@@ -186,3 +186,42 @@ fn build_context_options_default() {
     assert_eq!(opts.traversal_depth, 1);
     assert!((opts.min_score - 0.0).abs() < f64::EPSILON);
 }
+
+#[test]
+fn test_new_node_kinds_roundtrip() {
+    use codegraph::types::NodeKind;
+    let kinds = vec![
+        (NodeKind::Class, "class"),
+        (NodeKind::Interface, "interface"),
+        (NodeKind::Constructor, "constructor"),
+        (NodeKind::Annotation, "annotation"),
+        (NodeKind::AnnotationUsage, "annotation_usage"),
+        (NodeKind::Package, "package"),
+        (NodeKind::InnerClass, "inner_class"),
+        (NodeKind::InitBlock, "init_block"),
+        (NodeKind::AbstractMethod, "abstract_method"),
+        (NodeKind::InterfaceType, "interface_type"),
+        (NodeKind::StructMethod, "struct_method"),
+        (NodeKind::GoPackage, "go_package"),
+        (NodeKind::StructTag, "struct_tag"),
+        (NodeKind::GenericParam, "generic_param"),
+    ];
+    for (kind, expected_str) in kinds {
+        assert_eq!(kind.as_str(), expected_str);
+        assert_eq!(NodeKind::from_str(expected_str), Some(kind));
+    }
+}
+
+#[test]
+fn test_new_edge_kinds_roundtrip() {
+    use codegraph::types::EdgeKind;
+    let kinds = vec![
+        (EdgeKind::Extends, "extends"),
+        (EdgeKind::Annotates, "annotates"),
+        (EdgeKind::Receives, "receives"),
+    ];
+    for (kind, expected_str) in kinds {
+        assert_eq!(kind.as_str(), expected_str);
+        assert_eq!(EdgeKind::from_str(expected_str), Some(kind));
+    }
+}

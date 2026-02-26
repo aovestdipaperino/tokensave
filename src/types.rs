@@ -20,6 +20,23 @@ pub enum NodeKind {
     Field,
     Macro,
     Use,
+    // Java-specific
+    Class,
+    Interface,
+    Constructor,
+    Annotation,
+    AnnotationUsage,
+    Package,
+    InnerClass,
+    InitBlock,
+    AbstractMethod,
+    // Go-specific
+    InterfaceType,
+    StructMethod,
+    GoPackage,
+    StructTag,
+    // Shared
+    GenericParam,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -42,6 +59,20 @@ impl NodeKind {
             NodeKind::Field => "field",
             NodeKind::Macro => "macro",
             NodeKind::Use => "use",
+            NodeKind::Class => "class",
+            NodeKind::Interface => "interface",
+            NodeKind::Constructor => "constructor",
+            NodeKind::Annotation => "annotation",
+            NodeKind::AnnotationUsage => "annotation_usage",
+            NodeKind::Package => "package",
+            NodeKind::InnerClass => "inner_class",
+            NodeKind::InitBlock => "init_block",
+            NodeKind::AbstractMethod => "abstract_method",
+            NodeKind::InterfaceType => "interface_type",
+            NodeKind::StructMethod => "struct_method",
+            NodeKind::GoPackage => "go_package",
+            NodeKind::StructTag => "struct_tag",
+            NodeKind::GenericParam => "generic_param",
         }
     }
 
@@ -63,6 +94,20 @@ impl NodeKind {
             "field" => Some(NodeKind::Field),
             "macro" => Some(NodeKind::Macro),
             "use" => Some(NodeKind::Use),
+            "class" => Some(NodeKind::Class),
+            "interface" => Some(NodeKind::Interface),
+            "constructor" => Some(NodeKind::Constructor),
+            "annotation" => Some(NodeKind::Annotation),
+            "annotation_usage" => Some(NodeKind::AnnotationUsage),
+            "package" => Some(NodeKind::Package),
+            "inner_class" => Some(NodeKind::InnerClass),
+            "init_block" => Some(NodeKind::InitBlock),
+            "abstract_method" => Some(NodeKind::AbstractMethod),
+            "interface_type" => Some(NodeKind::InterfaceType),
+            "struct_method" => Some(NodeKind::StructMethod),
+            "go_package" => Some(NodeKind::GoPackage),
+            "struct_tag" => Some(NodeKind::StructTag),
+            "generic_param" => Some(NodeKind::GenericParam),
             _ => None,
         }
     }
@@ -78,6 +123,9 @@ pub enum EdgeKind {
     TypeOf,
     Returns,
     DerivesMacro,
+    Extends,
+    Annotates,
+    Receives,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -92,6 +140,9 @@ impl EdgeKind {
             EdgeKind::TypeOf => "type_of",
             EdgeKind::Returns => "returns",
             EdgeKind::DerivesMacro => "derives_macro",
+            EdgeKind::Extends => "extends",
+            EdgeKind::Annotates => "annotates",
+            EdgeKind::Receives => "receives",
         }
     }
 
@@ -105,6 +156,9 @@ impl EdgeKind {
             "type_of" => Some(EdgeKind::TypeOf),
             "returns" => Some(EdgeKind::Returns),
             "derives_macro" => Some(EdgeKind::DerivesMacro),
+            "extends" => Some(EdgeKind::Extends),
+            "annotates" => Some(EdgeKind::Annotates),
+            "receives" => Some(EdgeKind::Receives),
             _ => None,
         }
     }
