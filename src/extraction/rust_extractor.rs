@@ -1065,3 +1065,17 @@ impl RustExtractor {
         }
     }
 }
+
+impl crate::extraction::LanguageExtractor for RustExtractor {
+    fn extensions(&self) -> &[&str] {
+        &["rs"]
+    }
+
+    fn language_name(&self) -> &str {
+        "Rust"
+    }
+
+    fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
+        RustExtractor::extract(file_path, source)
+    }
+}

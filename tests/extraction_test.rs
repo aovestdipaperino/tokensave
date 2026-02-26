@@ -1,4 +1,4 @@
-use codegraph::extraction::RustExtractor;
+use codegraph::extraction::{LanguageRegistry, RustExtractor};
 use codegraph::types::*;
 
 #[test]
@@ -300,4 +300,42 @@ mod server {
     assert_eq!(fns.len(), 1);
     assert!(fns[0].qualified_name.contains("server"));
     assert!(fns[0].qualified_name.contains("handle_request"));
+}
+
+#[test]
+fn test_language_registry_finds_rust_extractor() {
+    let registry = LanguageRegistry::new();
+    assert!(registry.extractor_for_file("src/main.rs").is_some());
+    assert!(registry.extractor_for_file("lib.rs").is_some());
+}
+
+#[test]
+fn test_language_registry_finds_go_extractor() {
+    let registry = LanguageRegistry::new();
+    assert!(registry.extractor_for_file("main.go").is_some());
+    assert!(registry.extractor_for_file("pkg/server.go").is_some());
+}
+
+#[test]
+fn test_language_registry_finds_java_extractor() {
+    let registry = LanguageRegistry::new();
+    assert!(registry.extractor_for_file("Main.java").is_some());
+    assert!(registry.extractor_for_file("src/com/example/App.java").is_some());
+}
+
+#[test]
+fn test_language_registry_returns_none_for_unknown() {
+    let registry = LanguageRegistry::new();
+    assert!(registry.extractor_for_file("script.py").is_none());
+    assert!(registry.extractor_for_file("style.css").is_none());
+    assert!(registry.extractor_for_file("README.md").is_none());
+}
+
+#[test]
+fn test_language_registry_supported_extensions() {
+    let registry = LanguageRegistry::new();
+    let exts = registry.supported_extensions();
+    assert!(exts.contains(&"rs"));
+    assert!(exts.contains(&"go"));
+    assert!(exts.contains(&"java"));
 }
