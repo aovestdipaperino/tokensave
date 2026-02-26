@@ -1,0 +1,26 @@
+[package]
+name = "codegraph"
+version = "0.1.0"
+edition = "2021"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust codebases"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "vtab"] }
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }
+ndarray = "0.16"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+glob = "0.3"
+walkdir = "2"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
