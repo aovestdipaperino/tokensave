@@ -8,6 +8,8 @@ description = "Code intelligence tool that builds a semantic knowledge graph fro
 rusqlite = { version = "0.31", features = ["bundled", "vtab"] }
 tree-sitter = "0.24"
 tree-sitter-rust = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-java = "0.23"
 ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }
 ndarray = "0.16"
 clap = { version = "4", features = ["derive"] }
