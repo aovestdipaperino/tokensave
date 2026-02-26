@@ -196,8 +196,16 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 }
             }
         }
-        Commands::Serve { path: _ } => {
-            println!("MCP server will be implemented in Task 10");
+        Commands::Serve { path } => {
+            let project_path = resolve_path(path);
+            let cg = CodeGraph::open(&project_path)?;
+            let server = codegraph::mcp::McpServer::new(cg);
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                codegraph::errors::CodeGraphError::Config {
+                    message: format!("failed to create tokio runtime: {}", e),
+                }
+            })?;
+            rt.block_on(server.run())?;
         }
     }
     Ok(())
