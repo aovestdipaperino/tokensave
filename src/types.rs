@@ -120,8 +120,30 @@ pub enum Visibility {
     Private,
 }
 
+impl Visibility {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pub => "public",
+            Self::PubCrate => "pub_crate",
+            Self::PubSuper => "pub_super",
+            Self::Private => "private",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "public" | "pub" => Some(Self::Pub),
+            "pub_crate" => Some(Self::PubCrate),
+            "pub_super" => Some(Self::PubSuper),
+            "private" => Some(Self::Private),
+            _ => None,
+        }
+    }
+}
+
 /// A node in the code graph representing a code entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: String,
     pub kind: NodeKind,
@@ -140,7 +162,7 @@ pub struct Node {
 }
 
 /// An edge in the code graph representing a relationship between nodes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub source: String,
     pub target: String,
@@ -149,7 +171,7 @@ pub struct Edge {
 }
 
 /// Record tracking an indexed file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileRecord {
     pub path: String,
     pub content_hash: String,
@@ -160,7 +182,7 @@ pub struct FileRecord {
 }
 
 /// An unresolved reference found during parsing, to be resolved later.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnresolvedRef {
     pub from_node_id: String,
     pub reference_name: String,
