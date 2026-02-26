@@ -787,8 +787,21 @@ impl Database {
     /// Attempts an FTS5 prefix match first. If no results are found, falls back
     /// to a `LIKE` query.
     pub fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        // Try FTS5 first (prefix match)
-        let fts_query = format!("{query}*");
+        // Sanitize query for FTS5: wrap each word in double quotes to escape
+        // special characters (*, ?, :, etc.) and join with spaces (implicit OR).
+        let fts_query: String = query
+            .split_whitespace()
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                let sanitized: String = w.chars().filter(|c| *c != '"').collect();
+                format!("\"{sanitized}\"*")
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut stmt = self
             .conn()
             .prepare(
