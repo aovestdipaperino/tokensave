@@ -313,6 +313,10 @@ pub struct GraphStats {
     pub edges_by_kind: HashMap<String, u64>,
     pub db_size_bytes: u64,
     pub last_updated: u64,
+    /// Total bytes of all indexed source files.
+    pub total_source_bytes: u64,
+    /// Approximate tokens saved by using the graph instead of raw source.
+    pub approx_tokens_saved: u64,
 }
 
 /// Options for building an LLM context from the graph.

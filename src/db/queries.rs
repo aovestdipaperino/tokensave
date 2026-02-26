@@ -986,6 +986,21 @@ impl Database {
             )
             .unwrap_or(0) as u64;
 
+        let total_source_bytes: u64 = self
+            .conn()
+            .query_row(
+                "SELECT COALESCE(SUM(size), 0) FROM files",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) as u64;
+
+        // Approximate tokens: ~4 bytes per token (common LLM tokenizer estimate).
+        // Saved tokens = raw source tokens - graph DB tokens.
+        let raw_tokens = total_source_bytes / 4;
+        let graph_tokens = db_size_bytes / 4;
+        let approx_tokens_saved = raw_tokens.saturating_sub(graph_tokens);
+
         Ok(GraphStats {
             node_count,
             edge_count,
@@ -994,6 +1009,8 @@ impl Database {
             edges_by_kind,
             db_size_bytes,
             last_updated,
+            total_source_bytes,
+            approx_tokens_saved,
         })
     }
 }
