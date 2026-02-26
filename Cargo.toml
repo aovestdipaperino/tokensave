@@ -2,7 +2,7 @@
 name = "codegraph"
 version = "0.2.0"
 edition = "2021"
-description = "Code intelligence tool that builds a semantic knowledge graph from Rust codebases"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, and Java codebases"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled", "vtab"] }

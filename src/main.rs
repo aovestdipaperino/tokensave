@@ -37,7 +37,7 @@ impl Spinner {
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
-#[command(name = "codegraph", about = "Code intelligence for Rust codebases")]
+#[command(name = "codegraph", about = "Code intelligence for Rust, Go, and Java codebases")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

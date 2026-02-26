@@ -142,7 +142,7 @@ jobs:
 
           cat > tap/Formula/codegraph.rb << EOF
           class Codegraph < Formula
-            desc "Code intelligence tool that builds semantic knowledge graphs from codebases"
+            desc "Code intelligence tool that builds semantic knowledge graphs from Rust, Go, and Java codebases"
             homepage "https://github.com/aovestdipaperino/codegraph-rs"
             url "https://github.com/aovestdipaperino/codegraph-rs/archive/refs/tags/v${VERSION}.tar.gz"
             sha256 "${SOURCE_SHA}"
