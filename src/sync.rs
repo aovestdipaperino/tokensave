@@ -12,10 +12,7 @@ pub fn content_hash(content: &str) -> String {
 }
 
 /// Find files whose stored content hash differs from the current hash.
-pub fn find_stale_files(
-    db: &Database,
-    current_hashes: &[(String, String)],
-) -> Result<Vec<String>> {
+pub fn find_stale_files(db: &Database, current_hashes: &[(String, String)]) -> Result<Vec<String>> {
     let mut stale = Vec::new();
     for (path, current_hash) in current_hashes {
         if let Some(file_record) = db.get_file(path)? {
