@@ -4,4 +4,5 @@ pub mod errors;
 pub mod extraction;
 pub mod graph;
 pub mod resolution;
+pub mod sync;
 pub mod types;
