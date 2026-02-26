@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "root_dir": ".",
+  "include": [
+    "**/*.rs"
+  ],
+  "exclude": [
+    "target/**",
+    ".git/**",
+    ".codegraph/**",
+    "node_modules/**",
+    "vendor/**",
+    "**/*.min.*"
+  ],
+  "max_file_size": 1048576,
+  "extract_docstrings": true,
+  "track_call_sites": true,
+  "enable_embeddings": false
+}

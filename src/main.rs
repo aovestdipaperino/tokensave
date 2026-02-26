@@ -133,6 +133,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 println!("  Nodes:  {}", stats.node_count);
                 println!("  Edges:  {}", stats.edge_count);
                 println!("  DB Size: {} bytes", stats.db_size_bytes);
+                println!("  Approx tokens saved: ~{}", stats.approx_tokens_saved);
                 if !stats.nodes_by_kind.is_empty() {
                     println!("\n  Nodes by kind:");
                     let mut sorted: Vec<_> = stats.nodes_by_kind.iter().collect();
