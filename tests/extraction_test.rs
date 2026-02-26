@@ -264,7 +264,10 @@ pub struct Config { pub name: String }
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::DerivesMacro)
         .collect();
-    assert!(!derives.is_empty(), "should have derives_macro unresolved refs");
+    assert!(
+        !derives.is_empty(),
+        "should have derives_macro unresolved refs"
+    );
     let names: Vec<&str> = derives.iter().map(|r| r.reference_name.as_str()).collect();
     assert!(names.contains(&"Debug"));
     assert!(names.contains(&"Clone"));
@@ -320,7 +323,9 @@ fn test_language_registry_finds_go_extractor() {
 fn test_language_registry_finds_java_extractor() {
     let registry = LanguageRegistry::new();
     assert!(registry.extractor_for_file("Main.java").is_some());
-    assert!(registry.extractor_for_file("src/com/example/App.java").is_some());
+    assert!(registry
+        .extractor_for_file("src/com/example/App.java")
+        .is_some());
 }
 
 #[test]

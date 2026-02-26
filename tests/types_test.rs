@@ -22,8 +22,8 @@ fn node_kind_as_str_roundtrip() {
 
     for kind in kinds {
         let s = kind.as_str();
-        let parsed =
-            NodeKind::from_str(s).unwrap_or_else(|| panic!("failed to parse NodeKind from '{}'", s));
+        let parsed = NodeKind::from_str(s)
+            .unwrap_or_else(|| panic!("failed to parse NodeKind from '{}'", s));
         assert_eq!(kind, parsed, "roundtrip failed for NodeKind::{}", s);
     }
 }
@@ -48,8 +48,8 @@ fn edge_kind_as_str_roundtrip() {
 
     for kind in kinds {
         let s = kind.as_str();
-        let parsed =
-            EdgeKind::from_str(s).unwrap_or_else(|| panic!("failed to parse EdgeKind from '{}'", s));
+        let parsed = EdgeKind::from_str(s)
+            .unwrap_or_else(|| panic!("failed to parse EdgeKind from '{}'", s));
         assert_eq!(kind, parsed, "roundtrip failed for EdgeKind::{}", s);
     }
 }

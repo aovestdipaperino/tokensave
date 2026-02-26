@@ -204,7 +204,14 @@ impl<'a> ReferenceResolver<'a> {
 
             // Callable kind bonus for Calls references
             if uref.reference_kind == EdgeKind::Calls
-                && (node.kind == NodeKind::Function || node.kind == NodeKind::Method)
+                && matches!(
+                    node.kind,
+                    NodeKind::Function
+                        | NodeKind::Method
+                        | NodeKind::StructMethod
+                        | NodeKind::Constructor
+                        | NodeKind::AbstractMethod
+                )
             {
                 score += 25;
             }

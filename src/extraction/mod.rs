@@ -1,14 +1,14 @@
+mod go_extractor;
+mod java_extractor;
 /// Tree-sitter based source code extraction module.
 ///
 /// This module provides extractors that parse source files using tree-sitter
 /// and produce structured graph nodes and edges.
 mod rust_extractor;
-mod go_extractor;
-mod java_extractor;
 
-pub use rust_extractor::RustExtractor;
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
+pub use rust_extractor::RustExtractor;
 
 use crate::types::ExtractionResult;
 
