@@ -36,7 +36,10 @@ fn test_initialize_creates_database() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("subdir").join("code_graph.db");
     let _db = Database::initialize(&db_path).expect("failed to initialize database");
-    assert!(db_path.exists(), "database file should exist after initialize");
+    assert!(
+        db_path.exists(),
+        "database file should exist after initialize"
+    );
 }
 
 #[test]
@@ -285,7 +288,8 @@ fn test_batch_insert_nodes() {
         .map(|i| sample_node(&format!("batch-{i}"), &format!("func_{i}"), "src/batch.rs"))
         .collect();
 
-    db.insert_nodes(&nodes).expect("failed to batch insert nodes");
+    db.insert_nodes(&nodes)
+        .expect("failed to batch insert nodes");
 
     let fetched = db
         .get_nodes_by_file("src/batch.rs")

@@ -82,55 +82,60 @@ fn row_to_unresolved_ref(row: &rusqlite::Row) -> rusqlite::Result<UnresolvedRef>
 impl Database {
     /// Inserts or replaces a single node.
     pub fn insert_node(&self, node: &Node) -> Result<()> {
-        self.conn().execute(
-            "INSERT OR REPLACE INTO nodes
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO nodes
                 (id, kind, name, qualified_name, file_path,
                  start_line, end_line, start_column, end_column,
                  docstring, signature, visibility, is_async, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                node.id,
-                node.kind.as_str(),
-                node.name,
-                node.qualified_name,
-                node.file_path,
-                node.start_line,
-                node.end_line,
-                node.start_column,
-                node.end_column,
-                node.docstring,
-                node.signature,
-                node.visibility.as_str(),
-                node.is_async as i32,
-                node.updated_at as i64,
-            ],
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to insert node: {e}"),
-            operation: "insert_node".to_string(),
-        })?;
+                params![
+                    node.id,
+                    node.kind.as_str(),
+                    node.name,
+                    node.qualified_name,
+                    node.file_path,
+                    node.start_line,
+                    node.end_line,
+                    node.start_column,
+                    node.end_column,
+                    node.docstring,
+                    node.signature,
+                    node.visibility.as_str(),
+                    node.is_async as i32,
+                    node.updated_at as i64,
+                ],
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to insert node: {e}"),
+                operation: "insert_node".to_string(),
+            })?;
         Ok(())
     }
 
     /// Inserts or replaces a batch of nodes inside a single transaction.
     pub fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
-        let tx = self.conn().unchecked_transaction().map_err(|e| {
-            CodeGraphError::Database {
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_nodes".to_string(),
-            }
-        })?;
+            })?;
 
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO nodes
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO nodes
                     (id, kind, name, qualified_name, file_path,
                      start_line, end_line, start_column, end_column,
                      docstring, signature, visibility, is_async, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            ).map_err(|e| CodeGraphError::Database {
-                message: format!("failed to prepare statement: {e}"),
-                operation: "insert_nodes".to_string(),
-            })?;
+                )
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to prepare statement: {e}"),
+                    operation: "insert_nodes".to_string(),
+                })?;
 
             for node in nodes {
                 stmt.execute(params![
@@ -148,7 +153,8 @@ impl Database {
                     node.visibility.as_str(),
                     node.is_async as i32,
                     node.updated_at as i64,
-                ]).map_err(|e| CodeGraphError::Database {
+                ])
+                .map_err(|e| CodeGraphError::Database {
                     message: format!("failed to insert node: {e}"),
                     operation: "insert_nodes".to_string(),
                 })?;
@@ -181,22 +187,25 @@ impl Database {
 
     /// Returns all nodes for a given file, ordered by start line.
     pub fn get_nodes_by_file(&self, file_path: &str) -> Result<Vec<Node>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT id, kind, name, qualified_name, file_path,
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, updated_at
              FROM nodes WHERE file_path = ?1 ORDER BY start_line",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare query: {e}"),
-            operation: "get_nodes_by_file".to_string(),
-        })?;
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare query: {e}"),
+                operation: "get_nodes_by_file".to_string(),
+            })?;
 
-        let rows = stmt.query_map(params![file_path], row_to_node).map_err(|e| {
-            CodeGraphError::Database {
+        let rows = stmt
+            .query_map(params![file_path], row_to_node)
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to query nodes by file: {e}"),
                 operation: "get_nodes_by_file".to_string(),
-            }
-        })?;
+            })?;
 
         let mut nodes = Vec::new();
         for row in rows {
@@ -210,15 +219,18 @@ impl Database {
 
     /// Returns all nodes of a given kind.
     pub fn get_nodes_by_kind(&self, kind: NodeKind) -> Result<Vec<Node>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT id, kind, name, qualified_name, file_path,
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, updated_at
              FROM nodes WHERE kind = ?1",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare query: {e}"),
-            operation: "get_nodes_by_kind".to_string(),
-        })?;
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare query: {e}"),
+                operation: "get_nodes_by_kind".to_string(),
+            })?;
 
         let rows = stmt
             .query_map(params![kind.as_str()], row_to_node)
@@ -239,22 +251,25 @@ impl Database {
 
     /// Returns every node in the database.
     pub fn get_all_nodes(&self) -> Result<Vec<Node>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT id, kind, name, qualified_name, file_path,
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, updated_at
              FROM nodes",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare query: {e}"),
-            operation: "get_all_nodes".to_string(),
-        })?;
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare query: {e}"),
+                operation: "get_all_nodes".to_string(),
+            })?;
 
-        let rows = stmt.query_map([], row_to_node).map_err(|e| {
-            CodeGraphError::Database {
+        let rows = stmt
+            .query_map([], row_to_node)
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to query all nodes: {e}"),
                 operation: "get_all_nodes".to_string(),
-            }
-        })?;
+            })?;
 
         let mut nodes = Vec::new();
         for row in rows {
@@ -299,12 +314,13 @@ impl Database {
             return Ok(());
         }
 
-        let tx = self.conn().unchecked_transaction().map_err(|e| {
-            CodeGraphError::Database {
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "delete_nodes_by_file".to_string(),
-            }
-        })?;
+            })?;
 
         for id in &node_ids {
             tx.execute(
@@ -332,14 +348,11 @@ impl Database {
                 })?;
         }
 
-        tx.execute(
-            "DELETE FROM nodes WHERE file_path = ?1",
-            params![file_path],
-        )
-        .map_err(|e| CodeGraphError::Database {
-            message: format!("failed to delete nodes: {e}"),
-            operation: "delete_nodes_by_file".to_string(),
-        })?;
+        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to delete nodes: {e}"),
+                operation: "delete_nodes_by_file".to_string(),
+            })?;
 
         tx.commit().map_err(|e| CodeGraphError::Database {
             message: format!("failed to commit transaction: {e}"),
@@ -355,24 +368,27 @@ impl Database {
 impl Database {
     /// Inserts a single edge.
     pub fn insert_edge(&self, edge: &Edge) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
-            params![edge.source, edge.target, edge.kind.as_str(), edge.line],
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to insert edge: {e}"),
-            operation: "insert_edge".to_string(),
-        })?;
+        self.conn()
+            .execute(
+                "INSERT INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
+                params![edge.source, edge.target, edge.kind.as_str(), edge.line],
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to insert edge: {e}"),
+                operation: "insert_edge".to_string(),
+            })?;
         Ok(())
     }
 
     /// Inserts a batch of edges inside a single transaction.
     pub fn insert_edges(&self, edges: &[Edge]) -> Result<()> {
-        let tx = self.conn().unchecked_transaction().map_err(|e| {
-            CodeGraphError::Database {
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_edges".to_string(),
-            }
-        })?;
+            })?;
 
         {
             let mut stmt = tx
@@ -409,19 +425,20 @@ impl Database {
     /// If `kinds` is empty, all outgoing edges are returned.
     pub fn get_outgoing_edges(&self, source_id: &str, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
         if kinds.is_empty() {
-            let mut stmt = self.conn().prepare(
-                "SELECT source, target, kind, line FROM edges WHERE source = ?1",
-            ).map_err(|e| CodeGraphError::Database {
-                message: format!("failed to prepare query: {e}"),
-                operation: "get_outgoing_edges".to_string(),
-            })?;
+            let mut stmt = self
+                .conn()
+                .prepare("SELECT source, target, kind, line FROM edges WHERE source = ?1")
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to prepare query: {e}"),
+                    operation: "get_outgoing_edges".to_string(),
+                })?;
 
-            let rows = stmt.query_map(params![source_id], row_to_edge).map_err(|e| {
-                CodeGraphError::Database {
+            let rows = stmt
+                .query_map(params![source_id], row_to_edge)
+                .map_err(|e| CodeGraphError::Database {
                     message: format!("failed to query outgoing edges: {e}"),
                     operation: "get_outgoing_edges".to_string(),
-                }
-            })?;
+                })?;
 
             let mut edges = Vec::new();
             for row in rows {
@@ -432,16 +449,23 @@ impl Database {
             }
             Ok(edges)
         } else {
-            let placeholders: Vec<String> = kinds.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+            let placeholders: Vec<String> = kinds
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 2))
+                .collect();
             let sql = format!(
                 "SELECT source, target, kind, line FROM edges WHERE source = ?1 AND kind IN ({})",
                 placeholders.join(", ")
             );
 
-            let mut stmt = self.conn().prepare(&sql).map_err(|e| CodeGraphError::Database {
-                message: format!("failed to prepare query: {e}"),
-                operation: "get_outgoing_edges".to_string(),
-            })?;
+            let mut stmt = self
+                .conn()
+                .prepare(&sql)
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to prepare query: {e}"),
+                    operation: "get_outgoing_edges".to_string(),
+                })?;
 
             let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             param_values.push(Box::new(source_id.to_string()));
@@ -474,19 +498,20 @@ impl Database {
     /// If `kinds` is empty, all incoming edges are returned.
     pub fn get_incoming_edges(&self, target_id: &str, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
         if kinds.is_empty() {
-            let mut stmt = self.conn().prepare(
-                "SELECT source, target, kind, line FROM edges WHERE target = ?1",
-            ).map_err(|e| CodeGraphError::Database {
-                message: format!("failed to prepare query: {e}"),
-                operation: "get_incoming_edges".to_string(),
-            })?;
+            let mut stmt = self
+                .conn()
+                .prepare("SELECT source, target, kind, line FROM edges WHERE target = ?1")
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to prepare query: {e}"),
+                    operation: "get_incoming_edges".to_string(),
+                })?;
 
-            let rows = stmt.query_map(params![target_id], row_to_edge).map_err(|e| {
-                CodeGraphError::Database {
+            let rows = stmt
+                .query_map(params![target_id], row_to_edge)
+                .map_err(|e| CodeGraphError::Database {
                     message: format!("failed to query incoming edges: {e}"),
                     operation: "get_incoming_edges".to_string(),
-                }
-            })?;
+                })?;
 
             let mut edges = Vec::new();
             for row in rows {
@@ -497,16 +522,23 @@ impl Database {
             }
             Ok(edges)
         } else {
-            let placeholders: Vec<String> = kinds.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+            let placeholders: Vec<String> = kinds
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 2))
+                .collect();
             let sql = format!(
                 "SELECT source, target, kind, line FROM edges WHERE target = ?1 AND kind IN ({})",
                 placeholders.join(", ")
             );
 
-            let mut stmt = self.conn().prepare(&sql).map_err(|e| CodeGraphError::Database {
-                message: format!("failed to prepare query: {e}"),
-                operation: "get_incoming_edges".to_string(),
-            })?;
+            let mut stmt = self
+                .conn()
+                .prepare(&sql)
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to prepare query: {e}"),
+                    operation: "get_incoming_edges".to_string(),
+                })?;
 
             let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             param_values.push(Box::new(target_id.to_string()));
@@ -537,10 +569,7 @@ impl Database {
     /// Deletes all edges originating from a given source node.
     pub fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
         self.conn()
-            .execute(
-                "DELETE FROM edges WHERE source = ?1",
-                params![source_id],
-            )
+            .execute("DELETE FROM edges WHERE source = ?1", params![source_id])
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to delete edges by source: {e}"),
                 operation: "delete_edges_by_source".to_string(),
@@ -556,22 +585,24 @@ impl Database {
 impl Database {
     /// Inserts or replaces a file record.
     pub fn upsert_file(&self, file: &FileRecord) -> Result<()> {
-        self.conn().execute(
-            "INSERT OR REPLACE INTO files
+        self.conn()
+            .execute(
+                "INSERT OR REPLACE INTO files
                 (path, content_hash, size, modified_at, indexed_at, node_count)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                file.path,
-                file.content_hash,
-                file.size as i64,
-                file.modified_at,
-                file.indexed_at,
-                file.node_count as i32,
-            ],
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to upsert file: {e}"),
-            operation: "upsert_file".to_string(),
-        })?;
+                params![
+                    file.path,
+                    file.content_hash,
+                    file.size as i64,
+                    file.modified_at,
+                    file.indexed_at,
+                    file.node_count as i32,
+                ],
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to upsert file: {e}"),
+                operation: "upsert_file".to_string(),
+            })?;
         Ok(())
     }
 
@@ -593,19 +624,22 @@ impl Database {
 
     /// Returns all file records.
     pub fn get_all_files(&self) -> Result<Vec<FileRecord>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT path, content_hash, size, modified_at, indexed_at, node_count FROM files",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare query: {e}"),
-            operation: "get_all_files".to_string(),
-        })?;
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT path, content_hash, size, modified_at, indexed_at, node_count FROM files",
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare query: {e}"),
+                operation: "get_all_files".to_string(),
+            })?;
 
-        let rows = stmt.query_map([], row_to_file).map_err(|e| {
-            CodeGraphError::Database {
+        let rows = stmt
+            .query_map([], row_to_file)
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to query all files: {e}"),
                 operation: "get_all_files".to_string(),
-            }
-        })?;
+            })?;
 
         let mut files = Vec::new();
         for row in rows {
@@ -637,33 +671,36 @@ impl Database {
 impl Database {
     /// Inserts a single unresolved reference.
     pub fn insert_unresolved_ref(&self, uref: &UnresolvedRef) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO unresolved_refs
+        self.conn()
+            .execute(
+                "INSERT INTO unresolved_refs
                 (from_node_id, reference_name, reference_kind, line, col, file_path)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                uref.from_node_id,
-                uref.reference_name,
-                uref.reference_kind.as_str(),
-                uref.line,
-                uref.column,
-                uref.file_path,
-            ],
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to insert unresolved ref: {e}"),
-            operation: "insert_unresolved_ref".to_string(),
-        })?;
+                params![
+                    uref.from_node_id,
+                    uref.reference_name,
+                    uref.reference_kind.as_str(),
+                    uref.line,
+                    uref.column,
+                    uref.file_path,
+                ],
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to insert unresolved ref: {e}"),
+                operation: "insert_unresolved_ref".to_string(),
+            })?;
         Ok(())
     }
 
     /// Inserts a batch of unresolved references inside a single transaction.
     pub fn insert_unresolved_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
-        let tx = self.conn().unchecked_transaction().map_err(|e| {
-            CodeGraphError::Database {
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_unresolved_refs".to_string(),
-            }
-        })?;
+            })?;
 
         {
             let mut stmt = tx
@@ -701,20 +738,23 @@ impl Database {
 
     /// Returns all unresolved references.
     pub fn get_unresolved_refs(&self) -> Result<Vec<UnresolvedRef>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT from_node_id, reference_name, reference_kind, line, col, file_path
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT from_node_id, reference_name, reference_kind, line, col, file_path
              FROM unresolved_refs",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare query: {e}"),
-            operation: "get_unresolved_refs".to_string(),
-        })?;
-
-        let rows = stmt
-            .query_map([], row_to_unresolved_ref)
+            )
             .map_err(|e| CodeGraphError::Database {
-                message: format!("failed to query unresolved refs: {e}"),
+                message: format!("failed to prepare query: {e}"),
                 operation: "get_unresolved_refs".to_string(),
             })?;
+
+        let rows =
+            stmt.query_map([], row_to_unresolved_ref)
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to query unresolved refs: {e}"),
+                    operation: "get_unresolved_refs".to_string(),
+                })?;
 
         let mut refs = Vec::new();
         for row in rows {
@@ -750,8 +790,10 @@ impl Database {
     pub fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         // Try FTS5 first (prefix match)
         let fts_query = format!("{query}*");
-        let mut stmt = self.conn().prepare(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.updated_at,
                     rank
@@ -760,20 +802,18 @@ impl Database {
              WHERE nodes_fts MATCH ?1
              ORDER BY rank
              LIMIT ?2",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare FTS query: {e}"),
-            operation: "search_nodes".to_string(),
-        })?;
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare FTS query: {e}"),
+                operation: "search_nodes".to_string(),
+            })?;
 
         let rows = stmt
             .query_map(params![fts_query, limit as i64], |row| {
                 let node = row_to_node(row)?;
                 let rank: f64 = row.get("rank")?;
                 // FTS5 rank is negative (lower = better match). Convert to positive score.
-                Ok(SearchResult {
-                    node,
-                    score: -rank,
-                })
+                Ok(SearchResult { node, score: -rank })
             })
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to execute FTS query: {e}"),
@@ -794,17 +834,20 @@ impl Database {
 
         // Fallback: LIKE query
         let like_pattern = format!("%{query}%");
-        let mut stmt = self.conn().prepare(
-            "SELECT id, kind, name, qualified_name, file_path,
+        let mut stmt = self
+            .conn()
+            .prepare(
+                "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, updated_at
              FROM nodes
              WHERE name LIKE ?1 OR qualified_name LIKE ?1 OR docstring LIKE ?1 OR signature LIKE ?1
              LIMIT ?2",
-        ).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to prepare LIKE query: {e}"),
-            operation: "search_nodes".to_string(),
-        })?;
+            )
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to prepare LIKE query: {e}"),
+                operation: "search_nodes".to_string(),
+            })?;
 
         let rows = stmt
             .query_map(params![like_pattern, limit as i64], |row| {
@@ -836,9 +879,7 @@ impl Database {
     pub fn get_stats(&self) -> Result<GraphStats> {
         let node_count: u64 = self
             .conn()
-            .query_row("SELECT COUNT(*) FROM nodes", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get::<_, i64>(0))
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to count nodes: {e}"),
                 operation: "get_stats".to_string(),
@@ -846,9 +887,7 @@ impl Database {
 
         let edge_count: u64 = self
             .conn()
-            .query_row("SELECT COUNT(*) FROM edges", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get::<_, i64>(0))
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to count edges: {e}"),
                 operation: "get_stats".to_string(),
@@ -856,9 +895,7 @@ impl Database {
 
         let file_count: u64 = self
             .conn()
-            .query_row("SELECT COUNT(*) FROM files", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to count files: {e}"),
                 operation: "get_stats".to_string(),
