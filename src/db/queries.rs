@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -965,10 +964,14 @@ impl Database {
 
         let db_size_bytes = self.size().unwrap_or(0);
 
-        let last_updated = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let last_updated: u64 = self
+            .conn()
+            .query_row(
+                "SELECT COALESCE(MAX(indexed_at), 0) FROM files",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0) as u64;
 
         Ok(GraphStats {
             node_count,

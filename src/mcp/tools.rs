@@ -169,11 +169,12 @@ fn truncate_response(s: &str) -> String {
     if s.len() <= MAX_RESPONSE_CHARS {
         s.to_string()
     } else {
-        let truncated = &s[..MAX_RESPONSE_CHARS];
-        format!(
-            "{}\n\n[... truncated at {} chars]",
-            truncated, MAX_RESPONSE_CHARS
-        )
+        // Find a valid UTF-8 character boundary at or before MAX_RESPONSE_CHARS
+        let mut end = MAX_RESPONSE_CHARS;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}\n\n[... truncated at {} chars]", &s[..end], end)
     }
 }
 

@@ -70,7 +70,7 @@ enum Commands {
         #[arg(short, long, default_value = "markdown")]
         format: String,
     },
-    /// Start MCP server (stub for now)
+    /// Start MCP server over stdio
     Serve {
         /// Project path
         #[arg(short, long)]

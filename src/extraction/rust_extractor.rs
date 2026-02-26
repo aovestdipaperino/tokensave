@@ -1040,11 +1040,13 @@ impl RustExtractor {
                 for trait_name in inner.split(',') {
                     let trait_name = trait_name.trim();
                     if !trait_name.is_empty() {
-                        state.edges.push(Edge {
-                            source: item_id.to_string(),
-                            target: trait_name.to_string(),
-                            kind: EdgeKind::DerivesMacro,
-                            line: Some(line),
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: item_id.to_string(),
+                            reference_name: trait_name.to_string(),
+                            reference_kind: EdgeKind::DerivesMacro,
+                            line,
+                            column: attr_node.start_position().column as u32,
+                            file_path: state.file_path.to_string(),
                         });
                     }
                 }

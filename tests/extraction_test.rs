@@ -260,11 +260,15 @@ pub struct Config { pub name: String }
 "#;
     let result = RustExtractor::extract("src/config.rs", source);
     let derives: Vec<_> = result
-        .edges
+        .unresolved_refs
         .iter()
-        .filter(|e| e.kind == EdgeKind::DerivesMacro)
+        .filter(|r| r.reference_kind == EdgeKind::DerivesMacro)
         .collect();
-    assert!(!derives.is_empty(), "should have derives_macro edges");
+    assert!(!derives.is_empty(), "should have derives_macro unresolved refs");
+    let names: Vec<&str> = derives.iter().map(|r| r.reference_name.as_str()).collect();
+    assert!(names.contains(&"Debug"));
+    assert!(names.contains(&"Clone"));
+    assert!(names.contains(&"Serialize"));
 }
 
 #[test]

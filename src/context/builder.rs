@@ -226,6 +226,10 @@ impl<'a> ContextBuilder<'a> {
             if let Some(code) = self.get_code(node)? {
                 let truncated = if code.len() > options.max_code_block_size {
                     let mut end = options.max_code_block_size;
+                    // Ensure we land on a valid UTF-8 boundary
+                    while !code.is_char_boundary(end) && end > 0 {
+                        end -= 1;
+                    }
                     // Try to truncate at a line boundary
                     if let Some(pos) = code[..end].rfind('\n') {
                         end = pos;
