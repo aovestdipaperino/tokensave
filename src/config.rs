@@ -40,7 +40,11 @@ impl Default for CodeGraphConfig {
         Self {
             version: 1,
             root_dir: String::new(),
-            include: vec!["**/*.rs".to_string()],
+            include: vec![
+                "**/*.rs".to_string(),
+                "**/*.go".to_string(),
+                "**/*.java".to_string(),
+            ],
             exclude: vec![
                 "target/**".to_string(),
                 ".git/**".to_string(),
@@ -48,6 +52,10 @@ impl Default for CodeGraphConfig {
                 "node_modules/**".to_string(),
                 "vendor/**".to_string(),
                 "**/*.min.*".to_string(),
+                "bin/**".to_string(),
+                "build/**".to_string(),
+                "out/**".to_string(),
+                ".gradle/**".to_string(),
             ],
             max_file_size: 1_048_576,
             extract_docstrings: true,

@@ -9,17 +9,21 @@ use crate::config::{
 use crate::context::ContextBuilder;
 use crate::db::Database;
 use crate::errors::{CodeGraphError, Result};
-use crate::extraction::RustExtractor;
+use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::ReferenceResolver;
 use crate::sync;
 use crate::types::*;
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
+///
+/// Provides a high-level API for initializing, indexing, querying, and
+/// syncing a Rust codebase's semantic knowledge graph.
 pub struct CodeGraph {
     db: Database,
     config: CodeGraphConfig,
     project_root: PathBuf,
+    registry: LanguageRegistry,
 }
 
 /// Result of a full indexing operation.
@@ -77,6 +81,7 @@ impl CodeGraph {
             db,
             config,
             project_root: project_root.to_path_buf(),
+            registry: LanguageRegistry::new(),
         })
     }
 
@@ -101,6 +106,7 @@ impl CodeGraph {
             db,
             config,
             project_root: project_root.to_path_buf(),
+            registry: LanguageRegistry::new(),
         })
     }
 
@@ -140,7 +146,11 @@ impl CodeGraph {
                 Err(_) => continue,
             };
 
-            let result = RustExtractor::extract(file_path, &source);
+            let extractor = match self.registry.extractor_for_file(file_path) {
+                Some(e) => e,
+                None => continue,
+            };
+            let result = extractor.extract(file_path, &source);
 
             // Store nodes and edges
             self.db.insert_nodes(&result.nodes)?;
@@ -221,7 +231,11 @@ impl CodeGraph {
                 Err(_) => continue,
             };
 
-            let result = RustExtractor::extract(file_path, &source);
+            let extractor = match self.registry.extractor_for_file(file_path) {
+                Some(e) => e,
+                None => continue,
+            };
+            let result = extractor.extract(file_path, &source);
             self.db.insert_nodes(&result.nodes)?;
             self.db.insert_edges(&result.edges)?;
             if !result.unresolved_refs.is_empty() {
