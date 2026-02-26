@@ -254,6 +254,11 @@ impl CodeGraph {
         for entry in WalkDir::new(&self.project_root)
             .into_iter()
             .filter_entry(|e| {
+                // Always allow the root directory itself (depth 0), even if
+                // its name starts with '.' (e.g. temp dirs on macOS).
+                if e.depth() == 0 {
+                    return true;
+                }
                 // Skip hidden directories and target/
                 let name = e.file_name().to_string_lossy();
                 !name.starts_with('.') && name != "target"
