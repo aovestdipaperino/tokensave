@@ -203,7 +203,7 @@ pub struct ExtractionResult {
 }
 
 /// A subgraph containing a subset of nodes and edges.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Subgraph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
@@ -284,7 +284,7 @@ impl Default for BuildContextOptions {
             format: OutputFormat::Markdown,
             search_limit: 3,
             traversal_depth: 1,
-            min_score: 0.3,
+            min_score: 0.0,
         }
     }
 }
