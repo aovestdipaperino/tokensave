@@ -16,9 +16,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            bottle_tag: ventura
           - runner: macos-14
             target: aarch64-apple-darwin
             bottle_tag: arm64_sonoma
@@ -140,7 +137,6 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SOURCE_SHA="${{ steps.hashes.outputs.source_sha }}"
-          VENTURA_SHA="${{ steps.hashes.outputs.ventura_sha }}"
           ARM64_SONOMA_SHA="${{ steps.hashes.outputs.arm64_sonoma_sha }}"
           X86_64_LINUX_SHA="${{ steps.hashes.outputs.x86_64_linux_sha }}"
 
@@ -154,7 +150,6 @@ jobs:
 
             bottle do
               root_url "https://github.com/aovestdipaperino/codegraph-rs/releases/download/v${VERSION}"
-              sha256 cellar: :any_skip_relocation, ventura:      "${VENTURA_SHA}"
               sha256 cellar: :any_skip_relocation, arm64_sonoma: "${ARM64_SONOMA_SHA}"
               sha256 cellar: :any_skip_relocation, x86_64_linux: "${X86_64_LINUX_SHA}"
             end
