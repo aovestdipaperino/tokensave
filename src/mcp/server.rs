@@ -4,6 +4,10 @@
 //! The server exposes code graph tools via the Model Context Protocol,
 //! allowing AI assistants to query the code graph interactively.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -13,15 +17,40 @@ use crate::errors::Result;
 use super::tools::{get_tool_definitions, handle_tool_call};
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
+/// Runtime statistics for the MCP server.
+pub struct ServerStats {
+    started_at: Instant,
+    total_requests: AtomicU64,
+    tool_calls: AtomicU64,
+    errors: AtomicU64,
+}
+
+impl ServerStats {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            total_requests: AtomicU64::new(0),
+            tool_calls: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+        }
+    }
+}
+
 /// The MCP server wrapping a `CodeGraph` instance.
 pub struct McpServer {
     cg: CodeGraph,
+    stats: ServerStats,
+    tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
     pub fn new(cg: CodeGraph) -> Self {
-        Self { cg }
+        Self {
+            cg,
+            stats: ServerStats::new(),
+            tool_call_counts: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Runs the server, reading JSON-RPC requests from stdin and writing
@@ -78,9 +107,10 @@ impl McpServer {
     ///
     /// Returns `None` for notifications (requests without an `id`).
     fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+        self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();
 
-        match request.method.as_str() {
+        let result = match request.method.as_str() {
             "initialize" => Some(self.handle_initialize(id)),
             "initialized" => {
                 // Notification - no response required
@@ -98,7 +128,16 @@ impl McpServer {
                 ErrorCode::MethodNotFound,
                 format!("method not found: {}", request.method),
             )),
+        };
+
+        // Track errors
+        if let Some(ref resp) = result {
+            if resp.error.is_some() {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+            }
         }
+
+        result
     }
 
     /// Handles the `initialize` method, returning server capabilities.
@@ -150,7 +189,18 @@ impl McpServer {
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-        match handle_tool_call(&self.cg, tool_name, arguments) {
+        self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut counts) = self.tool_call_counts.lock() {
+            *counts.entry(tool_name.to_string()).or_insert(0) += 1;
+        }
+
+        let server_stats = if tool_name == "codegraph_status" {
+            Some(self.server_stats_json())
+        } else {
+            None
+        };
+
+        match handle_tool_call(&self.cg, tool_name, arguments, server_stats) {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(
                 id,
@@ -158,5 +208,23 @@ impl McpServer {
                 format!("tool execution failed: {}", e),
             ),
         }
+    }
+
+    /// Returns the current server runtime statistics as a JSON value.
+    pub fn server_stats_json(&self) -> Value {
+        let uptime = self.stats.started_at.elapsed();
+        let tool_counts: Value = self
+            .tool_call_counts
+            .lock()
+            .map(|counts| json!(*counts))
+            .unwrap_or(json!({}));
+
+        json!({
+            "uptime_secs": uptime.as_secs(),
+            "total_requests": self.stats.total_requests.load(Ordering::Relaxed),
+            "tool_calls": self.stats.tool_calls.load(Ordering::Relaxed),
+            "errors": self.stats.errors.load(Ordering::Relaxed),
+            "tool_call_counts": tool_counts,
+        })
     }
 }

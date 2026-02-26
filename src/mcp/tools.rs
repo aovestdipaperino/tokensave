@@ -147,8 +147,14 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result as a JSON value, or an error if the tool name
-/// is unknown or the handler fails.
-pub fn handle_tool_call(cg: &CodeGraph, tool_name: &str, args: Value) -> Result<Value> {
+/// is unknown or the handler fails. The optional `server_stats` value is
+/// included in `codegraph_status` responses when provided.
+pub fn handle_tool_call(
+    cg: &CodeGraph,
+    tool_name: &str,
+    args: Value,
+    server_stats: Option<Value>,
+) -> Result<Value> {
     match tool_name {
         "codegraph_search" => handle_search(cg, args),
         "codegraph_context" => handle_context(cg, args),
@@ -156,7 +162,7 @@ pub fn handle_tool_call(cg: &CodeGraph, tool_name: &str, args: Value) -> Result<
         "codegraph_callees" => handle_callees(cg, args),
         "codegraph_impact" => handle_impact(cg, args),
         "codegraph_node" => handle_node(cg, args),
-        "codegraph_status" => handle_status(cg),
+        "codegraph_status" => handle_status(cg, server_stats),
         _ => Err(CodeGraphError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
@@ -399,11 +405,15 @@ fn handle_node(cg: &CodeGraph, args: Value) -> Result<Value> {
 }
 
 /// Handles `codegraph_status` tool calls.
-fn handle_status(cg: &CodeGraph) -> Result<Value> {
+fn handle_status(cg: &CodeGraph, server_stats: Option<Value>) -> Result<Value> {
     let stats = cg.get_stats()?;
-    let output = serde_json::to_string_pretty(&stats).unwrap_or_default();
+    let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
+    if let Some(ss) = server_stats {
+        output["server"] = ss;
+    }
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
     Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&output) }]
+        "content": [{ "type": "text", "text": truncate_response(&formatted) }]
     }))
 }
 
