@@ -127,6 +127,15 @@ impl CodeGraph {
     /// extracts nodes and edges, resolves references, and stores everything
     /// in the database.
     pub fn index_all(&self) -> Result<IndexResult> {
+        self.index_all_with_progress(|_| {})
+    }
+
+    /// Like `index_all()`, but calls `on_file` with each file path before
+    /// processing it. Use this to drive a progress spinner in the CLI.
+    pub fn index_all_with_progress<F>(&self, on_file: F) -> Result<IndexResult>
+    where
+        F: Fn(&str),
+    {
         let start = Instant::now();
 
         // 1. Clear existing data
@@ -140,6 +149,8 @@ impl CodeGraph {
         let mut total_edges = 0;
 
         for file_path in &files {
+            on_file(file_path);
+
             let abs_path = self.project_root.join(file_path);
             let source = match std::fs::read_to_string(&abs_path) {
                 Ok(s) => s,

@@ -1,10 +1,39 @@
 use clap::{Parser, Subcommand};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 
 use codegraph::codegraph::CodeGraph;
 use codegraph::context::{format_context_as_json, format_context_as_markdown};
 use codegraph::types::*;
+
+struct Spinner {
+    frames: &'static [&'static str],
+    idx: usize,
+}
+
+impl Spinner {
+    fn new() -> Self {
+        Self {
+            frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+            idx: 0,
+        }
+    }
+
+    fn tick(&mut self, message: &str) {
+        let frame = self.frames[self.idx % self.frames.len()];
+        self.idx += 1;
+        let mut stderr = std::io::stderr();
+        let _ = write!(stderr, "\r\x1b[2K{} {}", frame, message);
+        let _ = stderr.flush();
+    }
+
+    fn done(message: &str) {
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(stderr, "\r\x1b[2K\x1b[32m✔\x1b[0m {}", message);
+        let _ = stderr.flush();
+    }
+}
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
@@ -93,21 +122,27 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             let cg = CodeGraph::init(&project_path)?;
             println!("Initialized CodeGraph at {}", project_path.display());
             if index {
-                let result = cg.index_all()?;
-                println!(
-                    "Indexed {} files: {} nodes, {} edges in {}ms",
+                let spinner = std::cell::RefCell::new(Spinner::new());
+                let result = cg.index_all_with_progress(|file| {
+                    spinner.borrow_mut().tick(&format!("indexing {}", file));
+                })?;
+                Spinner::done(&format!(
+                    "indexing done — {} files, {} nodes, {} edges in {}ms",
                     result.file_count, result.node_count, result.edge_count, result.duration_ms
-                );
+                ));
             }
         }
         Commands::Index { path, force: _ } => {
             let project_path = resolve_path(path);
             let cg = CodeGraph::open(&project_path)?;
-            let result = cg.index_all()?;
-            println!(
-                "Indexed {} files: {} nodes, {} edges in {}ms",
+            let spinner = std::cell::RefCell::new(Spinner::new());
+            let result = cg.index_all_with_progress(|file| {
+                spinner.borrow_mut().tick(&format!("indexing {}", file));
+            })?;
+            Spinner::done(&format!(
+                "indexing done — {} files, {} nodes, {} edges in {}ms",
                 result.file_count, result.node_count, result.edge_count, result.duration_ms
-            );
+            ));
         }
         Commands::Sync { path } => {
             let project_path = resolve_path(path);
