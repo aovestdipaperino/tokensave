@@ -180,4 +180,9 @@ fn build_context_options_default() {
     assert_eq!(opts.max_nodes, 20);
     assert_eq!(opts.max_code_blocks, 5);
     assert_eq!(opts.max_code_block_size, 1500);
+    assert!(opts.include_code);
+    assert_eq!(opts.format, OutputFormat::Markdown);
+    assert_eq!(opts.search_limit, 3);
+    assert_eq!(opts.traversal_depth, 1);
+    assert!((opts.min_score - 0.3).abs() < f64::EPSILON);
 }

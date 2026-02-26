@@ -154,8 +154,8 @@ pub struct FileRecord {
     pub path: String,
     pub content_hash: String,
     pub size: u64,
-    pub modified_at: u64,
-    pub indexed_at: u64,
+    pub modified_at: i64,
+    pub indexed_at: i64,
     pub node_count: u32,
 }
 
@@ -242,9 +242,14 @@ pub struct GraphStats {
 /// Options for building an LLM context from the graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildContextOptions {
-    pub max_nodes: u32,
-    pub max_code_blocks: u32,
-    pub max_code_block_size: u32,
+    pub max_nodes: usize,
+    pub max_code_blocks: usize,
+    pub max_code_block_size: usize,
+    pub include_code: bool,
+    pub format: OutputFormat,
+    pub search_limit: usize,
+    pub traversal_depth: usize,
+    pub min_score: f64,
 }
 
 impl Default for BuildContextOptions {
@@ -253,6 +258,11 @@ impl Default for BuildContextOptions {
             max_nodes: 20,
             max_code_blocks: 5,
             max_code_block_size: 1500,
+            include_code: true,
+            format: OutputFormat::Markdown,
+            search_limit: 3,
+            traversal_depth: 1,
+            min_score: 0.3,
         }
     }
 }
