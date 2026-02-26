@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            bottle_tag: ventura
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            bottle_tag: arm64_sonoma
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bottle_tag: x86_64_linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package Homebrew bottle
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BOTTLE_TAG="${{ matrix.bottle_tag }}"
+
+          mkdir -p codegraph/${VERSION}/bin
+          cp target/${{ matrix.target }}/release/codegraph codegraph/${VERSION}/bin/codegraph
+          chmod +x codegraph/${VERSION}/bin/codegraph
+
+          tar czf "codegraph--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" codegraph/
+
+      - name: Upload bottle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-${{ matrix.bottle_tag }}
+          path: "codegraph--*.bottle.tar.gz"
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download all bottle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bottles
+          merge-multiple: true
+
+      - name: Create source tarball
+        run: |
+          git archive --format=tar.gz --prefix=codegraph-rs-${{ steps.version.outputs.version }}/ \
+            -o "codegraph-rs-${{ steps.version.outputs.version }}.tar.gz" HEAD
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            bottles/*
+            codegraph-rs-${{ steps.version.outputs.version }}.tar.gz
+
+  update-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download bottle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bottles
+          merge-multiple: true
+
+      - name: Download source tarball from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
+            --pattern "codegraph-rs-${VERSION}.tar.gz" \
+            --dir .
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          SOURCE_SHA=$(sha256sum "codegraph-rs-${VERSION}.tar.gz" | awk '{print $1}')
+          echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+
+          for f in bottles/codegraph--*.bottle.tar.gz; do
+            tag=$(basename "$f" | sed "s/codegraph--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Clone tap repo
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/aovestdipaperino/homebrew-tap.git" tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SOURCE_SHA="${{ steps.hashes.outputs.source_sha }}"
+          VENTURA_SHA="${{ steps.hashes.outputs.ventura_sha }}"
+          ARM64_SONOMA_SHA="${{ steps.hashes.outputs.arm64_sonoma_sha }}"
+          X86_64_LINUX_SHA="${{ steps.hashes.outputs.x86_64_linux_sha }}"
+
+          cat > tap/Formula/codegraph.rb << EOF
+          class Codegraph < Formula
+            desc "Code intelligence tool that builds semantic knowledge graphs from codebases"
+            homepage "https://github.com/aovestdipaperino/codegraph-rs"
+            url "https://github.com/aovestdipaperino/codegraph-rs/archive/refs/tags/v${VERSION}.tar.gz"
+            sha256 "${SOURCE_SHA}"
+            license "MIT"
+
+            bottle do
+              root_url "https://github.com/aovestdipaperino/codegraph-rs/releases/download/v${VERSION}"
+              sha256 cellar: :any_skip_relocation, ventura:      "${VENTURA_SHA}"
+              sha256 cellar: :any_skip_relocation, arm64_sonoma: "${ARM64_SONOMA_SHA}"
+              sha256 cellar: :any_skip_relocation, x86_64_linux: "${X86_64_LINUX_SHA}"
+            end
+
+            depends_on "rust" => :build
+
+            def install
+              system "cargo", "install", *std_cargo_args
+            end
+
+            test do
+              system "#{bin}/codegraph", "--help"
+            end
+          end
+          EOF
+
+      - name: Commit and push formula update
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/codegraph.rb
+          git commit -m "codegraph ${{ steps.version.outputs.version }}"
+          git push
