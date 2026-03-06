@@ -13,14 +13,14 @@ Verify it works:
 codegraph --help
 ```
 
-## 2. Initialize and index your project
+## 2. Index your project
 
 ```bash
 cd /path/to/your/project
-codegraph init --index
+codegraph index
 ```
 
-This creates a `.codegraph/` directory and indexes all Rust, Go, and Java files in the project. You can re-index at any time with `codegraph index`, or incrementally sync changes with `codegraph sync`.
+This creates a `.codegraph/` directory (if needed) and indexes all Rust, Go, and Java files in the project. You can re-index at any time with `codegraph index`, or incrementally sync changes with `codegraph sync`.
 
 Check what was indexed:
 

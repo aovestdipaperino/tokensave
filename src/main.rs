@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process;
 
 use codegraph::codegraph::CodeGraph;
@@ -45,21 +45,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new CodeGraph project
-    Init {
-        /// Project path (default: current directory)
-        path: Option<String>,
-        /// Run initial indexing after init
-        #[arg(short, long)]
-        index: bool,
-    },
-    /// Full re-index of the project
+    /// Initialize (if needed) and index the project
     Index {
         /// Project path (default: current directory)
         path: Option<String>,
-        /// Clear existing data before indexing
-        #[arg(short, long)]
-        force: bool,
     },
     /// Incremental sync of changed files
     Sync {
@@ -117,36 +106,14 @@ fn main() {
 
 fn run(cli: Cli) -> codegraph::errors::Result<()> {
     match cli.command {
-        Commands::Init { path, index } => {
+        Commands::Index { path } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::init(&project_path)?;
-            println!("Initialized CodeGraph at {}", project_path.display());
-            if index {
-                let spinner = std::cell::RefCell::new(Spinner::new());
-                let result = cg.index_all_with_progress(|file| {
-                    spinner.borrow_mut().tick(&format!("indexing {}", file));
-                })?;
-                Spinner::done(&format!(
-                    "indexing done — {} files, {} nodes, {} edges in {}ms",
-                    result.file_count, result.node_count, result.edge_count, result.duration_ms
-                ));
-            }
-        }
-        Commands::Index { path, force: _ } => {
-            let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
-            let spinner = std::cell::RefCell::new(Spinner::new());
-            let result = cg.index_all_with_progress(|file| {
-                spinner.borrow_mut().tick(&format!("indexing {}", file));
-            })?;
-            Spinner::done(&format!(
-                "indexing done — {} files, {} nodes, {} edges in {}ms",
-                result.file_count, result.node_count, result.edge_count, result.duration_ms
-            ));
+            let cg = init_and_index(&project_path)?;
+            drop(cg);
         }
         Commands::Sync { path } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
+            let cg = ensure_initialized(&project_path)?;
             let result = cg.sync()?;
             println!(
                 "Sync complete: {} added, {} modified, {} removed in {}ms",
@@ -155,7 +122,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
         }
         Commands::Status { path, json } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
+            let cg = ensure_initialized(&project_path)?;
             let stats = cg.get_stats()?;
             if json {
                 println!(
@@ -185,7 +152,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             limit,
         } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
+            let cg = ensure_initialized(&project_path)?;
             let results = cg.search(&search, limit)?;
             if results.is_empty() {
                 println!("No results found for '{}'", search);
@@ -211,7 +178,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             format,
         } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
+            let cg = ensure_initialized(&project_path)?;
             let output_format = if format == "json" {
                 OutputFormat::Json
             } else {
@@ -234,7 +201,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
         }
         Commands::Serve { path } => {
             let project_path = resolve_path(path);
-            let cg = CodeGraph::open(&project_path)?;
+            let cg = ensure_initialized(&project_path)?;
             let server = codegraph::mcp::McpServer::new(cg);
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 codegraph::errors::CodeGraphError::Config {
@@ -245,6 +212,52 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Initializes a new project (if needed) and runs a full index.
+fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
+    let cg = if CodeGraph::is_initialized(project_path) {
+        CodeGraph::open(project_path)?
+    } else {
+        let cg = CodeGraph::init(project_path)?;
+        eprintln!("Initialized CodeGraph at {}", project_path.display());
+        cg
+    };
+    let spinner = std::cell::RefCell::new(Spinner::new());
+    let result = cg.index_all_with_progress(|file| {
+        spinner.borrow_mut().tick(&format!("indexing {}", file));
+    })?;
+    Spinner::done(&format!(
+        "indexing done — {} files, {} nodes, {} edges in {}ms",
+        result.file_count, result.node_count, result.edge_count, result.duration_ms
+    ));
+    Ok(cg)
+}
+
+/// Opens an existing project, or prompts the user to initialize and index first.
+fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
+    if CodeGraph::is_initialized(project_path) {
+        return CodeGraph::open(project_path);
+    }
+    eprint!(
+        "No CodeGraph index found at '{}'. Initialize and index now? [y/N] ",
+        project_path.display()
+    );
+    io::stderr().flush().ok();
+    let mut answer = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|e| codegraph::errors::CodeGraphError::Config {
+            message: format!("failed to read stdin: {}", e),
+        })?;
+    if answer.trim().eq_ignore_ascii_case("y") {
+        init_and_index(project_path)
+    } else {
+        Err(codegraph::errors::CodeGraphError::Config {
+            message: "aborted — run 'codegraph index' first".to_string(),
+        })
+    }
 }
 
 /// Resolves an optional path argument to an absolute `PathBuf`.

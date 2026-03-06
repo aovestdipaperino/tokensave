@@ -20,10 +20,7 @@ The port maintains the same architecture and MCP tool interface while leveraging
 ## Usage
 
 ```bash
-# Initialize in a project
-codegraph init [path]
-
-# Full index
+# Initialize (if needed) and index
 codegraph index [path]
 
 # Incremental update
