@@ -75,6 +75,12 @@ impl<'a> ContextBuilder<'a> {
     /// Returns `None` if the file cannot be read or the line range is invalid.
     pub fn get_code(&self, node: &Node) -> Result<Option<String>> {
         let file_path = self.project_root.join(&node.file_path);
+        // Prevent path traversal: ensure the resolved path stays within the project root.
+        if let (Ok(canonical), Ok(root)) = (file_path.canonicalize(), self.project_root.canonicalize()) {
+            if !canonical.starts_with(&root) {
+                return Ok(None);
+            }
+        }
         let content = match fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(_) => return Ok(None),

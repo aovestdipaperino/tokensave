@@ -277,6 +277,7 @@ impl CodeGraph {
     fn scan_files(&self) -> Result<Vec<String>> {
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
+            .follow_links(false)
             .into_iter()
             .filter_entry(|e| {
                 // Always allow the root directory itself (depth 0), even if

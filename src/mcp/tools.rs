@@ -196,7 +196,7 @@ fn handle_search(cg: &CodeGraph, args: Value) -> Result<Value> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(500) as usize)
         .unwrap_or(10);
 
     let results = cg.search(query, limit)?;
@@ -234,7 +234,7 @@ fn handle_context(cg: &CodeGraph, args: Value) -> Result<Value> {
     let max_nodes = args
         .get("max_nodes")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(100) as usize)
         .unwrap_or(20);
 
     let options = BuildContextOptions {
@@ -262,7 +262,7 @@ fn handle_callers(cg: &CodeGraph, args: Value) -> Result<Value> {
     let max_depth = args
         .get("max_depth")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
     let results = cg.get_callers(node_id, max_depth)?;
@@ -299,7 +299,7 @@ fn handle_callees(cg: &CodeGraph, args: Value) -> Result<Value> {
     let max_depth = args
         .get("max_depth")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
     let results = cg.get_callees(node_id, max_depth)?;
@@ -336,7 +336,7 @@ fn handle_impact(cg: &CodeGraph, args: Value) -> Result<Value> {
     let max_depth = args
         .get("max_depth")
         .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
+        .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
     let subgraph = cg.get_impact_radius(node_id, max_depth)?;
