@@ -190,6 +190,7 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
+        eprintln!("[codegraph] tool call: {}", tool_name);
         if let Ok(mut counts) = self.tool_call_counts.lock() {
             *counts.entry(tool_name.to_string()).or_insert(0) += 1;
         }
