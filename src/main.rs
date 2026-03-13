@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::io::{self, BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -45,15 +45,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize (if needed) and index the project
-    Index {
-        /// Project path (default: current directory)
-        path: Option<String>,
-    },
-    /// Incremental sync of changed files
+    /// Sync the index (creates it if missing, incremental by default)
     Sync {
         /// Project path (default: current directory)
         path: Option<String>,
+        /// Force a full re-index
+        #[arg(short, long)]
+        force: bool,
     },
     /// Show project statistics
     Status {
@@ -106,19 +104,21 @@ fn main() {
 
 fn run(cli: Cli) -> codegraph::errors::Result<()> {
     match cli.command {
-        Commands::Index { path } => {
+        Commands::Sync { path, force } => {
             let project_path = resolve_path(path);
-            let cg = init_and_index(&project_path)?;
-            drop(cg);
-        }
-        Commands::Sync { path } => {
-            let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path)?;
-            let result = cg.sync()?;
-            println!(
-                "Sync complete: {} added, {} modified, {} removed in {}ms",
-                result.files_added, result.files_modified, result.files_removed, result.duration_ms
-            );
+            if force || !CodeGraph::is_initialized(&project_path) {
+                if !force {
+                    eprintln!("No existing index found — performing full index");
+                }
+                init_and_index(&project_path)?;
+            } else {
+                let cg = CodeGraph::open(&project_path)?;
+                let result = cg.sync()?;
+                println!(
+                    "Sync complete: {} added, {} modified, {} removed in {}ms",
+                    result.files_added, result.files_modified, result.files_removed, result.duration_ms
+                );
+            }
         }
         Commands::Status { path, json } => {
             let project_path = resolve_path(path);
@@ -234,30 +234,17 @@ fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
     Ok(cg)
 }
 
-/// Opens an existing project, or prompts the user to initialize and index first.
+/// Opens an existing project, or tells the user to run `codegraph sync` first.
 fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
     if CodeGraph::is_initialized(project_path) {
         return CodeGraph::open(project_path);
     }
-    eprint!(
-        "No CodeGraph index found at '{}'. Initialize and index now? [y/N] ",
-        project_path.display()
-    );
-    io::stderr().flush().ok();
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| codegraph::errors::CodeGraphError::Config {
-            message: format!("failed to read stdin: {}", e),
-        })?;
-    if answer.trim().eq_ignore_ascii_case("y") {
-        init_and_index(project_path)
-    } else {
-        Err(codegraph::errors::CodeGraphError::Config {
-            message: "aborted — run 'codegraph index' first".to_string(),
-        })
-    }
+    Err(codegraph::errors::CodeGraphError::Config {
+        message: format!(
+            "no CodeGraph index found at '{}' — run 'codegraph sync' first",
+            project_path.display()
+        ),
+    })
 }
 
 /// Resolves an optional path argument to an absolute `PathBuf`.

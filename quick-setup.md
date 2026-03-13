@@ -17,10 +17,10 @@ codegraph --help
 
 ```bash
 cd /path/to/your/project
-codegraph index
+codegraph sync
 ```
 
-This creates a `.codegraph/` directory (if needed) and indexes all Rust, Go, and Java files in the project. You can re-index at any time with `codegraph index`, or incrementally sync changes with `codegraph sync`.
+This creates a `.codegraph/` directory (if needed) and indexes all Rust, Go, and Java files in the project. Running `codegraph sync` again picks up only changed files. To force a full re-index, use `codegraph sync --force`.
 
 Check what was indexed:
 
