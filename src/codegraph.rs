@@ -95,7 +95,7 @@ impl CodeGraph {
         if !db_path.exists() {
             return Err(CodeGraphError::Config {
                 message: format!(
-                    "no CodeGraph database found at '{}'; run 'codegraph index' first",
+                    "no CodeGraph database found at '{}'; run 'codegraph sync' first",
                     db_path.display()
                 ),
             });
