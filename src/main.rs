@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::io::Write;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -40,7 +40,7 @@ impl Spinner {
 #[command(name = "codegraph", about = "Code intelligence for Rust, Go, and Java codebases")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -103,7 +103,11 @@ fn main() {
 }
 
 fn run(cli: Cli) -> codegraph::errors::Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => return handle_no_command(),
+    };
+    match command {
         Commands::Sync { path, force } => {
             let project_path = resolve_path(path);
             if force || !CodeGraph::is_initialized(&project_path) {
@@ -210,6 +214,34 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             })?;
             rt.block_on(server.run())?;
         }
+    }
+    Ok(())
+}
+
+/// When invoked with no subcommand, offer to create the index if none exists.
+fn handle_no_command() -> codegraph::errors::Result<()> {
+    let project_path = resolve_path(None);
+    if CodeGraph::is_initialized(&project_path) {
+        // Already initialized — show help via clap
+        let _ = <Cli as clap::CommandFactory>::command().print_help();
+        eprintln!();
+        return Ok(());
+    }
+    eprint!(
+        "No CodeGraph index found at '{}'. Create one now? [Y/n] ",
+        project_path.display()
+    );
+    io::stderr().flush().ok();
+    let mut answer = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|e| codegraph::errors::CodeGraphError::Config {
+            message: format!("failed to read stdin: {}", e),
+        })?;
+    let answer = answer.trim();
+    if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+        init_and_index(&project_path)?;
     }
     Ok(())
 }
