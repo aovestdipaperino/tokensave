@@ -907,6 +907,47 @@ impl Database {
                 .await
                 .unwrap_or(0) as u64;
 
+        // Files grouped by language (derived from file extension)
+        let mut files_by_language = HashMap::new();
+        {
+            let mut rows = self
+                .conn()
+                .query(
+                    "SELECT \
+                       CASE \
+                         WHEN path LIKE '%.rs' THEN 'Rust' \
+                         WHEN path LIKE '%.go' THEN 'Go' \
+                         WHEN path LIKE '%.java' THEN 'Java' \
+                         ELSE 'Other' \
+                       END AS lang, \
+                       COUNT(*) \
+                     FROM files GROUP BY lang",
+                    (),
+                )
+                .await
+                .map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to query files by language: {e}"),
+                    operation: "get_stats".to_string(),
+                })?;
+
+            while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+                message: format!("failed to read stats row: {e}"),
+                operation: "get_stats".to_string(),
+            })? {
+                let lang: String = row.get(0).map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to read language: {e}"),
+                    operation: "get_stats".to_string(),
+                })?;
+                let count: i64 = row.get(1).map_err(|e| CodeGraphError::Database {
+                    message: format!("failed to read count: {e}"),
+                    operation: "get_stats".to_string(),
+                })?;
+                if count > 0 {
+                    files_by_language.insert(lang, count as u64);
+                }
+            }
+        }
+
         Ok(GraphStats {
             node_count,
             edge_count,
@@ -916,6 +957,7 @@ impl Database {
             db_size_bytes,
             last_updated,
             total_source_bytes,
+            files_by_language,
         })
     }
 }

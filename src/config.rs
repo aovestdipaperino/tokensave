@@ -15,14 +15,14 @@ pub const CODEGRAPH_DIR: &str = ".codegraph";
 /// Configuration for a CodeGraph project.
 ///
 /// Controls which files are indexed, size limits, and feature toggles.
+/// Language inclusion is derived automatically from the installed
+/// `LanguageExtractor` set — only exclude patterns live in the config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeGraphConfig {
     /// Schema version of the configuration.
     pub version: u32,
     /// Root directory of the project being indexed.
     pub root_dir: String,
-    /// Glob patterns for files to include during indexing.
-    pub include: Vec<String>,
     /// Glob patterns for files to exclude during indexing.
     pub exclude: Vec<String>,
     /// Maximum file size in bytes; files larger than this are skipped.
@@ -40,11 +40,6 @@ impl Default for CodeGraphConfig {
         Self {
             version: 1,
             root_dir: String::new(),
-            include: vec![
-                "**/*.rs".to_string(),
-                "**/*.go".to_string(),
-                "**/*.java".to_string(),
-            ],
             exclude: vec![
                 "target/**".to_string(),
                 ".git/**".to_string(),
@@ -150,29 +145,15 @@ pub fn save_config(project_root: &Path, config: &CodeGraphConfig) -> Result<()> 
     Ok(())
 }
 
-/// Determines whether a file should be included based on the configuration's
-/// include and exclude glob patterns.
-///
-/// A file is included only if it matches at least one include pattern and
-/// does not match any exclude pattern. Exclude patterns take precedence.
-pub fn should_include_file(file_path: &str, config: &CodeGraphConfig) -> bool {
+/// Returns `true` if the file matches any of the configured exclude patterns.
+pub fn is_excluded(file_path: &str, config: &CodeGraphConfig) -> bool {
     let match_opts = glob::MatchOptions {
         case_sensitive: true,
         require_literal_separator: false,
         require_literal_leading_dot: false,
     };
 
-    // Check exclude patterns first — if any match, the file is excluded.
     for pattern_str in &config.exclude {
-        if let Ok(pattern) = Pattern::new(pattern_str) {
-            if pattern.matches_with(file_path, match_opts) {
-                return false;
-            }
-        }
-    }
-
-    // Check include patterns — the file must match at least one.
-    for pattern_str in &config.include {
         if let Ok(pattern) = Pattern::new(pattern_str) {
             if pattern.matches_with(file_path, match_opts) {
                 return true;

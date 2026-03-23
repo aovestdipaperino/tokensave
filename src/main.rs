@@ -375,6 +375,17 @@ fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
     // Stats rows
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
+    // Build the languages summary string
+    let languages_str = {
+        let mut langs: Vec<_> = stats.files_by_language.iter().collect();
+        langs.sort_by(|a, b| b.1.cmp(a.1));
+        langs
+            .iter()
+            .map(|(lang, count)| format!("{} ({})", lang, count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
     let db_size = format_bytes(stats.db_size_bytes);
     let source_size = format_bytes(stats.total_source_bytes);
     let stats_rows: Vec<Vec<(&str, String)>> = if stats.total_source_bytes > 0 {
@@ -387,7 +398,7 @@ fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
             vec![
                 ("DB Size", db_size),
                 ("Source", source_size),
-                ("", String::new()),
+                ("Languages", languages_str),
             ],
         ]
     } else {
@@ -398,7 +409,7 @@ fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
         ],
         vec![
             ("DB Size", db_size),
-            ("", String::new()),
+            ("Languages", languages_str),
             ("", String::new()),
         ]]
     };

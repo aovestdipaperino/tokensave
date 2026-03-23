@@ -315,6 +315,8 @@ pub struct GraphStats {
     pub last_updated: u64,
     /// Total bytes of all indexed source files.
     pub total_source_bytes: u64,
+    /// Number of indexed files per language (e.g. "Rust" -> 42).
+    pub files_by_language: HashMap<String, u64>,
 }
 
 /// Options for building an LLM context from the graph.

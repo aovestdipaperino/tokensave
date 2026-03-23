@@ -5,9 +5,7 @@ use std::time::Instant;
 
 use walkdir::WalkDir;
 
-use crate::config::{
-    get_codegraph_dir, load_config, save_config, should_include_file, CodeGraphConfig,
-};
+use crate::config::{get_codegraph_dir, is_excluded, load_config, save_config, CodeGraphConfig};
 use crate::context::ContextBuilder;
 use crate::db::Database;
 use crate::errors::{CodeGraphError, Result};
@@ -307,9 +305,13 @@ impl CodeGraph {
         })
     }
 
-    /// Scans the project root for Rust files, respecting the configured
-    /// include/exclude patterns and max file size.
+    /// Scans the project root for source files in all supported languages,
+    /// respecting the configured exclude patterns and max file size.
+    ///
+    /// Supported extensions are derived from the `LanguageRegistry` so that
+    /// adding a new extractor automatically picks up its files.
     fn scan_files(&self) -> Result<Vec<String>> {
+        let supported_exts = self.registry.supported_extensions();
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
             .follow_links(false)
@@ -333,10 +335,17 @@ impl CodeGraph {
                 continue;
             }
             let path = entry.path();
+            // Check extension against registry-supported languages
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if !supported_exts.contains(&ext) {
+                continue;
+            }
             if let Ok(relative) = path.strip_prefix(&self.project_root) {
                 let rel_str = relative.to_string_lossy().to_string();
-                if should_include_file(&rel_str, &self.config) {
-                    // Check file size
+                if !is_excluded(&rel_str, &self.config) {
                     if let Ok(metadata) = std::fs::metadata(path) {
                         if metadata.len() <= self.config.max_file_size {
                             files.push(rel_str);
