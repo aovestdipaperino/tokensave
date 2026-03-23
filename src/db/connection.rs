@@ -69,6 +69,7 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
+        Self::ensure_metadata_table(&conn).await?;
 
         Ok(Self { conn, _db: db })
     }
@@ -144,6 +145,21 @@ impl Database {
         .map_err(|e| CodeGraphError::Database {
             message: format!("failed to apply pragmas: {e}"),
             operation: "apply_pragmas".to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Ensures the metadata table exists (for databases created before it was
+    /// added to the schema).
+    async fn ensure_metadata_table(conn: &Connection) -> Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .map_err(|e| CodeGraphError::Database {
+            message: format!("failed to ensure metadata table: {e}"),
+            operation: "ensure_metadata_table".to_string(),
         })?;
         Ok(())
     }
