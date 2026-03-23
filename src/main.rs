@@ -1,4 +1,5 @@
 // Rust guideline compliant 2025-10-17
+// Updated 2026-03-23: compact bordered table for status output
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -151,23 +152,7 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
             } else {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
                 print!("{}", include_str!("resources/logo.ansi"));
-                println!("CodeGraph v{}", env!("CARGO_PKG_VERSION"));
-                println!("  Files:  {}", stats.file_count);
-                println!("  Nodes:  {}", stats.node_count);
-                println!("  Edges:  {}", stats.edge_count);
-                println!("  DB Size: {} bytes", stats.db_size_bytes);
-                println!(
-                    "  Tokens saved: \x1b[32m~{}\x1b[0m",
-                    format_token_count(tokens_saved)
-                );
-                if !stats.nodes_by_kind.is_empty() {
-                    println!("\n  Nodes by kind:");
-                    let mut sorted: Vec<_> = stats.nodes_by_kind.iter().collect();
-                    sorted.sort_by_key(|(k, _)| (*k).clone());
-                    for (kind, count) in &sorted {
-                        println!("    {}: {}", kind, count);
-                    }
-                }
+                print_status_table(&stats, tokens_saved);
             }
         }
         Commands::Query {
@@ -303,6 +288,153 @@ fn format_token_count(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+/// Formats a byte count into a human-readable string (e.g. "798.0 MB").
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Formats a number with comma separators (e.g. 243302 -> "243,302").
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, ch) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    result.chars().rev().collect()
+}
+
+/// Formats a single table cell with left-aligned label and right-aligned value.
+fn format_cell(label: &str, value: &str, width: usize) -> String {
+    let content_len = label.len() + value.len();
+    let pad = width.saturating_sub(2 + content_len);
+    format!(" {}{}{} ", label, " ".repeat(pad), value)
+}
+
+/// Builds a horizontal separator line (e.g. ├──┬──┬──┤).
+fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_cols: usize) -> String {
+    let mut line = String::from(left);
+    for i in 0..num_cols {
+        line.push_str(&"─".repeat(cell_width));
+        line.push(if i < num_cols - 1 { mid } else { right });
+    }
+    line
+}
+
+/// Prints the status output as a compact bordered table.
+fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
+    let version = env!("CARGO_PKG_VERSION");
+    let num_cols = 3;
+
+    // Prepare sorted node kinds
+    let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
+    sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
+
+    let num_kind_rows = sorted_kinds.len().div_ceil(num_cols);
+
+    // Determine cell width from the widest node-kind entry
+    let max_kind_len = sorted_kinds
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(10);
+    let max_count_len = sorted_kinds
+        .iter()
+        .map(|(_, c)| format_number(**c).len())
+        .max()
+        .unwrap_or(5);
+    // Ensure the cell also fits stat labels like "DB Size" + "798.0 MB"
+    let cell_width = (max_kind_len + max_count_len + 3).max(22);
+    let inner_width = cell_width * num_cols + (num_cols - 1);
+
+    // Title row
+    let title = format!("CodeGraph v{}", version);
+    let tokens_text = format!("Tokens saved ~{}", format_token_count(tokens_saved));
+    let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
+
+    println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
+    println!(
+        "│ {}{}\x1b[32m{}\x1b[0m │",
+        title,
+        " ".repeat(title_pad),
+        tokens_text
+    );
+
+    // Stats rows
+    println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
+
+    let db_size = format_bytes(stats.db_size_bytes);
+    let source_size = format_bytes(stats.total_source_bytes);
+    let stats_rows: Vec<Vec<(&str, String)>> = if stats.total_source_bytes > 0 {
+        vec![
+            vec![
+                ("Files", format_number(stats.file_count)),
+                ("Nodes", format_number(stats.node_count)),
+                ("Edges", format_number(stats.edge_count)),
+            ],
+            vec![
+                ("DB Size", db_size),
+                ("Source", source_size),
+                ("", String::new()),
+            ],
+        ]
+    } else {
+        vec![vec![
+            ("Files", format_number(stats.file_count)),
+            ("Nodes", format_number(stats.node_count)),
+            ("Edges", format_number(stats.edge_count)),
+        ],
+        vec![
+            ("DB Size", db_size),
+            ("", String::new()),
+            ("", String::new()),
+        ]]
+    };
+
+    for row in &stats_rows {
+        print!("│");
+        for (i, (label, value)) in row.iter().enumerate() {
+            if label.is_empty() {
+                print!("{}", " ".repeat(cell_width));
+            } else {
+                print!("{}", format_cell(label, value, cell_width));
+            }
+            print!("{}", if i < num_cols - 1 { "│" } else { "│\n" });
+        }
+    }
+
+    // Node kinds section
+    if !sorted_kinds.is_empty() {
+        println!("{}", table_separator('├', '┼', '┤', cell_width, num_cols));
+
+        for r in 0..num_kind_rows {
+            print!("│");
+            for c in 0..num_cols {
+                let idx = r + c * num_kind_rows;
+                if idx < sorted_kinds.len() {
+                    let (kind, count) = &sorted_kinds[idx];
+                    print!("{}", format_cell(kind, &format_number(**count), cell_width));
+                } else {
+                    print!("{}", " ".repeat(cell_width));
+                }
+                print!("{}", if c < num_cols - 1 { "│" } else { "│\n" });
+            }
+        }
+    }
+
+    println!("{}", table_separator('╰', '┴', '╯', cell_width, num_cols));
 }
 
 /// Resolves an optional path argument to an absolute `PathBuf`.
