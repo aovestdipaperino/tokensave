@@ -1,6 +1,6 @@
 [package]
 name = "token-codegraph"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, and Java codebases"
 license = "MIT"
