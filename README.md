@@ -167,6 +167,31 @@ codegraph query <search> [path]
 codegraph serve
 ```
 
+### Auto-sync on commit (optional)
+
+Keep the index up to date automatically by running `codegraph sync` after every successful git commit. The repo includes a `post-commit` hook that does this in the background.
+
+**Global (all repos):**
+
+```bash
+# Set a global hooks directory (skip if you already have one)
+git config --global core.hooksPath ~/.git-hooks
+mkdir -p ~/.git-hooks
+
+# Install the hook
+cp scripts/post-commit ~/.git-hooks/post-commit
+chmod +x ~/.git-hooks/post-commit
+```
+
+**Per-repo:**
+
+```bash
+cp scripts/post-commit .git/hooks/post-commit
+chmod +x .git/hooks/post-commit
+```
+
+The hook checks for both the `codegraph` binary and a `.codegraph/` directory before running, so it is a no-op in repos that haven't been indexed.
+
 ## How it works with Claude Code
 
 Once configured, Claude Code automatically uses codegraph instead of reading raw files when it needs to understand your codebase. The three layers reinforce each other:

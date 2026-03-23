@@ -119,11 +119,24 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 init_and_index(&project_path).await?;
             } else {
                 let cg = CodeGraph::open(&project_path).await?;
-                let result = cg.sync().await?;
-                println!(
-                    "Sync complete: {} added, {} modified, {} removed in {}ms",
-                    result.files_added, result.files_modified, result.files_removed, result.duration_ms
-                );
+                let spinner = std::cell::RefCell::new(Spinner::new());
+                let result = cg
+                    .sync_with_progress(|phase, detail| {
+                        let msg = if detail.is_empty() {
+                            phase.to_string()
+                        } else {
+                            format!("{phase} {detail}")
+                        };
+                        spinner.borrow_mut().tick(&msg);
+                    })
+                    .await?;
+                Spinner::done(&format!(
+                    "sync done — {} added, {} modified, {} removed in {}ms",
+                    result.files_added,
+                    result.files_modified,
+                    result.files_removed,
+                    result.duration_ms
+                ));
             }
         }
         Commands::Status { path, json } => {

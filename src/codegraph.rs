@@ -211,10 +211,23 @@ impl CodeGraph {
     /// Performs an incremental sync: detects changed, new, and removed files
     /// and re-indexes only those that need updating.
     pub async fn sync(&self) -> Result<SyncResult> {
+        self.sync_with_progress(|_, _| {}).await
+    }
+
+    /// Like `sync()`, but calls `on_progress` with a description and the
+    /// current step for each phase of work. Use this to drive a progress
+    /// spinner in the CLI.
+    pub async fn sync_with_progress<F>(&self, on_progress: F) -> Result<SyncResult>
+    where
+        F: Fn(&str, &str),
+    {
         let start = Instant::now();
+
+        on_progress("scanning files", "");
         let current_files = self.scan_files()?;
 
         // Compute current hashes
+        on_progress("hashing files", "");
         let mut current_hashes = Vec::new();
         for path in &current_files {
             let abs_path = self.project_root.join(path);
@@ -223,18 +236,22 @@ impl CodeGraph {
             }
         }
 
+        on_progress("detecting changes", "");
         let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
         let new = sync::find_new_files(&self.db, &current_files).await?;
         let removed = sync::find_removed_files(&self.db, &current_files).await?;
 
         // Remove deleted files
         for path in &removed {
+            on_progress("removing", path);
             self.db.delete_file(path).await?;
         }
 
         // Re-index stale and new files
         let to_index: Vec<String> = stale.iter().chain(new.iter()).cloned().collect();
         for file_path in &to_index {
+            on_progress("syncing", file_path);
+
             // Delete old data for this file
             self.db.delete_nodes_by_file(file_path).await?;
 
@@ -269,13 +286,16 @@ impl CodeGraph {
         // Resolve references (call edges, uses, etc.) across all files.
         // This must run after all files are indexed so cross-file references
         // can find their targets.
-        let unresolved = self.db.get_unresolved_refs().await?;
-        if !unresolved.is_empty() {
-            let resolver = ReferenceResolver::new(&self.db).await;
-            let resolution = resolver.resolve_all(&unresolved);
-            let edges = resolver.create_edges(&resolution.resolved);
-            if !edges.is_empty() {
-                self.db.insert_edges(&edges).await?;
+        if !to_index.is_empty() {
+            on_progress("resolving references", "");
+            let unresolved = self.db.get_unresolved_refs().await?;
+            if !unresolved.is_empty() {
+                let resolver = ReferenceResolver::new(&self.db).await;
+                let resolution = resolver.resolve_all(&unresolved);
+                let edges = resolver.create_edges(&resolution.resolved);
+                if !edges.is_empty() {
+                    self.db.insert_edges(&edges).await?;
+                }
             }
         }
 

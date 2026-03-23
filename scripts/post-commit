@@ -1,0 +1,15 @@
+#!/bin/bash
+# Git post-commit hook that re-indexes the codegraph after each commit.
+#
+# Install globally:
+#   git config --global core.hooksPath ~/.git-hooks
+#   cp scripts/post-commit ~/.git-hooks/post-commit
+#   chmod +x ~/.git-hooks/post-commit
+#
+# Install per-repo:
+#   cp scripts/post-commit .git/hooks/post-commit
+#   chmod +x .git/hooks/post-commit
+
+if command -v codegraph &>/dev/null && [ -d ".codegraph" ]; then
+    codegraph sync &>/dev/null &
+fi
