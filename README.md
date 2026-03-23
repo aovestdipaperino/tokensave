@@ -2,7 +2,7 @@
   <img src="src/resources/logo.png" alt="CodeGraph" width="300">
 </p>
 
-# codegraph-rs
+# token-codegraph
 
 A Rust port of [CodeGraph](https://github.com/colbymchenry/codegraph) — a local-first code intelligence system that builds a semantic knowledge graph from any codebase.
 
@@ -40,8 +40,8 @@ brew install aovestdipaperino/tap/codegraph
 **From source:**
 
 ```bash
-git clone https://github.com/aovestdipaperino/codegraph-rs.git
-cd codegraph-rs
+git clone https://github.com/aovestdipaperino/token-codegraph.git
+cd token-codegraph
 cargo install --path .
 ```
 
