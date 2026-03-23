@@ -210,11 +210,12 @@ impl<'a> GraphQueryManager<'a> {
     /// Computes the depth of a node in the containment hierarchy by walking
     /// up incoming `Contains` edges.
     async fn compute_depth(&self, node_id: &str) -> Result<usize> {
+        const MAX_DEPTH: usize = 100;
         let mut depth: usize = 0;
         let mut current_id = node_id.to_string();
         let mut visited: HashSet<String> = HashSet::new();
 
-        loop {
+        while depth < MAX_DEPTH {
             if visited.contains(&current_id) {
                 break;
             }
@@ -225,54 +226,88 @@ impl<'a> GraphQueryManager<'a> {
                 .get_incoming_edges(&current_id, &[EdgeKind::Contains])
                 .await?;
 
-            if incoming.is_empty() {
-                break;
-            }
-
             // Take the first parent in the containment hierarchy.
-            current_id = incoming[0].source.clone();
-            depth += 1;
+            match incoming.first() {
+                Some(edge) => {
+                    current_id = edge.source.clone();
+                    depth += 1;
+                }
+                None => break,
+            }
         }
 
         Ok(depth)
     }
 }
 
-/// Recursive DFS for cycle detection on the file dependency graph.
+/// Iterative DFS for cycle detection on the file dependency graph.
+///
+/// Uses an explicit stack instead of recursion to comply with the
+/// "no recursion" rule (NASA Power of 10, Rule 1).
 fn dfs_cycle_detect(
-    node: &str,
+    start: &str,
     adj: &HashMap<String, HashSet<String>>,
     visited: &mut HashSet<String>,
     on_stack: &mut HashSet<String>,
-    stack: &mut Vec<String>,
+    path: &mut Vec<String>,
     cycles: &mut Vec<Vec<String>>,
 ) {
-    visited.insert(node.to_string());
-    on_stack.insert(node.to_string());
-    stack.push(node.to_string());
+    // Each frame: (node, neighbor_index). We materialise the neighbor list
+    // so we can index into it across iterations.
+    let mut call_stack: Vec<(String, Vec<String>, usize)> = Vec::new();
 
-    if let Some(neighbors) = adj.get(node) {
-        for neighbor in neighbors {
-            if !visited.contains(neighbor) {
-                dfs_cycle_detect(neighbor, adj, visited, on_stack, stack, cycles);
-            } else if on_stack.contains(neighbor) {
-                // Found a cycle. Extract it from the stack.
-                let mut cycle = Vec::new();
-                let mut found_start = false;
-                for item in stack.iter() {
-                    if item == neighbor {
-                        found_start = true;
-                    }
-                    if found_start {
-                        cycle.push(item.clone());
-                    }
+    // Push the initial frame.
+    let neighbors: Vec<String> = adj
+        .get(start)
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default();
+    visited.insert(start.to_string());
+    on_stack.insert(start.to_string());
+    path.push(start.to_string());
+    call_stack.push((start.to_string(), neighbors, 0));
+
+    while let Some(frame) = call_stack.last_mut() {
+        let idx = frame.2;
+        if idx >= frame.1.len() {
+            // All neighbors explored — backtrack.
+            // Safety: we are inside `while let Some(_) = call_stack.last_mut()`,
+            // so pop() is guaranteed to return Some.
+            let Some((node, _, _)) = call_stack.pop() else {
+                break;
+            };
+            path.pop();
+            on_stack.remove(&node);
+            continue;
+        }
+
+        // Advance the iterator for this frame.
+        frame.2 += 1;
+        let neighbor = frame.1[idx].clone();
+
+        if !visited.contains(&neighbor) {
+            // Descend into the neighbor.
+            let nb_neighbors: Vec<String> = adj
+                .get(&neighbor)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
+            visited.insert(neighbor.clone());
+            on_stack.insert(neighbor.clone());
+            path.push(neighbor.clone());
+            call_stack.push((neighbor, nb_neighbors, 0));
+        } else if on_stack.contains(&neighbor) {
+            // Found a cycle — extract it from the current path.
+            let mut cycle = Vec::new();
+            let mut found_start = false;
+            for item in path.iter() {
+                if item == &neighbor {
+                    found_start = true;
                 }
-                cycle.push(neighbor.clone());
-                cycles.push(cycle);
+                if found_start {
+                    cycle.push(item.clone());
+                }
             }
+            cycle.push(neighbor.clone());
+            cycles.push(cycle);
         }
     }
-
-    stack.pop();
-    on_stack.remove(node);
 }

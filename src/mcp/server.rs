@@ -38,6 +38,7 @@ impl ServerStats {
 }
 
 /// The MCP server wrapping a `CodeGraph` instance.
+// Lock ordering: file_token_map -> tool_call_counts (never nested)
 pub struct McpServer {
     cg: CodeGraph,
     stats: ServerStats,

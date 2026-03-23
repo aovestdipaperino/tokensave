@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/resources/logo.png" alt="CodeGraph" width="300">
+</p>
+
 # codegraph-rs
 
 A Rust port of [CodeGraph](https://github.com/colbymchenry/codegraph) — a local-first code intelligence system that builds a semantic knowledge graph from any codebase.
@@ -21,6 +25,12 @@ The port maintains the same architecture and MCP tool interface while leveraging
 
 ### 1. Install the binary
 
+**Cargo (any platform):**
+
+```bash
+cargo install codegraph
+```
+
 **Homebrew (macOS):**
 
 ```bash
@@ -30,6 +40,8 @@ brew install aovestdipaperino/tap/codegraph
 **From source:**
 
 ```bash
+git clone https://github.com/aovestdipaperino/codegraph-rs.git
+cd codegraph-rs
 cargo install --path .
 ```
 
