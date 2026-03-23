@@ -150,7 +150,7 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 );
             } else {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
-                println!("CodeGraph Status");
+                println!("CodeGraph v{}", env!("CARGO_PKG_VERSION"));
                 println!("  Files:  {}", stats.file_count);
                 println!("  Nodes:  {}", stats.node_count);
                 println!("  Edges:  {}", stats.edge_count);
