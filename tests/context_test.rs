@@ -61,8 +61,8 @@ fn test_format_context_json() {
     assert_eq!(parsed["query"], "test");
 }
 
-#[test]
-fn test_build_context_with_db() {
+#[tokio::test]
+async fn test_build_context_with_db() {
     use codegraph::context::ContextBuilder;
     use codegraph::db::Database;
     use std::fs;
@@ -76,7 +76,9 @@ fn test_build_context_with_db() {
     fs::write(project.join("src/lib.rs"), "pub fn process_data() {}\n").unwrap();
 
     // Init DB and insert a node
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db")).unwrap();
+    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+        .await
+        .unwrap();
     let node = Node {
         id: "function:test123".to_string(),
         kind: NodeKind::Function,
@@ -93,17 +95,19 @@ fn test_build_context_with_db() {
         is_async: false,
         updated_at: 0,
     };
-    db.insert_node(&node).unwrap();
+    db.insert_node(&node).await.unwrap();
 
     let builder = ContextBuilder::new(&db, project);
-    let result = builder.build_context("process_data", &BuildContextOptions::default());
+    let result = builder
+        .build_context("process_data", &BuildContextOptions::default())
+        .await;
     assert!(result.is_ok());
     let ctx = result.unwrap();
     assert!(!ctx.entry_points.is_empty());
 }
 
-#[test]
-fn test_get_code_reads_source_file() {
+#[tokio::test]
+async fn test_get_code_reads_source_file() {
     use codegraph::context::ContextBuilder;
     use codegraph::db::Database;
     use std::fs;
@@ -119,7 +123,9 @@ fn test_get_code_reads_source_file() {
     )
     .unwrap();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db")).unwrap();
+    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+        .await
+        .unwrap();
 
     let node = Node {
         id: "function:main123".to_string(),
@@ -139,15 +145,15 @@ fn test_get_code_reads_source_file() {
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).unwrap();
+    let code = builder.get_code(&node).await.unwrap();
     assert!(code.is_some());
     let content = code.unwrap();
     assert!(content.contains("fn main()"));
     assert!(content.contains("println!"));
 }
 
-#[test]
-fn test_get_code_returns_none_for_missing_file() {
+#[tokio::test]
+async fn test_get_code_returns_none_for_missing_file() {
     use codegraph::context::ContextBuilder;
     use codegraph::db::Database;
     use tempfile::TempDir;
@@ -155,7 +161,9 @@ fn test_get_code_returns_none_for_missing_file() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db")).unwrap();
+    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+        .await
+        .unwrap();
 
     let node = Node {
         id: "function:missing".to_string(),
@@ -175,12 +183,12 @@ fn test_get_code_returns_none_for_missing_file() {
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).unwrap();
+    let code = builder.get_code(&node).await.unwrap();
     assert!(code.is_none());
 }
 
-#[test]
-fn test_find_relevant_context() {
+#[tokio::test]
+async fn test_find_relevant_context() {
     use codegraph::context::ContextBuilder;
     use codegraph::db::Database;
     use tempfile::TempDir;
@@ -188,7 +196,9 @@ fn test_find_relevant_context() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db")).unwrap();
+    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+        .await
+        .unwrap();
     let node = Node {
         id: "function:ctx_test".to_string(),
         kind: NodeKind::Function,
@@ -205,11 +215,12 @@ fn test_find_relevant_context() {
         is_async: false,
         updated_at: 0,
     };
-    db.insert_node(&node).unwrap();
+    db.insert_node(&node).await.unwrap();
 
     let builder = ContextBuilder::new(&db, project);
     let subgraph = builder
         .find_relevant_context("compute", &BuildContextOptions::default())
+        .await
         .unwrap();
     assert!(!subgraph.nodes.is_empty());
 }

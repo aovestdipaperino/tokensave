@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 //! MCP server that reads JSON-RPC 2.0 messages from stdin and writes
 //! responses to stdout.
 //!
@@ -41,15 +42,43 @@ pub struct McpServer {
     cg: CodeGraph,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
+    /// Approximate token count per indexed file (file_path -> tokens).
+    file_token_map: std::sync::Mutex<HashMap<String, u64>>,
+    /// Running total of tokens saved by serving from the graph.
+    tokens_saved: AtomicU64,
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
-    pub fn new(cg: CodeGraph) -> Self {
+    pub async fn new(cg: CodeGraph) -> Self {
+        let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
+            file_token_map: std::sync::Mutex::new(file_token_map),
+            tokens_saved: AtomicU64::new(0),
+        }
+    }
+
+    /// Adds the approximate token count for the given file paths to the
+    /// running saved-tokens counter.
+    fn accumulate_tokens_saved(&self, file_paths: &[String]) {
+        if file_paths.is_empty() {
+            return;
+        }
+        let map = match self.file_token_map.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let mut total: u64 = 0;
+        for path in file_paths {
+            if let Some(&tokens) = map.get(path.as_str()) {
+                total += tokens;
+            }
+        }
+        if total > 0 {
+            self.tokens_saved.fetch_add(total, Ordering::Relaxed);
         }
     }
 
@@ -71,7 +100,7 @@ impl McpServer {
             let parsed: std::result::Result<JsonRpcRequest, _> = serde_json::from_str(&line);
 
             let response = match parsed {
-                Ok(request) => self.handle_request(&request),
+                Ok(request) => self.handle_request(&request).await,
                 Err(e) => Some(JsonRpcResponse::error(
                     Value::Null,
                     ErrorCode::ParseError,
@@ -106,7 +135,7 @@ impl McpServer {
     /// Dispatches a parsed JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for notifications (requests without an `id`).
-    fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();
 
@@ -121,7 +150,7 @@ impl McpServer {
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id)),
-            "tools/call" => Some(self.handle_tools_call(id, &request.params)),
+            "tools/call" => Some(self.handle_tools_call(id, &request.params).await),
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
             _ => Some(JsonRpcResponse::error(
                 id,
@@ -164,7 +193,7 @@ impl McpServer {
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
-    fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
+    async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
         let params = match params {
             Some(p) => p,
             None => {
@@ -201,8 +230,11 @@ impl McpServer {
             None
         };
 
-        match handle_tool_call(&self.cg, tool_name, arguments, server_stats) {
-            Ok(result) => JsonRpcResponse::success(id, result),
+        match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
+            Ok(result) => {
+                self.accumulate_tokens_saved(&result.touched_files);
+                JsonRpcResponse::success(id, result.value)
+            }
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
@@ -226,6 +258,7 @@ impl McpServer {
             "tool_calls": self.stats.tool_calls.load(Ordering::Relaxed),
             "errors": self.stats.errors.load(Ordering::Relaxed),
             "tool_call_counts": tool_counts,
+            "approx_tokens_saved": self.tokens_saved.load(Ordering::Relaxed),
         })
     }
 }

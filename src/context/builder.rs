@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -27,15 +28,15 @@ impl<'a> ContextBuilder<'a> {
     /// 3. Expand graph around entry points using BFS traversal
     /// 4. Extract code blocks by reading source files
     /// 5. Build and return `TaskContext`
-    pub fn build_context(&self, query: &str, options: &BuildContextOptions) -> Result<TaskContext> {
+    pub async fn build_context(&self, query: &str, options: &BuildContextOptions) -> Result<TaskContext> {
         // Step 1-3: find relevant subgraph and entry points
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options)?;
-        let subgraph = self.expand_subgraph(&entry_points, options)?;
+        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        let subgraph = self.expand_subgraph(&entry_points, options).await?;
 
         // Step 4: extract code blocks from source files
         let code_blocks = if options.include_code {
-            self.extract_code_blocks(&entry_points, options)?
+            self.extract_code_blocks(&entry_points, options).await?
         } else {
             Vec::new()
         };
@@ -60,20 +61,20 @@ impl<'a> ContextBuilder<'a> {
     ///
     /// Extracts symbols from the query, searches for matching nodes, and expands
     /// via BFS traversal to the configured depth.
-    pub fn find_relevant_context(
+    pub async fn find_relevant_context(
         &self,
         query: &str,
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options)?;
-        self.expand_subgraph(&entry_points, options)
+        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        self.expand_subgraph(&entry_points, options).await
     }
 
     /// Reads the source file and extracts the code for a node.
     ///
     /// Returns `None` if the file cannot be read or the line range is invalid.
-    pub fn get_code(&self, node: &Node) -> Result<Option<String>> {
+    pub async fn get_code(&self, node: &Node) -> Result<Option<String>> {
         let file_path = self.project_root.join(&node.file_path);
         // Prevent path traversal: ensure the resolved path stays within the project root.
         if let (Ok(canonical), Ok(root)) = (file_path.canonicalize(), self.project_root.canonicalize()) {
@@ -116,7 +117,7 @@ impl<'a> ContextBuilder<'a> {
     /// The search results from the database are already ranked by relevance and
     /// limited. We apply `min_score` only when it is positive, allowing the
     /// caller to disable filtering with `min_score = 0.0`.
-    fn find_entry_points(
+    async fn find_entry_points(
         &self,
         query: &str,
         symbols: &[String],
@@ -126,7 +127,7 @@ impl<'a> ContextBuilder<'a> {
         let mut entry_points: Vec<Node> = Vec::new();
 
         // Search using the full query
-        let search_results = self.db.search_nodes(query, options.search_limit)?;
+        let search_results = self.db.search_nodes(query, options.search_limit).await?;
         for sr in &search_results {
             if self.score_passes(sr.score, options.min_score) && seen_ids.insert(sr.node.id.clone())
             {
@@ -139,7 +140,7 @@ impl<'a> ContextBuilder<'a> {
             if entry_points.len() >= options.max_nodes {
                 break;
             }
-            let results = self.db.search_nodes(symbol, options.search_limit)?;
+            let results = self.db.search_nodes(symbol, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
@@ -155,7 +156,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     /// Expands the subgraph around entry points using BFS traversal.
-    fn expand_subgraph(
+    async fn expand_subgraph(
         &self,
         entry_points: &[Node],
         options: &BuildContextOptions,
@@ -177,7 +178,7 @@ impl<'a> ContextBuilder<'a> {
         };
 
         for node in entry_points {
-            let sub = traverser.traverse_bfs(&node.id, &traversal_opts)?;
+            let sub = traverser.traverse_bfs(&node.id, &traversal_opts).await?;
 
             for root in sub.roots {
                 if !all_roots.contains(&root) {
@@ -217,7 +218,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     /// Extracts code blocks for the entry-point nodes.
-    fn extract_code_blocks(
+    async fn extract_code_blocks(
         &self,
         entry_points: &[Node],
         options: &BuildContextOptions,
@@ -229,7 +230,7 @@ impl<'a> ContextBuilder<'a> {
                 break;
             }
 
-            if let Some(code) = self.get_code(node)? {
+            if let Some(code) = self.get_code(node).await? {
                 let truncated = if code.len() > options.max_code_block_size {
                     let mut end = options.max_code_block_size;
                     // Ensure we land on a valid UTF-8 boundary

@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use std::collections::{HashSet, VecDeque};
 
 use crate::db::Database;
@@ -24,7 +25,7 @@ impl<'a> GraphTraverser<'a> {
     /// Respects the traversal options including max depth, edge kind filter,
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
-    pub fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+    pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -34,7 +35,7 @@ impl<'a> GraphTraverser<'a> {
         let mut queue: VecDeque<(String, u32)> = VecDeque::new();
 
         // Optionally include the start node.
-        if let Some(start_node) = self.db.get_node_by_id(start_id)? {
+        if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
             if opts.include_start && self.node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
@@ -60,7 +61,7 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction)?;
+            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
 
             for edge in edges {
                 let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
@@ -70,7 +71,7 @@ impl<'a> GraphTraverser<'a> {
                 }
                 visited.insert(neighbor_id.clone());
 
-                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id)? {
+                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
                     if self.node_matches_filter(&neighbor_node, opts) {
                         result_nodes.push(neighbor_node);
                         if result_nodes.len() >= opts.limit as usize {
@@ -96,26 +97,65 @@ impl<'a> GraphTraverser<'a> {
     /// Respects the traversal options including max depth, edge kind filter,
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and edges.
-    pub fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+    ///
+    /// Uses an iterative approach with an explicit stack to avoid async
+    /// recursion issues.
+    pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
         let mut roots: Vec<String> = Vec::new();
 
-        if let Some(start_node) = self.db.get_node_by_id(start_id)? {
+        if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
             if opts.include_start && self.node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
                 result_nodes.push(start_node);
             }
-            self.dfs_recursive(
-                start_id,
-                0,
-                opts,
-                &mut visited,
-                &mut result_nodes,
-                &mut result_edges,
-            )?;
+        } else {
+            return Ok(Subgraph {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                roots: Vec::new(),
+            });
+        }
+
+        let edge_filter = opts.edge_kinds.as_deref().unwrap_or(&[]);
+
+        // Iterative DFS using an explicit stack of (node_id, depth).
+        let mut stack: Vec<(String, u32)> = vec![(start_id.to_string(), 0)];
+
+        while let Some((current_id, depth)) = stack.pop() {
+            if depth >= opts.max_depth {
+                continue;
+            }
+
+            if result_nodes.len() >= opts.limit as usize {
+                break;
+            }
+
+            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
+
+            for edge in edges {
+                let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
+
+                if visited.contains(&neighbor_id) {
+                    continue;
+                }
+                visited.insert(neighbor_id.clone());
+
+                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
+                    if self.node_matches_filter(&neighbor_node, opts) {
+                        result_nodes.push(neighbor_node);
+                        if result_nodes.len() >= opts.limit as usize {
+                            result_edges.push(edge);
+                            break;
+                        }
+                    }
+                    result_edges.push(edge);
+                    stack.push((neighbor_id, depth + 1));
+                }
+            }
         }
 
         Ok(Subgraph {
@@ -128,7 +168,7 @@ impl<'a> GraphTraverser<'a> {
     /// Gets all nodes that call the given node, up to `max_depth` levels.
     ///
     /// Follows incoming `Calls` edges to find callers transitively.
-    pub fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+    pub async fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let mut results: Vec<(Node, Edge)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
@@ -143,7 +183,8 @@ impl<'a> GraphTraverser<'a> {
 
             let edges = self
                 .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Calls])?;
+                .get_incoming_edges(&current_id, &[EdgeKind::Calls])
+                .await?;
 
             for edge in edges {
                 let caller_id = &edge.source;
@@ -152,7 +193,7 @@ impl<'a> GraphTraverser<'a> {
                 }
                 visited.insert(caller_id.clone());
 
-                if let Some(caller_node) = self.db.get_node_by_id(caller_id)? {
+                if let Some(caller_node) = self.db.get_node_by_id(caller_id).await? {
                     queue.push_back((caller_id.clone(), depth + 1));
                     results.push((caller_node, edge));
                 }
@@ -165,7 +206,7 @@ impl<'a> GraphTraverser<'a> {
     /// Gets all nodes that the given node calls, up to `max_depth` levels.
     ///
     /// Follows outgoing `Calls` edges to find callees transitively.
-    pub fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+    pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let mut results: Vec<(Node, Edge)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
@@ -180,7 +221,8 @@ impl<'a> GraphTraverser<'a> {
 
             let edges = self
                 .db
-                .get_outgoing_edges(&current_id, &[EdgeKind::Calls])?;
+                .get_outgoing_edges(&current_id, &[EdgeKind::Calls])
+                .await?;
 
             for edge in edges {
                 let callee_id = &edge.target;
@@ -189,7 +231,7 @@ impl<'a> GraphTraverser<'a> {
                 }
                 visited.insert(callee_id.clone());
 
-                if let Some(callee_node) = self.db.get_node_by_id(callee_id)? {
+                if let Some(callee_node) = self.db.get_node_by_id(callee_id).await? {
                     queue.push_back((callee_id.clone(), depth + 1));
                     results.push((callee_node, edge));
                 }
@@ -203,7 +245,7 @@ impl<'a> GraphTraverser<'a> {
     /// indirectly reference or call this node.
     ///
     /// Performs a BFS over incoming edges of all kinds up to `max_depth`.
-    pub fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
+    pub async fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
         let opts = TraversalOptions {
             max_depth: max_depth as u32,
             edge_kinds: None,
@@ -212,14 +254,14 @@ impl<'a> GraphTraverser<'a> {
             limit: u32::MAX,
             include_start: true,
         };
-        self.traverse_bfs(node_id, &opts)
+        self.traverse_bfs(node_id, &opts).await
     }
 
     /// Builds a bidirectional call graph around a node.
     ///
     /// Combines BFS over outgoing `Calls` edges (callees) and BFS over
     /// incoming `Calls` edges (callers) up to the specified `depth`.
-    pub fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
+    pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
         // Outgoing (callees)
         let outgoing_opts = TraversalOptions {
             max_depth: depth as u32,
@@ -229,7 +271,7 @@ impl<'a> GraphTraverser<'a> {
             limit: u32::MAX,
             include_start: true,
         };
-        let outgoing_sub = self.traverse_bfs(node_id, &outgoing_opts)?;
+        let outgoing_sub = self.traverse_bfs(node_id, &outgoing_opts).await?;
 
         // Incoming (callers)
         let incoming_opts = TraversalOptions {
@@ -240,7 +282,7 @@ impl<'a> GraphTraverser<'a> {
             limit: u32::MAX,
             include_start: false,
         };
-        let incoming_sub = self.traverse_bfs(node_id, &incoming_opts)?;
+        let incoming_sub = self.traverse_bfs(node_id, &incoming_opts).await?;
 
         // Merge the two subgraphs, deduplicating nodes by ID.
         let mut seen_nodes: HashSet<String> = HashSet::new();
@@ -287,7 +329,7 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows both outgoing (traits this node implements) and incoming
     /// (nodes that implement this trait) `Implements` edges.
-    pub fn get_type_hierarchy(&self, node_id: &str) -> Result<Subgraph> {
+    pub async fn get_type_hierarchy(&self, node_id: &str) -> Result<Subgraph> {
         let opts = TraversalOptions {
             max_depth: 10,
             edge_kinds: Some(vec![EdgeKind::Implements]),
@@ -296,7 +338,7 @@ impl<'a> GraphTraverser<'a> {
             limit: u32::MAX,
             include_start: true,
         };
-        self.traverse_bfs(node_id, &opts)
+        self.traverse_bfs(node_id, &opts).await
     }
 
     /// Finds the shortest path between two nodes using BFS.
@@ -304,14 +346,14 @@ impl<'a> GraphTraverser<'a> {
     /// If `edge_kinds` is empty, all edge types are followed. Returns `None`
     /// if no path exists. The returned path includes the start and end nodes
     /// with the edges connecting them.
-    pub fn find_path(
+    pub async fn find_path(
         &self,
         from_id: &str,
         to_id: &str,
         edge_kinds: &[EdgeKind],
     ) -> Result<Option<GraphPath>> {
         if from_id == to_id {
-            if let Some(node) = self.db.get_node_by_id(from_id)? {
+            if let Some(node) = self.db.get_node_by_id(from_id).await? {
                 return Ok(Some(vec![(node, None)]));
             }
             return Ok(None);
@@ -331,7 +373,7 @@ impl<'a> GraphTraverser<'a> {
 
         while let Some(current_id) = queue.pop_front() {
             // Get outgoing edges.
-            let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds)?;
+            let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
             for edge in outgoing {
                 let neighbor = edge.target.clone();
                 if !visited.contains(&neighbor) {
@@ -352,7 +394,7 @@ impl<'a> GraphTraverser<'a> {
             }
 
             // Also get incoming edges (traverse bidirectionally for path finding).
-            let incoming = self.db.get_incoming_edges(&current_id, edge_kinds)?;
+            let incoming = self.db.get_incoming_edges(&current_id, edge_kinds).await?;
             for edge in incoming {
                 let neighbor = edge.source.clone();
                 if !visited.contains(&neighbor) {
@@ -394,7 +436,7 @@ impl<'a> GraphTraverser<'a> {
         // Resolve node IDs to actual Node objects.
         let mut path: Vec<(Node, Option<Edge>)> = Vec::new();
         for (id, edge) in path_ids {
-            if let Some(node) = self.db.get_node_by_id(&id)? {
+            if let Some(node) = self.db.get_node_by_id(&id).await? {
                 path.push((node, edge));
             }
         }
@@ -406,71 +448,19 @@ impl<'a> GraphTraverser<'a> {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    /// Recursively performs DFS, collecting nodes and edges.
-    fn dfs_recursive(
-        &self,
-        current_id: &str,
-        depth: u32,
-        opts: &TraversalOptions,
-        visited: &mut HashSet<String>,
-        result_nodes: &mut Vec<Node>,
-        result_edges: &mut Vec<Edge>,
-    ) -> Result<()> {
-        if depth >= opts.max_depth {
-            return Ok(());
-        }
-
-        if result_nodes.len() >= opts.limit as usize {
-            return Ok(());
-        }
-
-        let edge_filter = opts.edge_kinds.as_deref().unwrap_or(&[]);
-        let edges = self.get_edges_for_direction(current_id, edge_filter, &opts.direction)?;
-
-        for edge in edges {
-            let neighbor_id = self.neighbor_id(&edge, current_id, &opts.direction);
-
-            if visited.contains(&neighbor_id) {
-                continue;
-            }
-            visited.insert(neighbor_id.clone());
-
-            if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id)? {
-                if self.node_matches_filter(&neighbor_node, opts) {
-                    result_nodes.push(neighbor_node);
-                    if result_nodes.len() >= opts.limit as usize {
-                        result_edges.push(edge);
-                        return Ok(());
-                    }
-                }
-                result_edges.push(edge);
-                self.dfs_recursive(
-                    &neighbor_id,
-                    depth + 1,
-                    opts,
-                    visited,
-                    result_nodes,
-                    result_edges,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
     /// Gets edges from the database according to the traversal direction.
-    fn get_edges_for_direction(
+    async fn get_edges_for_direction(
         &self,
         node_id: &str,
         edge_kinds: &[EdgeKind],
         direction: &TraversalDirection,
     ) -> Result<Vec<Edge>> {
         match direction {
-            TraversalDirection::Outgoing => self.db.get_outgoing_edges(node_id, edge_kinds),
-            TraversalDirection::Incoming => self.db.get_incoming_edges(node_id, edge_kinds),
+            TraversalDirection::Outgoing => self.db.get_outgoing_edges(node_id, edge_kinds).await,
+            TraversalDirection::Incoming => self.db.get_incoming_edges(node_id, edge_kinds).await,
             TraversalDirection::Both => {
-                let mut edges = self.db.get_outgoing_edges(node_id, edge_kinds)?;
-                edges.extend(self.db.get_incoming_edges(node_id, edge_kinds)?);
+                let mut edges = self.db.get_outgoing_edges(node_id, edge_kinds).await?;
+                edges.extend(self.db.get_incoming_edges(node_id, edge_kinds).await?);
                 Ok(edges)
             }
         }

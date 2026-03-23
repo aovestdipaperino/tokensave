@@ -1,23 +1,26 @@
+// Rust guideline compliant 2025-10-17
 use std::path::Path;
 
-use rusqlite::Connection;
+use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
 use crate::errors::{CodeGraphError, Result};
 
 /// The embedded SQL schema applied when initializing a new database.
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
-/// SQLite database backing the code graph.
+/// SQLite database backing the code graph, powered by libsql.
 pub struct Database {
     conn: Connection,
+    /// Kept alive so the underlying database is not dropped.
+    _db: LibsqlDatabase,
 }
 
 impl Database {
     /// Creates a new database at `db_path`, creating parent directories if needed.
     ///
-    /// Opens a SQLite connection, applies performance pragmas, and executes the
+    /// Opens a libsql connection, applies performance pragmas, and executes the
     /// full schema (tables, indexes, triggers, FTS).
-    pub fn initialize(db_path: &Path) -> Result<Self> {
+    pub async fn initialize(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CodeGraphError::Database {
                 message: format!("failed to create database directory: {e}"),
@@ -25,35 +28,52 @@ impl Database {
             })?;
         }
 
-        let conn = Connection::open(db_path).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to open database: {e}"),
+        let db = Builder::new_local(db_path)
+            .build()
+            .await
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to open database: {e}"),
+                operation: "initialize".to_string(),
+            })?;
+
+        let conn = db.connect().map_err(|e| CodeGraphError::Database {
+            message: format!("failed to connect to database: {e}"),
             operation: "initialize".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn)?;
+        Self::apply_pragmas(&conn).await?;
 
         conn.execute_batch(SCHEMA_SQL)
+            .await
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to apply schema: {e}"),
                 operation: "initialize".to_string(),
             })?;
 
-        Ok(Self { conn })
+        Ok(Self { conn, _db: db })
     }
 
     /// Opens an existing database at `db_path` and applies performance pragmas.
-    pub fn open(db_path: &Path) -> Result<Self> {
-        let conn = Connection::open(db_path).map_err(|e| CodeGraphError::Database {
-            message: format!("failed to open database: {e}"),
+    pub async fn open(db_path: &Path) -> Result<Self> {
+        let db = Builder::new_local(db_path)
+            .build()
+            .await
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to open database: {e}"),
+                operation: "open".to_string(),
+            })?;
+
+        let conn = db.connect().map_err(|e| CodeGraphError::Database {
+            message: format!("failed to connect to database: {e}"),
             operation: "open".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn)?;
+        Self::apply_pragmas(&conn).await?;
 
-        Ok(Self { conn })
+        Ok(Self { conn, _db: db })
     }
 
-    /// Returns a reference to the underlying SQLite connection.
+    /// Returns a reference to the underlying libsql connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -64,33 +84,53 @@ impl Database {
     }
 
     /// Runs VACUUM and ANALYZE to reclaim space and update query planner statistics.
-    pub fn optimize(&self) -> Result<()> {
+    pub async fn optimize(&self) -> Result<()> {
         self.conn
             .execute_batch("VACUUM; ANALYZE;")
+            .await
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to optimize database: {e}"),
                 operation: "optimize".to_string(),
-            })
+            })?;
+        Ok(())
     }
 
     /// Returns the on-disk size of the database file in bytes.
-    pub fn size(&self) -> Result<u64> {
-        let size: i64 = self
+    pub async fn size(&self) -> Result<u64> {
+        let mut rows = self
             .conn
-            .query_row(
+            .query(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-                [],
-                |row| row.get(0),
+                (),
             )
+            .await
             .map_err(|e| CodeGraphError::Database {
                 message: format!("failed to get database size: {e}"),
                 operation: "size".to_string(),
             })?;
+
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| CodeGraphError::Database {
+                message: format!("failed to read database size row: {e}"),
+                operation: "size".to_string(),
+            })?
+            .ok_or_else(|| CodeGraphError::Database {
+                message: "no result from page size query".to_string(),
+                operation: "size".to_string(),
+            })?;
+
+        let size = row.get::<i64>(0).map_err(|e| CodeGraphError::Database {
+            message: format!("failed to read size value: {e}"),
+            operation: "size".to_string(),
+        })?;
+
         Ok(size as u64)
     }
 
     /// Applies performance-oriented SQLite pragmas.
-    fn apply_pragmas(conn: &Connection) -> Result<()> {
+    async fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -100,9 +140,11 @@ impl Database {
              PRAGMA temp_store = MEMORY;
              PRAGMA mmap_size = 268435456;",
         )
+        .await
         .map_err(|e| CodeGraphError::Database {
             message: format!("failed to apply pragmas: {e}"),
             operation: "apply_pragmas".to_string(),
-        })
+        })?;
+        Ok(())
     }
 }

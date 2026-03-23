@@ -5,9 +5,11 @@ use tempfile::TempDir;
 
 /// Sets up a temporary database pre-populated with two nodes: a `helper`
 /// function in `src/utils.rs` and a `main` function in `src/main.rs`.
-fn setup_db_with_nodes() -> (TempDir, Database) {
+async fn setup_db_with_nodes() -> (TempDir, Database) {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let db = Database::initialize(&dir.path().join("test.db")).expect("failed to init db");
+    let db = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
 
     let callee = Node {
         id: generate_node_id("src/utils.rs", &NodeKind::Function, "helper", 1),
@@ -43,15 +45,15 @@ fn setup_db_with_nodes() -> (TempDir, Database) {
         updated_at: 0,
     };
 
-    db.insert_node(&callee).expect("failed to insert callee");
-    db.insert_node(&caller).expect("failed to insert caller");
+    db.insert_node(&callee).await.expect("failed to insert callee");
+    db.insert_node(&caller).await.expect("failed to insert caller");
     (dir, db)
 }
 
-#[test]
-fn test_resolve_exact_name_match() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_resolve_exact_name_match() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -76,10 +78,10 @@ fn test_resolve_exact_name_match() {
     );
 }
 
-#[test]
-fn test_resolve_qualified_name_match() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_resolve_qualified_name_match() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -101,10 +103,10 @@ fn test_resolve_qualified_name_match() {
     assert_eq!(resolved.resolved_by, "qualified-match");
 }
 
-#[test]
-fn test_resolve_all() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_resolve_all() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let refs = vec![UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -122,10 +124,10 @@ fn test_resolve_all() {
     assert!(result.unresolved.is_empty());
 }
 
-#[test]
-fn test_unresolvable_reference() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_unresolvable_reference() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let uref = UnresolvedRef {
         from_node_id: "function:caller".to_string(),
@@ -142,10 +144,10 @@ fn test_unresolvable_reference() {
     );
 }
 
-#[test]
-fn test_unresolvable_in_resolve_all() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_unresolvable_in_resolve_all() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let refs = vec![
         UnresolvedRef {
@@ -173,10 +175,10 @@ fn test_unresolvable_in_resolve_all() {
     assert_eq!(result.unresolved[0].reference_name, "nonexistent");
 }
 
-#[test]
-fn test_creates_edges_from_resolved() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_creates_edges_from_resolved() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let resolved = ResolvedRef {
         original: UnresolvedRef {
@@ -206,10 +208,12 @@ fn test_creates_edges_from_resolved() {
     );
 }
 
-#[test]
-fn test_multiple_candidates_best_match_scoring() {
+#[tokio::test]
+async fn test_multiple_candidates_best_match_scoring() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let db = Database::initialize(&dir.path().join("test.db")).expect("failed to init db");
+    let db = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
 
     // Two nodes with the same name "process" in different files.
     let same_file_node = Node {
@@ -264,12 +268,14 @@ fn test_multiple_candidates_best_match_scoring() {
     };
 
     db.insert_node(&same_file_node)
+        .await
         .expect("failed to insert same_file_node");
     db.insert_node(&other_file_node)
+        .await
         .expect("failed to insert other_file_node");
-    db.insert_node(&caller).expect("failed to insert caller");
+    db.insert_node(&caller).await.expect("failed to insert caller");
 
-    let resolver = ReferenceResolver::new(&db);
+    let resolver = ReferenceResolver::new(&db).await;
 
     // Reference from src/main.rs should prefer the same-file candidate.
     let uref = UnresolvedRef {
@@ -295,19 +301,19 @@ fn test_multiple_candidates_best_match_scoring() {
     );
 }
 
-#[test]
-fn test_create_edges_empty_input() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_create_edges_empty_input() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let edges = resolver.create_edges(&[]);
     assert!(edges.is_empty());
 }
 
-#[test]
-fn test_resolve_all_empty_input() {
-    let (_dir, db) = setup_db_with_nodes();
-    let resolver = ReferenceResolver::new(&db);
+#[tokio::test]
+async fn test_resolve_all_empty_input() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::new(&db).await;
 
     let result = resolver.resolve_all(&[]);
     assert_eq!(result.total, 0);

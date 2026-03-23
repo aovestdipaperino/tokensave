@@ -1,3 +1,5 @@
+// Rust guideline compliant 2025-10-17
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -67,7 +69,7 @@ impl CodeGraph {
     ///
     /// Creates the `.codegraph` directory, writes a default configuration,
     /// and initializes a fresh SQLite database.
-    pub fn init(project_root: &Path) -> Result<Self> {
+    pub async fn init(project_root: &Path) -> Result<Self> {
         let config = CodeGraphConfig {
             root_dir: project_root.to_string_lossy().to_string(),
             ..CodeGraphConfig::default()
@@ -75,7 +77,7 @@ impl CodeGraph {
         save_config(project_root, &config)?;
 
         let db_path = get_codegraph_dir(project_root).join("codegraph.db");
-        let db = Database::initialize(&db_path)?;
+        let db = Database::initialize(&db_path).await?;
 
         Ok(Self {
             db,
@@ -88,7 +90,7 @@ impl CodeGraph {
     /// Opens an existing CodeGraph project at the given root.
     ///
     /// Loads the configuration from disk and opens the existing database.
-    pub fn open(project_root: &Path) -> Result<Self> {
+    pub async fn open(project_root: &Path) -> Result<Self> {
         let config = load_config(project_root)?;
         let db_path = get_codegraph_dir(project_root).join("codegraph.db");
 
@@ -101,7 +103,7 @@ impl CodeGraph {
             });
         }
 
-        let db = Database::open(&db_path)?;
+        let db = Database::open(&db_path).await?;
         Ok(Self {
             db,
             config,
@@ -126,20 +128,20 @@ impl CodeGraph {
     /// Performs a full index: clears existing data, scans all Rust files,
     /// extracts nodes and edges, resolves references, and stores everything
     /// in the database.
-    pub fn index_all(&self) -> Result<IndexResult> {
-        self.index_all_with_progress(|_| {})
+    pub async fn index_all(&self) -> Result<IndexResult> {
+        self.index_all_with_progress(|_| {}).await
     }
 
     /// Like `index_all()`, but calls `on_file` with each file path before
     /// processing it. Use this to drive a progress spinner in the CLI.
-    pub fn index_all_with_progress<F>(&self, on_file: F) -> Result<IndexResult>
+    pub async fn index_all_with_progress<F>(&self, on_file: F) -> Result<IndexResult>
     where
         F: Fn(&str),
     {
         let start = Instant::now();
 
         // 1. Clear existing data
-        self.db.clear()?;
+        self.db.clear().await?;
 
         // 2. Scan for Rust files using walkdir
         let files = self.scan_files()?;
@@ -164,11 +166,11 @@ impl CodeGraph {
             let result = extractor.extract(file_path, &source);
 
             // Store nodes and edges
-            self.db.insert_nodes(&result.nodes)?;
-            self.db.insert_edges(&result.edges)?;
+            self.db.insert_nodes(&result.nodes).await?;
+            self.db.insert_edges(&result.edges).await?;
 
             if !result.unresolved_refs.is_empty() {
-                self.db.insert_unresolved_refs(&result.unresolved_refs)?;
+                self.db.insert_unresolved_refs(&result.unresolved_refs).await?;
             }
 
             // Store file record
@@ -180,20 +182,20 @@ impl CodeGraph {
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
             };
-            self.db.upsert_file(&file_record)?;
+            self.db.upsert_file(&file_record).await?;
 
             total_nodes += result.nodes.len();
             total_edges += result.edges.len();
         }
 
         // 4. Resolve references
-        let unresolved = self.db.get_unresolved_refs()?;
+        let unresolved = self.db.get_unresolved_refs().await?;
         if !unresolved.is_empty() {
-            let resolver = ReferenceResolver::new(&self.db);
+            let resolver = ReferenceResolver::new(&self.db).await;
             let resolution = resolver.resolve_all(&unresolved);
             let edges = resolver.create_edges(&resolution.resolved);
             if !edges.is_empty() {
-                self.db.insert_edges(&edges)?;
+                self.db.insert_edges(&edges).await?;
                 total_edges += edges.len();
             }
         }
@@ -208,7 +210,7 @@ impl CodeGraph {
 
     /// Performs an incremental sync: detects changed, new, and removed files
     /// and re-indexes only those that need updating.
-    pub fn sync(&self) -> Result<SyncResult> {
+    pub async fn sync(&self) -> Result<SyncResult> {
         let start = Instant::now();
         let current_files = self.scan_files()?;
 
@@ -221,20 +223,20 @@ impl CodeGraph {
             }
         }
 
-        let stale = sync::find_stale_files(&self.db, &current_hashes)?;
-        let new = sync::find_new_files(&self.db, &current_files)?;
-        let removed = sync::find_removed_files(&self.db, &current_files)?;
+        let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
+        let new = sync::find_new_files(&self.db, &current_files).await?;
+        let removed = sync::find_removed_files(&self.db, &current_files).await?;
 
         // Remove deleted files
         for path in &removed {
-            self.db.delete_file(path)?;
+            self.db.delete_file(path).await?;
         }
 
         // Re-index stale and new files
         let to_index: Vec<String> = stale.iter().chain(new.iter()).cloned().collect();
         for file_path in &to_index {
             // Delete old data for this file
-            self.db.delete_nodes_by_file(file_path)?;
+            self.db.delete_nodes_by_file(file_path).await?;
 
             let abs_path = self.project_root.join(file_path);
             let source = match std::fs::read_to_string(&abs_path) {
@@ -247,10 +249,10 @@ impl CodeGraph {
                 None => continue,
             };
             let result = extractor.extract(file_path, &source);
-            self.db.insert_nodes(&result.nodes)?;
-            self.db.insert_edges(&result.edges)?;
+            self.db.insert_nodes(&result.nodes).await?;
+            self.db.insert_edges(&result.edges).await?;
             if !result.unresolved_refs.is_empty() {
-                self.db.insert_unresolved_refs(&result.unresolved_refs)?;
+                self.db.insert_unresolved_refs(&result.unresolved_refs).await?;
             }
 
             let file_record = FileRecord {
@@ -261,7 +263,20 @@ impl CodeGraph {
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
             };
-            self.db.upsert_file(&file_record)?;
+            self.db.upsert_file(&file_record).await?;
+        }
+
+        // Resolve references (call edges, uses, etc.) across all files.
+        // This must run after all files are indexed so cross-file references
+        // can find their targets.
+        let unresolved = self.db.get_unresolved_refs().await?;
+        if !unresolved.is_empty() {
+            let resolver = ReferenceResolver::new(&self.db).await;
+            let resolution = resolver.resolve_all(&unresolved);
+            let edges = resolver.create_edges(&resolution.resolved);
+            if !edges.is_empty() {
+                self.db.insert_edges(&edges).await?;
+            }
         }
 
         Ok(SyncResult {
@@ -320,49 +335,55 @@ impl CodeGraph {
 
 impl CodeGraph {
     /// Searches for nodes matching the given query string.
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        self.db.search_nodes(query, limit)
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        self.db.search_nodes(query, limit).await
     }
 
     /// Returns aggregate statistics about the code graph.
-    pub fn get_stats(&self) -> Result<GraphStats> {
-        self.db.get_stats()
+    pub async fn get_stats(&self) -> Result<GraphStats> {
+        self.db.get_stats().await
     }
 
     /// Retrieves a single node by its unique ID.
-    pub fn get_node(&self, id: &str) -> Result<Option<Node>> {
-        self.db.get_node_by_id(id)
+    pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
+        self.db.get_node_by_id(id).await
     }
 
     /// Returns all nodes that transitively call the given node, up to `max_depth`.
-    pub fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+    pub async fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let traverser = GraphTraverser::new(&self.db);
-        traverser.get_callers(node_id, max_depth)
+        traverser.get_callers(node_id, max_depth).await
     }
 
     /// Returns all nodes that the given node transitively calls, up to `max_depth`.
-    pub fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+    pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let traverser = GraphTraverser::new(&self.db);
-        traverser.get_callees(node_id, max_depth)
+        traverser.get_callees(node_id, max_depth).await
     }
 
     /// Computes the impact radius: all nodes that directly or indirectly
     /// depend on the given node, up to `max_depth`.
-    pub fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
+    pub async fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
         let traverser = GraphTraverser::new(&self.db);
-        traverser.get_impact_radius(node_id, max_depth)
+        traverser.get_impact_radius(node_id, max_depth).await
     }
 
     /// Finds potentially dead code (nodes with no incoming edges).
-    pub fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+    pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         let qm = GraphQueryManager::new(&self.db);
-        qm.find_dead_code(kinds)
+        qm.find_dead_code(kinds).await
     }
 
     /// Builds an AI-ready context for a given task description.
-    pub fn build_context(&self, task: &str, options: &BuildContextOptions) -> Result<TaskContext> {
+    pub async fn build_context(&self, task: &str, options: &BuildContextOptions) -> Result<TaskContext> {
         let builder = ContextBuilder::new(&self.db, &self.project_root);
-        builder.build_context(task, options)
+        builder.build_context(task, options).await
+    }
+
+    /// Returns a map of file path to approximate token count (size / 4).
+    pub async fn get_file_token_map(&self) -> Result<HashMap<String, u64>> {
+        let files = self.db.get_all_files().await?;
+        Ok(files.into_iter().map(|f| (f.path, f.size / 4)).collect())
     }
 
     /// Returns a reference to the current configuration.

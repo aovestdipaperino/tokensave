@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use std::collections::HashMap;
 
 use crate::db::Database;
@@ -25,8 +26,8 @@ impl<'a> ReferenceResolver<'a> {
     ///
     /// This method does not panic. If the database query fails the caches will
     /// simply be empty.
-    pub fn new(db: &'a Database) -> Self {
-        let all_nodes = db.get_all_nodes().unwrap_or_default();
+    pub async fn new(db: &'a Database) -> Self {
+        let all_nodes = db.get_all_nodes().await.unwrap_or_default();
 
         let mut name_cache: HashMap<String, Vec<Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<String, Vec<Node>> = HashMap::new();

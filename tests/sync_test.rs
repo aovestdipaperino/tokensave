@@ -17,10 +17,10 @@ fn test_content_hash_different() {
     assert_ne!(hash1, hash2);
 }
 
-#[test]
-fn test_find_stale_files() {
+#[tokio::test]
+async fn test_find_stale_files() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     db.upsert_file(&FileRecord {
         path: "src/main.rs".to_string(),
         content_hash: "old_hash".to_string(),
@@ -29,26 +29,27 @@ fn test_find_stale_files() {
         indexed_at: 1001,
         node_count: 5,
     })
+    .await
     .unwrap();
 
     let current = vec![("src/main.rs".to_string(), "new_hash".to_string())];
-    let stale = find_stale_files(&db, &current).unwrap();
+    let stale = find_stale_files(&db, &current).await.unwrap();
     assert_eq!(stale, vec!["src/main.rs"]);
 }
 
-#[test]
-fn test_find_new_files() {
+#[tokio::test]
+async fn test_find_new_files() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     let current = vec!["src/new_file.rs".to_string()];
-    let new = find_new_files(&db, &current).unwrap();
+    let new = find_new_files(&db, &current).await.unwrap();
     assert_eq!(new, vec!["src/new_file.rs"]);
 }
 
-#[test]
-fn test_find_removed_files() {
+#[tokio::test]
+async fn test_find_removed_files() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     db.upsert_file(&FileRecord {
         path: "src/deleted.rs".to_string(),
         content_hash: "hash".to_string(),
@@ -57,9 +58,10 @@ fn test_find_removed_files() {
         indexed_at: 1001,
         node_count: 2,
     })
+    .await
     .unwrap();
 
     let current: Vec<String> = vec![];
-    let removed = find_removed_files(&db, &current).unwrap();
+    let removed = find_removed_files(&db, &current).await.unwrap();
     assert_eq!(removed, vec!["src/deleted.rs"]);
 }

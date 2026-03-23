@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -94,18 +95,19 @@ enum Commands {
     },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
-    if let Err(e) = run(cli) {
+    if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
         process::exit(1);
     }
 }
 
-fn run(cli: Cli) -> codegraph::errors::Result<()> {
+async fn run(cli: Cli) -> codegraph::errors::Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
-        None => return handle_no_command(),
+        None => return handle_no_command().await,
     };
     match command {
         Commands::Sync { path, force } => {
@@ -114,10 +116,10 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 if !force {
                     eprintln!("No existing index found — performing full index");
                 }
-                init_and_index(&project_path)?;
+                init_and_index(&project_path).await?;
             } else {
-                let cg = CodeGraph::open(&project_path)?;
-                let result = cg.sync()?;
+                let cg = CodeGraph::open(&project_path).await?;
+                let result = cg.sync().await?;
                 println!(
                     "Sync complete: {} added, {} modified, {} removed in {}ms",
                     result.files_added, result.files_modified, result.files_removed, result.duration_ms
@@ -126,8 +128,8 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
         }
         Commands::Status { path, json } => {
             let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path)?;
-            let stats = cg.get_stats()?;
+            let cg = ensure_initialized(&project_path).await?;
+            let stats = cg.get_stats().await?;
             if json {
                 println!(
                     "{}",
@@ -139,7 +141,6 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 println!("  Nodes:  {}", stats.node_count);
                 println!("  Edges:  {}", stats.edge_count);
                 println!("  DB Size: {} bytes", stats.db_size_bytes);
-                println!("  Approx tokens saved: ~{}", stats.approx_tokens_saved);
                 if !stats.nodes_by_kind.is_empty() {
                     println!("\n  Nodes by kind:");
                     let mut sorted: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -156,8 +157,8 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             limit,
         } => {
             let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path)?;
-            let results = cg.search(&search, limit)?;
+            let cg = ensure_initialized(&project_path).await?;
+            let results = cg.search(&search, limit).await?;
             if results.is_empty() {
                 println!("No results found for '{}'", search);
             } else {
@@ -182,7 +183,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
             format,
         } => {
             let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path)?;
+            let cg = ensure_initialized(&project_path).await?;
             let output_format = if format == "json" {
                 OutputFormat::Json
             } else {
@@ -193,7 +194,7 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 format: output_format.clone(),
                 ..Default::default()
             };
-            let context = cg.build_context(&task, &options)?;
+            let context = cg.build_context(&task, &options).await?;
             match output_format {
                 OutputFormat::Json => {
                     println!("{}", format_context_as_json(&context));
@@ -205,21 +206,16 @@ fn run(cli: Cli) -> codegraph::errors::Result<()> {
         }
         Commands::Serve { path } => {
             let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path)?;
-            let server = codegraph::mcp::McpServer::new(cg);
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                codegraph::errors::CodeGraphError::Config {
-                    message: format!("failed to create tokio runtime: {}", e),
-                }
-            })?;
-            rt.block_on(server.run())?;
+            let cg = ensure_initialized(&project_path).await?;
+            let server = codegraph::mcp::McpServer::new(cg).await;
+            server.run().await?;
         }
     }
     Ok(())
 }
 
 /// When invoked with no subcommand, offer to create the index if none exists.
-fn handle_no_command() -> codegraph::errors::Result<()> {
+async fn handle_no_command() -> codegraph::errors::Result<()> {
     let project_path = resolve_path(None);
     if CodeGraph::is_initialized(&project_path) {
         // Already initialized — show help via clap
@@ -241,24 +237,24 @@ fn handle_no_command() -> codegraph::errors::Result<()> {
         })?;
     let answer = answer.trim();
     if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-        init_and_index(&project_path)?;
+        init_and_index(&project_path).await?;
     }
     Ok(())
 }
 
 /// Initializes a new project (if needed) and runs a full index.
-fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
+async fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
     let cg = if CodeGraph::is_initialized(project_path) {
-        CodeGraph::open(project_path)?
+        CodeGraph::open(project_path).await?
     } else {
-        let cg = CodeGraph::init(project_path)?;
+        let cg = CodeGraph::init(project_path).await?;
         eprintln!("Initialized CodeGraph at {}", project_path.display());
         cg
     };
     let spinner = std::cell::RefCell::new(Spinner::new());
     let result = cg.index_all_with_progress(|file| {
         spinner.borrow_mut().tick(&format!("indexing {}", file));
-    })?;
+    }).await?;
     Spinner::done(&format!(
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
@@ -267,9 +263,9 @@ fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
 }
 
 /// Opens an existing project, or tells the user to run `codegraph sync` first.
-fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
+async fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
     if CodeGraph::is_initialized(project_path) {
-        return CodeGraph::open(project_path);
+        return CodeGraph::open(project_path).await;
     }
     Err(codegraph::errors::CodeGraphError::Config {
         message: format!(

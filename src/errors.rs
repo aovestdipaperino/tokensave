@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use thiserror::Error;
 
 /// Errors that can occur during code graph operations.
@@ -28,8 +29,8 @@ pub enum CodeGraphError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    #[error("libsql error: {0}")]
+    Libsql(#[from] libsql::Error),
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),

@@ -1,7 +1,10 @@
+// Rust guideline compliant 2025-10-17
 //! MCP tool definitions and dispatch for the code graph.
 //!
 //! Each tool maps to a `CodeGraph` method. Tool definitions include JSON Schema
 //! descriptions so that MCP clients can discover available capabilities.
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -144,29 +147,50 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// The result of a tool call, including the JSON response and the file
+/// paths that were touched (used to track saved tokens).
+pub struct ToolResult {
+    /// The JSON-RPC result payload.
+    pub value: Value,
+    /// Unique file paths referenced in the result.
+    pub touched_files: Vec<String>,
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
-/// Returns the tool result as a JSON value, or an error if the tool name
-/// is unknown or the handler fails. The optional `server_stats` value is
-/// included in `codegraph_status` responses when provided.
-pub fn handle_tool_call(
+/// Returns the tool result and touched file paths, or an error if the tool
+/// name is unknown or the handler fails. The optional `server_stats` value
+/// is included in `codegraph_status` responses when provided.
+pub async fn handle_tool_call(
     cg: &CodeGraph,
     tool_name: &str,
     args: Value,
     server_stats: Option<Value>,
-) -> Result<Value> {
+) -> Result<ToolResult> {
     match tool_name {
-        "codegraph_search" => handle_search(cg, args),
-        "codegraph_context" => handle_context(cg, args),
-        "codegraph_callers" => handle_callers(cg, args),
-        "codegraph_callees" => handle_callees(cg, args),
-        "codegraph_impact" => handle_impact(cg, args),
-        "codegraph_node" => handle_node(cg, args),
-        "codegraph_status" => handle_status(cg, server_stats),
+        "codegraph_search" => handle_search(cg, args).await,
+        "codegraph_context" => handle_context(cg, args).await,
+        "codegraph_callers" => handle_callers(cg, args).await,
+        "codegraph_callees" => handle_callees(cg, args).await,
+        "codegraph_impact" => handle_impact(cg, args).await,
+        "codegraph_node" => handle_node(cg, args).await,
+        "codegraph_status" => handle_status(cg, server_stats).await,
         _ => Err(CodeGraphError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
     }
+}
+
+/// Deduplicates an iterator of file path strings into a `Vec<String>`.
+fn unique_file_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for p in paths {
+        if seen.insert(p) {
+            result.push(p.to_string());
+        }
+    }
+    result
 }
 
 /// Truncates a string to the maximum response character limit, appending
@@ -185,7 +209,7 @@ fn truncate_response(s: &str) -> String {
 }
 
 /// Handles `codegraph_search` tool calls.
-fn handle_search(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_search(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let query =
         args.get("query")
             .and_then(|v| v.as_str())
@@ -199,7 +223,9 @@ fn handle_search(cg: &CodeGraph, args: Value) -> Result<Value> {
         .map(|v| v.min(500) as usize)
         .unwrap_or(10);
 
-    let results = cg.search(query, limit)?;
+    let results = cg.search(query, limit).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
 
     let items: Vec<Value> = results
         .iter()
@@ -217,13 +243,16 @@ fn handle_search(cg: &CodeGraph, args: Value) -> Result<Value> {
         .collect();
 
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&output) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
 }
 
 /// Handles `codegraph_context` tool calls.
-fn handle_context(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_context(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let task = args
         .get("task")
         .and_then(|v| v.as_str())
@@ -242,16 +271,27 @@ fn handle_context(cg: &CodeGraph, args: Value) -> Result<Value> {
         ..Default::default()
     };
 
-    let context = cg.build_context(task, &options)?;
+    let context = cg.build_context(task, &options).await?;
+    let touched_files = unique_file_paths(
+        context
+            .subgraph
+            .nodes
+            .iter()
+            .map(|n| n.file_path.as_str())
+            .chain(context.related_files.iter().map(|s| s.as_str())),
+    );
     let output = format_context_as_markdown(&context);
 
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&output) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
 }
 
 /// Handles `codegraph_callers` tool calls.
-fn handle_callers(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_callers(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
@@ -265,7 +305,9 @@ fn handle_callers(cg: &CodeGraph, args: Value) -> Result<Value> {
         .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
-    let results = cg.get_callers(node_id, max_depth)?;
+    let results = cg.get_callers(node_id, max_depth).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
 
     let items: Vec<Value> = results
         .iter()
@@ -282,13 +324,16 @@ fn handle_callers(cg: &CodeGraph, args: Value) -> Result<Value> {
         .collect();
 
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&output) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
 }
 
 /// Handles `codegraph_callees` tool calls.
-fn handle_callees(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_callees(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
@@ -302,7 +347,9 @@ fn handle_callees(cg: &CodeGraph, args: Value) -> Result<Value> {
         .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
-    let results = cg.get_callees(node_id, max_depth)?;
+    let results = cg.get_callees(node_id, max_depth).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
 
     let items: Vec<Value> = results
         .iter()
@@ -319,13 +366,16 @@ fn handle_callees(cg: &CodeGraph, args: Value) -> Result<Value> {
         .collect();
 
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&output) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
 }
 
 /// Handles `codegraph_impact` tool calls.
-fn handle_impact(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_impact(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
@@ -339,7 +389,9 @@ fn handle_impact(cg: &CodeGraph, args: Value) -> Result<Value> {
         .map(|v| v.min(10) as usize)
         .unwrap_or(3);
 
-    let subgraph = cg.get_impact_radius(node_id, max_depth)?;
+    let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
+
+    let touched_files = unique_file_paths(subgraph.nodes.iter().map(|n| n.file_path.as_str()));
 
     let nodes: Vec<Value> = subgraph
         .nodes
@@ -362,13 +414,16 @@ fn handle_impact(cg: &CodeGraph, args: Value) -> Result<Value> {
     });
 
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
 }
 
 /// Handles `codegraph_node` tool calls.
-fn handle_node(cg: &CodeGraph, args: Value) -> Result<Value> {
+async fn handle_node(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
@@ -376,10 +431,11 @@ fn handle_node(cg: &CodeGraph, args: Value) -> Result<Value> {
             message: "missing required parameter: node_id".to_string(),
         })?;
 
-    let node = cg.get_node(node_id)?;
+    let node = cg.get_node(node_id).await?;
 
     match node {
         Some(n) => {
+            let touched_files = vec![n.file_path.clone()];
             let output = json!({
                 "id": n.id,
                 "name": n.name,
@@ -394,27 +450,36 @@ fn handle_node(cg: &CodeGraph, args: Value) -> Result<Value> {
                 "is_async": n.is_async,
             });
             let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-            Ok(json!({
-                "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-            }))
+            Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+                }),
+                touched_files,
+            })
         }
-        None => Ok(json!({
-            "content": [{ "type": "text", "text": format!("Node not found: {}", node_id) }]
-        })),
+        None => Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("Node not found: {}", node_id) }]
+            }),
+            touched_files: vec![],
+        }),
     }
 }
 
 /// Handles `codegraph_status` tool calls.
-fn handle_status(cg: &CodeGraph, server_stats: Option<Value>) -> Result<Value> {
-    let stats = cg.get_stats()?;
+async fn handle_status(cg: &CodeGraph, server_stats: Option<Value>) -> Result<ToolResult> {
+    let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     if let Some(ss) = server_stats {
         output["server"] = ss;
     }
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-    Ok(json!({
-        "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-    }))
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
 }
 
 #[cfg(test)]

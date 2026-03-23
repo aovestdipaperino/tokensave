@@ -24,10 +24,10 @@ fn test_cosine_similarity_zero_vector() {
     assert_eq!(cosine_similarity(&a, &b), 0.0);
 }
 
-#[test]
-fn test_store_and_retrieve_vector() {
+#[tokio::test]
+async fn test_store_and_retrieve_vector() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     // Must have a node to reference (FK constraint)
     let node = Node {
@@ -46,22 +46,22 @@ fn test_store_and_retrieve_vector() {
         is_async: false,
         updated_at: 0,
     };
-    db.insert_node(&node).unwrap();
+    db.insert_node(&node).await.unwrap();
 
     let embedding = vec![0.1f32, 0.2, 0.3, 0.4, 0.5];
-    store_vector(&db, "function:test_fn", &embedding, "test-model").unwrap();
+    store_vector(&db, "function:test_fn", &embedding, "test-model").await.unwrap();
 
-    let retrieved = get_vector(&db, "function:test_fn").unwrap();
+    let retrieved = get_vector(&db, "function:test_fn").await.unwrap();
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.len(), 5);
     assert!((retrieved[0] - 0.1).abs() < 1e-6);
 }
 
-#[test]
-fn test_brute_force_search() {
+#[tokio::test]
+async fn test_brute_force_search() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     for i in 0..5u32 {
         let node = Node {
@@ -80,15 +80,15 @@ fn test_brute_force_search() {
             is_async: false,
             updated_at: 0,
         };
-        db.insert_node(&node).unwrap();
+        db.insert_node(&node).await.unwrap();
 
         let mut embedding = vec![0.0f32; 5];
         embedding[i as usize] = 1.0;
-        store_vector(&db, &format!("function:fn_{}", i), &embedding, "test").unwrap();
+        store_vector(&db, &format!("function:fn_{}", i), &embedding, "test").await.unwrap();
     }
 
     let query = vec![0.0f32, 0.0, 0.9, 0.1, 0.0];
-    let results = brute_force_search(&db, &query, 3).unwrap();
+    let results = brute_force_search(&db, &query, 3).await.unwrap();
     assert!(!results.is_empty());
     assert_eq!(results[0].0, "function:fn_2");
 }
@@ -117,11 +117,11 @@ fn test_create_node_text() {
     assert!(text.contains("Processes raw data"));
 }
 
-#[test]
-fn test_vector_count() {
+#[tokio::test]
+async fn test_vector_count() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
-    assert_eq!(vector_count(&db).unwrap(), 0);
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    assert_eq!(vector_count(&db).await.unwrap(), 0);
 
     let node = Node {
         id: "function:count_test".to_string(),
@@ -139,15 +139,15 @@ fn test_vector_count() {
         is_async: false,
         updated_at: 0,
     };
-    db.insert_node(&node).unwrap();
-    store_vector(&db, "function:count_test", &[1.0, 2.0, 3.0], "test").unwrap();
-    assert_eq!(vector_count(&db).unwrap(), 1);
+    db.insert_node(&node).await.unwrap();
+    store_vector(&db, "function:count_test", &[1.0, 2.0, 3.0], "test").await.unwrap();
+    assert_eq!(vector_count(&db).await.unwrap(), 1);
 }
 
-#[test]
-fn test_delete_vector() {
+#[tokio::test]
+async fn test_delete_vector() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     let node = Node {
         id: "function:del".to_string(),
         kind: NodeKind::Function,
@@ -164,17 +164,17 @@ fn test_delete_vector() {
         is_async: false,
         updated_at: 0,
     };
-    db.insert_node(&node).unwrap();
-    store_vector(&db, "function:del", &[1.0, 2.0], "test").unwrap();
-    assert!(get_vector(&db, "function:del").unwrap().is_some());
-    delete_vector(&db, "function:del").unwrap();
-    assert!(get_vector(&db, "function:del").unwrap().is_none());
+    db.insert_node(&node).await.unwrap();
+    store_vector(&db, "function:del", &[1.0, 2.0], "test").await.unwrap();
+    assert!(get_vector(&db, "function:del").await.unwrap().is_some());
+    delete_vector(&db, "function:del").await.unwrap();
+    assert!(get_vector(&db, "function:del").await.unwrap().is_none());
 }
 
-#[test]
-fn test_clear_vectors() {
+#[tokio::test]
+async fn test_clear_vectors() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     for i in 0..3u32 {
         let node = Node {
@@ -193,20 +193,20 @@ fn test_clear_vectors() {
             is_async: false,
             updated_at: 0,
         };
-        db.insert_node(&node).unwrap();
-        store_vector(&db, &format!("function:clear_{}", i), &[1.0, 2.0], "test").unwrap();
+        db.insert_node(&node).await.unwrap();
+        store_vector(&db, &format!("function:clear_{}", i), &[1.0, 2.0], "test").await.unwrap();
     }
 
-    assert_eq!(vector_count(&db).unwrap(), 3);
-    clear_vectors(&db).unwrap();
-    assert_eq!(vector_count(&db).unwrap(), 0);
+    assert_eq!(vector_count(&db).await.unwrap(), 3);
+    clear_vectors(&db).await.unwrap();
+    assert_eq!(vector_count(&db).await.unwrap(), 0);
 }
 
-#[test]
-fn test_get_vector_not_found() {
+#[tokio::test]
+async fn test_get_vector_not_found() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).unwrap();
-    let result = get_vector(&db, "nonexistent:id").unwrap();
+    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let result = get_vector(&db, "nonexistent:id").await.unwrap();
     assert!(result.is_none());
 }
 

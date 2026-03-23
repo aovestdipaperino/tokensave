@@ -1,3 +1,4 @@
+// Rust guideline compliant 2025-10-17
 use std::collections::{HashMap, HashSet};
 
 use crate::db::Database;
@@ -40,13 +41,13 @@ impl<'a> GraphQueryManager<'a> {
     /// - `pub` items at file level (they may be part of a public API).
     ///
     /// If `kinds` is non-empty, only nodes of the specified kinds are checked.
-    pub fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+    pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         let nodes = if kinds.is_empty() {
-            self.db.get_all_nodes()?
+            self.db.get_all_nodes().await?
         } else {
             let mut all = Vec::new();
             for kind in kinds {
-                all.extend(self.db.get_nodes_by_kind(kind.clone())?);
+                all.extend(self.db.get_nodes_by_kind(kind.clone()).await?);
             }
             all
         };
@@ -66,7 +67,7 @@ impl<'a> GraphQueryManager<'a> {
                 continue;
             }
 
-            let incoming = self.db.get_incoming_edges(&node.id, &[])?;
+            let incoming = self.db.get_incoming_edges(&node.id, &[]).await?;
             if incoming.is_empty() {
                 dead.push(node);
             }
@@ -76,9 +77,9 @@ impl<'a> GraphQueryManager<'a> {
     }
 
     /// Computes metrics for a single node describing its graph connectivity.
-    pub fn get_node_metrics(&self, node_id: &str) -> Result<NodeMetrics> {
-        let incoming = self.db.get_incoming_edges(node_id, &[])?;
-        let outgoing = self.db.get_outgoing_edges(node_id, &[])?;
+    pub async fn get_node_metrics(&self, node_id: &str) -> Result<NodeMetrics> {
+        let incoming = self.db.get_incoming_edges(node_id, &[]).await?;
+        let outgoing = self.db.get_outgoing_edges(node_id, &[]).await?;
 
         let caller_count = incoming
             .iter()
@@ -94,7 +95,7 @@ impl<'a> GraphQueryManager<'a> {
             .count();
 
         // Compute depth by walking up the containment hierarchy.
-        let depth = self.compute_depth(node_id)?;
+        let depth = self.compute_depth(node_id).await?;
 
         Ok(NodeMetrics {
             incoming_edge_count: incoming.len(),
@@ -111,17 +112,18 @@ impl<'a> GraphQueryManager<'a> {
     /// Examines outgoing `Uses` and `Calls` edges from all nodes in the
     /// specified file. Returns the deduplicated set of target file paths,
     /// excluding the source file itself.
-    pub fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
-        let nodes = self.db.get_nodes_by_file(file_path)?;
+    pub async fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
+        let nodes = self.db.get_nodes_by_file(file_path).await?;
         let mut dep_files: HashSet<String> = HashSet::new();
 
         for node in &nodes {
             let edges = self
                 .db
-                .get_outgoing_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])?;
+                .get_outgoing_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])
+                .await?;
 
             for edge in &edges {
-                if let Some(target_node) = self.db.get_node_by_id(&edge.target)? {
+                if let Some(target_node) = self.db.get_node_by_id(&edge.target).await? {
                     if target_node.file_path != file_path {
                         dep_files.insert(target_node.file_path);
                     }
@@ -139,17 +141,18 @@ impl<'a> GraphQueryManager<'a> {
     /// Examines incoming `Uses` and `Calls` edges to all nodes in the
     /// specified file. Returns the deduplicated set of source file paths,
     /// excluding the target file itself.
-    pub fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
-        let nodes = self.db.get_nodes_by_file(file_path)?;
+    pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
+        let nodes = self.db.get_nodes_by_file(file_path).await?;
         let mut dependent_files: HashSet<String> = HashSet::new();
 
         for node in &nodes {
             let edges = self
                 .db
-                .get_incoming_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])?;
+                .get_incoming_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])
+                .await?;
 
             for edge in &edges {
-                if let Some(source_node) = self.db.get_node_by_id(&edge.source)? {
+                if let Some(source_node) = self.db.get_node_by_id(&edge.source).await? {
                     if source_node.file_path != file_path {
                         dependent_files.insert(source_node.file_path);
                     }
@@ -166,13 +169,13 @@ impl<'a> GraphQueryManager<'a> {
     ///
     /// Builds a file-level dependency graph and runs DFS-based cycle detection.
     /// Returns all cycles found, where each cycle is a vector of file paths.
-    pub fn find_circular_dependencies(&self) -> Result<Vec<Vec<String>>> {
+    pub async fn find_circular_dependencies(&self) -> Result<Vec<Vec<String>>> {
         // Build file-level adjacency list.
-        let all_files = self.db.get_all_files()?;
+        let all_files = self.db.get_all_files().await?;
         let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
 
         for file in &all_files {
-            let deps = self.get_file_dependencies(&file.path)?;
+            let deps = self.get_file_dependencies(&file.path).await?;
             adj.insert(file.path.clone(), deps.into_iter().collect());
         }
 
@@ -206,7 +209,7 @@ impl<'a> GraphQueryManager<'a> {
 
     /// Computes the depth of a node in the containment hierarchy by walking
     /// up incoming `Contains` edges.
-    fn compute_depth(&self, node_id: &str) -> Result<usize> {
+    async fn compute_depth(&self, node_id: &str) -> Result<usize> {
         let mut depth: usize = 0;
         let mut current_id = node_id.to_string();
         let mut visited: HashSet<String> = HashSet::new();
@@ -219,7 +222,8 @@ impl<'a> GraphQueryManager<'a> {
 
             let incoming = self
                 .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Contains])?;
+                .get_incoming_edges(&current_id, &[EdgeKind::Contains])
+                .await?;
 
             if incoming.is_empty() {
                 break;

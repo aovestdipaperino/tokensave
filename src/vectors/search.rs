@@ -1,5 +1,5 @@
-use rusqlite::params;
-use rusqlite::OptionalExtension;
+// Rust guideline compliant 2025-10-17
+use libsql::params;
 
 use crate::db::Database;
 use crate::errors::Result;
@@ -22,16 +22,23 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// The embedding is serialized as a little-endian byte blob. If a vector
 /// already exists for `node_id`, it is replaced.
-pub fn store_vector(db: &Database, node_id: &str, embedding: &[f32], model: &str) -> Result<()> {
+pub async fn store_vector(
+    db: &Database,
+    node_id: &str,
+    embedding: &[f32],
+    model: &str,
+) -> Result<()> {
     let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    db.conn().execute(
-        "INSERT OR REPLACE INTO vectors (node_id, embedding, model, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![node_id, bytes, model, now],
-    )?;
+    db.conn()
+        .execute(
+            "INSERT OR REPLACE INTO vectors (node_id, embedding, model, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![node_id, bytes, model, now],
+        )
+        .await?;
     Ok(())
 }
 
@@ -39,18 +46,18 @@ pub fn store_vector(db: &Database, node_id: &str, embedding: &[f32], model: &str
 ///
 /// Returns `None` if no vector is stored for the given `node_id`.
 /// The blob is deserialized from little-endian f32 values.
-pub fn get_vector(db: &Database, node_id: &str) -> Result<Option<Vec<f32>>> {
-    let result: Option<Vec<u8>> = db
+pub async fn get_vector(db: &Database, node_id: &str) -> Result<Option<Vec<f32>>> {
+    let mut rows = db
         .conn()
-        .query_row(
+        .query(
             "SELECT embedding FROM vectors WHERE node_id = ?1",
             params![node_id],
-            |row| row.get(0),
         )
-        .optional()?;
+        .await?;
 
-    match result {
-        Some(bytes) => {
+    match rows.next().await? {
+        Some(row) => {
+            let bytes: Vec<u8> = row.get(0)?;
             let floats = bytes_to_f32s(&bytes);
             Ok(Some(floats))
         }
@@ -62,24 +69,20 @@ pub fn get_vector(db: &Database, node_id: &str) -> Result<Option<Vec<f32>>> {
 ///
 /// Loads every vector from the database, computes cosine similarity against
 /// `query`, and returns the top `limit` results sorted by descending similarity.
-pub fn brute_force_search(
+pub async fn brute_force_search(
     db: &Database,
     query: &[f32],
     limit: usize,
 ) -> Result<Vec<(String, f32)>> {
-    let mut stmt = db
+    let mut rows = db
         .conn()
-        .prepare("SELECT node_id, embedding FROM vectors")?;
-
-    let rows = stmt.query_map([], |row| {
-        let node_id: String = row.get(0)?;
-        let bytes: Vec<u8> = row.get(1)?;
-        Ok((node_id, bytes))
-    })?;
+        .query("SELECT node_id, embedding FROM vectors", ())
+        .await?;
 
     let mut scored: Vec<(String, f32)> = Vec::new();
-    for row in rows {
-        let (node_id, bytes) = row?;
+    while let Some(row) = rows.next().await? {
+        let node_id: String = row.get(0)?;
+        let bytes: Vec<u8> = row.get(1)?;
         let embedding = bytes_to_f32s(&bytes);
         let score = cosine_similarity(query, &embedding);
         scored.push((node_id, score));
@@ -91,23 +94,30 @@ pub fn brute_force_search(
 }
 
 /// Get the count of stored vectors.
-pub fn vector_count(db: &Database) -> Result<usize> {
-    let count: i64 = db
+pub async fn vector_count(db: &Database) -> Result<usize> {
+    let mut rows = db
         .conn()
-        .query_row("SELECT COUNT(*) FROM vectors", [], |row| row.get(0))?;
+        .query("SELECT COUNT(*) FROM vectors", ())
+        .await?;
+    let row = rows.next().await?.expect("COUNT always returns a row");
+    let count: i64 = row.get(0)?;
     Ok(count as usize)
 }
 
 /// Delete a vector for a node.
-pub fn delete_vector(db: &Database, node_id: &str) -> Result<()> {
+pub async fn delete_vector(db: &Database, node_id: &str) -> Result<()> {
     db.conn()
-        .execute("DELETE FROM vectors WHERE node_id = ?1", params![node_id])?;
+        .execute(
+            "DELETE FROM vectors WHERE node_id = ?1",
+            params![node_id],
+        )
+        .await?;
     Ok(())
 }
 
 /// Clear all vectors.
-pub fn clear_vectors(db: &Database) -> Result<()> {
-    db.conn().execute("DELETE FROM vectors", [])?;
+pub async fn clear_vectors(db: &Database) -> Result<()> {
+    db.conn().execute("DELETE FROM vectors", ()).await?;
     Ok(())
 }
 
