@@ -375,44 +375,51 @@ fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
     // Stats rows
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
-    // Build the languages summary string
-    let languages_str = {
-        let mut langs: Vec<_> = stats.files_by_language.iter().collect();
-        langs.sort_by(|a, b| b.1.cmp(a.1));
-        langs
-            .iter()
-            .map(|(lang, count)| format!("{} ({})", lang, count))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    // Sort languages by file count descending
+    let mut sorted_langs: Vec<_> = stats.files_by_language.iter().collect();
+    sorted_langs.sort_by(|a, b| b.1.cmp(a.1));
 
     let db_size = format_bytes(stats.db_size_bytes);
     let source_size = format_bytes(stats.total_source_bytes);
-    let stats_rows: Vec<Vec<(&str, String)>> = if stats.total_source_bytes > 0 {
-        vec![
-            vec![
-                ("Files", format_number(stats.file_count)),
-                ("Nodes", format_number(stats.node_count)),
-                ("Edges", format_number(stats.edge_count)),
-            ],
-            vec![
-                ("DB Size", db_size),
-                ("Source", source_size),
-                ("Languages", languages_str),
-            ],
-        ]
-    } else {
-        vec![vec![
-            ("Files", format_number(stats.file_count)),
-            ("Nodes", format_number(stats.node_count)),
-            ("Edges", format_number(stats.edge_count)),
-        ],
-        vec![
-            ("DB Size", db_size),
-            ("Languages", languages_str),
-            ("", String::new()),
-        ]]
-    };
+
+    // Build stats rows: first row is counts, then DB/Source + one language per cell
+    let mut stats_rows: Vec<Vec<(&str, String)>> = vec![vec![
+        ("Files", format_number(stats.file_count)),
+        ("Nodes", format_number(stats.node_count)),
+        ("Edges", format_number(stats.edge_count)),
+    ]];
+
+    // Second row starts with DB Size + Source (or empty), then languages fill remaining cells
+    let mut second_row: Vec<(&str, String)> = vec![("DB Size", db_size)];
+    if stats.total_source_bytes > 0 {
+        second_row.push(("Source", source_size));
+    }
+    // Fill languages into the remaining cells of this row and subsequent rows
+    let mut lang_idx = 0;
+    while second_row.len() < num_cols && lang_idx < sorted_langs.len() {
+        let (lang, count) = sorted_langs[lang_idx];
+        second_row.push((lang.as_str(), format_number(*count)));
+        lang_idx += 1;
+    }
+    while second_row.len() < num_cols {
+        second_row.push(("", String::new()));
+    }
+    stats_rows.push(second_row);
+
+    // Any remaining languages go into additional rows
+    while lang_idx < sorted_langs.len() {
+        let mut row: Vec<(&str, String)> = Vec::new();
+        for _ in 0..num_cols {
+            if lang_idx < sorted_langs.len() {
+                let (lang, count) = sorted_langs[lang_idx];
+                row.push((lang.as_str(), format_number(*count)));
+                lang_idx += 1;
+            } else {
+                row.push(("", String::new()));
+            }
+        }
+        stats_rows.push(row);
+    }
 
     for row in &stats_rows {
         print!("│");
