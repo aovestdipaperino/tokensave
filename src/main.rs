@@ -9,29 +9,66 @@ use codegraph::codegraph::CodeGraph;
 use codegraph::context::{format_context_as_json, format_context_as_markdown};
 use codegraph::types::*;
 
+/// A self-animating spinner that ticks on a background thread.
+///
+/// Call `set_message` to update what is displayed; the background thread
+/// redraws at ~80 ms intervals. Call `done` to stop and print a final line.
 struct Spinner {
-    frames: &'static [&'static str],
-    idx: usize,
+    message: std::sync::Arc<std::sync::Mutex<String>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Spinner {
     fn new() -> Self {
+        let message = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let msg = message.clone();
+        let stp = stop.clone();
+        // Hide cursor while spinner is active.
+        let _ = write!(std::io::stderr(), "\x1b[?25l");
+        let _ = std::io::stderr().flush();
+        let handle = std::thread::spawn(move || {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut idx = 0usize;
+            while !stp.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = msg.lock().unwrap().clone();
+                if !text.is_empty() {
+                    let frame = frames[idx % frames.len()];
+                    idx += 1;
+                    // Truncate to avoid line wrapping on typical terminals.
+                    let display: std::borrow::Cow<str> = if text.len() > 50 {
+                        format!("…{}", &text[text.len() - 49..]).into()
+                    } else {
+                        text.as_str().into()
+                    };
+                    let mut stderr = std::io::stderr();
+                    let _ = write!(stderr, "\r\x1b[2K{} {}", frame, display);
+                    let _ = stderr.flush();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(80));
+            }
+        });
         Self {
-            frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-            idx: 0,
+            message,
+            stop,
+            handle: Some(handle),
         }
     }
 
-    fn tick(&mut self, message: &str) {
-        let frame = self.frames[self.idx % self.frames.len()];
-        self.idx += 1;
-        let mut stderr = std::io::stderr();
-        let _ = write!(stderr, "\r\x1b[2K{} {}", frame, message);
-        let _ = stderr.flush();
+    fn set_message(&self, msg: &str) {
+        *self.message.lock().unwrap() = msg.to_string();
     }
 
-    fn done(message: &str) {
+    fn done(self, message: &str) {
+        self.stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle {
+            let _ = h.join();
+        }
         let mut stderr = std::io::stderr();
+        // Show cursor again, then print the done line.
+        let _ = write!(stderr, "\x1b[?25h");
         let _ = writeln!(stderr, "\r\x1b[2K\x1b[32m✔\x1b[0m {}", message);
         let _ = stderr.flush();
     }
@@ -120,7 +157,7 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                 init_and_index(&project_path).await?;
             } else {
                 let cg = CodeGraph::open(&project_path).await?;
-                let spinner = std::cell::RefCell::new(Spinner::new());
+                let spinner = Spinner::new();
                 let result = cg
                     .sync_with_progress(|phase, detail| {
                         let msg = if detail.is_empty() {
@@ -128,10 +165,10 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                         } else {
                             format!("{phase} {detail}")
                         };
-                        spinner.borrow_mut().tick(&msg);
+                        spinner.set_message(&msg);
                     })
                     .await?;
-                Spinner::done(&format!(
+                spinner.done(&format!(
                     "sync done — {} added, {} modified, {} removed in {}ms",
                     result.files_added,
                     result.files_modified,
@@ -255,11 +292,11 @@ async fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGr
         eprintln!("Initialized CodeGraph at {}", project_path.display());
         cg
     };
-    let spinner = std::cell::RefCell::new(Spinner::new());
+    let spinner = Spinner::new();
     let result = cg.index_all_with_progress(|file| {
-        spinner.borrow_mut().tick(&format!("indexing {}", file));
+        spinner.set_message(&format!("indexing {}", file));
     }).await?;
-    Spinner::done(&format!(
+    spinner.done(&format!(
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
     ));
