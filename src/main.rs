@@ -149,11 +149,16 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                     serde_json::to_string_pretty(&stats).unwrap_or_default()
                 );
             } else {
+                let indexed_tokens = stats.total_source_bytes / 4;
                 println!("CodeGraph Status");
                 println!("  Files:  {}", stats.file_count);
                 println!("  Nodes:  {}", stats.node_count);
                 println!("  Edges:  {}", stats.edge_count);
                 println!("  DB Size: {} bytes", stats.db_size_bytes);
+                println!(
+                    "  Indexed tokens: \x1b[32m~{}\x1b[0m (saved per full-context query)",
+                    format_token_count(indexed_tokens)
+                );
                 if !stats.nodes_by_kind.is_empty() {
                     println!("\n  Nodes by kind:");
                     let mut sorted: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -286,6 +291,17 @@ async fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<Co
             project_path.display()
         ),
     })
+}
+
+/// Formats a token count into a human-readable string (e.g. "12.3k", "1.5M").
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// Resolves an optional path argument to an absolute `PathBuf`.
