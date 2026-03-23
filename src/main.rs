@@ -149,15 +149,15 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
                     serde_json::to_string_pretty(&stats).unwrap_or_default()
                 );
             } else {
-                let indexed_tokens = stats.total_source_bytes / 4;
+                let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
                 println!("CodeGraph Status");
                 println!("  Files:  {}", stats.file_count);
                 println!("  Nodes:  {}", stats.node_count);
                 println!("  Edges:  {}", stats.edge_count);
                 println!("  DB Size: {} bytes", stats.db_size_bytes);
                 println!(
-                    "  Indexed tokens: \x1b[32m~{}\x1b[0m (saved per full-context query)",
-                    format_token_count(indexed_tokens)
+                    "  Tokens saved: \x1b[32m~{}\x1b[0m",
+                    format_token_count(tokens_saved)
                 );
                 if !stats.nodes_by_kind.is_empty() {
                     println!("\n  Nodes by kind:");

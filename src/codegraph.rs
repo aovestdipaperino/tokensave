@@ -406,6 +406,21 @@ impl CodeGraph {
         Ok(files.into_iter().map(|f| (f.path, f.size / 4)).collect())
     }
 
+    /// Returns the persisted tokens-saved counter.
+    pub async fn get_tokens_saved(&self) -> Result<u64> {
+        match self.db.get_metadata("tokens_saved").await? {
+            Some(v) => Ok(v.parse::<u64>().unwrap_or(0)),
+            None => Ok(0),
+        }
+    }
+
+    /// Persists the tokens-saved counter to the database.
+    pub async fn set_tokens_saved(&self, value: u64) -> Result<()> {
+        self.db
+            .set_metadata("tokens_saved", &value.to_string())
+            .await
+    }
+
     /// Returns a reference to the current configuration.
     pub fn get_config(&self) -> &CodeGraphConfig {
         &self.config

@@ -114,6 +114,12 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(f
 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
+-- Key-value metadata (persistent counters, settings)
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Initial schema version
 INSERT OR IGNORE INTO schema_versions (version, applied_at, description)
 VALUES (1, strftime('%s', 'now'), 'Initial schema');

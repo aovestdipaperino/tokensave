@@ -52,33 +52,39 @@ impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
     pub async fn new(cg: CodeGraph) -> Self {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
+        let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
-            tokens_saved: AtomicU64::new(0),
+            tokens_saved: AtomicU64::new(persisted),
         }
     }
 
     /// Adds the approximate token count for the given file paths to the
-    /// running saved-tokens counter.
-    fn accumulate_tokens_saved(&self, file_paths: &[String]) {
+    /// running saved-tokens counter and persists it to the database.
+    async fn accumulate_tokens_saved(&self, file_paths: &[String]) {
         if file_paths.is_empty() {
             return;
         }
-        let map = match self.file_token_map.lock() {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        let mut total: u64 = 0;
-        for path in file_paths {
-            if let Some(&tokens) = map.get(path.as_str()) {
-                total += tokens;
+        let delta = {
+            let map = match self.file_token_map.lock() {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let mut total: u64 = 0;
+            for path in file_paths {
+                if let Some(&tokens) = map.get(path.as_str()) {
+                    total += tokens;
+                }
             }
-        }
-        if total > 0 {
-            self.tokens_saved.fetch_add(total, Ordering::Relaxed);
+            total
+        };
+        if delta > 0 {
+            let new_total = self.tokens_saved.fetch_add(delta, Ordering::Relaxed) + delta;
+            // Persist to DB (best-effort, don't block on failure)
+            let _ = self.cg.set_tokens_saved(new_total).await;
         }
     }
 
@@ -232,7 +238,7 @@ impl McpServer {
 
         match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
             Ok(result) => {
-                self.accumulate_tokens_saved(&result.touched_files);
+                self.accumulate_tokens_saved(&result.touched_files).await;
                 JsonRpcResponse::success(id, result.value)
             }
             Err(e) => JsonRpcResponse::error(
