@@ -1,5 +1,5 @@
 [package]
-name = "codegraph"
+name = "token-codegraph"
 version = "0.5.1"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, and Java codebases"
@@ -9,6 +9,13 @@ homepage = "https://github.com/aovestdipaperino/codegraph-rs"
 readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
+
+[lib]
+name = "codegraph"
+
+[[bin]]
+name = "codegraph"
+path = "src/main.rs"
 
 [dependencies]
 libsql = "0.9.30"

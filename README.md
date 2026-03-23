@@ -28,7 +28,7 @@ The port maintains the same architecture and MCP tool interface while leveraging
 **Cargo (any platform):**
 
 ```bash
-cargo install codegraph
+cargo install token-codegraph
 ```
 
 **Homebrew (macOS):**

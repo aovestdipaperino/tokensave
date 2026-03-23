@@ -426,32 +426,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codegraph"
-version = "0.5.1"
-dependencies = [
- "clap",
- "glob",
- "hex",
- "libsql",
- "logo-art",
- "ndarray",
- "ort",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-java",
- "tree-sitter-rust",
- "walkdir",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,6 +2181,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "token-codegraph"
+version = "0.5.1"
+dependencies = [
+ "clap",
+ "glob",
+ "hex",
+ "libsql",
+ "logo-art",
+ "ndarray",
+ "ort",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-rust",
+ "walkdir",
 ]
 
 [[package]]
