@@ -35,6 +35,12 @@ pub enum NodeKind {
     StructMethod,
     GoPackage,
     StructTag,
+    // Scala-specific
+    ScalaObject,
+    CaseClass,
+    ScalaPackage,
+    ValField,
+    VarField,
     // Shared
     GenericParam,
 }
@@ -72,6 +78,11 @@ impl NodeKind {
             NodeKind::StructMethod => "struct_method",
             NodeKind::GoPackage => "go_package",
             NodeKind::StructTag => "struct_tag",
+            NodeKind::ScalaObject => "object",
+            NodeKind::CaseClass => "case_class",
+            NodeKind::ScalaPackage => "scala_package",
+            NodeKind::ValField => "val",
+            NodeKind::VarField => "var",
             NodeKind::GenericParam => "generic_param",
         }
     }
@@ -107,6 +118,11 @@ impl NodeKind {
             "struct_method" => Some(NodeKind::StructMethod),
             "go_package" => Some(NodeKind::GoPackage),
             "struct_tag" => Some(NodeKind::StructTag),
+            "object" => Some(NodeKind::ScalaObject),
+            "case_class" => Some(NodeKind::CaseClass),
+            "scala_package" => Some(NodeKind::ScalaPackage),
+            "val" => Some(NodeKind::ValField),
+            "var" => Some(NodeKind::VarField),
             "generic_param" => Some(NodeKind::GenericParam),
             _ => None,
         }

@@ -918,6 +918,7 @@ impl Database {
                          WHEN path LIKE '%.rs' THEN 'Rust' \
                          WHEN path LIKE '%.go' THEN 'Go' \
                          WHEN path LIKE '%.java' THEN 'Java' \
+                         WHEN path LIKE '%.scala' OR path LIKE '%.sc' THEN 'Scala' \
                          ELSE 'Other' \
                        END AS lang, \
                        COUNT(*) \

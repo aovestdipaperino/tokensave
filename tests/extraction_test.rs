@@ -329,6 +329,16 @@ fn test_language_registry_finds_java_extractor() {
 }
 
 #[test]
+fn test_language_registry_finds_scala_extractor() {
+    let registry = LanguageRegistry::new();
+    assert!(registry.extractor_for_file("Main.scala").is_some());
+    assert!(registry
+        .extractor_for_file("src/com/example/App.scala")
+        .is_some());
+    assert!(registry.extractor_for_file("script.sc").is_some());
+}
+
+#[test]
 fn test_language_registry_returns_none_for_unknown() {
     let registry = LanguageRegistry::new();
     assert!(registry.extractor_for_file("script.py").is_none());
@@ -343,4 +353,6 @@ fn test_language_registry_supported_extensions() {
     assert!(exts.contains(&"rs"));
     assert!(exts.contains(&"go"));
     assert!(exts.contains(&"java"));
+    assert!(exts.contains(&"scala"));
+    assert!(exts.contains(&"sc"));
 }

@@ -5,10 +5,12 @@ mod java_extractor;
 /// This module provides extractors that parse source files using tree-sitter
 /// and produce structured graph nodes and edges.
 mod rust_extractor;
+mod scala_extractor;
 
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
 pub use rust_extractor::RustExtractor;
+pub use scala_extractor::ScalaExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -45,6 +47,7 @@ impl LanguageRegistry {
                 Box::new(RustExtractor),
                 Box::new(GoExtractor),
                 Box::new(JavaExtractor),
+                Box::new(ScalaExtractor),
             ],
         }
     }

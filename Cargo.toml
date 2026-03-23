@@ -1,8 +1,8 @@
 [package]
 name = "token-codegraph"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2021"
-description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, and Java codebases"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, and Scala codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/token-codegraph"
 homepage = "https://github.com/aovestdipaperino/token-codegraph"
@@ -23,6 +23,7 @@ tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-java = "0.23"
+tree-sitter-scala = "0.25"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }

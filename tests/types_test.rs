@@ -204,6 +204,11 @@ fn test_new_node_kinds_roundtrip() {
         (NodeKind::StructMethod, "struct_method"),
         (NodeKind::GoPackage, "go_package"),
         (NodeKind::StructTag, "struct_tag"),
+        (NodeKind::ScalaObject, "object"),
+        (NodeKind::CaseClass, "case_class"),
+        (NodeKind::ScalaPackage, "scala_package"),
+        (NodeKind::ValField, "val"),
+        (NodeKind::VarField, "var"),
         (NodeKind::GenericParam, "generic_param"),
     ];
     for (kind, expected_str) in kinds {
