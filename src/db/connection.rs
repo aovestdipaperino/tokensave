@@ -5,8 +5,7 @@ use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
 use crate::errors::{CodeGraphError, Result};
 
-/// The embedded SQL schema applied when initializing a new database.
-const SCHEMA_SQL: &str = include_str!("schema.sql");
+use super::migrations;
 
 /// SQLite database backing the code graph, powered by libsql.
 pub struct Database {
@@ -18,8 +17,8 @@ pub struct Database {
 impl Database {
     /// Creates a new database at `db_path`, creating parent directories if needed.
     ///
-    /// Opens a libsql connection, applies performance pragmas, and executes the
-    /// full schema (tables, indexes, triggers, FTS).
+    /// Opens a libsql connection, applies performance pragmas, and runs all
+    /// schema migrations up to the latest version.
     pub async fn initialize(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CodeGraphError::Database {
@@ -42,18 +41,13 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
-
-        conn.execute_batch(SCHEMA_SQL)
-            .await
-            .map_err(|e| CodeGraphError::Database {
-                message: format!("failed to apply schema: {e}"),
-                operation: "initialize".to_string(),
-            })?;
+        migrations::migrate(&conn).await?;
 
         Ok(Self { conn, _db: db })
     }
 
-    /// Opens an existing database at `db_path` and applies performance pragmas.
+    /// Opens an existing database at `db_path`, applies performance pragmas,
+    /// and runs any pending schema migrations.
     pub async fn open(db_path: &Path) -> Result<Self> {
         let db = Builder::new_local(db_path)
             .build()
@@ -69,7 +63,7 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
-        Self::ensure_metadata_table(&conn).await?;
+        migrations::migrate(&conn).await?;
 
         Ok(Self { conn, _db: db })
     }
@@ -145,21 +139,6 @@ impl Database {
         .map_err(|e| CodeGraphError::Database {
             message: format!("failed to apply pragmas: {e}"),
             operation: "apply_pragmas".to_string(),
-        })?;
-        Ok(())
-    }
-
-    /// Ensures the metadata table exists (for databases created before it was
-    /// added to the schema).
-    async fn ensure_metadata_table(conn: &Connection) -> Result<()> {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-            (),
-        )
-        .await
-        .map_err(|e| CodeGraphError::Database {
-            message: format!("failed to ensure metadata table: {e}"),
-            operation: "ensure_metadata_table".to_string(),
         })?;
         Ok(())
     }
