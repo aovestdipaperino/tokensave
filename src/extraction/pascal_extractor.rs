@@ -21,7 +21,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of `(name, node_id)` for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -189,7 +189,7 @@ impl PascalExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("program {}", name)),
+            signature: Some(format!("program {name}")),
             docstring: Self::extract_docstring(state, node),
             visibility: Visibility::Pub,
             is_async: false,
@@ -233,7 +233,7 @@ impl PascalExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("unit {}", name)),
+            signature: Some(format!("unit {name}")),
             docstring: Self::extract_docstring(state, node),
             visibility: Visibility::Pub,
             is_async: false,
@@ -309,7 +309,7 @@ impl PascalExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("uses {}", name)),
+            signature: Some(format!("uses {name}")),
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
@@ -398,11 +398,11 @@ impl PascalExtractor {
         let id = generate_node_id(&state.file_path, &NodeKind::Class, name, start_line);
 
         // Build signature: "TMyClass = class(TObject)"
-        let mut sig = format!("{} = class", name);
+        let mut sig = format!("{name} = class");
         // Check for parent class.
         if let Some(parent_ref) = Self::find_child_by_kind(class_node, "typeref") {
             let parent_name = state.node_text(parent_ref);
-            sig = format!("{} = class({})", name, parent_name);
+            sig = format!("{name} = class({parent_name})");
         }
 
         let graph_node = Node {
@@ -488,7 +488,7 @@ impl PascalExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("{} = record", name)),
+            signature: Some(format!("{name} = record")),
             docstring,
             visibility,
             is_async: false,
@@ -542,7 +542,7 @@ impl PascalExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("{} = interface", name)),
+            signature: Some(format!("{name} = interface")),
             docstring,
             visibility,
             is_async: false,
@@ -731,7 +731,7 @@ impl PascalExtractor {
     /// Extract a method declaration inside a class.
     fn visit_class_method_decl(state: &mut ExtractionState, node: TsNode<'_>) {
         // Determine the kind from the keyword child.
-        let (kind, node_kind) = Self::determine_proc_kind(node);
+        let (_kind_str, node_kind) = Self::determine_proc_kind(node);
         let name = Self::find_proc_name(state, node);
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -757,7 +757,6 @@ impl PascalExtractor {
             is_async: false,
             updated_at: state.timestamp,
         };
-        let _ = kind; // Suppress unused warning.
         state.nodes.push(graph_node);
 
         // Contains edge from parent.
