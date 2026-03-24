@@ -57,7 +57,7 @@ Once configured, Claude has access to these tools:
 | `tokensave_node` | Get detailed info about a specific symbol |
 | `tokensave_files` | List indexed project files with filtering |
 | `tokensave_affected` | Find test files affected by source changes |
-| `tokensave_status` | Show graph statistics |
+| `tokensave_status` | Show graph statistics and global tokens saved |
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 

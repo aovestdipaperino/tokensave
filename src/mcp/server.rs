@@ -12,6 +12,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 use crate::errors::Result;
 
@@ -47,6 +48,8 @@ pub struct McpServer {
     file_token_map: std::sync::Mutex<HashMap<String, u64>>,
     /// Running total of tokens saved by serving from the graph.
     tokens_saved: AtomicU64,
+    /// User-level database tracking all projects (best-effort).
+    global_db: Option<GlobalDb>,
 }
 
 impl McpServer {
@@ -54,12 +57,18 @@ impl McpServer {
     pub async fn new(cg: TokenSave) -> Self {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
+        let global_db = GlobalDb::open().await;
+        // Register this project in the global DB with its current tokens
+        if let Some(ref gdb) = global_db {
+            gdb.upsert(cg.project_root(), persisted).await;
+        }
         Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
             tokens_saved: AtomicU64::new(persisted),
+            global_db,
         }
     }
 
@@ -86,6 +95,10 @@ impl McpServer {
             let new_total = self.tokens_saved.fetch_add(delta, Ordering::Relaxed) + delta;
             // Persist to DB (best-effort, don't block on failure)
             let _ = self.cg.set_tokens_saved(new_total).await;
+            // Best-effort update to global DB
+            if let Some(ref gdb) = self.global_db {
+                gdb.upsert(self.cg.project_root(), new_total).await;
+            }
         }
     }
 
@@ -168,6 +181,12 @@ impl McpServer {
         // Persist final tokens-saved value
         if let Err(e) = self.cg.set_tokens_saved(tokens_saved).await {
             eprintln!("[tokensave] warning: failed to persist tokens_saved on shutdown: {e}");
+        }
+
+        // Update global DB with final count and checkpoint it
+        if let Some(ref gdb) = self.global_db {
+            gdb.upsert(self.cg.project_root(), tokens_saved).await;
+            gdb.checkpoint().await;
         }
 
         // Checkpoint WAL to merge it into the main database file
@@ -274,7 +293,7 @@ impl McpServer {
         }
 
         let server_stats = if tool_name == "tokensave_status" {
-            Some(self.server_stats_json())
+            Some(self.server_stats_json().await)
         } else {
             None
         };
@@ -293,7 +312,7 @@ impl McpServer {
     }
 
     /// Returns the current server runtime statistics as a JSON value.
-    pub fn server_stats_json(&self) -> Value {
+    pub async fn server_stats_json(&self) -> Value {
         let uptime = self.stats.started_at.elapsed();
         let tool_counts: Value = self
             .tool_call_counts
@@ -301,13 +320,21 @@ impl McpServer {
             .map(|counts| json!(*counts))
             .unwrap_or(json!({}));
 
-        json!({
+        let mut stats = json!({
             "uptime_secs": uptime.as_secs(),
             "total_requests": self.stats.total_requests.load(Ordering::Relaxed),
             "tool_calls": self.stats.tool_calls.load(Ordering::Relaxed),
             "errors": self.stats.errors.load(Ordering::Relaxed),
             "tool_call_counts": tool_counts,
             "approx_tokens_saved": self.tokens_saved.load(Ordering::Relaxed),
-        })
+        });
+
+        if let Some(ref gdb) = self.global_db {
+            if let Some(global_total) = gdb.global_tokens_saved().await {
+                stats["global_tokens_saved"] = json!(global_total);
+            }
+        }
+
+        stats
     }
 }

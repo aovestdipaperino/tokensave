@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-24
+
+### Added
+- User-level global database (`~/.tokensave/global.db`) that tracks all TokenSave projects and their cumulative saved tokens
+- `tokensave_status` and CLI `tokensave status` now report both local (project) and global (all projects) tokens saved when the global DB is available
+- All CLI entry points (`sync`, `status`, `claude-install` init) register the project in the global DB on every run
+- MCP server updates the global DB on every token accumulation and on shutdown (best-effort, no locking)
+
+### Changed
+- `print_status_table` title row shows `Local ~X  Global ~Y` when global data is available, falls back to `Tokens saved ~X` otherwise
+
 ## [1.2.1] - 2026-03-24
 
 ### Fixed

@@ -227,6 +227,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.files_removed,
                     result.duration_ms
                 ));
+                update_global_db(&cg).await;
             }
         }
         Commands::Status { path, json } => {
@@ -240,8 +241,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             } else {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
+                // Register project and read global total in one open
+                let global_tokens_saved = match tokensave::global_db::GlobalDb::open().await {
+                    Some(gdb) => {
+                        gdb.upsert(&project_path, tokens_saved).await;
+                        gdb.global_tokens_saved().await
+                    }
+                    None => None,
+                };
                 print!("{}", include_str!("resources/logo.ansi"));
-                print_status_table(&stats, tokens_saved);
+                print_status_table(&stats, tokens_saved, global_tokens_saved);
             }
         }
         Commands::Query {
@@ -471,6 +480,7 @@ async fn init_and_index(project_path: &Path) -> tokensave::errors::Result<TokenS
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
     ));
+    update_global_db(&cg).await;
     Ok(cg)
 }
 
@@ -485,6 +495,14 @@ async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<To
             project_path.display()
         ),
     })
+}
+
+/// Best-effort: register this project in the user-level global DB.
+async fn update_global_db(cg: &TokenSave) {
+    if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
+        let tokens = cg.get_tokens_saved().await.unwrap_or(0);
+        gdb.upsert(cg.project_root(), tokens).await;
+    }
 }
 
 /// Formats a token count into a human-readable string (e.g. "12.3k", "1.5M").
@@ -542,7 +560,11 @@ fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_co
 }
 
 /// Prints the status output as a compact bordered table.
-fn print_status_table(stats: &tokensave::types::GraphStats, tokens_saved: u64) {
+fn print_status_table(
+    stats: &tokensave::types::GraphStats,
+    tokens_saved: u64,
+    global_tokens_saved: Option<u64>,
+) {
     let version = env!("CARGO_PKG_VERSION");
     let num_cols = 3;
 
@@ -569,7 +591,14 @@ fn print_status_table(stats: &tokensave::types::GraphStats, tokens_saved: u64) {
 
     // Title row
     let title = format!("TokenSave v{}", version);
-    let tokens_text = format!("Tokens saved ~{}", format_token_count(tokens_saved));
+    let tokens_text = match global_tokens_saved {
+        Some(global) => format!(
+            "Local ~{}  Global ~{}",
+            format_token_count(tokens_saved),
+            format_token_count(global)
+        ),
+        None => format!("Tokens saved ~{}", format_token_count(tokens_saved)),
+    };
     let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
 
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
