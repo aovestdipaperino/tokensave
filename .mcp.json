@@ -2,7 +2,7 @@
   "mcpServers": {
     "tokensave": {
       "command": "tokensave",
-      "args": ["serve", "-p", "/Users/enzolombardi/Code/code-graph"]
+      "args": ["serve", "-p", "/Users/enzol/Code/tokensave"]
     }
   }
 }
