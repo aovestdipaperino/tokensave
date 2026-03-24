@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-24
+
+### Added
+- `claude-install` CLI command — configures Claude Code integration (MCP server, permissions, hook, CLAUDE.md rules) in a single step, replacing the bash `setup.sh` script
+- `hook-pre-tool-use` hidden CLI command — cross-platform PreToolUse hook handler written in pure Rust (no bash/jq dependency), blocks Explore agents and exploration-style prompts
+
+### Removed
+- Embedded bash hook script — the hook is now a native Rust subcommand
+
+## [1.1.0] - 2026-03-24
+
+### Added
+- `tokensave files` CLI command — list indexed files with `--filter` (directory prefix), `--pattern` (glob), and `--json` output
+- `tokensave affected` CLI command — BFS through file dependency graph to find test files impacted by source changes; supports `--stdin` (pipe from `git diff --name-only`), `--depth`, `--filter`, `--json`, `--quiet`
+- `tokensave_files` MCP tool — file listing with path/pattern filtering, flat or grouped-by-directory output
+- `tokensave_affected` MCP tool — find affected test files via file-level dependency traversal
+- Graceful shutdown handler for MCP server — persists tokens-saved counter, checkpoints SQLite WAL, and logs session summary on SIGINT/SIGTERM
+- `Database::checkpoint()` method for WAL cleanup on shutdown
+
 ## [1.0.1] - 2026-03-24
 
 ### Changed
