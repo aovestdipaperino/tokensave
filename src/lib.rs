@@ -21,6 +21,7 @@ pub mod context;
 pub mod db;
 pub mod errors;
 pub mod extraction;
+pub mod global_db;
 pub mod graph;
 pub mod mcp;
 pub mod resolution;

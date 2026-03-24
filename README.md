@@ -267,7 +267,7 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_node` | Get details + source code for a symbol |
 | `tokensave_files` | List indexed project files with filtering |
 | `tokensave_affected` | Find test files affected by source changes |
-| `tokensave_status` | Get index status and statistics |
+| `tokensave_status` | Get index status, statistics, and global tokens saved |
 
 ### `tokensave_context`
 
@@ -338,7 +338,7 @@ Returns the list of affected test files and count.
 
 ### `tokensave_status`
 
-Get index status and project statistics. Returns index metadata, symbol counts, language distribution, and pending changes.
+Get index status and project statistics. Returns index metadata, symbol counts, language distribution, and pending changes. Also reports global tokens saved across all tracked projects (from the user-level database at `~/.tokensave/global.db`).
 
 ---
 
