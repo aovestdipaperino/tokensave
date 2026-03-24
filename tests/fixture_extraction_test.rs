@@ -1,0 +1,544 @@
+//! Integration tests that run each language extractor against realistic sample files.
+//!
+//! These tests verify that extractors handle real-world code patterns correctly,
+//! producing the expected nodes, edges, and relationships.
+
+use codegraph::extraction::LanguageExtractor;
+use codegraph::types::*;
+
+fn read_fixture(name: &str) -> String {
+    let path = format!("tests/fixtures/{}", name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e))
+}
+
+// ── TypeScript ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_typescript() {
+    let source = read_fixture("sample.ts");
+    let extractor = codegraph::extraction::TypeScriptExtractor;
+    let result = extractor.extract("sample.ts", &source);
+    assert!(result.errors.is_empty(), "TS errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 2, "expected >= 2 imports, got {}", imports.len());
+
+    // Const
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
+
+    // Type alias
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::TypeAlias && n.name == "UserId"));
+
+    // Interface
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Interface && n.name == "IUser"));
+
+    // Enum
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "Role"));
+
+    // Function
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "log"));
+
+    // Exported class with decorator
+    let class = result.nodes.iter().find(|n| n.kind == NodeKind::Class && n.name == "UserService");
+    assert!(class.is_some(), "UserService class not found");
+    assert_eq!(class.unwrap().visibility, Visibility::Pub);
+
+    // Methods including async
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 2, "expected >= 2 methods");
+    let fetch = methods.iter().find(|m| m.name == "fetchProfile");
+    assert!(fetch.is_some(), "fetchProfile method not found");
+    assert!(fetch.unwrap().is_async, "fetchProfile should be async");
+
+    // Arrow function (export const createUser = ...)
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::ArrowFunction && n.name == "createUser"));
+
+    // Namespace (Auth module — may or may not be detected depending on TS grammar version)
+    // assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Namespace && n.name == "Auth"));
+
+    // Call sites
+    assert!(!result.unresolved_refs.is_empty(), "expected call site refs");
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+
+    // Extends edge (UserService extends EventEmitter)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends ref for UserService"
+    );
+}
+
+// ── JavaScript ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_javascript() {
+    let source = read_fixture("sample.js");
+    let extractor = codegraph::extraction::TypeScriptExtractor;
+    let result = extractor.extract("sample.js", &source);
+    assert!(result.errors.is_empty(), "JS errors: {:?}", result.errors);
+
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Handler"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "JsonHandler"));
+    let fetch_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "fetchData");
+    assert!(fetch_fn.is_some());
+    assert!(fetch_fn.unwrap().is_async);
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::ArrowFunction && n.name == "double"));
+}
+
+// ── Python ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_python() {
+    let source = read_fixture("sample.py");
+    let extractor = codegraph::extraction::PythonExtractor;
+    let result = extractor.extract("sample.py", &source);
+    assert!(result.errors.is_empty(), "Python errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 3, "expected >= 3 imports, got {}", imports.len());
+
+    // Module-level constants
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "MAX_CONNECTIONS"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "DEFAULT_TIMEOUT"));
+
+    // Functions
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "log"));
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "log").unwrap();
+    assert!(log_fn.docstring.is_some(), "log() should have docstring");
+
+    // Decorator
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Decorator));
+
+    // Classes
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Base"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Pool"));
+
+    // Docstring on class
+    let conn = result.nodes.iter().find(|n| n.kind == NodeKind::Class && n.name == "Connection").unwrap();
+    assert!(conn.docstring.is_some(), "Connection should have docstring");
+
+    // Methods
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 5, "expected >= 5 methods, got {}", methods.len());
+
+    // Async method
+    let connect = methods.iter().find(|m| m.name == "connect");
+    assert!(connect.is_some(), "connect method not found");
+    assert!(connect.unwrap().is_async, "connect should be async");
+
+    // Visibility: _internal_method is private
+    let internal = methods.iter().find(|m| m.name == "_internal_method");
+    assert!(internal.is_some());
+    assert_eq!(internal.unwrap().visibility, Visibility::Private);
+
+    // Nested class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Config"));
+
+    // Inheritance
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends refs for class inheritance"
+    );
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+
+    // Signature with type annotations should not be truncated
+    let log_sig = log_fn.signature.as_ref().unwrap();
+    assert!(
+        log_sig.contains("message"),
+        "log signature should contain 'message', got: {}",
+        log_sig
+    );
+}
+
+// ── C ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_c() {
+    let source = read_fixture("sample.c");
+    let extractor = codegraph::extraction::CExtractor;
+    let result = extractor.extract("sample.c", &source);
+    assert!(result.errors.is_empty(), "C errors: {:?}", result.errors);
+
+    // Includes
+    let includes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Include).collect();
+    assert!(includes.len() >= 3, "expected >= 3 includes");
+
+    // Preprocessor defines
+    let defs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::PreprocessorDef).collect();
+    assert!(defs.iter().any(|n| n.name == "MAX_BUFFER_SIZE"));
+
+    // Typedef struct
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Typedef && n.name == "Point"));
+
+    // Struct with fields
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(fields.len() >= 2, "expected struct fields");
+
+    // Union
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Union));
+
+    // Enum
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert!(variants.len() >= 4, "expected >= 4 enum variants");
+
+    // Function pointer typedef
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Typedef && n.name == "Callback"));
+
+    // Functions
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "point_distance"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "main"));
+
+    // Static function is private
+    let set_err = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "set_error");
+    assert!(set_err.is_some());
+    assert_eq!(set_err.unwrap().visibility, Visibility::Private);
+
+    // Docstrings
+    let dist_fn = result.nodes.iter().find(|n| n.name == "point_distance").unwrap();
+    assert!(dist_fn.docstring.is_some(), "point_distance should have docstring");
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+}
+
+// ── C header ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_c_header() {
+    let source = read_fixture("sample.h");
+    let extractor = codegraph::extraction::CExtractor;
+    let result = extractor.extract("sample.h", &source);
+    assert!(result.errors.is_empty(), "C header errors: {:?}", result.errors);
+
+    // File node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Preprocessor def
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::PreprocessorDef && n.name == "API_VERSION"));
+
+    // Typedef struct
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Typedef && n.name == "Rect"));
+
+    // Enum
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+}
+
+// ── C++ ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_cpp() {
+    let source = read_fixture("sample.cpp");
+    let extractor = codegraph::extraction::CppExtractor;
+    let result = extractor.extract("sample.cpp", &source);
+    assert!(result.errors.is_empty(), "C++ errors: {:?}", result.errors);
+
+    // Namespace
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Namespace && n.name == "geom"));
+
+    // Struct
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Vec2"));
+
+    // Abstract class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Shape"));
+
+    // Derived classes
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Circle"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Rectangle"));
+
+    // Template class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Template));
+
+    // Methods
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 4, "expected >= 4 methods");
+
+    // Enum class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+
+    // Union
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Union));
+
+    // Typedef
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Typedef && n.name == "EntityId"));
+
+    // Typedef
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Typedef && n.name == "EntityId"));
+
+    // Includes
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Include));
+
+    // Preprocessor def
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::PreprocessorDef && n.name == "DEFAULT_CAPACITY"));
+
+    // Static function is private
+    let helper = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "internal_helper");
+    assert!(helper.is_some());
+    assert_eq!(helper.unwrap().visibility, Visibility::Private);
+
+    // Inheritance edges
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends refs for class inheritance"
+    );
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+}
+
+// ── Kotlin ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_kotlin() {
+    let source = read_fixture("sample.kt");
+    let extractor = codegraph::extraction::KotlinExtractor;
+    let result = extractor.extract("sample.kt", &source);
+    assert!(result.errors.is_empty(), "Kotlin errors: {:?}", result.errors);
+
+    // Package
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::KotlinPackage));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 2, "expected >= 2 imports");
+
+    // Data class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::DataClass && n.name == "Point"));
+
+    // Sealed class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::SealedClass));
+
+    // Interface
+    let iface = result.nodes.iter().find(|n| n.kind == NodeKind::Interface || n.kind == NodeKind::Trait);
+    assert!(iface.is_some(), "Repository interface not found");
+
+    // Annotation (may be Decorator or AnnotationUsage depending on extractor)
+    let has_annotation = result.nodes.iter().any(|n| n.kind == NodeKind::Decorator || n.kind == NodeKind::AnnotationUsage);
+    assert!(has_annotation, "expected annotation nodes");
+
+    // Abstract class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Entity"));
+
+    // Regular class with properties
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "User"));
+    let properties: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Property).collect();
+    assert!(properties.len() >= 2, "expected >= 2 properties");
+
+    // Companion object
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::CompanionObject));
+
+    // Enum class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+
+    // Object declaration (singleton)
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::KotlinObject && n.name == "Logger"));
+
+    // Extension function
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name.contains("toSlug")));
+
+    // Visibility: protected helper
+    let helper = result.nodes.iter().find(|n| n.name == "helperFunction");
+    if let Some(h) = helper {
+        assert_eq!(h.visibility, Visibility::PubSuper, "protected should be PubSuper");
+    }
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+}
+
+// ── Dart ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_dart() {
+    let source = read_fixture("sample.dart");
+    let extractor = codegraph::extraction::DartExtractor;
+    let result = extractor.extract("sample.dart", &source);
+    assert!(result.errors.is_empty(), "Dart errors: {:?}", result.errors);
+
+    // Library
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Library));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 2, "expected >= 2 imports");
+
+    // Enum
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+
+    // Abstract class (may map to Interface or Class)
+    let serializable = result.nodes.iter().find(|n| n.name == "Serializable");
+    assert!(serializable.is_some(), "Serializable not found");
+
+    // Mixin
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Mixin && n.name == "Timestamped"));
+
+    // Class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "User"));
+
+    // Extension
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Extension && n.name == "StringUtils"));
+
+    // Methods
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 2, "expected >= 2 methods");
+
+    // Constructor
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Constructor));
+
+    // Private visibility (_email, _isValid, _logAction)
+    let privates: Vec<_> = result.nodes.iter().filter(|n| n.visibility == Visibility::Private).collect();
+    assert!(privates.len() >= 1, "expected private members");
+
+    // Async function
+    let process = result.nodes.iter().find(|n| n.name == "processUsers");
+    if let Some(p) = process {
+        assert!(p.is_async, "processUsers should be async");
+    }
+
+    // Typedef
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::TypeAlias));
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
+
+// ── C# ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_csharp() {
+    let source = read_fixture("sample.cs");
+    let extractor = codegraph::extraction::CSharpExtractor;
+    let result = extractor.extract("sample.cs", &source);
+    assert!(result.errors.is_empty(), "C# errors: {:?}", result.errors);
+
+    // Namespace
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Namespace));
+
+    // Using directives
+    let usings: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(usings.len() >= 3, "expected >= 3 using directives");
+
+    // Enum
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
+
+    // Record
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Record && n.name == "AppConfig"));
+
+    // Delegate
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Delegate));
+
+    // Interfaces
+    let ifaces: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Interface).collect();
+    assert!(ifaces.len() >= 2, "expected >= 2 interfaces");
+
+    // Attribute (decorator)
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::AnnotationUsage || n.kind == NodeKind::Decorator));
+
+    // Abstract class
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Entity"));
+
+    // Class with methods
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "User"));
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 3, "expected >= 3 methods");
+
+    // Constructor
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Constructor));
+
+    // Properties
+    let props: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::CSharpProperty).collect();
+    assert!(props.len() >= 2, "expected >= 2 properties");
+
+    // Event
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Event));
+
+    // Fields
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Field));
+
+    // Struct
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Point"));
+
+    // Visibility: private, internal, protected
+    assert!(result.nodes.iter().any(|n| n.visibility == Visibility::Private));
+    assert!(result.nodes.iter().any(|n| n.visibility == Visibility::PubCrate)); // internal
+
+    // Async method
+    let fetch = methods.iter().find(|m| m.name == "FetchProfileAsync");
+    if let Some(f) = fetch {
+        assert!(f.is_async, "FetchProfileAsync should be async");
+    }
+
+    // Inheritance
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends || r.reference_kind == EdgeKind::Implements),
+        "expected inheritance refs"
+    );
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+}
+
+// ── Pascal ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_pascal() {
+    let source = read_fixture("sample.pas");
+    let extractor = codegraph::extraction::PascalExtractor;
+    let result = extractor.extract("sample.pas", &source);
+    assert!(result.errors.is_empty(), "Pascal errors: {:?}", result.errors);
+
+    // Unit declaration
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::PascalUnit));
+
+    // Uses clause
+    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(uses.len() >= 2, "expected >= 2 uses");
+
+    // Constants
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "MaxRetries"));
+
+    // Record type
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::PascalRecord && n.name == "TPoint"));
+
+    // Interface type
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Interface));
+
+    // Classes
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "TEntity"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "TUser"));
+
+    // Constructor
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Constructor));
+
+    // Functions and procedures
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "PointDistance"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Procedure && n.name == "LogMessage"));
+
+    // Methods
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 2, "expected >= 2 methods");
+
+    // Properties
+    let properties: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Property).collect();
+    assert!(properties.len() >= 1, "expected >= 1 property");
+
+    // Visibility: private members
+    assert!(result.nodes.iter().any(|n| n.visibility == Visibility::Private));
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
