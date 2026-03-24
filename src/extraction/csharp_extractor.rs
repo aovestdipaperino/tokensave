@@ -332,6 +332,9 @@ impl CSharpExtractor {
             });
         }
 
+        // Extract attributes on this class.
+        Self::extract_attributes_from_declaration(state, node, &id);
+
         // Extract base list (extends/implements).
         Self::extract_base_list(state, node, &id, true);
 
@@ -669,6 +672,9 @@ impl CSharpExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract attributes on this constructor.
+        Self::extract_attributes_from_declaration(state, node, &id);
 
         // Extract call sites from the constructor body.
         if let Some(body) = node.child_by_field_name("body") {
@@ -1300,6 +1306,95 @@ impl CSharpExtractor {
                         column: child.start_position().column as u32,
                         file_path: state.file_path.clone(),
                     });
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract attributes from a declaration node's attribute_list children.
+    /// Creates AnnotationUsage nodes and Annotates edges pointing to the target declaration.
+    fn extract_attributes_from_declaration(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute_list" {
+                    Self::visit_attribute_list_for_target(state, child, target_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Visit an attribute_list node and create AnnotationUsage nodes targeting a known declaration.
+    fn visit_attribute_list_for_target(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute" {
+                    let attr_name = Self::extract_attribute_name(state, child);
+                    let start_line = child.start_position().row as u32;
+                    let end_line = child.end_position().row as u32;
+                    let start_column = child.start_position().column as u32;
+                    let end_column = child.end_position().column as u32;
+                    let qualified_name =
+                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let id = generate_node_id(
+                        &state.file_path,
+                        &NodeKind::AnnotationUsage,
+                        &attr_name,
+                        start_line,
+                    );
+
+                    let graph_node = Node {
+                        id: id.clone(),
+                        kind: NodeKind::AnnotationUsage,
+                        name: attr_name,
+                        qualified_name,
+                        file_path: state.file_path.clone(),
+                        start_line,
+                        end_line,
+                        start_column,
+                        end_column,
+                        signature: Some(state.node_text(child).trim().to_string()),
+                        docstring: None,
+                        visibility: Visibility::Pub,
+                        is_async: false,
+                        updated_at: state.timestamp,
+                    };
+                    state.nodes.push(graph_node);
+
+                    // Annotates edge from annotation to target declaration.
+                    state.edges.push(Edge {
+                        source: id.clone(),
+                        target: target_id.to_string(),
+                        kind: EdgeKind::Annotates,
+                        line: Some(start_line),
+                    });
+
+                    // Contains edge from parent.
+                    if let Some(parent_id) = state.parent_node_id() {
+                        state.edges.push(Edge {
+                            source: parent_id.to_string(),
+                            target: id,
+                            kind: EdgeKind::Contains,
+                            line: Some(start_line),
+                        });
+                    }
                 }
                 if !cursor.goto_next_sibling() {
                     break;
