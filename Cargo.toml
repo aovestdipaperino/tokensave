@@ -24,6 +24,7 @@ tree-sitter-rust = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-java = "0.23"
 tree-sitter-scala = "0.25"
+tree-sitter-c = "0.23"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
