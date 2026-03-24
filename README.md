@@ -14,12 +14,30 @@ The port maintains the same architecture and MCP tool interface while leveraging
 
 ## Features
 
-- Tree-sitter AST parsing for Rust, Go, and Java
+- Tree-sitter AST parsing for Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, and Pascal
 - libsql (Turso) backed knowledge graph with FTS5 search
 - MCP server (JSON-RPC 2.0 over stdio) for AI assistant integration
 - Graph traversal: callers, callees, impact radius
 - Incremental sync for fast re-indexing
 - Vector embeddings for semantic search
+
+## Supported Languages
+
+| Language | Extensions | Since |
+|----------|-----------|-------|
+| Rust | `.rs` | 0.4.0 |
+| Go | `.go` | 0.5.0 |
+| Java | `.java` | 0.5.0 |
+| Scala | `.scala`, `.sc` | 0.6.0 |
+| TypeScript | `.ts`, `.tsx` | 0.7.0 |
+| JavaScript | `.js`, `.jsx` | 0.7.0 |
+| Python | `.py` | 0.7.0 |
+| C | `.c`, `.h` | 0.7.0 |
+| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hh` | 0.7.0 |
+| Kotlin | `.kt`, `.kts` | 0.7.0 |
+| Dart | `.dart` | 0.7.0 |
+| C# | `.cs` | 0.7.0 |
+| Pascal | `.pas`, `.pp`, `.dpr` | 0.7.0 |
 
 ## Install
 
