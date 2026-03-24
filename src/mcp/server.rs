@@ -90,14 +90,32 @@ impl McpServer {
     }
 
     /// Runs the server, reading JSON-RPC requests from stdin and writing
-    /// responses to stdout. Runs until stdin is closed.
+    /// responses to stdout. Runs until stdin is closed or a shutdown signal
+    /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
     pub async fn run(&self) -> Result<()> {
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
         let reader = BufReader::new(stdin);
         let mut lines = reader.lines();
 
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .expect("failed to register SIGTERM handler");
+
+        loop {
+            let line = tokio::select! {
+                result = lines.next_line() => {
+                    match result {
+                        Ok(Some(line)) => line,
+                        // stdin closed
+                        _ => break,
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => break,
+                _ = sigterm.recv() => break,
+            };
+
             let line = line.trim().to_string();
             if line.is_empty() {
                 continue;
@@ -136,7 +154,31 @@ impl McpServer {
             }
         }
 
+        self.shutdown().await;
         Ok(())
+    }
+
+    /// Performs graceful shutdown: persists the tokens-saved counter,
+    /// checkpoints the WAL, and logs a session summary.
+    async fn shutdown(&self) {
+        let uptime = self.stats.started_at.elapsed();
+        let tool_calls = self.stats.tool_calls.load(Ordering::Relaxed);
+        let tokens_saved = self.tokens_saved.load(Ordering::Relaxed);
+
+        // Persist final tokens-saved value
+        if let Err(e) = self.cg.set_tokens_saved(tokens_saved).await {
+            eprintln!("[tokensave] warning: failed to persist tokens_saved on shutdown: {e}");
+        }
+
+        // Checkpoint WAL to merge it into the main database file
+        if let Err(e) = self.cg.checkpoint().await {
+            eprintln!("[tokensave] warning: failed to checkpoint WAL on shutdown: {e}");
+        }
+
+        eprintln!(
+            "[tokensave] shutdown: {} tool calls, ~{} tokens saved, uptime {}s",
+            tool_calls, tokens_saved, uptime.as_secs()
+        );
     }
 
     /// Dispatches a parsed JSON-RPC request to the appropriate handler.

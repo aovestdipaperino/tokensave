@@ -409,6 +409,17 @@ impl TokenSave {
         builder.build_context(task, options).await
     }
 
+    /// Returns all indexed file records.
+    pub async fn get_all_files(&self) -> Result<Vec<FileRecord>> {
+        self.db.get_all_files().await
+    }
+
+    /// Returns file paths that depend on the given file.
+    pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
+        let qm = GraphQueryManager::new(&self.db);
+        qm.get_file_dependents(file_path).await
+    }
+
     /// Returns a map of file path to approximate token count (size / 4).
     pub async fn get_file_token_map(&self) -> Result<HashMap<String, u64>> {
         let files = self.db.get_all_files().await?;
@@ -428,6 +439,11 @@ impl TokenSave {
         self.db
             .set_metadata("tokens_saved", &value.to_string())
             .await
+    }
+
+    /// Checkpoints the WAL and closes the database connection.
+    pub async fn checkpoint(&self) -> Result<()> {
+        self.db.checkpoint().await
     }
 
     /// Returns a reference to the current configuration.

@@ -125,6 +125,44 @@ enum Commands {
         #[arg(short, long, default_value = "markdown")]
         format: String,
     },
+    /// List indexed files
+    Files {
+        /// Project path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Filter to files under this directory
+        #[arg(long)]
+        filter: Option<String>,
+        /// Filter files matching this glob pattern
+        #[arg(long)]
+        pattern: Option<String>,
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// Find test files affected by changed source files
+    Affected {
+        /// Changed file paths
+        files: Vec<String>,
+        /// Project path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Read file list from stdin (one per line)
+        #[arg(long)]
+        stdin: bool,
+        /// Max dependency traversal depth
+        #[arg(short, long, default_value = "5")]
+        depth: usize,
+        /// Custom glob filter for test files
+        #[arg(short, long)]
+        filter: Option<String>,
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+        /// Only output file paths, no decoration
+        #[arg(short, long)]
+        quiet: bool,
+    },
     /// Start MCP server over stdio
     Serve {
         /// Project path
@@ -250,6 +288,119 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 OutputFormat::Markdown => {
                     println!("{}", format_context_as_markdown(&context));
+                }
+            }
+        }
+        Commands::Files {
+            path,
+            filter,
+            pattern,
+            json,
+        } => {
+            let project_path = resolve_path(path);
+            let cg = ensure_initialized(&project_path).await?;
+            let mut files = cg.get_all_files().await?;
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+
+            // Apply directory prefix filter
+            if let Some(ref dir) = filter {
+                let prefix = if dir.ends_with('/') {
+                    dir.clone()
+                } else {
+                    format!("{}/", dir)
+                };
+                files.retain(|f| f.path.starts_with(&prefix) || f.path == dir.as_str());
+            }
+
+            // Apply glob pattern filter
+            if let Some(ref pat) = pattern {
+                if let Ok(glob) = glob::Pattern::new(pat) {
+                    files.retain(|f| glob.matches(&f.path));
+                } else {
+                    eprintln!("warning: invalid glob pattern '{}', ignoring", pat);
+                }
+            }
+
+            if json {
+                let items: Vec<serde_json::Value> = files
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "path": f.path,
+                            "size": f.size,
+                            "node_count": f.node_count,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&items).unwrap_or_default()
+                );
+            } else {
+                println!("{} indexed files", files.len());
+                for f in &files {
+                    println!(
+                        "  {} ({} bytes, {} symbols)",
+                        f.path, f.size, f.node_count
+                    );
+                }
+            }
+        }
+        Commands::Affected {
+            files,
+            path,
+            stdin,
+            depth,
+            filter,
+            json,
+            quiet,
+        } => {
+            let project_path = resolve_path(path);
+            let cg = ensure_initialized(&project_path).await?;
+
+            // Collect changed files from args and/or stdin
+            let mut changed: Vec<String> = files;
+            if stdin {
+                let stdin_handle = io::stdin();
+                for line in stdin_handle.lock().lines() {
+                    if let Ok(line) = line {
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            changed.push(trimmed);
+                        }
+                    }
+                }
+            }
+
+            if changed.is_empty() {
+                eprintln!("No files specified. Pass file paths as arguments or use --stdin.");
+                return Ok(());
+            }
+
+            let affected = find_affected_tests(&cg, &changed, depth, filter.as_deref()).await?;
+
+            if json {
+                let output = serde_json::json!({
+                    "changed_files": changed,
+                    "affected_tests": affected,
+                    "count": affected.len(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output).unwrap_or_default()
+                );
+            } else if quiet {
+                for f in &affected {
+                    println!("{}", f);
+                }
+            } else {
+                if affected.is_empty() {
+                    println!("No affected test files found.");
+                } else {
+                    println!("{} affected test file(s):", affected.len());
+                    for f in &affected {
+                        println!("  {}", f);
+                    }
                 }
             }
         }
@@ -508,4 +659,71 @@ fn resolve_path(path: Option<String>) -> PathBuf {
         Some(p) => PathBuf::from(p),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     }
+}
+
+/// Returns `true` if the file path looks like a test file.
+fn is_test_file(path: &str) -> bool {
+    // Common test file naming conventions
+    let test_segments = [
+        "test/", "tests/", "__tests__/", "spec/", "e2e/",
+        ".test.", ".spec.", "_test.", "_spec.",
+    ];
+    let lower = path.to_ascii_lowercase();
+    test_segments.iter().any(|s| lower.contains(s))
+}
+
+/// BFS through file dependents to find test files affected by changes.
+async fn find_affected_tests(
+    cg: &TokenSave,
+    changed_files: &[String],
+    max_depth: usize,
+    custom_filter: Option<&str>,
+) -> tokensave::errors::Result<Vec<String>> {
+    use std::collections::{HashSet, VecDeque};
+
+    let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
+
+    let matches_test = |path: &str| -> bool {
+        if let Some(ref g) = custom_glob {
+            g.matches(path)
+        } else {
+            is_test_file(path)
+        }
+    };
+
+    let mut affected: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<String> = HashSet::new();
+
+    // Seed: changed files that are themselves tests go directly into the result
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    for file in changed_files {
+        if matches_test(file) {
+            affected.insert(file.clone());
+        }
+        if visited.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+
+    // BFS through file dependents
+    while let Some((file, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let dependents = cg.get_file_dependents(&file).await?;
+        for dep in dependents {
+            if !visited.insert(dep.clone()) {
+                continue;
+            }
+            if matches_test(&dep) {
+                affected.insert(dep.clone());
+            } else {
+                queue.push_back((dep, depth + 1));
+            }
+        }
+    }
+
+    let mut result: Vec<String> = affected.into_iter().collect();
+    result.sort();
+    Ok(result)
 }

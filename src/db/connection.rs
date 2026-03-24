@@ -78,6 +78,21 @@ impl Database {
         drop(self.conn);
     }
 
+    /// Checkpoints the WAL back into the main database file.
+    ///
+    /// This ensures all committed transactions are merged into the main DB
+    /// before the process exits, preventing a stale WAL file on next startup.
+    pub async fn checkpoint(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to checkpoint WAL: {e}"),
+                operation: "checkpoint".to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Runs VACUUM and ANALYZE to reclaim space and update query planner statistics.
     pub async fn optimize(&self) -> Result<()> {
         self.conn
