@@ -218,6 +218,40 @@ fn test_new_node_kinds_roundtrip() {
 }
 
 #[test]
+fn test_c_cpp_csharp_pascal_kotlin_dart_node_kinds_roundtrip() {
+    use codegraph::types::NodeKind;
+    let kinds = vec![
+        (NodeKind::Union, "union"),
+        (NodeKind::Typedef, "typedef"),
+        (NodeKind::Include, "include"),
+        (NodeKind::PreprocessorDef, "preprocessor_def"),
+        (NodeKind::Namespace, "namespace"),
+        (NodeKind::Template, "template"),
+        (NodeKind::Delegate, "delegate"),
+        (NodeKind::Event, "event"),
+        (NodeKind::Record, "record"),
+        (NodeKind::CSharpProperty, "csharp_property"),
+        (NodeKind::Procedure, "procedure"),
+        (NodeKind::PascalProgram, "pascal_program"),
+        (NodeKind::PascalUnit, "pascal_unit"),
+        (NodeKind::PascalRecord, "pascal_record"),
+        (NodeKind::Property, "property"),
+        (NodeKind::DataClass, "data_class"),
+        (NodeKind::SealedClass, "sealed_class"),
+        (NodeKind::KotlinObject, "kotlin_object"),
+        (NodeKind::KotlinPackage, "kotlin_package"),
+        (NodeKind::CompanionObject, "companion_object"),
+        (NodeKind::Mixin, "mixin"),
+        (NodeKind::Extension, "extension"),
+        (NodeKind::Library, "library"),
+    ];
+    for (kind, expected_str) in kinds {
+        assert_eq!(kind.as_str(), expected_str);
+        assert_eq!(NodeKind::from_str(expected_str), Some(kind));
+    }
+}
+
+#[test]
 fn test_new_edge_kinds_roundtrip() {
     use codegraph::types::EdgeKind;
     let kinds = vec![

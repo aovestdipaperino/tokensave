@@ -115,6 +115,45 @@ union Data {
 }
 
 #[test]
+fn test_c_union_with_fields() {
+    let source = r#"
+union Data {
+    int i;
+    float f;
+};
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("data.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let union_node = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Union && n.name == "Data")
+        .expect("should have Data union");
+
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .collect();
+    assert_eq!(fields.len(), 2, "union should have 2 fields");
+    assert!(fields.iter().any(|f| f.name == "i"));
+    assert!(fields.iter().any(|f| f.name == "f"));
+
+    let contains_from_union: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Contains && e.source == union_node.id)
+        .collect();
+    assert_eq!(
+        contains_from_union.len(),
+        2,
+        "Data union should contain 2 fields via Contains edges"
+    );
+}
+
+#[test]
 fn test_c_enum_with_constants() {
     let source = r#"
 enum Color {
@@ -465,6 +504,32 @@ enum LogLevel {
         .filter(|n| n.kind == NodeKind::EnumVariant)
         .collect();
     assert_eq!(variants.len(), 4);
+}
+
+#[test]
+fn test_c_global_variable_docstring() {
+    let source = r#"
+/* The global counter for tracking state. */
+int global_counter = 0;
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("globals.c", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .collect();
+    assert_eq!(statics.len(), 1);
+    let doc = statics[0]
+        .docstring
+        .as_ref()
+        .expect("global variable should have docstring");
+    assert!(
+        doc.contains("global counter"),
+        "docstring: {:?}",
+        doc
+    );
 }
 
 #[test]

@@ -341,6 +341,7 @@ impl CExtractor {
 
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -359,7 +360,7 @@ impl CExtractor {
             start_column,
             end_column,
             signature,
-            docstring: None,
+            docstring,
             visibility,
             is_async: false,
             updated_at: state.timestamp,
@@ -907,11 +908,16 @@ impl CExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // Extract fields (same as struct).
+        state.node_stack.push((name.to_string(), id.clone()));
+        Self::extract_struct_fields(state, spec_node);
+        state.node_stack.pop();
     }
 
     /// Create an Enum node with EnumVariant children.
