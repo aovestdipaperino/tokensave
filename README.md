@@ -2,44 +2,80 @@
   <img src="src/resources/logo.png" alt="TokenSave" width="300">
 </p>
 
-# tokensave
+<h3 align="center">Supercharge Claude Code with Semantic Code Intelligence</h3>
 
-A Rust port of [CodeGraph](https://github.com/colbymchenry/codegraph) — a local-first code intelligence system that builds a semantic knowledge graph from any codebase.
+<p align="center"><strong>Fewer tokens &bull; Fewer tool calls &bull; 100% local</strong></p>
 
-## Origin
+<p align="center">
+  <a href="https://crates.io/crates/tokensave"><img src="https://img.shields.io/crates/v/tokensave.svg" alt="crates.io"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.70+-orange.svg" alt="Rust"></a>
+</p>
 
-This project is a Rust port of the original [TypeScript implementation](https://github.com/colbymchenry/codegraph) by [@colbymchenry](https://github.com/colbymchenry). The original TypeScript source is included as a git submodule under `codegraph/` for reference.
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-supported-blue.svg" alt="macOS">
+  <img src="https://img.shields.io/badge/Linux-supported-blue.svg" alt="Linux">
+  <img src="https://img.shields.io/badge/Windows-supported-blue.svg" alt="Windows">
+</p>
 
-The port maintains the same architecture and MCP tool interface while leveraging Rust for performance and native tree-sitter bindings.
+---
 
-## Features
+## Why tokensave?
 
-- Tree-sitter AST parsing for Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, and Pascal
-- libsql (Turso) backed knowledge graph with FTS5 search
-- MCP server (JSON-RPC 2.0 over stdio) for AI assistant integration
-- Graph traversal: callers, callees, impact radius
-- Incremental sync for fast re-indexing
-- Vector embeddings for semantic search
+When Claude Code works on a complex task, it spawns **Explore agents** that scan your codebase using grep, glob, and file reads. Every tool call consumes tokens.
 
-## Supported Languages
+**tokensave gives Claude a pre-indexed semantic knowledge graph.** Instead of scanning files, Claude queries the graph instantly — fewer API calls, less token usage, same code understanding.
 
-| Language | Extensions | Since |
-|----------|-----------|-------|
-| Rust | `.rs` | 0.4.0 |
-| Go | `.go` | 0.5.0 |
-| Java | `.java` | 0.5.0 |
-| Scala | `.scala`, `.sc` | 0.6.0 |
-| TypeScript | `.ts`, `.tsx` | 0.7.0 |
-| JavaScript | `.js`, `.jsx` | 0.7.0 |
-| Python | `.py` | 0.7.0 |
-| C | `.c`, `.h` | 0.7.0 |
-| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hh` | 0.7.0 |
-| Kotlin | `.kt`, `.kts` | 0.7.0 |
-| Dart | `.dart` | 0.7.0 |
-| C# | `.cs` | 0.7.0 |
-| Pascal | `.pas`, `.pp`, `.dpr` | 0.7.0 |
+### How It Works
 
-## Install
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Claude Code                                                 │
+│                                                              │
+│  "Implement user authentication"                             │
+│        │                                                     │
+│        ▼                                                     │
+│  ┌─────────────────┐       ┌─────────────────┐              │
+│  │  Explore Agent   │ ───── │  Explore Agent   │              │
+│  └────────┬────────┘       └────────┬────────┘              │
+└───────────┼──────────────────────────┼───────────────────────┘
+            │                          │
+            ▼                          ▼
+┌──────────────────────────────────────────────────────────────┐
+│  tokensave MCP Server                                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
+│  │   Search     │  │   Callers   │  │   Context   │          │
+│  │   "auth"     │  │  "login()"  │  │   for task  │          │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
+│         └────────────────┼────────────────┘                  │
+│                          ▼                                   │
+│              ┌───────────────────────┐                        │
+│              │   libSQL Graph DB     │                        │
+│              │   • Instant lookups   │                        │
+│              │   • FTS5 search       │                        │
+│              │   • Vector embeddings │                        │
+│              └───────────────────────┘                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Without tokensave:** Explore agents use `grep`, `glob`, and `Read` to scan files — many API calls, high token usage.
+
+**With tokensave:** Agents query the graph via MCP tools — instant results, local processing, fewer tokens.
+
+---
+
+## Key Features
+
+| | | |
+|---|---|---|
+| **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
+| One tool call returns everything Claude needs — entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
+| **13 Languages** | **100% Local** | **Always Fresh** |
+| Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal — all with the same API. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
+
+---
+
+## Quick Start
 
 ### 1. Install the binary
 
@@ -87,10 +123,8 @@ tokensave sync
 
 This creates a `.tokensave/` directory with the knowledge graph database. Subsequent runs are incremental — only changed files are re-indexed.
 
-### Manual setup (if you prefer not to run the script)
-
 <details>
-<summary>Click to expand</summary>
+<summary><strong>Manual setup (if you prefer not to run the script)</strong></summary>
 
 #### a. MCP server
 
@@ -178,23 +212,16 @@ Append the following to `~/.claude/CLAUDE.md` (create it if it doesn't exist). T
 
 </details>
 
-## Usage
+---
+
+## CLI Usage
 
 ```bash
-# Sync (creates index if missing, incremental by default)
-tokensave sync [path]
-
-# Force a full re-index
-tokensave sync --force [path]
-
-# Show statistics
-tokensave status [path]
-
-# Search symbols
-tokensave query <search> [path]
-
-# Start MCP server
-tokensave serve
+tokensave sync [path]            # Sync (creates index if missing, incremental by default)
+tokensave sync --force [path]    # Force a full re-index
+tokensave status [path]          # Show statistics
+tokensave query <search> [path]  # Search symbols
+tokensave serve                  # Start MCP server
 ```
 
 ### Auto-sync on commit (optional)
@@ -222,7 +249,76 @@ chmod +x .git/hooks/post-commit
 
 The hook checks for both the `tokensave` binary and a `.tokensave/` directory before running, so it is a no-op in repos that haven't been indexed.
 
-## How it works with Claude Code
+---
+
+## MCP Tools Reference
+
+These tools are exposed via the MCP server and available to Claude Code when `.tokensave/` exists in the project.
+
+| Tool | Use For |
+|------|---------|
+| `tokensave_search` | Find symbols by name (functions, classes, types) |
+| `tokensave_context` | Get relevant code context for a task |
+| `tokensave_callers` | Find what calls a function |
+| `tokensave_callees` | Find what a function calls |
+| `tokensave_impact` | See what's affected by changing a symbol |
+| `tokensave_node` | Get details + source code for a symbol |
+| `tokensave_status` | Get index status and statistics |
+
+### `tokensave_context`
+
+Get relevant code context for a task using semantic search and graph traversal.
+
+- **`task`** (string, required): The task description
+- **`max_nodes`** (number, optional): Maximum number of nodes to include (default: 20)
+
+Returns structured code context with entry points, related symbols, and code snippets.
+
+### `tokensave_search`
+
+Search for symbols by name in the codebase.
+
+- **`query`** (string, required): Symbol name to search for
+- **`kind`** (string, optional): Filter by node kind (function, class, method, etc.)
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Returns matching symbols with locations and signatures.
+
+### `tokensave_callers` / `tokensave_callees`
+
+Find functions that call a symbol, or functions called by a symbol.
+
+- **`symbol`** (string, required): The symbol to analyze
+- **`depth`** (number, optional): Traversal depth (default: 1)
+- **`limit`** (number, optional): Maximum results (default: 20)
+
+Returns related symbols with relationship types.
+
+### `tokensave_impact`
+
+Analyze the impact of changing a symbol. Returns all symbols affected by modifications.
+
+- **`symbol`** (string, required): The symbol to analyze
+- **`max_depth`** (number, optional): Maximum traversal depth (default: 3)
+
+Returns impact map showing affected symbols and their relationships.
+
+### `tokensave_node`
+
+Get detailed information about a specific symbol including source code.
+
+- **`symbol`** (string, required): The symbol name
+- **`file`** (string, optional): Filter by file path
+
+Returns complete symbol details with source code, location, and relationships.
+
+### `tokensave_status`
+
+Get index status and project statistics. Returns index metadata, symbol counts, language distribution, and pending changes.
+
+---
+
+## How It Works with Claude Code
 
 Once configured, Claude Code automatically uses tokensave instead of reading raw files when it needs to understand your codebase. The three layers reinforce each other:
 
@@ -234,6 +330,106 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 
 The result: Claude gets the same code understanding with far fewer tokens. A typical Explore agent reads 20-50 files; tokensave returns the relevant symbols, relationships, and code snippets from its pre-built index.
 
+---
+
+## How It Works (Technical)
+
+### 1. Extraction
+
+tokensave uses language-specific Tree-sitter grammars (native Rust bindings) to extract:
+- Function and class definitions
+- Variable and type declarations
+- Import and export statements
+- Method calls and references
+
+### 2. Storage
+
+Extracted symbols are stored in a local libSQL (Turso) database with:
+- Symbol metadata (name, kind, location, signature)
+- File information and language classification
+- FTS5 full-text search index
+- Vector embeddings for semantic search
+
+### 3. Reference Resolution
+
+The system resolves references between symbols:
+- Import chains
+- Function calls
+- Type relationships
+- Cross-file dependencies
+
+### 4. Graph Queries
+
+The graph supports complex queries:
+- Find callers/callees at configurable depth
+- Trace impact of changes across the codebase
+- Build contextual symbol sets for a given task
+- Semantic search via vector embeddings
+
+---
+
+## Supported Languages
+
+| Language | Extensions | Since |
+|----------|-----------|-------|
+| Rust | `.rs` | 0.4.0 |
+| Go | `.go` | 0.5.0 |
+| Java | `.java` | 0.5.0 |
+| Scala | `.scala`, `.sc` | 0.6.0 |
+| TypeScript | `.ts`, `.tsx` | 0.7.0 |
+| JavaScript | `.js`, `.jsx` | 0.7.0 |
+| Python | `.py` | 0.7.0 |
+| C | `.c`, `.h` | 0.7.0 |
+| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hh` | 0.7.0 |
+| Kotlin | `.kt`, `.kts` | 0.7.0 |
+| Dart | `.dart` | 0.7.0 |
+| C# | `.cs` | 0.7.0 |
+| Pascal | `.pas`, `.pp`, `.dpr` | 0.7.0 |
+
+---
+
+## Troubleshooting
+
+### "tokensave not initialized"
+
+The `.tokensave/` directory doesn't exist in your project.
+
+```bash
+tokensave sync
+```
+
+### MCP server not connecting
+
+Claude Code doesn't see tokensave tools.
+
+1. Ensure `~/.claude/settings.json` includes the tokensave MCP server config
+2. Restart Claude Code completely
+3. Check that `tokensave` is in your PATH: `which tokensave`
+
+### Missing symbols in search
+
+Some symbols aren't showing up in search results.
+
+- Run `tokensave sync` to update the index
+- Check that the language is supported (see table above)
+- Verify the file isn't excluded by `.gitignore`
+
+### Indexing is slow
+
+Large projects take longer on the first full index.
+
+- Subsequent runs use incremental sync and are much faster
+- Use `tokensave sync` (not `--force`) for day-to-day updates
+- The post-commit hook runs in the background to avoid blocking
+
+---
+
+## Origin
+
+This project is a Rust port of the original [CodeGraph](https://github.com/colbymchenry/codegraph) TypeScript implementation by [@colbymchenry](https://github.com/colbymchenry). The port maintains the same architecture and MCP tool interface while leveraging Rust for performance and native tree-sitter bindings.
+
+---
+
 ## Building
 
 ```bash
@@ -241,3 +437,7 @@ cargo build --release
 cargo test
 cargo clippy --all
 ```
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
