@@ -7,12 +7,22 @@ mod java_extractor;
 mod rust_extractor;
 mod scala_extractor;
 mod c_extractor;
+mod cpp_extractor;
+mod csharp_extractor;
+mod dart_extractor;
+mod kotlin_extractor;
+mod pascal_extractor;
 
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
+pub use kotlin_extractor::KotlinExtractor;
 pub use rust_extractor::RustExtractor;
 pub use scala_extractor::ScalaExtractor;
 pub use c_extractor::CExtractor;
+pub use cpp_extractor::CppExtractor;
+pub use csharp_extractor::CSharpExtractor;
+pub use dart_extractor::DartExtractor;
+pub use pascal_extractor::PascalExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -51,6 +61,11 @@ impl LanguageRegistry {
                 Box::new(JavaExtractor),
                 Box::new(ScalaExtractor),
                 Box::new(CExtractor),
+                Box::new(CppExtractor),
+                Box::new(CSharpExtractor),
+                Box::new(DartExtractor),
+                Box::new(KotlinExtractor),
+                Box::new(PascalExtractor),
             ],
         }
     }

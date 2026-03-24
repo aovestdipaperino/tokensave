@@ -25,6 +25,8 @@ tree-sitter-go = "0.25"
 tree-sitter-java = "0.23"
 tree-sitter-scala = "0.25"
 tree-sitter-c = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-cpp = "0.23"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
@@ -38,6 +40,9 @@ sha2 = "0.10"
 glob = "0.3"
 walkdir = "2"
 hex = "0.4"
+tree-sitter-dart-orchard = "0.3"
+tree-sitter-kotlin-sg = "0.4.0"
+tree-sitter-pascal = "0.10"
 
 [build-dependencies]
 logo-art = "0.2"
