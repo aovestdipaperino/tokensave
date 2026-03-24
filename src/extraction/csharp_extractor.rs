@@ -737,11 +737,6 @@ impl CSharpExtractor {
     /// Extract field declarations.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
         let visibility = Self::extract_csharp_visibility(node, state);
-        let start_line = node.start_position().row as u32;
-        let end_line = node.end_position().row as u32;
-        let start_column = node.start_position().column as u32;
-        let end_column = node.end_position().column as u32;
-        let signature_text = state.node_text(node).trim().to_string();
 
         // In C# tree-sitter, field_declaration contains a variable_declaration
         // which has variable_declarator children.
@@ -751,14 +746,7 @@ impl CSharpExtractor {
                 let child = cursor.node();
                 if child.kind() == "variable_declaration" {
                     Self::extract_variable_declarators(
-                        state,
-                        child,
-                        &visibility,
-                        start_line,
-                        end_line,
-                        start_column,
-                        end_column,
-                        &signature_text,
+                        state, child, &visibility, node,
                     );
                 }
                 if !cursor.goto_next_sibling() {
@@ -773,12 +761,13 @@ impl CSharpExtractor {
         state: &mut ExtractionState,
         node: TsNode<'_>,
         visibility: &Visibility,
-        start_line: u32,
-        end_line: u32,
-        start_column: u32,
-        end_column: u32,
-        signature_text: &str,
+        field_decl: TsNode<'_>,
     ) {
+        let start_line = field_decl.start_position().row as u32;
+        let end_line = field_decl.end_position().row as u32;
+        let start_column = field_decl.start_position().column as u32;
+        let end_column = field_decl.end_position().column as u32;
+        let signature_text = state.node_text(field_decl).trim().to_string();
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {

@@ -295,10 +295,10 @@ impl DartExtractor {
         let signature = Some(sig_text.trim().to_string());
 
         // Detect async from the function body.
-        let is_async = body.map_or(false, |b| {
-            let body_text = state.node_text(b);
-            body_text.starts_with("async")
-        });
+        let is_async = match body {
+            Some(b) => state.node_text(b).starts_with("async"),
+            None => false,
+        };
 
         // Span from the signature to the end of the body (or just the signature).
         let start_line = sig_node.start_position().row as u32;
@@ -862,10 +862,10 @@ impl DartExtractor {
         let sig_text = state.node_text(sig_node);
         let signature = Some(sig_text.trim().to_string());
 
-        let is_async = body.map_or(false, |b| {
-            let body_text = state.node_text(b);
-            body_text.starts_with("async")
-        });
+        let is_async = match body {
+            Some(b) => state.node_text(b).starts_with("async"),
+            None => false,
+        };
 
         let start_line = sig_node.start_position().row as u32;
         let end_line = body.map_or(sig_node.end_position().row as u32, |b| {
