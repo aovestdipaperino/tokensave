@@ -44,17 +44,17 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
 
-          mkdir -p codegraph/${VERSION}/bin
-          cp target/${{ matrix.target }}/release/codegraph codegraph/${VERSION}/bin/codegraph
-          chmod +x codegraph/${VERSION}/bin/codegraph
+          mkdir -p tokensave/${VERSION}/bin
+          cp target/${{ matrix.target }}/release/tokensave tokensave/${VERSION}/bin/tokensave
+          chmod +x tokensave/${VERSION}/bin/tokensave
 
-          tar czf "codegraph--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" codegraph/
+          tar czf "tokensave--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
       - name: Upload bottle artifact
         uses: actions/upload-artifact@v4
         with:
           name: bottle-${{ matrix.bottle_tag }}
-          path: "codegraph--*.bottle.tar.gz"
+          path: "tokensave--*.bottle.tar.gz"
 
   release:
     needs: build
@@ -76,8 +76,8 @@ jobs:
 
       - name: Create source tarball
         run: |
-          git archive --format=tar.gz --prefix=codegraph-rs-${{ steps.version.outputs.version }}/ \
-            -o "codegraph-rs-${{ steps.version.outputs.version }}.tar.gz" HEAD
+          git archive --format=tar.gz --prefix=tokensave-${{ steps.version.outputs.version }}/ \
+            -o "tokensave-${{ steps.version.outputs.version }}.tar.gz" HEAD
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -85,7 +85,7 @@ jobs:
           generate_release_notes: true
           files: |
             bottles/*
-            codegraph-rs-${{ steps.version.outputs.version }}.tar.gz
+            tokensave-${{ steps.version.outputs.version }}.tar.gz
 
   update-tap:
     needs: release
@@ -110,7 +110,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           gh release download "${GITHUB_REF_NAME}" \
             --repo "${{ github.repository }}" \
-            --pattern "codegraph-rs-${VERSION}.tar.gz" \
+            --pattern "tokensave-${VERSION}.tar.gz" \
             --dir .
 
       - name: Compute SHA256 hashes
@@ -118,11 +118,11 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
-          SOURCE_SHA=$(sha256sum "codegraph-rs-${VERSION}.tar.gz" | awk '{print $1}')
+          SOURCE_SHA=$(sha256sum "tokensave-${VERSION}.tar.gz" | awk '{print $1}')
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
-          for f in bottles/codegraph--*.bottle.tar.gz; do
-            tag=$(basename "$f" | sed "s/codegraph--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
+          for f in bottles/tokensave--*.bottle.tar.gz; do
+            tag=$(basename "$f" | sed "s/tokensave--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
             sha=$(sha256sum "$f" | awk '{print $1}')
             echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
           done
@@ -140,16 +140,16 @@ jobs:
           ARM64_SONOMA_SHA="${{ steps.hashes.outputs.arm64_sonoma_sha }}"
           X86_64_LINUX_SHA="${{ steps.hashes.outputs.x86_64_linux_sha }}"
 
-          cat > tap/Formula/codegraph.rb << EOF
-          class Codegraph < Formula
-            desc "Code intelligence tool that builds semantic knowledge graphs from Rust, Go, and Java codebases"
-            homepage "https://github.com/aovestdipaperino/codegraph-rs"
-            url "https://github.com/aovestdipaperino/codegraph-rs/archive/refs/tags/v${VERSION}.tar.gz"
+          cat > tap/Formula/tokensave.rb << EOF
+          class Tokensave < Formula
+            desc "Code intelligence tool that builds semantic knowledge graphs from source code"
+            homepage "https://github.com/aovestdipaperino/tokensave"
+            url "https://github.com/aovestdipaperino/tokensave/archive/refs/tags/v${VERSION}.tar.gz"
             sha256 "${SOURCE_SHA}"
             license "MIT"
 
             bottle do
-              root_url "https://github.com/aovestdipaperino/codegraph-rs/releases/download/v${VERSION}"
+              root_url "https://github.com/aovestdipaperino/tokensave/releases/download/v${VERSION}"
               sha256 cellar: :any_skip_relocation, arm64_sonoma: "${ARM64_SONOMA_SHA}"
               sha256 cellar: :any_skip_relocation, x86_64_linux: "${X86_64_LINUX_SHA}"
             end
@@ -161,7 +161,7 @@ jobs:
             end
 
             test do
-              system "#{bin}/codegraph", "--help"
+              system "#{bin}/tokensave", "--help"
             end
           end
           EOF
@@ -171,6 +171,6 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/codegraph.rb
-          git commit -m "codegraph ${{ steps.version.outputs.version }}"
+          git add Formula/tokensave.rb
+          git commit -m "tokensave ${{ steps.version.outputs.version }}"
           git push

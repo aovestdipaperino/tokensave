@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-03-24
+
+### Fixed
+- Renamed all remaining `codegraph` references in release workflow, Homebrew formula, setup script, and hook to `tokensave`
+- Release workflow now produces `tokensave` binary, bottles, and source tarballs (was still using `codegraph` names)
+- Homebrew formula class renamed from `Codegraph` to `Tokensave` with updated URLs
+- Setup script variable `CODEGRAPH_BIN` renamed to `TOKENSAVE_BIN`
+- CLAUDE.md marker in setup script updated to use `Tokensave` name
+
 ## [1.2.0] - 2026-03-24
 
 ### Added

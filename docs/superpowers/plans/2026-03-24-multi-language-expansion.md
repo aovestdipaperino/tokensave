@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add 8 new language extractors (TypeScript/JS, Python, C, C++, Kotlin, Dart, C#, Pascal) to codegraph, following the existing extractor pattern.
+**Goal:** Add 8 new language extractors (TypeScript/JS, Python, C, C++, Kotlin, Dart, C#, Pascal) to tokensave, following the existing extractor pattern.
 
 **Architecture:** Each language gets its own `*_extractor.rs` file implementing the `LanguageExtractor` trait. The file follows the same `ExtractionState` + AST visitor pattern used by the existing Go/Rust/Java/Scala extractors. New language-specific `NodeKind` variants are added to `types.rs`. Each extractor is registered in `LanguageRegistry::new()`.
 
@@ -814,7 +814,7 @@ Add a test (or run manually) that `LanguageRegistry::new().supported_extensions(
 
 - [ ] **Step 3: Test with real files from each language**
 
-Run `codegraph index` against small sample projects/files for each language to verify end-to-end indexing works.
+Run `tokensave index` against small sample projects/files for each language to verify end-to-end indexing works.
 
 - [ ] **Step 4: Run clippy**
 

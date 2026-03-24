@@ -5,7 +5,7 @@
 #
 # Install: copy to ~/.claude/hooks/ and add to settings.json hooks.
 
-BLOCK_MSG='{"decision": "block", "reason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, tokensave_callees, tokensave_callers, tokensave_impact) instead of agents for code research. Codegraph is faster and more precise for symbol relationships, call paths, and code structure. Only use agents for code exploration if you have already tried tokensave and it cannot answer the question."}'
+BLOCK_MSG='{"decision": "block", "reason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, tokensave_callees, tokensave_callers, tokensave_impact) instead of agents for code research. Tokensave is faster and more precise for symbol relationships, call paths, and code structure. Only use agents for code exploration if you have already tried tokensave and it cannot answer the question."}'
 
 SUBAGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
 
