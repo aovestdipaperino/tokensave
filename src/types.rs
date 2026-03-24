@@ -43,6 +43,11 @@ pub enum NodeKind {
     VarField,
     // Shared
     GenericParam,
+    // C/C++-specific
+    Union,
+    Typedef,
+    Include,
+    PreprocessorDef,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -84,6 +89,10 @@ impl NodeKind {
             NodeKind::ValField => "val",
             NodeKind::VarField => "var",
             NodeKind::GenericParam => "generic_param",
+            NodeKind::Union => "union",
+            NodeKind::Typedef => "typedef",
+            NodeKind::Include => "include",
+            NodeKind::PreprocessorDef => "preprocessor_def",
         }
     }
 
@@ -124,6 +133,10 @@ impl NodeKind {
             "val" => Some(NodeKind::ValField),
             "var" => Some(NodeKind::VarField),
             "generic_param" => Some(NodeKind::GenericParam),
+            "union" => Some(NodeKind::Union),
+            "typedef" => Some(NodeKind::Typedef),
+            "include" => Some(NodeKind::Include),
+            "preprocessor_def" => Some(NodeKind::PreprocessorDef),
             _ => None,
         }
     }
