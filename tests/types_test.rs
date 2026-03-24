@@ -221,6 +221,11 @@ fn test_new_node_kinds_roundtrip() {
 fn test_c_cpp_csharp_pascal_kotlin_dart_node_kinds_roundtrip() {
     use codegraph::types::NodeKind;
     let kinds = vec![
+        // TypeScript/JavaScript
+        (NodeKind::ArrowFunction, "arrow_function"),
+        (NodeKind::Decorator, "decorator"),
+        (NodeKind::Export, "export"),
+        // C/C++
         (NodeKind::Union, "union"),
         (NodeKind::Typedef, "typedef"),
         (NodeKind::Include, "include"),
