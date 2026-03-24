@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use libsql::params;
 
 use super::connection::Database;
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 use crate::types::*;
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert node: {e}"),
                 operation: "insert_node".to_string(),
             })?;
@@ -133,7 +133,7 @@ impl Database {
             .conn()
             .transaction()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_nodes".to_string(),
             })?;
@@ -163,13 +163,13 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert node: {e}"),
                 operation: "insert_nodes".to_string(),
             })?;
         }
 
-        tx.commit().await.map_err(|e| CodeGraphError::Database {
+        tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
             operation: "insert_nodes".to_string(),
         })
@@ -187,17 +187,17 @@ impl Database {
                 params![id],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query node by id: {e}"),
                 operation: "get_node_by_id".to_string(),
             })?;
 
-        match rows.next().await.map_err(|e| CodeGraphError::Database {
+        match rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read node row: {e}"),
             operation: "get_node_by_id".to_string(),
         })? {
             Some(row) => {
-                let node = row_to_node(&row).map_err(|e| CodeGraphError::Database {
+                let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to map node row: {e}"),
                     operation: "get_node_by_id".to_string(),
                 })?;
@@ -219,7 +219,7 @@ impl Database {
                 params![file_path],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query nodes by file: {e}"),
                 operation: "get_nodes_by_file".to_string(),
             })?;
@@ -239,7 +239,7 @@ impl Database {
                 params![kind.as_str()],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query nodes by kind: {e}"),
                 operation: "get_nodes_by_kind".to_string(),
             })?;
@@ -259,7 +259,7 @@ impl Database {
                 (),
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query all nodes: {e}"),
                 operation: "get_all_nodes".to_string(),
             })?;
@@ -275,17 +275,17 @@ impl Database {
                 .conn()
                 .query("SELECT id FROM nodes WHERE file_path = ?1", params![file_path])
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query node ids: {e}"),
                     operation: "delete_nodes_by_file".to_string(),
                 })?;
 
             let mut ids = Vec::new();
-            while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read node id: {e}"),
                 operation: "delete_nodes_by_file".to_string(),
             })? {
-                ids.push(row.get::<String>(0).map_err(|e| CodeGraphError::Database {
+                ids.push(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read node id value: {e}"),
                     operation: "delete_nodes_by_file".to_string(),
                 })?);
@@ -301,7 +301,7 @@ impl Database {
             .conn()
             .transaction()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "delete_nodes_by_file".to_string(),
             })?;
@@ -312,7 +312,7 @@ impl Database {
                 params![id.as_str()],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to delete edges: {e}"),
                 operation: "delete_nodes_by_file".to_string(),
             })?;
@@ -322,14 +322,14 @@ impl Database {
                 params![id.as_str()],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to delete unresolved refs: {e}"),
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
             tx.execute("DELETE FROM vectors WHERE node_id = ?1", params![id.as_str()])
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to delete vectors: {e}"),
                     operation: "delete_nodes_by_file".to_string(),
                 })?;
@@ -340,12 +340,12 @@ impl Database {
             params![file_path],
         )
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to delete nodes: {e}"),
             operation: "delete_nodes_by_file".to_string(),
         })?;
 
-        tx.commit().await.map_err(|e| CodeGraphError::Database {
+        tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
             operation: "delete_nodes_by_file".to_string(),
         })
@@ -370,7 +370,7 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert edge: {e}"),
                 operation: "insert_edge".to_string(),
             })?;
@@ -383,7 +383,7 @@ impl Database {
             .conn()
             .transaction()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_edges".to_string(),
             })?;
@@ -399,13 +399,13 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert edge: {e}"),
                 operation: "insert_edges".to_string(),
             })?;
         }
 
-        tx.commit().await.map_err(|e| CodeGraphError::Database {
+        tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
             operation: "insert_edges".to_string(),
         })
@@ -427,7 +427,7 @@ impl Database {
                     params![source_id],
                 )
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query outgoing edges: {e}"),
                     operation: "get_outgoing_edges".to_string(),
                 })?;
@@ -454,7 +454,7 @@ impl Database {
                 .conn()
                 .query(&sql, libsql::params_from_iter(param_values))
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query outgoing edges: {e}"),
                     operation: "get_outgoing_edges".to_string(),
                 })?;
@@ -479,7 +479,7 @@ impl Database {
                     params![target_id],
                 )
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query incoming edges: {e}"),
                     operation: "get_incoming_edges".to_string(),
                 })?;
@@ -506,7 +506,7 @@ impl Database {
                 .conn()
                 .query(&sql, libsql::params_from_iter(param_values))
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query incoming edges: {e}"),
                     operation: "get_incoming_edges".to_string(),
                 })?;
@@ -523,7 +523,7 @@ impl Database {
                 params![source_id],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to delete edges by source: {e}"),
                 operation: "delete_edges_by_source".to_string(),
             })?;
@@ -553,7 +553,7 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to upsert file: {e}"),
                 operation: "upsert_file".to_string(),
             })?;
@@ -570,17 +570,17 @@ impl Database {
                 params![path],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file: {e}"),
                 operation: "get_file".to_string(),
             })?;
 
-        match rows.next().await.map_err(|e| CodeGraphError::Database {
+        match rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read file row: {e}"),
             operation: "get_file".to_string(),
         })? {
             Some(row) => {
-                let file = row_to_file(&row).map_err(|e| CodeGraphError::Database {
+                let file = row_to_file(&row).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to map file row: {e}"),
                     operation: "get_file".to_string(),
                 })?;
@@ -599,7 +599,7 @@ impl Database {
                 (),
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query all files: {e}"),
                 operation: "get_all_files".to_string(),
             })?;
@@ -613,7 +613,7 @@ impl Database {
         self.conn()
             .execute("DELETE FROM files WHERE path = ?1", params![path])
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to delete file: {e}"),
                 operation: "delete_file".to_string(),
             })?;
@@ -643,7 +643,7 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert unresolved ref: {e}"),
                 operation: "insert_unresolved_ref".to_string(),
             })?;
@@ -656,7 +656,7 @@ impl Database {
             .conn()
             .transaction()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to begin transaction: {e}"),
                 operation: "insert_unresolved_refs".to_string(),
             })?;
@@ -676,13 +676,13 @@ impl Database {
                 ],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert unresolved ref: {e}"),
                 operation: "insert_unresolved_refs".to_string(),
             })?;
         }
 
-        tx.commit().await.map_err(|e| CodeGraphError::Database {
+        tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
             operation: "insert_unresolved_refs".to_string(),
         })
@@ -698,7 +698,7 @@ impl Database {
                 (),
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query unresolved refs: {e}"),
                 operation: "get_unresolved_refs".to_string(),
             })?;
@@ -711,7 +711,7 @@ impl Database {
         self.conn()
             .execute("DELETE FROM unresolved_refs", ())
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to clear unresolved refs: {e}"),
                 operation: "clear_unresolved_refs".to_string(),
             })?;
@@ -760,21 +760,21 @@ impl Database {
                 params![fts_query.as_str(), limit as i64],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to execute FTS query: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
 
         let mut results = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read search result: {e}"),
             operation: "search_nodes".to_string(),
         })? {
-            let node = row_to_node(&row).map_err(|e| CodeGraphError::Database {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to map search result: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
-            let rank: f64 = row.get::<f64>(14).map_err(|e| CodeGraphError::Database {
+            let rank: f64 = row.get::<f64>(14).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read rank: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
@@ -803,17 +803,17 @@ impl Database {
                 params![like_pattern.as_str(), limit as i64],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to execute LIKE query: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
 
         let mut results = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read search result: {e}"),
             operation: "search_nodes".to_string(),
         })? {
-            let node = row_to_node(&row).map_err(|e| CodeGraphError::Database {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to map search result: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
@@ -846,20 +846,20 @@ impl Database {
                 .conn()
                 .query("SELECT kind, COUNT(*) FROM nodes GROUP BY kind", ())
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query nodes by kind: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
 
-            while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read stats row: {e}"),
                 operation: "get_stats".to_string(),
             })? {
-                let kind: String = row.get(0).map_err(|e| CodeGraphError::Database {
+                let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read kind: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
-                let count: i64 = row.get(1).map_err(|e| CodeGraphError::Database {
+                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read count: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
@@ -874,20 +874,20 @@ impl Database {
                 .conn()
                 .query("SELECT kind, COUNT(*) FROM edges GROUP BY kind", ())
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query edges by kind: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
 
-            while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read stats row: {e}"),
                 operation: "get_stats".to_string(),
             })? {
-                let kind: String = row.get(0).map_err(|e| CodeGraphError::Database {
+                let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read kind: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
-                let count: i64 = row.get(1).map_err(|e| CodeGraphError::Database {
+                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read count: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
@@ -926,20 +926,20 @@ impl Database {
                     (),
                 )
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query files by language: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
 
-            while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read stats row: {e}"),
                 operation: "get_stats".to_string(),
             })? {
-                let lang: String = row.get(0).map_err(|e| CodeGraphError::Database {
+                let lang: String = row.get(0).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read language: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
-                let count: i64 = row.get(1).map_err(|e| CodeGraphError::Database {
+                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read count: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
@@ -979,7 +979,7 @@ impl Database {
                  DELETE FROM files;",
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to clear database: {e}"),
                 operation: "clear".to_string(),
             })?;
@@ -1001,17 +1001,17 @@ impl Database {
                 params![key],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query metadata: {e}"),
                 operation: "get_metadata".to_string(),
             })?;
 
-        match rows.next().await.map_err(|e| CodeGraphError::Database {
+        match rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read metadata row: {e}"),
             operation: "get_metadata".to_string(),
         })? {
             Some(row) => {
-                let value: String = row.get(0).map_err(|e| CodeGraphError::Database {
+                let value: String = row.get(0).map_err(|e| TokenSaveError::Database {
                     message: format!("failed to read metadata value: {e}"),
                     operation: "get_metadata".to_string(),
                 })?;
@@ -1029,7 +1029,7 @@ impl Database {
                 params![key, value],
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to set metadata: {e}"),
                 operation: "set_metadata".to_string(),
             })?;
@@ -1057,11 +1057,11 @@ async fn collect_rows<T>(
     operation: &str,
 ) -> Result<Vec<T>> {
     let mut items = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| CodeGraphError::Database {
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
         message: format!("failed to read row: {e}"),
         operation: operation.to_string(),
     })? {
-        items.push(map_fn(&row).map_err(|e| CodeGraphError::Database {
+        items.push(map_fn(&row).map_err(|e| TokenSaveError::Database {
             message: format!("failed to map row: {e}"),
             operation: operation.to_string(),
         })?);
@@ -1078,7 +1078,7 @@ async fn query_scalar_i64(
     let mut rows = conn
         .query(sql, ())
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to execute scalar query: {e}"),
             operation: operation.to_string(),
         })?;
@@ -1086,16 +1086,16 @@ async fn query_scalar_i64(
     let row = rows
         .next()
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to read scalar row: {e}"),
             operation: operation.to_string(),
         })?
-        .ok_or_else(|| CodeGraphError::Database {
+        .ok_or_else(|| TokenSaveError::Database {
             message: "no result from scalar query".to_string(),
             operation: operation.to_string(),
         })?;
 
-    row.get::<i64>(0).map_err(|e| CodeGraphError::Database {
+    row.get::<i64>(0).map_err(|e| TokenSaveError::Database {
         message: format!("failed to read scalar value: {e}"),
         operation: operation.to_string(),
     })

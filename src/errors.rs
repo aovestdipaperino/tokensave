@@ -3,7 +3,7 @@ use thiserror::Error;
 
 /// Errors that can occur during code graph operations.
 #[derive(Error, Debug)]
-pub enum CodeGraphError {
+pub enum TokenSaveError {
     #[error("file error: {message} (path: {path})")]
     File { message: String, path: String },
 
@@ -36,5 +36,5 @@ pub enum CodeGraphError {
     Json(#[from] serde_json::Error),
 }
 
-/// Convenience alias for results using `CodeGraphError`.
-pub type Result<T> = std::result::Result<T, CodeGraphError>;
+/// Convenience alias for results using `TokenSaveError`.
+pub type Result<T> = std::result::Result<T, TokenSaveError>;

@@ -1,6 +1,6 @@
-use codegraph::extraction::JavaExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::JavaExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 #[test]
 fn test_java_extract_package() {

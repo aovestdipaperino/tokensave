@@ -1,6 +1,6 @@
-use codegraph::extraction::LanguageExtractor;
-use codegraph::extraction::PascalExtractor;
-use codegraph::types::*;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::extraction::PascalExtractor;
+use tokensave::types::*;
 
 fn extract(source: &str) -> ExtractionResult {
     let extractor = PascalExtractor;

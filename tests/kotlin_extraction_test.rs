@@ -1,6 +1,6 @@
-use codegraph::extraction::KotlinExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::KotlinExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 fn extract(source: &str) -> ExtractionResult {
     let extractor = KotlinExtractor;

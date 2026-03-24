@@ -3,8 +3,8 @@
 //! These tests verify that extractors handle real-world code patterns correctly,
 //! producing the expected nodes, edges, and relationships.
 
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 fn read_fixture(name: &str) -> String {
     let path = format!("tests/fixtures/{}", name);
@@ -16,7 +16,7 @@ fn read_fixture(name: &str) -> String {
 #[test]
 fn test_fixture_typescript() {
     let source = read_fixture("sample.ts");
-    let extractor = codegraph::extraction::TypeScriptExtractor;
+    let extractor = tokensave::extraction::TypeScriptExtractor;
     let result = extractor.extract("sample.ts", &source);
     assert!(result.errors.is_empty(), "TS errors: {:?}", result.errors);
 
@@ -80,7 +80,7 @@ fn test_fixture_typescript() {
 #[test]
 fn test_fixture_javascript() {
     let source = read_fixture("sample.js");
-    let extractor = codegraph::extraction::TypeScriptExtractor;
+    let extractor = tokensave::extraction::TypeScriptExtractor;
     let result = extractor.extract("sample.js", &source);
     assert!(result.errors.is_empty(), "JS errors: {:?}", result.errors);
 
@@ -97,7 +97,7 @@ fn test_fixture_javascript() {
 #[test]
 fn test_fixture_python() {
     let source = read_fixture("sample.py");
-    let extractor = codegraph::extraction::PythonExtractor;
+    let extractor = tokensave::extraction::PythonExtractor;
     let result = extractor.extract("sample.py", &source);
     assert!(result.errors.is_empty(), "Python errors: {:?}", result.errors);
 
@@ -169,7 +169,7 @@ fn test_fixture_python() {
 #[test]
 fn test_fixture_c() {
     let source = read_fixture("sample.c");
-    let extractor = codegraph::extraction::CExtractor;
+    let extractor = tokensave::extraction::CExtractor;
     let result = extractor.extract("sample.c", &source);
     assert!(result.errors.is_empty(), "C errors: {:?}", result.errors);
 
@@ -221,7 +221,7 @@ fn test_fixture_c() {
 #[test]
 fn test_fixture_c_header() {
     let source = read_fixture("sample.h");
-    let extractor = codegraph::extraction::CExtractor;
+    let extractor = tokensave::extraction::CExtractor;
     let result = extractor.extract("sample.h", &source);
     assert!(result.errors.is_empty(), "C header errors: {:?}", result.errors);
 
@@ -243,7 +243,7 @@ fn test_fixture_c_header() {
 #[test]
 fn test_fixture_cpp() {
     let source = read_fixture("sample.cpp");
-    let extractor = codegraph::extraction::CppExtractor;
+    let extractor = tokensave::extraction::CppExtractor;
     let result = extractor.extract("sample.cpp", &source);
     assert!(result.errors.is_empty(), "C++ errors: {:?}", result.errors);
 
@@ -305,7 +305,7 @@ fn test_fixture_cpp() {
 #[test]
 fn test_fixture_kotlin() {
     let source = read_fixture("sample.kt");
-    let extractor = codegraph::extraction::KotlinExtractor;
+    let extractor = tokensave::extraction::KotlinExtractor;
     let result = extractor.extract("sample.kt", &source);
     assert!(result.errors.is_empty(), "Kotlin errors: {:?}", result.errors);
 
@@ -365,7 +365,7 @@ fn test_fixture_kotlin() {
 #[test]
 fn test_fixture_dart() {
     let source = read_fixture("sample.dart");
-    let extractor = codegraph::extraction::DartExtractor;
+    let extractor = tokensave::extraction::DartExtractor;
     let result = extractor.extract("sample.dart", &source);
     assert!(result.errors.is_empty(), "Dart errors: {:?}", result.errors);
 
@@ -421,7 +421,7 @@ fn test_fixture_dart() {
 #[test]
 fn test_fixture_csharp() {
     let source = read_fixture("sample.cs");
-    let extractor = codegraph::extraction::CSharpExtractor;
+    let extractor = tokensave::extraction::CSharpExtractor;
     let result = extractor.extract("sample.cs", &source);
     assert!(result.errors.is_empty(), "C# errors: {:?}", result.errors);
 
@@ -497,7 +497,7 @@ fn test_fixture_csharp() {
 #[test]
 fn test_fixture_pascal() {
     let source = read_fixture("sample.pas");
-    let extractor = codegraph::extraction::PascalExtractor;
+    let extractor = tokensave::extraction::PascalExtractor;
     let result = extractor.extract("sample.pas", &source);
     assert!(result.errors.is_empty(), "Pascal errors: {:?}", result.errors);
 

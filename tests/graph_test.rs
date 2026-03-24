@@ -1,7 +1,7 @@
-use codegraph::db::Database;
-use codegraph::graph::queries::GraphQueryManager;
-use codegraph::graph::traversal::GraphTraverser;
-use codegraph::types::*;
+use tokensave::db::Database;
+use tokensave::graph::queries::GraphQueryManager;
+use tokensave::graph::traversal::GraphTraverser;
+use tokensave::types::*;
 use tempfile::TempDir;
 
 /// Helper: create a temp database and return (Database, TempDir).
@@ -506,7 +506,7 @@ async fn test_find_circular_dependencies() {
     db.insert_edges(&edges).await.expect("insert edges failed");
 
     // Register files so they show up in get_all_files.
-    let file_a = codegraph::types::FileRecord {
+    let file_a = tokensave::types::FileRecord {
         path: "src/a.rs".to_string(),
         content_hash: "hash_a".to_string(),
         size: 100,
@@ -514,7 +514,7 @@ async fn test_find_circular_dependencies() {
         indexed_at: 2000,
         node_count: 1,
     };
-    let file_b = codegraph::types::FileRecord {
+    let file_b = tokensave::types::FileRecord {
         path: "src/b.rs".to_string(),
         content_hash: "hash_b".to_string(),
         size: 100,

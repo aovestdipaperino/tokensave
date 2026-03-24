@@ -1,4 +1,4 @@
-use codegraph::types::*;
+use tokensave::types::*;
 
 #[test]
 fn node_kind_as_str_roundtrip() {
@@ -189,7 +189,7 @@ fn build_context_options_default() {
 
 #[test]
 fn test_new_node_kinds_roundtrip() {
-    use codegraph::types::NodeKind;
+    use tokensave::types::NodeKind;
     let kinds = vec![
         (NodeKind::Class, "class"),
         (NodeKind::Interface, "interface"),
@@ -219,7 +219,7 @@ fn test_new_node_kinds_roundtrip() {
 
 #[test]
 fn test_c_cpp_csharp_pascal_kotlin_dart_node_kinds_roundtrip() {
-    use codegraph::types::NodeKind;
+    use tokensave::types::NodeKind;
     let kinds = vec![
         // TypeScript/JavaScript
         (NodeKind::ArrowFunction, "arrow_function"),
@@ -258,7 +258,7 @@ fn test_c_cpp_csharp_pascal_kotlin_dart_node_kinds_roundtrip() {
 
 #[test]
 fn test_new_edge_kinds_roundtrip() {
-    use codegraph::types::EdgeKind;
+    use tokensave::types::EdgeKind;
     let kinds = vec![
         (EdgeKind::Extends, "extends"),
         (EdgeKind::Annotates, "annotates"),

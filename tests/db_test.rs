@@ -1,5 +1,5 @@
-use codegraph::db::Database;
-use codegraph::types::*;
+use tokensave::db::Database;
+use tokensave::types::*;
 use tempfile::TempDir;
 
 /// Helper: create an in-memory-style temp database and return (Database, TempDir).

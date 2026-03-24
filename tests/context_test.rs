@@ -1,5 +1,5 @@
-use codegraph::context::*;
-use codegraph::types::*;
+use tokensave::context::*;
+use tokensave::types::*;
 
 #[test]
 fn test_extract_symbols_from_query() {
@@ -63,8 +63,8 @@ fn test_format_context_json() {
 
 #[tokio::test]
 async fn test_build_context_with_db() {
-    use codegraph::context::ContextBuilder;
-    use codegraph::db::Database;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
 
@@ -76,7 +76,7 @@ async fn test_build_context_with_db() {
     fs::write(project.join("src/lib.rs"), "pub fn process_data() {}\n").unwrap();
 
     // Init DB and insert a node
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -108,8 +108,8 @@ async fn test_build_context_with_db() {
 
 #[tokio::test]
 async fn test_get_code_reads_source_file() {
-    use codegraph::context::ContextBuilder;
-    use codegraph::db::Database;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
 
@@ -123,7 +123,7 @@ async fn test_get_code_reads_source_file() {
     )
     .unwrap();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
 
@@ -154,14 +154,14 @@ async fn test_get_code_reads_source_file() {
 
 #[tokio::test]
 async fn test_get_code_returns_none_for_missing_file() {
-    use codegraph::context::ContextBuilder;
-    use codegraph::db::Database;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
 
@@ -189,14 +189,14 @@ async fn test_get_code_returns_none_for_missing_file() {
 
 #[tokio::test]
 async fn test_find_relevant_context() {
-    use codegraph::context::ContextBuilder;
-    use codegraph::db::Database;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
     use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".codegraph/codegraph.db"))
+    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
     let node = Node {

@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-03-24
+## [1.0.0] - 2026-03-24
+
+### Changed
+- **Renamed project from `token-codegraph` to `tokensave`**
+- Crate name: `tokensave` (was `token-codegraph`)
+- Binary name: `tokensave` (was `codegraph`)
+- Data directory: `.tokensave/` (was `.codegraph/`)
+- MCP tool prefix: `tokensave_*` (was `codegraph_*`)
+- Version bump to 1.0.0
 
 ### Added
 - TypeScript/JavaScript language support (.ts, .tsx, .js, .jsx)
@@ -18,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dart language support (.dart)
 - C# language support (.cs)
 - Pascal language support (.pas, .pp, .dpr)
+- Legacy `.codegraph/` directory detection with migration warning
 - CHANGELOG.md for tracking version history
 
 ## [0.6.0]
@@ -35,8 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.2]
 
 ### Changed
-- Update repo URLs after GitHub rename to token-codegraph
-- Rename crate to token-codegraph for crates.io
+- Update repo URLs after GitHub rename to tokensave
+- Rename crate to tokensave for crates.io
 
 ## [0.5.1]
 
@@ -64,9 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.1]
 
 ### Added
-- Show version number in codegraph status
+- Show version number in tokensave status
 - Persist tokens-saved counter to database
-- Show indexed token count in codegraph status
+- Show indexed token count in tokensave status
 
 ### Changed
 - Update dependencies
@@ -109,7 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - MCP server (JSON-RPC 2.0 over stdio)
-- CLI interface and CodeGraph orchestrator
+- CLI interface and TokenSave orchestrator
 - Vector embeddings for semantic search
 - Context builder for AI-ready code graph context
 - Incremental sync for detecting file changes

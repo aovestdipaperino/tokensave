@@ -1,6 +1,6 @@
-use codegraph::extraction::CppExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::CppExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 #[test]
 fn test_cpp_file_node_is_root() {

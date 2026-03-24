@@ -3,7 +3,7 @@ use std::path::Path;
 
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 
 use super::migrations;
 
@@ -21,7 +21,7 @@ impl Database {
     /// schema migrations up to the latest version.
     pub async fn initialize(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CodeGraphError::Database {
+            std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to create database directory: {e}"),
                 operation: "initialize".to_string(),
             })?;
@@ -30,12 +30,12 @@ impl Database {
         let db = Builder::new_local(db_path)
             .build()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to open database: {e}"),
                 operation: "initialize".to_string(),
             })?;
 
-        let conn = db.connect().map_err(|e| CodeGraphError::Database {
+        let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
             operation: "initialize".to_string(),
         })?;
@@ -52,12 +52,12 @@ impl Database {
         let db = Builder::new_local(db_path)
             .build()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to open database: {e}"),
                 operation: "open".to_string(),
             })?;
 
-        let conn = db.connect().map_err(|e| CodeGraphError::Database {
+        let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
             operation: "open".to_string(),
         })?;
@@ -83,7 +83,7 @@ impl Database {
         self.conn
             .execute_batch("VACUUM; ANALYZE;")
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to optimize database: {e}"),
                 operation: "optimize".to_string(),
             })?;
@@ -99,7 +99,7 @@ impl Database {
                 (),
             )
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to get database size: {e}"),
                 operation: "size".to_string(),
             })?;
@@ -107,16 +107,16 @@ impl Database {
         let row = rows
             .next()
             .await
-            .map_err(|e| CodeGraphError::Database {
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read database size row: {e}"),
                 operation: "size".to_string(),
             })?
-            .ok_or_else(|| CodeGraphError::Database {
+            .ok_or_else(|| TokenSaveError::Database {
                 message: "no result from page size query".to_string(),
                 operation: "size".to_string(),
             })?;
 
-        let size = row.get::<i64>(0).map_err(|e| CodeGraphError::Database {
+        let size = row.get::<i64>(0).map_err(|e| TokenSaveError::Database {
             message: format!("failed to read size value: {e}"),
             operation: "size".to_string(),
         })?;
@@ -136,7 +136,7 @@ impl Database {
              PRAGMA mmap_size = 268435456;",
         )
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to apply pragmas: {e}"),
             operation: "apply_pragmas".to_string(),
         })?;

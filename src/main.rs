@@ -5,9 +5,9 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use codegraph::codegraph::CodeGraph;
-use codegraph::context::{format_context_as_json, format_context_as_markdown};
-use codegraph::types::*;
+use tokensave::tokensave::TokenSave;
+use tokensave::context::{format_context_as_json, format_context_as_markdown};
+use tokensave::types::*;
 
 /// A self-animating spinner that ticks on a background thread.
 ///
@@ -76,7 +76,7 @@ impl Spinner {
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
-#[command(name = "codegraph", about = "Code intelligence for Rust, Go, Java, and Scala codebases")]
+#[command(name = "tokensave", about = "Code intelligence for Rust, Go, Java, and Scala codebases")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -142,7 +142,7 @@ async fn main() {
     }
 }
 
-async fn run(cli: Cli) -> codegraph::errors::Result<()> {
+async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => return handle_no_command().await,
@@ -150,13 +150,21 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
     match command {
         Commands::Sync { path, force } => {
             let project_path = resolve_path(path);
-            if force || !CodeGraph::is_initialized(&project_path) {
+            // Warn if legacy .codegraph directory exists
+            if project_path.join(".codegraph").is_dir() {
+                eprintln!(
+                    "warning: found legacy .codegraph/ directory at '{}'. \
+                     tokensave now uses .tokensave/ — the old directory can be safely deleted.",
+                    project_path.display()
+                );
+            }
+            if force || !TokenSave::is_initialized(&project_path) {
                 if !force {
                     eprintln!("No existing index found — performing full index");
                 }
                 init_and_index(&project_path).await?;
             } else {
-                let cg = CodeGraph::open(&project_path).await?;
+                let cg = TokenSave::open(&project_path).await?;
                 let spinner = Spinner::new();
                 let result = cg
                     .sync_with_progress(|phase, detail| {
@@ -248,7 +256,7 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
         Commands::Serve { path } => {
             let project_path = resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
-            let server = codegraph::mcp::McpServer::new(cg).await;
+            let server = tokensave::mcp::McpServer::new(cg).await;
             server.run().await?;
         }
     }
@@ -256,16 +264,16 @@ async fn run(cli: Cli) -> codegraph::errors::Result<()> {
 }
 
 /// When invoked with no subcommand, offer to create the index if none exists.
-async fn handle_no_command() -> codegraph::errors::Result<()> {
+async fn handle_no_command() -> tokensave::errors::Result<()> {
     let project_path = resolve_path(None);
-    if CodeGraph::is_initialized(&project_path) {
+    if TokenSave::is_initialized(&project_path) {
         // Already initialized — show help via clap
         let _ = <Cli as clap::CommandFactory>::command().print_help();
         eprintln!();
         return Ok(());
     }
     eprint!(
-        "No CodeGraph index found at '{}'. Create one now? [Y/n] ",
+        "No TokenSave index found at '{}'. Create one now? [Y/n] ",
         project_path.display()
     );
     io::stderr().flush().ok();
@@ -273,7 +281,7 @@ async fn handle_no_command() -> codegraph::errors::Result<()> {
     io::stdin()
         .lock()
         .read_line(&mut answer)
-        .map_err(|e| codegraph::errors::CodeGraphError::Config {
+        .map_err(|e| tokensave::errors::TokenSaveError::Config {
             message: format!("failed to read stdin: {}", e),
         })?;
     let answer = answer.trim();
@@ -284,12 +292,12 @@ async fn handle_no_command() -> codegraph::errors::Result<()> {
 }
 
 /// Initializes a new project (if needed) and runs a full index.
-async fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
-    let cg = if CodeGraph::is_initialized(project_path) {
-        CodeGraph::open(project_path).await?
+async fn init_and_index(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
+    let cg = if TokenSave::is_initialized(project_path) {
+        TokenSave::open(project_path).await?
     } else {
-        let cg = CodeGraph::init(project_path).await?;
-        eprintln!("Initialized CodeGraph at {}", project_path.display());
+        let cg = TokenSave::init(project_path).await?;
+        eprintln!("Initialized TokenSave at {}", project_path.display());
         cg
     };
     let spinner = Spinner::new();
@@ -303,14 +311,14 @@ async fn init_and_index(project_path: &Path) -> codegraph::errors::Result<CodeGr
     Ok(cg)
 }
 
-/// Opens an existing project, or tells the user to run `codegraph sync` first.
-async fn ensure_initialized(project_path: &Path) -> codegraph::errors::Result<CodeGraph> {
-    if CodeGraph::is_initialized(project_path) {
-        return CodeGraph::open(project_path).await;
+/// Opens an existing project, or tells the user to run `tokensave sync` first.
+async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
+    if TokenSave::is_initialized(project_path) {
+        return TokenSave::open(project_path).await;
     }
-    Err(codegraph::errors::CodeGraphError::Config {
+    Err(tokensave::errors::TokenSaveError::Config {
         message: format!(
-            "no CodeGraph index found at '{}' — run 'codegraph sync' first",
+            "no TokenSave index found at '{}' — run 'tokensave sync' first",
             project_path.display()
         ),
     })
@@ -371,7 +379,7 @@ fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_co
 }
 
 /// Prints the status output as a compact bordered table.
-fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
+fn print_status_table(stats: &tokensave::types::GraphStats, tokens_saved: u64) {
     let version = env!("CARGO_PKG_VERSION");
     let num_cols = 3;
 
@@ -397,7 +405,7 @@ fn print_status_table(stats: &codegraph::types::GraphStats, tokens_saved: u64) {
     let inner_width = cell_width * num_cols + (num_cols - 1);
 
     // Title row
-    let title = format!("CodeGraph v{}", version);
+    let title = format!("TokenSave v{}", version);
     let tokens_text = format!("Tokens saved ~{}", format_token_count(tokens_saved));
     let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
 

@@ -1,7 +1,7 @@
-use codegraph::extraction::ScalaExtractor;
-use codegraph::types::{EdgeKind, NodeKind};
+use tokensave::extraction::ScalaExtractor;
+use tokensave::types::{EdgeKind, NodeKind};
 
-fn extract(source: &str) -> codegraph::types::ExtractionResult {
+fn extract(source: &str) -> tokensave::types::ExtractionResult {
     ScalaExtractor::extract_scala("test.scala", source)
 }
 
@@ -175,7 +175,7 @@ fn test_scala_visibility_private() {
     let result = extract("class Foo {\n  private def secret(): Unit = ()\n}");
     let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
     assert_eq!(methods.len(), 1);
-    assert_eq!(methods[0].visibility, codegraph::types::Visibility::Private);
+    assert_eq!(methods[0].visibility, tokensave::types::Visibility::Private);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn test_scala_visibility_default_is_public() {
     let result = extract("class Foo {\n  def open(): Unit = ()\n}");
     let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
     assert_eq!(methods.len(), 1);
-    assert_eq!(methods[0].visibility, codegraph::types::Visibility::Pub);
+    assert_eq!(methods[0].visibility, tokensave::types::Visibility::Pub);
 }
 
 #[test]

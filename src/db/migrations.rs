@@ -1,5 +1,5 @@
 // Rust guideline compliant 2025-10-17
-//! Sequential schema migrations for the codegraph database.
+//! Sequential schema migrations for the tokensave database.
 //!
 //! Each migration is a function that takes a connection and applies DDL
 //! statements. Migrations run inside an EXCLUSIVE transaction so that
@@ -11,7 +11,7 @@
 
 use libsql::Connection;
 
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
@@ -20,18 +20,18 @@ const LATEST_VERSION: u32 = 2;
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
     let mut rows = conn.query("PRAGMA user_version", ()).await.map_err(|e| {
-        CodeGraphError::Database {
+        TokenSaveError::Database {
             message: format!("failed to read user_version: {e}"),
             operation: "get_version".to_string(),
         }
     })?;
-    let row = rows.next().await.map_err(|e| CodeGraphError::Database {
+    let row = rows.next().await.map_err(|e| TokenSaveError::Database {
         message: format!("failed to read user_version row: {e}"),
         operation: "get_version".to_string(),
     })?;
     match row {
         Some(r) => {
-            let v: i64 = r.get(0).map_err(|e| CodeGraphError::Database {
+            let v: i64 = r.get(0).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read user_version value: {e}"),
                 operation: "get_version".to_string(),
             })?;
@@ -48,7 +48,7 @@ async fn get_version(conn: &Connection) -> Result<u32> {
 async fn set_version(conn: &Connection, version: u32) -> Result<()> {
     conn.execute(&format!("PRAGMA user_version = {version}"), ())
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to set user_version: {e}"),
             operation: "set_version".to_string(),
         })?;
@@ -71,7 +71,7 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
     // blocked.
     conn.execute("BEGIN EXCLUSIVE", ())
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("failed to acquire exclusive lock: {e}"),
             operation: "migrate".to_string(),
         })?;
@@ -86,7 +86,7 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
         Ok(()) => {
             conn.execute("COMMIT", ())
                 .await
-                .map_err(|e| CodeGraphError::Database {
+                .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to commit migrations: {e}"),
                     operation: "migrate".to_string(),
                 })?;
@@ -113,7 +113,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
     match version {
         1 => migrate_v1(conn).await,
         2 => migrate_v2(conn).await,
-        _ => Err(CodeGraphError::Database {
+        _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
         }),
@@ -184,7 +184,7 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
         );",
     )
     .await
-    .map_err(|e| CodeGraphError::Database {
+    .map_err(|e| TokenSaveError::Database {
         message: format!("v1: failed to create tables: {e}"),
         operation: "migrate_v1".to_string(),
     })?;
@@ -218,7 +218,7 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
         END;",
     )
     .await
-    .map_err(|e| CodeGraphError::Database {
+    .map_err(|e| TokenSaveError::Database {
         message: format!("v1: failed to create FTS: {e}"),
         operation: "migrate_v1".to_string(),
     })?;
@@ -242,7 +242,7 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);",
     )
     .await
-    .map_err(|e| CodeGraphError::Database {
+    .map_err(|e| TokenSaveError::Database {
         message: format!("v1: failed to create indexes: {e}"),
         operation: "migrate_v1".to_string(),
     })?;
@@ -264,7 +264,7 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
         (),
     )
     .await
-    .map_err(|e| CodeGraphError::Database {
+    .map_err(|e| TokenSaveError::Database {
         message: format!("v2: failed to create metadata table: {e}"),
         operation: "migrate_v2".to_string(),
     })?;
@@ -272,7 +272,7 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
     // Drop the legacy schema_versions table if it exists.
     conn.execute("DROP TABLE IF EXISTS schema_versions", ())
         .await
-        .map_err(|e| CodeGraphError::Database {
+        .map_err(|e| TokenSaveError::Database {
             message: format!("v2: failed to drop schema_versions: {e}"),
             operation: "migrate_v2".to_string(),
         })?;

@@ -4,21 +4,21 @@ use std::path::{Path, PathBuf};
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 
-/// Name of the configuration file stored inside the `.codegraph` directory.
+/// Name of the configuration file stored inside the `.tokensave` directory.
 pub const CONFIG_FILENAME: &str = "config.json";
 
-/// Name of the hidden directory used to store CodeGraph metadata.
-pub const CODEGRAPH_DIR: &str = ".codegraph";
+/// Name of the hidden directory used to store TokenSave metadata.
+pub const TOKENSAVE_DIR: &str = ".tokensave";
 
-/// Configuration for a CodeGraph project.
+/// Configuration for a TokenSave project.
 ///
 /// Controls which files are indexed, size limits, and feature toggles.
 /// Language inclusion is derived automatically from the installed
 /// `LanguageExtractor` set — only exclude patterns live in the config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CodeGraphConfig {
+pub struct TokenSaveConfig {
     /// Schema version of the configuration.
     pub version: u32,
     /// Root directory of the project being indexed.
@@ -35,7 +35,7 @@ pub struct CodeGraphConfig {
     pub enable_embeddings: bool,
 }
 
-impl Default for CodeGraphConfig {
+impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
             version: 1,
@@ -43,7 +43,7 @@ impl Default for CodeGraphConfig {
             exclude: vec![
                 "target/**".to_string(),
                 ".git/**".to_string(),
-                ".codegraph/**".to_string(),
+                ".tokensave/**".to_string(),
                 "node_modules/**".to_string(),
                 "vendor/**".to_string(),
                 "**/*.min.*".to_string(),
@@ -60,31 +60,31 @@ impl Default for CodeGraphConfig {
     }
 }
 
-/// Returns the path to the `.codegraph` directory within the given project root.
-pub fn get_codegraph_dir(project_root: &Path) -> PathBuf {
-    project_root.join(CODEGRAPH_DIR)
+/// Returns the path to the `.tokensave` directory within the given project root.
+pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
+    project_root.join(TOKENSAVE_DIR)
 }
 
-/// Returns the path to the configuration file (`config.json`) within the `.codegraph` directory.
+/// Returns the path to the configuration file (`config.json`) within the `.tokensave` directory.
 pub fn get_config_path(project_root: &Path) -> PathBuf {
-    get_codegraph_dir(project_root).join(CONFIG_FILENAME)
+    get_tokensave_dir(project_root).join(CONFIG_FILENAME)
 }
 
 /// Loads the configuration from disk.
 ///
 /// If the configuration file does not exist, returns a default configuration
 /// with `root_dir` set to the given project root.
-pub fn load_config(project_root: &Path) -> Result<CodeGraphConfig> {
+pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     let config_path = get_config_path(project_root);
 
     if !config_path.exists() {
-        return Ok(CodeGraphConfig {
+        return Ok(TokenSaveConfig {
             root_dir: project_root.to_string_lossy().to_string(),
-            ..CodeGraphConfig::default()
+            ..TokenSaveConfig::default()
         });
     }
 
-    let contents = fs::read_to_string(&config_path).map_err(|e| CodeGraphError::Config {
+    let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to read config file '{}': {}",
             config_path.display(),
@@ -92,8 +92,8 @@ pub fn load_config(project_root: &Path) -> Result<CodeGraphConfig> {
         ),
     })?;
 
-    let config: CodeGraphConfig =
-        serde_json::from_str(&contents).map_err(|e| CodeGraphError::Config {
+    let config: TokenSaveConfig =
+        serde_json::from_str(&contents).map_err(|e| TokenSaveError::Config {
             message: format!(
                 "failed to parse config file '{}': {}",
                 config_path.display(),
@@ -108,12 +108,12 @@ pub fn load_config(project_root: &Path) -> Result<CodeGraphConfig> {
 ///
 /// Writes to a temporary file first and then renames it to the final location,
 /// ensuring that a partial write never corrupts the configuration.
-pub fn save_config(project_root: &Path, config: &CodeGraphConfig) -> Result<()> {
-    let codegraph_dir = get_codegraph_dir(project_root);
-    fs::create_dir_all(&codegraph_dir).map_err(|e| CodeGraphError::Config {
+pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> {
+    let tokensave_dir = get_tokensave_dir(project_root);
+    fs::create_dir_all(&tokensave_dir).map_err(|e| TokenSaveError::Config {
         message: format!(
-            "failed to create codegraph directory '{}': {}",
-            codegraph_dir.display(),
+            "failed to create tokensave directory '{}': {}",
+            tokensave_dir.display(),
             e
         ),
     })?;
@@ -121,11 +121,11 @@ pub fn save_config(project_root: &Path, config: &CodeGraphConfig) -> Result<()> 
     let config_path = get_config_path(project_root);
     let tmp_path = config_path.with_extension("tmp");
 
-    let json = serde_json::to_string_pretty(config).map_err(|e| CodeGraphError::Config {
+    let json = serde_json::to_string_pretty(config).map_err(|e| TokenSaveError::Config {
         message: format!("failed to serialize config: {}", e),
     })?;
 
-    fs::write(&tmp_path, &json).map_err(|e| CodeGraphError::Config {
+    fs::write(&tmp_path, &json).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to write temporary config file '{}': {}",
             tmp_path.display(),
@@ -133,7 +133,7 @@ pub fn save_config(project_root: &Path, config: &CodeGraphConfig) -> Result<()> 
         ),
     })?;
 
-    fs::rename(&tmp_path, &config_path).map_err(|e| CodeGraphError::Config {
+    fs::rename(&tmp_path, &config_path).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to rename temporary config file '{}' to '{}': {}",
             tmp_path.display(),
@@ -146,7 +146,7 @@ pub fn save_config(project_root: &Path, config: &CodeGraphConfig) -> Result<()> 
 }
 
 /// Returns `true` if the file matches any of the configured exclude patterns.
-pub fn is_excluded(file_path: &str, config: &CodeGraphConfig) -> bool {
+pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     let match_opts = glob::MatchOptions {
         case_sensitive: true,
         require_literal_separator: false,

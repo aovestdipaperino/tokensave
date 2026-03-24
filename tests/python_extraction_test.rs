@@ -1,6 +1,6 @@
-use codegraph::extraction::LanguageExtractor;
-use codegraph::extraction::PythonExtractor;
-use codegraph::types::*;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::extraction::PythonExtractor;
+use tokensave::types::*;
 
 #[test]
 fn test_py_file_node_is_root() {

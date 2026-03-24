@@ -1,20 +1,20 @@
 [package]
-name = "token-codegraph"
-version = "0.7.0"
+name = "tokensave"
+version = "1.0.0"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, and Pascal codebases"
 license = "MIT"
-repository = "https://github.com/aovestdipaperino/token-codegraph"
-homepage = "https://github.com/aovestdipaperino/token-codegraph"
+repository = "https://github.com/aovestdipaperino/tokensave"
+homepage = "https://github.com/aovestdipaperino/tokensave"
 readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
 
 [lib]
-name = "codegraph"
+name = "tokensave"
 
 [[bin]]
-name = "codegraph"
+name = "tokensave"
 path = "src/main.rs"
 
 [dependencies]

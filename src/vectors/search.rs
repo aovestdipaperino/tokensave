@@ -102,7 +102,7 @@ pub async fn vector_count(db: &Database) -> Result<usize> {
     let row = rows
         .next()
         .await?
-        .ok_or_else(|| crate::errors::CodeGraphError::Vector {
+        .ok_or_else(|| crate::errors::TokenSaveError::Vector {
             message: "COUNT query returned no rows".to_string(),
         })?;
     let count: i64 = row.get(0)?;

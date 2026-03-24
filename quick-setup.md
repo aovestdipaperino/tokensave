@@ -4,28 +4,28 @@
 
 ```bash
 brew tap aovestdipaperino/tap
-brew install codegraph
+brew install tokensave
 ```
 
 Verify it works:
 
 ```bash
-codegraph --help
+tokensave --help
 ```
 
 ## 2. Index your project
 
 ```bash
 cd /path/to/your/project
-codegraph sync
+tokensave sync
 ```
 
-This creates a `.codegraph/` directory (if needed) and indexes all Rust, Go, and Java files in the project. Running `codegraph sync` again picks up only changed files. To force a full re-index, use `codegraph sync --force`.
+This creates a `.tokensave/` directory (if needed) and indexes all Rust, Go, and Java files in the project. Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
 
 Check what was indexed:
 
 ```bash
-codegraph status
+tokensave status
 ```
 
 ## 3. Configure the MCP server in Claude
@@ -37,8 +37,8 @@ Add the following to your Claude settings file.
 ```json
 {
   "mcpServers": {
-    "codegraph": {
-      "command": "codegraph",
+    "tokensave": {
+      "command": "tokensave",
       "args": ["serve", "--path", "/path/to/your/project"]
     }
   }
@@ -50,8 +50,8 @@ Add the following to your Claude settings file.
 ```json
 {
   "mcpServers": {
-    "codegraph": {
-      "command": "codegraph",
+    "tokensave": {
+      "command": "tokensave",
       "args": ["serve", "--path", "/path/to/your/project"]
     }
   }
@@ -66,26 +66,26 @@ Once the MCP server is configured, Claude has access to these tools:
 
 | Tool | What it does |
 |------|-------------|
-| `codegraph_search` | Find symbols by name or keyword |
-| `codegraph_context` | Build AI-ready context for a task description |
-| `codegraph_callers` | Find all callers of a function |
-| `codegraph_callees` | Find all callees of a function |
-| `codegraph_impact` | Compute the impact radius of a symbol |
-| `codegraph_node` | Get detailed info about a specific symbol |
-| `codegraph_status` | Show graph statistics |
+| `tokensave_search` | Find symbols by name or keyword |
+| `tokensave_context` | Build AI-ready context for a task description |
+| `tokensave_callers` | Find all callers of a function |
+| `tokensave_callees` | Find all callees of a function |
+| `tokensave_impact` | Compute the impact radius of a symbol |
+| `tokensave_node` | Get detailed info about a specific symbol |
+| `tokensave_status` | Show graph statistics |
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 
-- *"How does the authentication module work?"* -- uses `codegraph_context`
-- *"What calls the `processPayment` function?"* -- uses `codegraph_callers`
-- *"If I change `UserService`, what else is affected?"* -- uses `codegraph_impact`
+- *"How does the authentication module work?"* -- uses `tokensave_context`
+- *"What calls the `processPayment` function?"* -- uses `tokensave_callers`
+- *"If I change `UserService`, what else is affected?"* -- uses `tokensave_impact`
 
 ## Keeping the index fresh
 
 After making code changes, sync the graph:
 
 ```bash
-codegraph sync
+tokensave sync
 ```
 
 The MCP server reads from the database on each request, so it picks up synced changes without restarting.

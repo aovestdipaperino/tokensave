@@ -1,7 +1,7 @@
 // Rust guideline compliant 2025-10-17
 //! MCP tool definitions and dispatch for the code graph.
 //!
-//! Each tool maps to a `CodeGraph` method. Tool definitions include JSON Schema
+//! Each tool maps to a `TokenSave` method. Tool definitions include JSON Schema
 //! descriptions so that MCP clients can discover available capabilities.
 
 use std::collections::HashSet;
@@ -9,9 +9,9 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::codegraph::CodeGraph;
+use crate::tokensave::TokenSave;
 use crate::context::format_context_as_markdown;
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 use crate::types::BuildContextOptions;
 
 /// Maximum character length for a tool response before truncation.
@@ -33,7 +33,7 @@ pub struct ToolDefinition {
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "codegraph_search".to_string(),
+            name: "tokensave_search".to_string(),
             description: "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -51,7 +51,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_context".to_string(),
+            name: "tokensave_context".to_string(),
             description: "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and code snippets.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -69,7 +69,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_callers".to_string(),
+            name: "tokensave_callers".to_string(),
             description: "Find all callers of a given node (function, method, etc.) up to a specified depth.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -87,7 +87,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_callees".to_string(),
+            name: "tokensave_callees".to_string(),
             description: "Find all callees of a given node (function, method, etc.) up to a specified depth.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -105,7 +105,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_impact".to_string(),
+            name: "tokensave_impact".to_string(),
             description: "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -123,7 +123,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_node".to_string(),
+            name: "tokensave_node".to_string(),
             description: "Retrieve detailed information about a single node by its ID.".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -137,7 +137,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "codegraph_status".to_string(),
+            name: "tokensave_status".to_string(),
             description: "Return aggregate statistics about the code graph (node/edge/file counts, DB size, etc.).".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -160,22 +160,22 @@ pub struct ToolResult {
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
 /// name is unknown or the handler fails. The optional `server_stats` value
-/// is included in `codegraph_status` responses when provided.
+/// is included in `tokensave_status` responses when provided.
 pub async fn handle_tool_call(
-    cg: &CodeGraph,
+    cg: &TokenSave,
     tool_name: &str,
     args: Value,
     server_stats: Option<Value>,
 ) -> Result<ToolResult> {
     match tool_name {
-        "codegraph_search" => handle_search(cg, args).await,
-        "codegraph_context" => handle_context(cg, args).await,
-        "codegraph_callers" => handle_callers(cg, args).await,
-        "codegraph_callees" => handle_callees(cg, args).await,
-        "codegraph_impact" => handle_impact(cg, args).await,
-        "codegraph_node" => handle_node(cg, args).await,
-        "codegraph_status" => handle_status(cg, server_stats).await,
-        _ => Err(CodeGraphError::Config {
+        "tokensave_search" => handle_search(cg, args).await,
+        "tokensave_context" => handle_context(cg, args).await,
+        "tokensave_callers" => handle_callers(cg, args).await,
+        "tokensave_callees" => handle_callees(cg, args).await,
+        "tokensave_impact" => handle_impact(cg, args).await,
+        "tokensave_node" => handle_node(cg, args).await,
+        "tokensave_status" => handle_status(cg, server_stats).await,
+        _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
     }
@@ -208,12 +208,12 @@ fn truncate_response(s: &str) -> String {
     }
 }
 
-/// Handles `codegraph_search` tool calls.
-async fn handle_search(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_search` tool calls.
+async fn handle_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let query =
         args.get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| CodeGraphError::Config {
+            .ok_or_else(|| TokenSaveError::Config {
                 message: "missing required parameter: query".to_string(),
             })?;
 
@@ -251,12 +251,12 @@ async fn handle_search(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     })
 }
 
-/// Handles `codegraph_context` tool calls.
-async fn handle_context(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_context` tool calls.
+async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let task = args
         .get("task")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| CodeGraphError::Config {
+        .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: task".to_string(),
         })?;
 
@@ -290,12 +290,12 @@ async fn handle_context(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     })
 }
 
-/// Handles `codegraph_callers` tool calls.
-async fn handle_callers(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_callers` tool calls.
+async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| CodeGraphError::Config {
+        .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: node_id".to_string(),
         })?;
 
@@ -332,12 +332,12 @@ async fn handle_callers(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     })
 }
 
-/// Handles `codegraph_callees` tool calls.
-async fn handle_callees(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_callees` tool calls.
+async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| CodeGraphError::Config {
+        .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: node_id".to_string(),
         })?;
 
@@ -374,12 +374,12 @@ async fn handle_callees(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     })
 }
 
-/// Handles `codegraph_impact` tool calls.
-async fn handle_impact(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_impact` tool calls.
+async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| CodeGraphError::Config {
+        .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: node_id".to_string(),
         })?;
 
@@ -422,12 +422,12 @@ async fn handle_impact(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     })
 }
 
-/// Handles `codegraph_node` tool calls.
-async fn handle_node(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
+/// Handles `tokensave_node` tool calls.
+async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = args
         .get("node_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| CodeGraphError::Config {
+        .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: node_id".to_string(),
         })?;
 
@@ -466,8 +466,8 @@ async fn handle_node(cg: &CodeGraph, args: Value) -> Result<ToolResult> {
     }
 }
 
-/// Handles `codegraph_status` tool calls.
-async fn handle_status(cg: &CodeGraph, server_stats: Option<Value>) -> Result<ToolResult> {
+/// Handles `tokensave_status` tool calls.
+async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     if let Some(ss) = server_stats {
@@ -492,13 +492,13 @@ mod tests {
         assert_eq!(tools.len(), 7);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(tool_names.contains(&"codegraph_search"));
-        assert!(tool_names.contains(&"codegraph_context"));
-        assert!(tool_names.contains(&"codegraph_callers"));
-        assert!(tool_names.contains(&"codegraph_callees"));
-        assert!(tool_names.contains(&"codegraph_impact"));
-        assert!(tool_names.contains(&"codegraph_node"));
-        assert!(tool_names.contains(&"codegraph_status"));
+        assert!(tool_names.contains(&"tokensave_search"));
+        assert!(tool_names.contains(&"tokensave_context"));
+        assert!(tool_names.contains(&"tokensave_callers"));
+        assert!(tool_names.contains(&"tokensave_callees"));
+        assert!(tool_names.contains(&"tokensave_impact"));
+        assert!(tool_names.contains(&"tokensave_node"));
+        assert!(tool_names.contains(&"tokensave_status"));
     }
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
     fn test_tool_definitions_serializable() {
         let tools = get_tool_definitions();
         let json = serde_json::to_string(&tools).unwrap();
-        assert!(json.contains("codegraph_search"));
-        assert!(json.contains("codegraph_status"));
+        assert!(json.contains("tokensave_search"));
+        assert!(json.contains("tokensave_status"));
     }
 }

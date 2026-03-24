@@ -1,6 +1,6 @@
-use codegraph::db::Database;
-use codegraph::types::*;
-use codegraph::vectors::*;
+use tokensave::db::Database;
+use tokensave::types::*;
+use tokensave::vectors::*;
 use tempfile::TempDir;
 
 #[test]

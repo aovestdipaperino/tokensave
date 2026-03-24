@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use walkdir::WalkDir;
 
-use crate::config::{get_codegraph_dir, is_excluded, load_config, save_config, CodeGraphConfig};
+use crate::config::{get_tokensave_dir, is_excluded, load_config, save_config, TokenSaveConfig};
 use crate::context::ContextBuilder;
 use crate::db::Database;
-use crate::errors::{CodeGraphError, Result};
+use crate::errors::{TokenSaveError, Result};
 use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::ReferenceResolver;
@@ -19,9 +19,9 @@ use crate::types::*;
 ///
 /// Provides a high-level API for initializing, indexing, querying, and
 /// syncing a Rust codebase's semantic knowledge graph.
-pub struct CodeGraph {
+pub struct TokenSave {
     db: Database,
-    config: CodeGraphConfig,
+    config: TokenSaveConfig,
     project_root: PathBuf,
     registry: LanguageRegistry,
 }
@@ -62,19 +62,19 @@ fn current_timestamp() -> i64 {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-impl CodeGraph {
-    /// Initializes a new CodeGraph project at the given root.
+impl TokenSave {
+    /// Initializes a new TokenSave project at the given root.
     ///
-    /// Creates the `.codegraph` directory, writes a default configuration,
+    /// Creates the `.tokensave` directory, writes a default configuration,
     /// and initializes a fresh SQLite database.
     pub async fn init(project_root: &Path) -> Result<Self> {
-        let config = CodeGraphConfig {
+        let config = TokenSaveConfig {
             root_dir: project_root.to_string_lossy().to_string(),
-            ..CodeGraphConfig::default()
+            ..TokenSaveConfig::default()
         };
         save_config(project_root, &config)?;
 
-        let db_path = get_codegraph_dir(project_root).join("codegraph.db");
+        let db_path = get_tokensave_dir(project_root).join("tokensave.db");
         let db = Database::initialize(&db_path).await?;
 
         Ok(Self {
@@ -85,17 +85,17 @@ impl CodeGraph {
         })
     }
 
-    /// Opens an existing CodeGraph project at the given root.
+    /// Opens an existing TokenSave project at the given root.
     ///
     /// Loads the configuration from disk and opens the existing database.
     pub async fn open(project_root: &Path) -> Result<Self> {
         let config = load_config(project_root)?;
-        let db_path = get_codegraph_dir(project_root).join("codegraph.db");
+        let db_path = get_tokensave_dir(project_root).join("tokensave.db");
 
         if !db_path.exists() {
-            return Err(CodeGraphError::Config {
+            return Err(TokenSaveError::Config {
                 message: format!(
-                    "no CodeGraph database found at '{}'; run 'codegraph sync' first",
+                    "no TokenSave database found at '{}'; run 'tokensave sync' first",
                     db_path.display()
                 ),
             });
@@ -110,10 +110,10 @@ impl CodeGraph {
         })
     }
 
-    /// Returns `true` if a CodeGraph project has been initialized at the given root.
+    /// Returns `true` if a TokenSave project has been initialized at the given root.
     pub fn is_initialized(project_root: &Path) -> bool {
-        get_codegraph_dir(project_root)
-            .join("codegraph.db")
+        get_tokensave_dir(project_root)
+            .join("tokensave.db")
             .exists()
     }
 }
@@ -122,7 +122,7 @@ impl CodeGraph {
 // Indexing
 // ---------------------------------------------------------------------------
 
-impl CodeGraph {
+impl TokenSave {
     /// Performs a full index: clears existing data, scans all Rust files,
     /// extracts nodes and edges, resolves references, and stores everything
     /// in the database.
@@ -362,7 +362,7 @@ impl CodeGraph {
 // Query delegation
 // ---------------------------------------------------------------------------
 
-impl CodeGraph {
+impl TokenSave {
     /// Searches for nodes matching the given query string.
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         self.db.search_nodes(query, limit).await
@@ -431,7 +431,7 @@ impl CodeGraph {
     }
 
     /// Returns a reference to the current configuration.
-    pub fn get_config(&self) -> &CodeGraphConfig {
+    pub fn get_config(&self) -> &TokenSaveConfig {
         &self.config
     }
 

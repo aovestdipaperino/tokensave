@@ -1,5 +1,5 @@
-use codegraph::extraction::{LanguageRegistry, RustExtractor};
-use codegraph::types::*;
+use tokensave::extraction::{LanguageRegistry, RustExtractor};
+use tokensave::types::*;
 
 #[test]
 fn test_extract_function() {

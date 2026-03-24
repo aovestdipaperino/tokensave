@@ -12,7 +12,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::codegraph::CodeGraph;
+use crate::tokensave::TokenSave;
 use crate::errors::Result;
 
 use super::tools::{get_tool_definitions, handle_tool_call};
@@ -37,10 +37,10 @@ impl ServerStats {
     }
 }
 
-/// The MCP server wrapping a `CodeGraph` instance.
+/// The MCP server wrapping a `TokenSave` instance.
 // Lock ordering: file_token_map -> tool_call_counts (never nested)
 pub struct McpServer {
-    cg: CodeGraph,
+    cg: TokenSave,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
     /// Approximate token count per indexed file (file_path -> tokens).
@@ -51,7 +51,7 @@ pub struct McpServer {
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
-    pub async fn new(cg: CodeGraph) -> Self {
+    pub async fn new(cg: TokenSave) -> Self {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         Self {
@@ -186,7 +186,7 @@ impl McpServer {
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "codegraph",
+                    "name": "tokensave",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }),
@@ -226,12 +226,12 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
-        eprintln!("[codegraph] tool call: {}", tool_name);
+        eprintln!("[tokensave] tool call: {}", tool_name);
         if let Ok(mut counts) = self.tool_call_counts.lock() {
             *counts.entry(tool_name.to_string()).or_insert(0) += 1;
         }
 
-        let server_stats = if tool_name == "codegraph_status" {
+        let server_stats = if tool_name == "tokensave_status" {
             Some(self.server_stats_json())
         } else {
             None

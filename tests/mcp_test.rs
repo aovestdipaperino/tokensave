@@ -1,5 +1,5 @@
-use codegraph::mcp::tools::*;
-use codegraph::mcp::transport::*;
+use tokensave::mcp::tools::*;
+use tokensave::mcp::transport::*;
 use serde_json::json;
 
 #[test]
@@ -22,13 +22,13 @@ fn test_tool_definitions() {
     assert!(!tools.is_empty());
 
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(tool_names.contains(&"codegraph_search"));
-    assert!(tool_names.contains(&"codegraph_context"));
-    assert!(tool_names.contains(&"codegraph_callers"));
-    assert!(tool_names.contains(&"codegraph_callees"));
-    assert!(tool_names.contains(&"codegraph_impact"));
-    assert!(tool_names.contains(&"codegraph_node"));
-    assert!(tool_names.contains(&"codegraph_status"));
+    assert!(tool_names.contains(&"tokensave_search"));
+    assert!(tool_names.contains(&"tokensave_context"));
+    assert!(tool_names.contains(&"tokensave_callers"));
+    assert!(tool_names.contains(&"tokensave_callees"));
+    assert!(tool_names.contains(&"tokensave_impact"));
+    assert!(tool_names.contains(&"tokensave_node"));
+    assert!(tool_names.contains(&"tokensave_status"));
 }
 
 #[test]

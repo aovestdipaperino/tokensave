@@ -1,6 +1,6 @@
-use codegraph::extraction::DartExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::DartExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 fn extract(source: &str) -> ExtractionResult {
     DartExtractor::extract_dart("test.dart", source)

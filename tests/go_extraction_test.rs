@@ -1,6 +1,6 @@
-use codegraph::extraction::GoExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::GoExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 #[test]
 fn test_go_extract_package() {

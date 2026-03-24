@@ -1,6 +1,6 @@
-use codegraph::extraction::CExtractor;
-use codegraph::extraction::LanguageExtractor;
-use codegraph::types::*;
+use tokensave::extraction::CExtractor;
+use tokensave::extraction::LanguageExtractor;
+use tokensave::types::*;
 
 #[test]
 fn test_c_file_node_is_root() {

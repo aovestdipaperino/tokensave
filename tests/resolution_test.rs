@@ -1,6 +1,6 @@
-use codegraph::db::Database;
-use codegraph::resolution::ReferenceResolver;
-use codegraph::types::*;
+use tokensave::db::Database;
+use tokensave::resolution::ReferenceResolver;
+use tokensave::types::*;
 use tempfile::TempDir;
 
 /// Sets up a temporary database pre-populated with two nodes: a `helper`

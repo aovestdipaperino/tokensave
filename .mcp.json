@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "codegraph": {
-      "command": "codegraph",
+    "tokensave": {
+      "command": "tokensave",
       "args": ["serve", "-p", "/Users/enzolombardi/Code/code-graph"]
     }
   }
