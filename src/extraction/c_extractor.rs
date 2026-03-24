@@ -335,11 +335,9 @@ impl CExtractor {
         };
 
         // Get the variable name from init_declarator or direct declarator
-        let name = Self::extract_variable_name(state, node);
-        if name.is_none() {
+        let Some(name) = Self::extract_variable_name(state, node) else {
             return;
-        }
-        let name = name.unwrap();
+        };
 
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
