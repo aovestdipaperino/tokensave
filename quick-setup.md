@@ -2,9 +2,16 @@
 
 ## 1. Install
 
+**Homebrew (macOS):**
+
 ```bash
-brew tap aovestdipaperino/tap
-brew install tokensave
+brew install aovestdipaperino/tap/tokensave
+```
+
+**Cargo (any platform):**
+
+```bash
+cargo install tokensave
 ```
 
 Verify it works:
@@ -13,14 +20,22 @@ Verify it works:
 tokensave --help
 ```
 
-## 2. Index your project
+## 2. Configure Claude Code
+
+```bash
+tokensave claude-install
+```
+
+This single command configures everything — MCP server, tool permissions, PreToolUse hook, and CLAUDE.md rules. No scripts, no `jq`, works on macOS/Linux/Windows. Safe to re-run after upgrading.
+
+## 3. Index your project
 
 ```bash
 cd /path/to/your/project
 tokensave sync
 ```
 
-This creates a `.tokensave/` directory (if needed) and indexes all Rust, Go, and Java files in the project. Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
+This creates a `.tokensave/` directory and indexes all supported files (13 languages). Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
 
 Check what was indexed:
 
@@ -28,24 +43,32 @@ Check what was indexed:
 tokensave status
 ```
 
-## 3. Configure the MCP server in Claude
+## 4. Use it with Claude
 
-Add the following to your Claude settings file.
+Once configured, Claude has access to these tools:
 
-**Claude Code** (`~/.claude/settings.json`):
+| Tool | What it does |
+|------|-------------|
+| `tokensave_search` | Find symbols by name or keyword |
+| `tokensave_context` | Build AI-ready context for a task description |
+| `tokensave_callers` | Find all callers of a function |
+| `tokensave_callees` | Find all callees of a function |
+| `tokensave_impact` | Compute the impact radius of a symbol |
+| `tokensave_node` | Get detailed info about a specific symbol |
+| `tokensave_files` | List indexed project files with filtering |
+| `tokensave_affected` | Find test files affected by source changes |
+| `tokensave_status` | Show graph statistics |
 
-```json
-{
-  "mcpServers": {
-    "tokensave": {
-      "command": "tokensave",
-      "args": ["serve", "--path", "/path/to/your/project"]
-    }
-  }
-}
-```
+Claude will use these tools automatically when you ask questions about your codebase. Examples:
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+- *"How does the authentication module work?"* — uses `tokensave_context`
+- *"What calls the `processPayment` function?"* — uses `tokensave_callers`
+- *"If I change `UserService`, what else is affected?"* — uses `tokensave_impact`
+- *"Which tests need to run after I changed db/connection.rs?"* — uses `tokensave_affected`
+
+### Claude Desktop (manual)
+
+For Claude Desktop, add the MCP server to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -59,26 +82,6 @@ Add the following to your Claude settings file.
 ```
 
 Replace `/path/to/your/project` with the absolute path to your indexed project.
-
-## 4. Use it with Claude
-
-Once the MCP server is configured, Claude has access to these tools:
-
-| Tool | What it does |
-|------|-------------|
-| `tokensave_search` | Find symbols by name or keyword |
-| `tokensave_context` | Build AI-ready context for a task description |
-| `tokensave_callers` | Find all callers of a function |
-| `tokensave_callees` | Find all callees of a function |
-| `tokensave_impact` | Compute the impact radius of a symbol |
-| `tokensave_node` | Get detailed info about a specific symbol |
-| `tokensave_status` | Show graph statistics |
-
-Claude will use these tools automatically when you ask questions about your codebase. Examples:
-
-- *"How does the authentication module work?"* -- uses `tokensave_context`
-- *"What calls the `processPayment` function?"* -- uses `tokensave_callers`
-- *"If I change `UserService`, what else is affected?"* -- uses `tokensave_impact`
 
 ## Keeping the index fresh
 
