@@ -626,6 +626,9 @@ impl CSharpExtractor {
             });
         }
 
+        // Extract attributes on this method.
+        Self::extract_attributes_from_declaration(state, node, &id);
+
         // Extract call sites from the method body.
         if let Some(body) = node.child_by_field_name("body") {
             Self::extract_call_sites(state, body, &id);
