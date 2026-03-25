@@ -222,6 +222,7 @@ tokensave claude-install         # Configure Claude Code integration
 tokensave serve                  # Start MCP server
 tokensave disable-upload-counter # Opt out of worldwide counter uploads
 tokensave enable-upload-counter  # Re-enable worldwide counter uploads
+tokensave doctor                 # Check installation and configuration health
 ```
 
 ### `tokensave files`
@@ -432,6 +433,122 @@ Returns the list of affected test files and count.
 ### `tokensave_status`
 
 Get index status and project statistics. Returns index metadata, symbol counts, language distribution, and pending changes. Also reports global tokens saved across all tracked projects (from the user-level database at `~/.tokensave/global.db`).
+
+### `tokensave_dead_code`
+
+Find unreachable symbols — functions or methods with no incoming edges (nothing calls them).
+
+- **`kinds`** (array of strings, optional): Node kinds to check (default: `["function", "method"]`)
+
+Returns a list of potentially dead code symbols with file paths and line numbers.
+
+### `tokensave_diff_context`
+
+Get semantic context for changed files. Given a list of file paths, returns the symbols in those files, what depends on them, and which tests are affected.
+
+- **`files`** (array of strings, required): Changed file paths to analyze
+- **`depth`** (number, optional): Impact traversal depth (default: 2)
+
+Returns: modified symbols, impacted downstream symbols, and affected test files.
+
+### `tokensave_module_api`
+
+Show the public API surface of a file or directory — all exported symbols with their signatures.
+
+- **`path`** (string, required): File path or directory prefix to inspect
+
+Returns public symbols sorted by file and line number.
+
+### `tokensave_circular`
+
+Detect circular dependencies between files in the project.
+
+- **`max_depth`** (number, optional): Maximum search depth (default: 10)
+
+Returns a list of dependency cycles (each cycle is a list of file paths).
+
+### `tokensave_hotspots`
+
+Find the most connected symbols — the ones with the highest combined incoming + outgoing edge count.
+
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Returns symbols ranked by connectivity, useful for identifying high-risk code.
+
+### `tokensave_similar`
+
+Find symbols with names similar to a given query.
+
+- **`symbol`** (string, required): Symbol name to match against
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Returns matching symbols sorted by relevance. Useful for finding patterns, naming inconsistencies, or related code.
+
+### `tokensave_rename_preview`
+
+Preview the impact of renaming a symbol. Shows all edges referencing it — callers, callees, containers, and other relationships.
+
+- **`node_id`** (string, required): The symbol's node ID
+
+Returns all referencing symbols with their locations and edge types.
+
+### `tokensave_unused_imports`
+
+Find import/use statements that are never referenced anywhere in the graph.
+
+Returns a list of unused import nodes with file paths and line numbers.
+
+### `tokensave_changelog`
+
+Generate a semantic diff between two git refs. Shows which symbols were added, removed, or exist in changed files.
+
+- **`from_ref`** (string, required): Starting git ref (e.g., `HEAD~5`, `v1.4.0`)
+- **`to_ref`** (string, required): Ending git ref (e.g., `HEAD`, `v1.5.0`)
+
+Returns a structured changelog with added/removed/modified symbols per file.
+
+---
+
+## `tokensave doctor`
+
+Run a comprehensive health check of your tokensave installation:
+
+```bash
+tokensave doctor
+```
+
+```
+tokensave doctor v1.5.0
+
+Binary
+  ✔ Binary: /Users/you/.cargo/bin/tokensave
+  ✔ Version: 1.5.0
+
+Current project
+  ✔ Index found: /Users/you/project/.tokensave/
+
+Global database
+  ✔ Global DB: /Users/you/.tokensave/global.db
+
+User config
+  ✔ Config: /Users/you/.tokensave/config.toml
+  ✔ Upload enabled
+
+Claude Code integration
+  ✔ Settings: /Users/you/.claude/settings.json
+  ✔ MCP server registered
+  ✔ PreToolUse hook installed
+  ✔ All 18 tool permissions granted
+  ✔ CLAUDE.md contains tokensave rules
+
+Network
+  ✔ Worldwide counter reachable (total: 1.0M)
+  ✔ GitHub releases API reachable
+
+All checks passed.
+```
+
+Checks: binary location, project index, global DB, user config, Claude Code settings (MCP server, hook, permissions, CLAUDE.md rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave claude-install`.
 
 ---
 

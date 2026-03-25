@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.5.0] - 2026-03-25
+## [1.5.1] - 2026-03-25
+
+### Added
+- `tokensave doctor` command — comprehensive health check of binary, project index, global DB, user config, Claude Code integration (MCP server, hook, permissions, CLAUDE.md), and network connectivity
+- Stale install warning: automatically detects when `claude-install` needs re-running due to new tool permissions and warns on every CLI command
 
 ### Added
 - 9 new MCP tools (18 total):

@@ -192,6 +192,8 @@ enum Commands {
     /// Enable uploading token counts to the worldwide counter
     #[command(name = "enable-upload-counter")]
     EnableUploadCounter,
+    /// Check tokensave installation, configuration, and Claude Code integration
+    Doctor,
 }
 
 #[tokio::main]
@@ -226,6 +228,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
              \x20     Run `tokensave disable-upload-counter` to opt out."
         );
     }
+
+    // Best-effort check: warn if claude-install needs re-running
+    check_claude_install_stale();
 
     match command {
         Commands::Sync { path, force } => {
@@ -547,6 +552,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.upload_enabled = true;
             config.save();
             eprintln!("Worldwide counter upload enabled.");
+        }
+        Commands::Doctor => {
+            run_doctor();
         }
     }
     Ok(())
@@ -930,6 +938,255 @@ fn print_status_table(
 /// Resolves an optional path argument to an absolute `PathBuf`.
 ///
 /// Defaults to the current working directory if no path is provided.
+/// Expected MCP tool permissions for the current version.
+const EXPECTED_TOOL_PERMS: &[&str] = &[
+    "mcp__tokensave__tokensave_affected",
+    "mcp__tokensave__tokensave_callees",
+    "mcp__tokensave__tokensave_callers",
+    "mcp__tokensave__tokensave_changelog",
+    "mcp__tokensave__tokensave_circular",
+    "mcp__tokensave__tokensave_context",
+    "mcp__tokensave__tokensave_dead_code",
+    "mcp__tokensave__tokensave_diff_context",
+    "mcp__tokensave__tokensave_files",
+    "mcp__tokensave__tokensave_hotspots",
+    "mcp__tokensave__tokensave_impact",
+    "mcp__tokensave__tokensave_module_api",
+    "mcp__tokensave__tokensave_node",
+    "mcp__tokensave__tokensave_rename_preview",
+    "mcp__tokensave__tokensave_search",
+    "mcp__tokensave__tokensave_similar",
+    "mcp__tokensave__tokensave_status",
+    "mcp__tokensave__tokensave_unused_imports",
+];
+
+/// Best-effort check: warn if `claude-install` needs re-running.
+/// Reads ~/.claude/settings.json and compares installed permissions
+/// against what the current version expects. Silent on any error.
+fn check_claude_install_stale() {
+    let Some(home) = home_dir() else { return };
+    let settings_path = home.join(".claude").join("settings.json");
+    let Ok(contents) = std::fs::read_to_string(&settings_path) else { return };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) else { return };
+
+    let installed: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let missing_count = EXPECTED_TOOL_PERMS
+        .iter()
+        .filter(|p| !installed.contains(p))
+        .count();
+
+    if missing_count > 0 {
+        eprintln!(
+            "\x1b[33mwarning: {} new tokensave tool(s) not yet permitted. Run `tokensave claude-install` to update.\x1b[0m",
+            missing_count
+        );
+    }
+}
+
+/// Runs a comprehensive health check of the tokensave installation.
+fn run_doctor() {
+    let mut issues = 0u32;
+    let mut warnings = 0u32;
+
+    let pass = |msg: &str| eprintln!("  \x1b[32m✔\x1b[0m {msg}");
+    let fail = |msg: &str| eprintln!("  \x1b[31m✘\x1b[0m {msg}");
+    let warn = |msg: &str| eprintln!("  \x1b[33m!\x1b[0m {msg}");
+    let info = |msg: &str| eprintln!("    {msg}");
+
+    eprintln!("\n\x1b[1mtokensave doctor v{}\x1b[0m\n", env!("CARGO_PKG_VERSION"));
+
+    // ── Binary ──────────────────────────────────────────────────────
+    eprintln!("\x1b[1mBinary\x1b[0m");
+    if let Ok(exe) = std::env::current_exe() {
+        pass(&format!("Binary: {}", exe.display()));
+    } else {
+        fail("Could not determine binary path");
+        issues += 1;
+    }
+    pass(&format!("Version: {}", env!("CARGO_PKG_VERSION")));
+
+    // ── Current project ─────────────────────────────────────────────
+    eprintln!("\n\x1b[1mCurrent project\x1b[0m");
+    let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if TokenSave::is_initialized(&project_path) {
+        pass(&format!("Index found: {}/.tokensave/", project_path.display()));
+    } else {
+        warn(&format!("No index at {}/.tokensave/ — run `tokensave sync`", project_path.display()));
+        warnings += 1;
+    }
+
+    // ── Global database ─────────────────────────────────────────────
+    eprintln!("\n\x1b[1mGlobal database\x1b[0m");
+    if let Some(db_path) = tokensave::global_db::global_db_path() {
+        if db_path.exists() {
+            pass(&format!("Global DB: {}", db_path.display()));
+        } else {
+            warn("Global DB not yet created (created on first sync)");
+            warnings += 1;
+        }
+    } else {
+        fail("Could not determine home directory for global DB");
+        issues += 1;
+    }
+
+    // ── User config ─────────────────────────────────────────────────
+    eprintln!("\n\x1b[1mUser config\x1b[0m");
+    if let Some(config_path) = tokensave::user_config::config_path() {
+        if config_path.exists() {
+            let config = tokensave::user_config::UserConfig::load();
+            pass(&format!("Config: {}", config_path.display()));
+            if config.upload_enabled {
+                pass("Upload enabled");
+            } else {
+                info("Upload disabled (opt-out)");
+            }
+            if config.pending_upload > 0 {
+                info(&format!("Pending upload: {} tokens", config.pending_upload));
+            }
+        } else {
+            warn("Config not yet created (created on first sync)");
+            warnings += 1;
+        }
+    } else {
+        fail("Could not determine home directory for config");
+        issues += 1;
+    }
+
+    // ── Claude Code integration ─────────────────────────────────────
+    eprintln!("\n\x1b[1mClaude Code integration\x1b[0m");
+    let home = home_dir();
+    if let Some(ref home) = home {
+        let settings_path = home.join(".claude").join("settings.json");
+        if settings_path.exists() {
+            let settings_ok = std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+
+            if let Some(settings) = settings_ok {
+                pass(&format!("Settings: {}", settings_path.display()));
+
+                // Check MCP server registration
+                let has_mcp = settings["mcpServers"]["tokensave"].is_object()
+                    || settings["mcpServers"]["tokensave"].is_string();
+                if has_mcp {
+                    pass("MCP server registered");
+                } else {
+                    fail("MCP server NOT registered — run `tokensave claude-install`");
+                    issues += 1;
+                }
+
+                // Check hook
+                let has_hook = settings["hooks"]["PreToolUse"]
+                    .as_array()
+                    .is_some_and(|arr| {
+                        arr.iter().any(|h| {
+                            let cmd = h["hooks"]
+                                .as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|c| c["command"].as_str())
+                                .unwrap_or("");
+                            cmd.contains("tokensave")
+                        })
+                    });
+                if has_hook {
+                    pass("PreToolUse hook installed");
+                } else {
+                    fail("PreToolUse hook NOT installed — run `tokensave claude-install`");
+                    issues += 1;
+                }
+
+                // Check permissions
+                let installed: Vec<&str> = settings["permissions"]["allow"]
+                    .as_array()
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
+                let missing: Vec<&&str> = EXPECTED_TOOL_PERMS
+                    .iter()
+                    .filter(|p| !installed.contains(p))
+                    .collect();
+
+                if missing.is_empty() {
+                    pass(&format!("All {} tool permissions granted", EXPECTED_TOOL_PERMS.len()));
+                } else {
+                    fail(&format!("{} tool permission(s) missing — run `tokensave claude-install`", missing.len()));
+                    for perm in &missing {
+                        info(&format!("missing: {}", perm));
+                    }
+                    issues += 1;
+                }
+
+                // Check for stale permissions (tools in settings that no longer exist)
+                let stale: Vec<&&str> = installed
+                    .iter()
+                    .filter(|p| p.starts_with("mcp__tokensave__") && !EXPECTED_TOOL_PERMS.contains(p))
+                    .collect();
+                if !stale.is_empty() {
+                    warn(&format!("{} stale permission(s) from older version (harmless)", stale.len()));
+                    warnings += 1;
+                }
+            } else {
+                fail("Could not parse settings.json");
+                issues += 1;
+            }
+        } else {
+            fail("~/.claude/settings.json not found — run `tokensave claude-install`");
+            issues += 1;
+        }
+
+        // Check CLAUDE.md
+        let claude_md_path = home.join(".claude").join("CLAUDE.md");
+        if claude_md_path.exists() {
+            let has_rules = std::fs::read_to_string(&claude_md_path)
+                .unwrap_or_default()
+                .contains("tokensave");
+            if has_rules {
+                pass("CLAUDE.md contains tokensave rules");
+            } else {
+                fail("CLAUDE.md missing tokensave rules — run `tokensave claude-install`");
+                issues += 1;
+            }
+        } else {
+            warn("~/.claude/CLAUDE.md does not exist");
+            warnings += 1;
+        }
+    } else {
+        fail("Could not determine home directory");
+        issues += 1;
+    }
+
+    // ── Network ─────────────────────────────────────────────────────
+    eprintln!("\n\x1b[1mNetwork\x1b[0m");
+    if let Some(total) = tokensave::cloud::fetch_worldwide_total() {
+        pass(&format!("Worldwide counter reachable (total: {})", format_token_count(total)));
+    } else {
+        warn("Worldwide counter unreachable (offline or timeout)");
+        warnings += 1;
+    }
+    if tokensave::cloud::fetch_latest_version().is_some() {
+        pass("GitHub releases API reachable");
+    } else {
+        warn("GitHub releases API unreachable (offline or timeout)");
+        warnings += 1;
+    }
+
+    // ── Summary ─────────────────────────────────────────────────────
+    eprintln!();
+    if issues == 0 && warnings == 0 {
+        eprintln!("\x1b[32mAll checks passed.\x1b[0m");
+    } else if issues == 0 {
+        eprintln!("\x1b[33m{} warning(s), no issues.\x1b[0m", warnings);
+    } else {
+        eprintln!("\x1b[31m{} issue(s), {} warning(s).\x1b[0m", issues, warnings);
+        eprintln!("Run \x1b[1mtokensave claude-install\x1b[0m to fix most issues.");
+    }
+    eprintln!();
+}
+
 /// Configures Claude Code to use tokensave: MCP server, permissions, hook, CLAUDE.md rules.
 fn claude_install() -> tokensave::errors::Result<()> {
     let home = home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
@@ -996,26 +1253,6 @@ fn claude_install() -> tokensave::errors::Result<()> {
     }
 
     // 4. Add MCP tool permissions (idempotent)
-    let tool_perms = [
-        "mcp__tokensave__tokensave_affected",
-        "mcp__tokensave__tokensave_callees",
-        "mcp__tokensave__tokensave_callers",
-        "mcp__tokensave__tokensave_changelog",
-        "mcp__tokensave__tokensave_circular",
-        "mcp__tokensave__tokensave_context",
-        "mcp__tokensave__tokensave_dead_code",
-        "mcp__tokensave__tokensave_diff_context",
-        "mcp__tokensave__tokensave_files",
-        "mcp__tokensave__tokensave_hotspots",
-        "mcp__tokensave__tokensave_impact",
-        "mcp__tokensave__tokensave_module_api",
-        "mcp__tokensave__tokensave_node",
-        "mcp__tokensave__tokensave_rename_preview",
-        "mcp__tokensave__tokensave_search",
-        "mcp__tokensave__tokensave_similar",
-        "mcp__tokensave__tokensave_status",
-        "mcp__tokensave__tokensave_unused_imports",
-    ];
     let existing: Vec<String> = settings["permissions"]["allow"]
         .as_array()
         .map(|arr| {
@@ -1025,7 +1262,7 @@ fn claude_install() -> tokensave::errors::Result<()> {
         })
         .unwrap_or_default();
     let mut allow: Vec<String> = existing;
-    for tool in &tool_perms {
+    for tool in EXPECTED_TOOL_PERMS {
         if !allow.iter().any(|e| e == *tool) {
             allow.push(tool.to_string());
         }
