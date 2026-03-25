@@ -2,3 +2,5 @@
 .DS_Store
 .codegraph
 .tokensave
+.mcp.json
+.claude/settings.local.json
