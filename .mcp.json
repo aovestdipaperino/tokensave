@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "tokensave": {
-      "command": "tokensave",
-      "args": ["serve", "-p", "/Users/enzo/Code/tokensave"]
-    }
-  }
-}
