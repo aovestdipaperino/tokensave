@@ -310,151 +310,74 @@ impl<'a> ContextBuilder<'a> {
 ///
 /// Common English stop words are filtered out.
 pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
-    let stop_words: HashSet<&str> = [
-        "the",
-        "is",
-        "in",
-        "for",
-        "to",
-        "a",
-        "an",
-        "of",
-        "and",
-        "or",
-        "not",
-        "this",
-        "that",
-        "it",
-        "with",
-        "on",
-        "at",
-        "by",
-        "from",
-        "as",
-        "be",
-        "was",
-        "are",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "will",
-        "would",
-        "could",
-        "should",
-        "may",
-        "might",
-        "can",
-        "shall",
-        "how",
-        "what",
-        "where",
-        "when",
-        "who",
-        "which",
-        "why",
-        "if",
-        "then",
-        "else",
-        "but",
-        "so",
-        "up",
-        "out",
-        "no",
-        "yes",
-        "all",
-        "any",
-        "each",
-        "every",
-        "fix",
-        "look",
-        "update",
-        "add",
-        "remove",
-        "delete",
-        "change",
-        "check",
-        "find",
-        "get",
-        "set",
-        "use",
-        "make",
-        "call",
-        "function",
-        "method",
-        "class",
-        "struct",
-        "type",
-        "module",
-        "file",
-        "handler",
-        "implement",
-        "create",
-        "about",
-    ]
-    .into_iter()
-    .collect();
+    let stop_words: HashSet<&str> = SYMBOL_STOP_WORDS.iter().copied().collect();
 
     let mut symbols: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // First, handle qualified paths like crate::types::Node
-    // Split on whitespace, find tokens containing ::
-    let tokens: Vec<&str> = query.split_whitespace().collect();
-
-    for token in &tokens {
-        // Strip leading/trailing punctuation
+    for token in query.split_whitespace() {
         let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
-
-        if clean.contains("::") {
-            // Take the last segment of the qualified path
-            if let Some(last) = clean.rsplit("::").next() {
-                if !last.is_empty()
-                    && !stop_words.contains(last.to_lowercase().as_str())
-                    && seen.insert(last.to_string())
-                {
-                    symbols.push(last.to_string());
-                }
-            }
-            // Also add the full path if it looks like a symbol
-            let full = clean.to_string();
-            if seen.insert(full.clone()) {
-                symbols.push(full);
-            }
-            continue;
-        }
-
-        // Clean token of surrounding punctuation
-        let word = clean;
-        if word.is_empty() {
-            continue;
-        }
-
-        // Check for snake_case or SCREAMING_SNAKE (contains underscore)
-        if word.contains('_') {
-            if !stop_words.contains(word.to_lowercase().as_str()) && seen.insert(word.to_string()) {
-                symbols.push(word.to_string());
-            }
-            continue;
-        }
-
-        // Check for CamelCase: at least one uppercase letter after position 0
-        if is_camel_case(word) {
-            if !stop_words.contains(word.to_lowercase().as_str()) && seen.insert(word.to_string()) {
-                symbols.push(word.to_string());
-            }
-            continue;
-        }
-
-        // Skip plain lowercase words that are stop words
-        // (non-stop single words that are all lowercase are not typically symbols)
+        classify_token(clean, &stop_words, &mut symbols, &mut seen);
     }
 
     symbols
+}
+
+/// Stop words filtered out during symbol extraction from natural language.
+const SYMBOL_STOP_WORDS: &[&str] = &[
+    "the", "is", "in", "for", "to", "a", "an", "of", "and", "or", "not",
+    "this", "that", "it", "with", "on", "at", "by", "from", "as", "be",
+    "was", "are", "been", "being", "have", "has", "had", "do", "does", "did",
+    "will", "would", "could", "should", "may", "might", "can", "shall",
+    "how", "what", "where", "when", "who", "which", "why",
+    "if", "then", "else", "but", "so", "up", "out", "no", "yes",
+    "all", "any", "each", "every",
+    "fix", "look", "update", "add", "remove", "delete", "change", "check",
+    "find", "get", "set", "use", "make", "call",
+    "function", "method", "class", "struct", "type", "module", "file",
+    "handler", "implement", "create", "about",
+];
+
+/// Classify a single cleaned token and push any symbols it yields.
+fn classify_token(
+    clean: &str,
+    stop_words: &HashSet<&str>,
+    symbols: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    if clean.is_empty() { return; }
+
+    if clean.contains("::") {
+        // Qualified path: extract last segment and full path
+        if let Some(last) = clean.rsplit("::").next() {
+            if !last.is_empty()
+                && !stop_words.contains(last.to_lowercase().as_str())
+                && seen.insert(last.to_string())
+            {
+                symbols.push(last.to_string());
+            }
+        }
+        let full = clean.to_string();
+        if seen.insert(full.clone()) {
+            symbols.push(full);
+        }
+        return;
+    }
+
+    // snake_case or SCREAMING_SNAKE
+    if clean.contains('_') {
+        if !stop_words.contains(clean.to_lowercase().as_str()) && seen.insert(clean.to_string()) {
+            symbols.push(clean.to_string());
+        }
+        return;
+    }
+
+    // CamelCase
+    if is_camel_case(clean) {
+        if !stop_words.contains(clean.to_lowercase().as_str()) && seen.insert(clean.to_string()) {
+            symbols.push(clean.to_string());
+        }
+    }
 }
 
 /// Returns `true` if `word` looks like CamelCase.
