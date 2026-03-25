@@ -111,22 +111,37 @@ impl McpServer {
         let reader = BufReader::new(stdin);
         let mut lines = reader.lines();
 
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("failed to register SIGTERM handler");
-
         loop {
-            let line = tokio::select! {
-                result = lines.next_line() => {
-                    match result {
-                        Ok(Some(line)) => line,
-                        // stdin closed
-                        _ => break,
+            let line: String = {
+                #[cfg(unix)]
+                {
+                    let mut sigterm = tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    )
+                    .expect("failed to register SIGTERM handler");
+                    tokio::select! {
+                        result = lines.next_line() => {
+                            match result {
+                                Ok(Some(line)) => line,
+                                _ => break,
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => break,
+                        _ = sigterm.recv() => break,
                     }
                 }
-                _ = tokio::signal::ctrl_c() => break,
-                _ = sigterm.recv() => break,
+                #[cfg(not(unix))]
+                {
+                    tokio::select! {
+                        result = lines.next_line() => {
+                            match result {
+                                Ok(Some(line)) => line,
+                                _ => break,
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => break,
+                    }
+                }
             };
 
             let line = line.trim().to_string();
