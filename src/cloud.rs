@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// The Cloudflare Worker endpoint URL.
 /// TODO: Replace with actual deployed worker URL before release.
-const WORKER_URL: &str = "https://tokensave-counter.CHANGEME.workers.dev";
+const WORKER_URL: &str = "https://tokensave-counter.enzinol.workers.dev";
 
 /// Timeout for flush (upload) requests.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
