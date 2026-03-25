@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-03-25
+
+### Fixed
+- Token counter inflation: `tokensave_files` no longer accumulates tokens saved (listing file names is metadata, not a file-read substitute)
+- Worldwide counter staleness: periodic flush every 30 seconds during MCP sessions instead of only on shutdown
+- Shutdown flush was effectively a no-op (delta always 0 because `accumulate_tokens_saved` already upserted the current value to global DB); now uses `last_flushed_tokens` to correctly track remaining delta
+
 ## [1.5.1] - 2026-03-25
 
 ### Added

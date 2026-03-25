@@ -6,7 +6,7 @@
 //! allowing AI assistants to query the code graph interactively.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -48,6 +48,10 @@ pub struct McpServer {
     file_token_map: std::sync::Mutex<HashMap<String, u64>>,
     /// Running total of tokens saved by serving from the graph.
     tokens_saved: AtomicU64,
+    /// Tokens already flushed to the worldwide counter this session.
+    last_flushed_tokens: AtomicU64,
+    /// UNIX timestamp of last worldwide flush (0 = never).
+    last_flush_at: AtomicI64,
     /// User-level database tracking all projects (best-effort).
     global_db: Option<GlobalDb>,
 }
@@ -68,6 +72,8 @@ impl McpServer {
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
             tokens_saved: AtomicU64::new(persisted),
+            last_flushed_tokens: AtomicU64::new(persisted),
+            last_flush_at: AtomicI64::new(0),
             global_db,
         }
     }
@@ -99,6 +105,52 @@ impl McpServer {
             if let Some(ref gdb) = self.global_db {
                 gdb.upsert(self.cg.project_root(), new_total).await;
             }
+        }
+    }
+
+    /// Flushes pending tokens to the worldwide counter if at least 30 seconds
+    /// have elapsed since the last flush. Best-effort, never blocks for long.
+    async fn maybe_flush_worldwide(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let last = self.last_flush_at.load(Ordering::Relaxed);
+        if now - last < 30 {
+            return;
+        }
+        // Mark as attempted immediately to prevent re-entry.
+        self.last_flush_at.store(now, Ordering::Relaxed);
+
+        let current = self.tokens_saved.load(Ordering::Relaxed);
+        let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
+        if current <= last_flushed {
+            return;
+        }
+        let delta = current - last_flushed;
+
+        let success = tokio::task::spawn_blocking(move || {
+            let mut config = crate::user_config::UserConfig::load();
+            config.pending_upload += delta;
+            if config.upload_enabled {
+                if crate::cloud::flush_pending(config.pending_upload).is_some() {
+                    config.pending_upload = 0;
+                    config.last_upload_at = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    config.save();
+                    return true;
+                }
+            }
+            config.save();
+            false
+        })
+        .await
+        .unwrap_or(false);
+
+        if success {
+            self.last_flushed_tokens.store(current, Ordering::Relaxed);
         }
     }
 
@@ -200,18 +252,15 @@ impl McpServer {
         }
 
         // Update global DB with final count and checkpoint it
-        let previous = if let Some(ref gdb) = self.global_db {
-            let prev = gdb.get_project_tokens(self.cg.project_root()).await;
+        if let Some(ref gdb) = self.global_db {
             gdb.upsert(self.cg.project_root(), tokens_saved).await;
             gdb.checkpoint().await;
-            prev
-        } else {
-            0
-        };
+        }
 
-        // Flush delta to worldwide counter via user config
-        if tokens_saved > previous {
-            let delta = tokens_saved - previous;
+        // Flush remaining delta to worldwide counter (what periodic flushes missed)
+        let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
+        if tokens_saved > last_flushed {
+            let delta = tokens_saved - last_flushed;
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
             if config.upload_enabled {
@@ -339,6 +388,7 @@ impl McpServer {
         match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
             Ok(result) => {
                 self.accumulate_tokens_saved(&result.touched_files).await;
+                self.maybe_flush_worldwide().await;
                 JsonRpcResponse::success(id, result.value)
             }
             Err(e) => JsonRpcResponse::error(

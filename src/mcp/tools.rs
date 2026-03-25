@@ -691,7 +691,8 @@ async fn handle_files(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         }
     }
 
-    let touched_files = unique_file_paths(files.iter().map(|f| f.path.as_str()));
+    // Listing files is metadata-only — no source code is served, so no tokens saved.
+    let touched_files = vec![];
 
     let format = args
         .get("format")

@@ -128,7 +128,7 @@ This single command:
 
 - Registers tokensave as an MCP server in `~/.claude/settings.json`
 - Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave
-- Adds tool permissions so Claude can call all 9 tokensave tools without prompting
+- Adds tool permissions so Claude can call all 18 tokensave tools without prompting
 - Appends rules to `~/.claude/CLAUDE.md` that instruct Claude to prefer tokensave over file reads
 
 All changes are idempotent — safe to run again after upgrading.
@@ -286,7 +286,7 @@ This powers the "Worldwide ~1.0M" counter shown in `tokensave status`, which dis
 
 **What is sent:** A single HTTP POST to `https://tokensave-counter.enzinol.workers.dev/increment` with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker also logs the **country of your IP address** (derived by Cloudflare from the request headers) for aggregate geographic statistics — your actual IP address is not stored.
 
-**When it's sent:** After `sync` or `status` (always), or after other commands if the last upload was more than 30 seconds ago. Failed uploads are silently retried on the next command with a 60-second cooldown.
+**When it's sent:** After `sync` or `status` (always), and during MCP sessions every 30 seconds while tools are being called. Failed uploads are silently retried on the next opportunity.
 
 **How to opt out:**
 
