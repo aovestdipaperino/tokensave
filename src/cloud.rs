@@ -54,6 +54,32 @@ pub fn fetch_worldwide_total() -> Option<u64> {
     Some(parsed.total)
 }
 
+/// Response from the worker's GET /countries endpoint.
+#[derive(serde::Deserialize)]
+struct CountriesResponse {
+    flags: Vec<String>,
+}
+
+/// Fetches country flags from the worldwide counter.
+/// Returns a list of emoji flags, or an empty vec on failure.
+pub fn fetch_country_flags() -> Vec<String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_millis(500))
+        .build();
+    let resp = match agent
+        .get(&format!("{WORKER_URL}/countries"))
+        .call()
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: CountriesResponse = match resp.into_json() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    parsed.flags
+}
+
 /// Response from GitHub releases API (only the fields we need).
 #[derive(serde::Deserialize)]
 struct GitHubRelease {

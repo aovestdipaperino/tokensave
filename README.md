@@ -214,6 +214,7 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 tokensave sync [path]            # Sync (creates index if missing, incremental by default)
 tokensave sync --force [path]    # Force a full re-index
 tokensave status [path]          # Show statistics
+tokensave status --show-flags    # Show statistics with country flags
 tokensave query <search> [path]  # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files

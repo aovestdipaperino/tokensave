@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-03-25
+
+### Added
+- Country flags row in `tokensave status` — shows emoji flags of countries where tokensave is used, centered below the token counters
+- `fetch_country_flags()` in cloud module (500ms timeout, best-effort)
+- Flags truncated with ellipsis if they exceed the available table width
+
 ## [1.4.2] - 2026-03-25
 
 ### Added

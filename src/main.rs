@@ -107,6 +107,9 @@ enum Commands {
         /// Output as JSON
         #[arg(short, long)]
         json: bool,
+        /// Show country flags of worldwide users
+        #[arg(long)]
+        show_flags: bool,
     },
     /// Search for symbols
     Query {
@@ -283,7 +286,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json } => {
+        Commands::Status { path, json, show_flags } => {
             let project_path = resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let stats = cg.get_stats().await?;
@@ -322,8 +325,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 } else {
                     None
                 };
+                let country_flags = if show_flags {
+                    tokensave::cloud::fetch_country_flags()
+                } else {
+                    Vec::new()
+                };
                 print!("{}", include_str!("resources/logo.ansi"));
-                print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide);
+                print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
 
                 // Version check (5 min cache)
                 check_for_update(&mut config, false);
@@ -723,6 +731,7 @@ fn print_status_table(
     tokens_saved: u64,
     global_tokens_saved: Option<u64>,
     worldwide: Option<u64>,
+    country_flags: &[String],
 ) {
     let version = env!("CARGO_PKG_VERSION");
     let num_cols = 3;
@@ -775,6 +784,44 @@ fn print_status_table(
         " ".repeat(title_pad),
         tokens_text
     );
+
+    // Country flags row (if any)
+    if !country_flags.is_empty() {
+        // Each flag emoji is 2 chars wide in the terminal but we join with spaces.
+        // Available width is inner_width - 2 (for padding inside │ ... │).
+        let available = inner_width.saturating_sub(2);
+        let mut flags_str = String::new();
+        let mut display_width = 0;
+        let flag_width = 2; // emoji flag display width
+        let sep = " ";
+        let ellipsis = "…";
+        for (i, flag) in country_flags.iter().enumerate() {
+            let needed = if i == 0 { flag_width } else { 1 + flag_width };
+            // Reserve space for ellipsis if there are more flags after this
+            let reserve = if i + 1 < country_flags.len() { 1 + 1 } else { 0 }; // " …"
+            if display_width + needed + reserve > available {
+                flags_str.push_str(sep);
+                flags_str.push_str(ellipsis);
+                display_width += 2;
+                break;
+            }
+            if i > 0 {
+                flags_str.push_str(sep);
+                display_width += 1;
+            }
+            flags_str.push_str(flag);
+            display_width += flag_width;
+        }
+        // Center the flags
+        let left_pad = (available.saturating_sub(display_width)) / 2;
+        let right_pad = available.saturating_sub(display_width + left_pad);
+        println!(
+            "│ {}{}{} │",
+            " ".repeat(left_pad),
+            flags_str,
+            " ".repeat(right_pad)
+        );
+    }
 
     // Stats rows
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
