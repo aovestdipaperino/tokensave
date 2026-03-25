@@ -9,6 +9,14 @@ use tokensave::tokensave::TokenSave;
 use tokensave::context::{format_context_as_json, format_context_as_markdown};
 use tokensave::types::*;
 
+/// Returns the current UNIX timestamp in seconds.
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 /// A self-animating spinner that ticks on a background thread.
 ///
 /// Call `set_message` to update what is displayed; the background thread
@@ -175,6 +183,12 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Disable uploading token counts to the worldwide counter
+    #[command(name = "disable-upload-counter")]
+    DisableUploadCounter,
+    /// Enable uploading token counts to the worldwide counter
+    #[command(name = "enable-upload-counter")]
+    EnableUploadCounter,
 }
 
 #[tokio::main]
@@ -191,6 +205,25 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Some(cmd) => cmd,
         None => return handle_no_command().await,
     };
+
+    // First-run notice (check BEFORE any config save creates the file)
+    let is_first_run = tokensave::user_config::UserConfig::is_fresh();
+
+    // Best-effort flush of pending worldwide counter tokens.
+    // `matches!` borrows `command` temporarily; the borrow is dropped
+    // before the `match command` move below, so this compiles.
+    let is_force_flush = matches!(command, Commands::Sync { .. } | Commands::Status { .. });
+    let mut user_config = tokensave::user_config::UserConfig::load();
+    try_flush(&mut user_config, is_force_flush);
+    user_config.save();
+
+    if is_first_run {
+        eprintln!(
+            "note: tokensave uploads anonymous token-saved counts to a worldwide counter.\n\
+             \x20     Run `tokensave disable-upload-counter` to opt out."
+        );
+    }
+
     match command {
         Commands::Sync { path, force } => {
             let project_path = resolve_path(path);
@@ -431,6 +464,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let server = tokensave::mcp::McpServer::new(cg).await;
             server.run().await?;
         }
+        Commands::DisableUploadCounter => {
+            let mut config = tokensave::user_config::UserConfig::load();
+            config.upload_enabled = false;
+            config.save();
+            eprintln!("Worldwide counter upload disabled. You can re-enable with `tokensave enable-upload-counter`.");
+        }
+        Commands::EnableUploadCounter => {
+            let mut config = tokensave::user_config::UserConfig::load();
+            config.upload_enabled = true;
+            config.save();
+            eprintln!("Worldwide counter upload enabled.");
+        }
     }
     Ok(())
 }
@@ -497,11 +542,50 @@ async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<To
     })
 }
 
-/// Best-effort: register this project in the user-level global DB.
+/// Best-effort: register this project in the user-level global DB and
+/// accumulate the token-saved delta into the pending upload counter.
 async fn update_global_db(cg: &TokenSave) {
+    let tokens = cg.get_tokens_saved().await.unwrap_or(0);
     if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
-        let tokens = cg.get_tokens_saved().await.unwrap_or(0);
+        let previous = gdb.get_project_tokens(cg.project_root()).await;
         gdb.upsert(cg.project_root(), tokens).await;
+
+        // Accumulate delta into pending upload
+        if tokens > previous {
+            let mut config = tokensave::user_config::UserConfig::load();
+            config.pending_upload += tokens - previous;
+            config.save();
+        }
+    }
+}
+
+/// Best-effort: try to flush pending tokens to the worldwide counter.
+/// `force` = true on status/sync commands (always attempt), false on others
+/// (only flush if stale > 30s).
+fn try_flush(config: &mut tokensave::user_config::UserConfig, force: bool) {
+    if config.pending_upload == 0 || !config.upload_enabled {
+        return;
+    }
+    let now = current_unix_timestamp();
+
+    // Cooldown: skip if last flush attempt failed less than 60s ago
+    if config.last_flush_attempt_at > config.last_upload_at
+        && now - config.last_flush_attempt_at < 60
+    {
+        return;
+    }
+
+    // Staleness check for non-force commands
+    if !force && now - config.last_upload_at < 30 {
+        return;
+    }
+
+    config.last_flush_attempt_at = now;
+    if let Some(worldwide_total) = tokensave::cloud::flush_pending(config.pending_upload) {
+        config.pending_upload = 0;
+        config.last_upload_at = now;
+        config.last_worldwide_total = worldwide_total;
+        config.last_worldwide_fetch_at = now;
     }
 }
 
