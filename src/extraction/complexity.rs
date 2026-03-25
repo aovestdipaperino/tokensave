@@ -18,6 +18,23 @@ pub struct ComplexityConfig {
     pub return_types: &'static [&'static str],
     /// Node types that introduce a new nesting level (block, compound_statement).
     pub nesting_types: &'static [&'static str],
+    /// Node types representing unsafe blocks (e.g. `unsafe_block` in Rust, `unsafe_statement` in C#).
+    pub unsafe_types: &'static [&'static str],
+    /// Node types that are inherently unchecked operations (e.g. `non_null_assertion_expression`).
+    pub unchecked_types: &'static [&'static str],
+    /// Method names that represent unchecked/force-unwrap calls (e.g. `unwrap`, `get`).
+    /// Matched against the method name in call expressions.
+    pub unchecked_methods: &'static [&'static str],
+    /// Node types representing method/function call expressions, used for unchecked_methods matching.
+    pub call_expression_types: &'static [&'static str],
+    /// Field name used to extract the method name from a call expression node.
+    /// e.g. "function" for TS, "method" for Rust. Empty to skip.
+    pub call_method_field: &'static str,
+    /// Macro/function names that count as assertions (e.g. `assert`, `assert_eq`, `assertEquals`).
+    /// Matched against macro invocation names and function/method call names.
+    pub assertion_names: &'static [&'static str],
+    /// Node types representing macro invocations (e.g. `macro_invocation` in Rust).
+    pub macro_invocation_types: &'static [&'static str],
 }
 
 /// Complexity metrics extracted from a function body.
@@ -27,13 +44,22 @@ pub struct ComplexityMetrics {
     pub loops: u32,
     pub returns: u32,
     pub max_nesting: u32,
+    /// Number of unsafe blocks/statements.
+    pub unsafe_blocks: u32,
+    /// Number of unchecked/force-unwrap calls or assertions.
+    pub unchecked_calls: u32,
+    /// Number of assertion calls (assert, debug_assert, assertEquals, etc.).
+    pub assertions: u32,
 }
 
 /// Counts complexity metrics by iterating over all descendants of `node`.
 ///
 /// Uses an explicit stack instead of recursion (NASA Power of 10, Rule 1).
 /// The nesting depth tracks how many nesting-type ancestors enclose each node.
-pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig) -> ComplexityMetrics {
+///
+/// `source` is needed to extract method/macro names for unchecked-call and
+/// assertion detection. Pass an empty slice to skip name-based matching.
+pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig, source: &[u8]) -> ComplexityMetrics {
     let mut metrics = ComplexityMetrics::default();
 
     // Stack: (tree-sitter node, current nesting depth)
@@ -72,6 +98,40 @@ pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig) -> Complexi
             metrics.returns += 1;
         }
 
+        // Unsafe blocks.
+        if config.unsafe_types.contains(&kind) {
+            metrics.unsafe_blocks += 1;
+        }
+
+        // Unchecked operator types (e.g. non_null_assertion_expression, `!!`).
+        if config.unchecked_types.contains(&kind) {
+            metrics.unchecked_calls += 1;
+        }
+
+        // Name-based detection for call expressions (unchecked methods + assertions).
+        if !source.is_empty() && config.call_expression_types.contains(&kind) {
+            if let Some(name) = extract_call_name(current, config.call_method_field, source) {
+                if config.unchecked_methods.contains(&name.as_str()) {
+                    metrics.unchecked_calls += 1;
+                }
+                if config.assertion_names.contains(&name.as_str()) {
+                    metrics.assertions += 1;
+                }
+            }
+        }
+
+        // Name-based detection for macro invocations (Rust assert!, debug_assert!, etc.).
+        if !source.is_empty() && config.macro_invocation_types.contains(&kind) {
+            if let Some(name) = extract_macro_name(current, source) {
+                if config.assertion_names.contains(&name.as_str()) {
+                    metrics.assertions += 1;
+                }
+                if config.unchecked_methods.contains(&name.as_str()) {
+                    metrics.unchecked_calls += 1;
+                }
+            }
+        }
+
         // Track nesting.
         let new_depth = if config.nesting_types.contains(&kind) {
             let d = depth + 1;
@@ -97,6 +157,90 @@ pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig) -> Complexi
     metrics
 }
 
+/// Extracts the method/function name from a call expression node.
+///
+/// Tries the configured `method_field` first (e.g. "function", "method"),
+/// then falls back to common child patterns: last identifier before `(`,
+/// or a `field_expression`/`member_expression` selector.
+fn extract_call_name(node: TsNode<'_>, method_field: &str, source: &[u8]) -> Option<String> {
+    // Try the configured field name first.
+    if !method_field.is_empty() {
+        if let Some(field_node) = node.child_by_field_name(method_field) {
+            // For chained calls like `x.unwrap()`, the field may be a
+            // field_expression / member_expression — grab the rightmost identifier.
+            let text = rightmost_identifier(field_node, source);
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+
+    // Fallback: first child that is an identifier or has a selector child.
+    let child_count = node.child_count();
+    let mut i: u32 = 0;
+    while (i as usize) < child_count {
+        if let Some(child) = node.child(i) {
+            let ck = child.kind();
+            if ck == "identifier" || ck == "field_identifier" || ck == "property_identifier" {
+                if let Ok(text) = child.utf8_text(source) {
+                    return Some(text.to_string());
+                }
+            }
+            // member_expression / field_expression: grab the property/field child.
+            if ck.contains("member_expression") || ck.contains("field_expression") {
+                let text = rightmost_identifier(child, source);
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Extracts the macro name from a macro invocation node (e.g. `assert!`).
+///
+/// Looks for the first identifier child, stripping a trailing `!` if present.
+fn extract_macro_name(node: TsNode<'_>, source: &[u8]) -> Option<String> {
+    let child_count = node.child_count();
+    let mut i: u32 = 0;
+    while (i as usize) < child_count {
+        if let Some(child) = node.child(i) {
+            let ck = child.kind();
+            if ck == "identifier" || ck == "scoped_identifier" {
+                if let Ok(text) = child.utf8_text(source) {
+                    return Some(text.trim_end_matches('!').to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Returns the text of the rightmost identifier-like child of `node`.
+fn rightmost_identifier(node: TsNode<'_>, source: &[u8]) -> String {
+    // If node itself is a simple identifier, return it.
+    let nk = node.kind();
+    if nk == "identifier" || nk == "field_identifier" || nk == "property_identifier" {
+        return node.utf8_text(source).unwrap_or("").to_string();
+    }
+    // Walk children right-to-left for the first identifier.
+    let cc = node.child_count();
+    let mut i = cc as u32;
+    while i > 0 {
+        i -= 1;
+        if let Some(child) = node.child(i) {
+            let ck = child.kind();
+            if ck == "identifier" || ck == "field_identifier" || ck == "property_identifier" {
+                return child.utf8_text(source).unwrap_or("").to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 // ---------------------------------------------------------------------------
 // Per-language configurations
 // ---------------------------------------------------------------------------
@@ -106,6 +250,13 @@ pub static RUST_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_expression", "while_expression", "loop_expression"],
     return_types: &["return_expression", "break_expression", "continue_expression"],
     nesting_types: &["block"],
+    unsafe_types: &["unsafe_block"],
+    unchecked_types: &[],
+    unchecked_methods: &["unwrap", "expect"],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "assert_eq", "assert_ne", "debug_assert", "debug_assert_eq", "debug_assert_ne"],
+    macro_invocation_types: &["macro_invocation"],
 };
 
 pub static JAVA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -113,6 +264,13 @@ pub static JAVA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "enhanced_for_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
     nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &["get"],
+    call_expression_types: &["method_invocation"],
+    call_method_field: "name",
+    assertion_names: &["assert", "assertEquals", "assertNotEquals", "assertTrue", "assertFalse", "assertNull", "assertNotNull", "assertThrows", "assertThat", "assertArrayEquals"],
+    macro_invocation_types: &[],
 };
 
 pub static GO_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -120,6 +278,13 @@ pub static GO_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement"],
     nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "require", "Equal", "NotEqual", "True", "False", "Nil", "NotNil", "Error", "NoError"],
+    macro_invocation_types: &[],
 };
 
 pub static PYTHON_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -127,6 +292,13 @@ pub static PYTHON_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "raise_statement"],
     nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call"],
+    call_method_field: "function",
+    assertion_names: &["assert", "assertEqual", "assertNotEqual", "assertTrue", "assertFalse", "assertIs", "assertIsNone", "assertIsNotNone", "assertIn", "assertRaises", "assertAlmostEqual"],
+    macro_invocation_types: &[],
 };
 
 pub static TYPESCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -134,6 +306,13 @@ pub static TYPESCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "for_in_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
     nesting_types: &["statement_block"],
+    unsafe_types: &[],
+    unchecked_types: &["non_null_assertion_expression"],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "expect", "assertEquals", "assertStrictEquals", "deepEqual", "strictEqual", "ok", "notOk"],
+    macro_invocation_types: &[],
 };
 
 pub static C_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -141,6 +320,13 @@ pub static C_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement"],
     nesting_types: &["compound_statement"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "assert_true", "assert_false", "assert_int_equal", "assert_string_equal", "assert_null", "assert_non_null", "CU_ASSERT", "CU_ASSERT_EQUAL"],
+    macro_invocation_types: &[],
 };
 
 pub static CPP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -148,6 +334,13 @@ pub static CPP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement", "do_statement", "for_range_loop"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
     nesting_types: &["compound_statement"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "ASSERT_TRUE", "ASSERT_FALSE", "ASSERT_EQ", "ASSERT_NE", "ASSERT_LT", "ASSERT_GT", "EXPECT_TRUE", "EXPECT_FALSE", "EXPECT_EQ", "EXPECT_NE", "static_assert"],
+    macro_invocation_types: &[],
 };
 
 pub static KOTLIN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -155,6 +348,13 @@ pub static KOTLIN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement", "do_while_statement"],
     return_types: &["jump_expression"],
     nesting_types: &["statements"],
+    unsafe_types: &[],
+    unchecked_types: &["postfix_expression"],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "",
+    assertion_names: &["assert", "assertEquals", "assertNotEquals", "assertTrue", "assertFalse", "assertNull", "assertNotNull", "assertIs", "assertIsNot"],
+    macro_invocation_types: &[],
 };
 
 pub static SCALA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -162,6 +362,13 @@ pub static SCALA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_expression", "while_expression"],
     return_types: &["return_expression"],
     nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &["get"],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "assertEquals", "assertResult", "assertThrows"],
+    macro_invocation_types: &[],
 };
 
 pub static DART_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -169,6 +376,13 @@ pub static DART_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
     nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &["postfix_expression"],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "expect", "expectLater", "expectAsync"],
+    macro_invocation_types: &[],
 };
 
 pub static CSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -176,6 +390,13 @@ pub static CSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "for_each_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
     nesting_types: &["block"],
+    unsafe_types: &["unsafe_statement"],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["invocation_expression"],
+    call_method_field: "function",
+    assertion_names: &["Assert", "AreEqual", "AreNotEqual", "IsTrue", "IsFalse", "IsNull", "IsNotNull", "ThrowsException"],
+    macro_invocation_types: &[],
 };
 
 pub static PASCAL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -183,6 +404,13 @@ pub static PASCAL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "while_statement", "repeat_statement"],
     return_types: &["raise_statement"],
     nesting_types: &["begin_end_block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_statement"],
+    call_method_field: "",
+    assertion_names: &["Assert", "CheckEquals", "CheckTrue", "CheckFalse"],
+    macro_invocation_types: &[],
 };
 
 pub static PHP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -190,6 +418,13 @@ pub static PHP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for_statement", "foreach_statement", "while_statement", "do_statement"],
     return_types: &["return_statement", "break_statement", "continue_statement", "throw_expression"],
     nesting_types: &["compound_statement"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["function_call_expression", "member_call_expression"],
+    call_method_field: "name",
+    assertion_names: &["assert", "assertEquals", "assertNotEquals", "assertTrue", "assertFalse", "assertNull", "assertNotNull", "assertSame", "assertInstanceOf"],
+    macro_invocation_types: &[],
 };
 
 pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -197,4 +432,11 @@ pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     loop_types: &["for", "while", "until"],
     return_types: &["return", "break", "next"],
     nesting_types: &["body_statement", "do_block", "block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &["fetch"],
+    call_expression_types: &["call", "method_call"],
+    call_method_field: "method",
+    assertion_names: &["assert", "assert_equal", "assert_not_equal", "assert_nil", "assert_not_nil", "assert_raises", "assert_match", "refute"],
+    macro_invocation_types: &[],
 };

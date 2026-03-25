@@ -48,6 +48,9 @@ async fn test_store_and_retrieve_vector() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -86,6 +89,9 @@ async fn test_brute_force_search() {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: 0,
         };
         db.insert_node(&node).await.unwrap();
@@ -121,6 +127,9 @@ fn test_create_node_text() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     let text = create_node_text(&node);
@@ -153,6 +162,9 @@ async fn test_vector_count() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -182,6 +194,9 @@ async fn test_delete_vector() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -215,6 +230,9 @@ async fn test_clear_vectors() {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: 0,
         };
         db.insert_node(&node).await.unwrap();
@@ -254,6 +272,9 @@ fn test_create_node_text_without_optional_fields() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     let text = create_node_text(&node);

@@ -33,6 +33,9 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 1000,
     }
 }

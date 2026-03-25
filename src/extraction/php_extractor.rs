@@ -105,6 +105,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -181,7 +184,7 @@ impl PhpExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
-        let metrics = count_complexity(node, &PHP_COMPLEXITY);
+        let metrics = count_complexity(node, &PHP_COMPLEXITY, &state.source);
 
         let graph_node = Node {
             id: id.clone(),
@@ -201,6 +204,9 @@ impl PhpExtractor {
             loops: metrics.loops,
             returns: metrics.returns,
             max_nesting: metrics.max_nesting,
+            unsafe_blocks: metrics.unsafe_blocks,
+            unchecked_calls: metrics.unchecked_calls,
+            assertions: metrics.assertions,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -236,7 +242,7 @@ impl PhpExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
-        let metrics = count_complexity(node, &PHP_COMPLEXITY);
+        let metrics = count_complexity(node, &PHP_COMPLEXITY, &state.source);
 
         let graph_node = Node {
             id: id.clone(),
@@ -256,6 +262,9 @@ impl PhpExtractor {
             loops: metrics.loops,
             returns: metrics.returns,
             max_nesting: metrics.max_nesting,
+            unsafe_blocks: metrics.unsafe_blocks,
+            unchecked_calls: metrics.unchecked_calls,
+            assertions: metrics.assertions,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -310,6 +319,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -372,6 +384,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -429,6 +444,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -486,6 +504,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -560,6 +581,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -606,6 +630,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -729,6 +756,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -802,6 +832,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -862,6 +895,9 @@ impl PhpExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);

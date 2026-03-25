@@ -29,6 +29,9 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -50,6 +53,9 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -242,6 +248,9 @@ async fn test_multiple_candidates_best_match_scoring() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -263,6 +272,9 @@ async fn test_multiple_candidates_best_match_scoring() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -284,6 +296,9 @@ async fn test_multiple_candidates_best_match_scoring() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 

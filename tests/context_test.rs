@@ -97,6 +97,9 @@ async fn test_build_context_with_db() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -149,6 +152,9 @@ async fn test_get_code_reads_source_file() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -191,6 +197,9 @@ async fn test_get_code_returns_none_for_missing_file() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
 
@@ -229,6 +238,9 @@ async fn test_find_relevant_context() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();

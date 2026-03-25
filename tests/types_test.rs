@@ -127,6 +127,9 @@ fn node_serde_roundtrip() {
         loops: 0,
         returns: 0,
         max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 1700000000,
     };
 

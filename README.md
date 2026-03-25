@@ -387,7 +387,7 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_inheritance_depth` | Find the deepest class inheritance hierarchies |
 | `tokensave_distribution` | Node kind breakdown (classes, methods, fields) per file or directory |
 | `tokensave_recursion` | Detect recursive/mutually-recursive call cycles (NASA Power of 10, Rule 1) |
-| `tokensave_complexity` | Rank functions by composite complexity with cyclomatic complexity from AST |
+| `tokensave_complexity` | Rank functions by composite complexity with cyclomatic complexity, safety metrics (unsafe, unchecked, assertions) from AST |
 | `tokensave_doc_coverage` | Find public symbols missing documentation |
 | `tokensave_god_class` | Find classes with the most members (methods + fields) |
 
@@ -436,7 +436,7 @@ Get detailed information about a specific symbol including source code.
 - **`symbol`** (string, required): The symbol name
 - **`file`** (string, optional): Filter by file path
 
-Returns complete symbol details with source code, location, relationships, and for function/method nodes: complexity metrics (`branches`, `loops`, `returns`, `max_nesting`, `cyclomatic_complexity`).
+Returns complete symbol details with source code, location, relationships, and for function/method nodes: complexity metrics (`branches`, `loops`, `returns`, `max_nesting`, `cyclomatic_complexity`) and safety metrics (`unsafe_blocks`, `unchecked_calls`, `assertions`).
 
 ### `tokensave_files`
 

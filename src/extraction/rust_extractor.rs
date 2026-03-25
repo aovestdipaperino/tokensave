@@ -102,6 +102,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -190,7 +193,7 @@ impl RustExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
-        let metrics = count_complexity(node, &RUST_COMPLEXITY);
+        let metrics = count_complexity(node, &RUST_COMPLEXITY, &state.source);
 
         let graph_node = Node {
             id: id.clone(),
@@ -210,6 +213,9 @@ impl RustExtractor {
             loops: metrics.loops,
             returns: metrics.returns,
             max_nesting: metrics.max_nesting,
+            unsafe_blocks: metrics.unsafe_blocks,
+            unchecked_calls: metrics.unchecked_calls,
+            assertions: metrics.assertions,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -259,6 +265,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -314,6 +323,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -368,6 +380,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -426,6 +441,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -497,6 +515,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -554,6 +575,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -601,6 +625,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -648,6 +675,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -693,6 +723,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -928,6 +961,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -990,6 +1026,9 @@ impl RustExtractor {
             loops: 0,
             returns: 0,
             max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);

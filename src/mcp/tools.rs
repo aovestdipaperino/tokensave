@@ -801,6 +801,9 @@ async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                 "loops": n.loops,
                 "returns": n.returns,
                 "max_nesting": n.max_nesting,
+                "unsafe_blocks": n.unsafe_blocks,
+                "unchecked_calls": n.unchecked_calls,
+                "assertions": n.assertions,
                 "cyclomatic_complexity": n.branches + 1,
             });
             let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
@@ -1959,6 +1962,9 @@ async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                 "loops": node.loops,
                 "returns": node.returns,
                 "max_nesting": node.max_nesting,
+                "unsafe_blocks": node.unsafe_blocks,
+                "unchecked_calls": node.unchecked_calls,
+                "assertions": node.assertions,
                 "fan_out": fan_out,
                 "fan_in": fan_in,
                 "score": score,

@@ -321,6 +321,12 @@ pub struct Node {
     pub returns: u32,
     /// Maximum brace nesting depth within the function body.
     pub max_nesting: u32,
+    /// Number of unsafe blocks/statements within the function body.
+    pub unsafe_blocks: u32,
+    /// Number of unchecked/force-unwrap calls (e.g. `.unwrap()`, `!!`, `.get()` on Optional).
+    pub unchecked_calls: u32,
+    /// Number of assertion calls (e.g. `assert!`, `assertEquals`, `expect`).
+    pub assertions: u32,
     pub updated_at: u64,
 }
 
