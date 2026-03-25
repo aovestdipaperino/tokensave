@@ -35,7 +35,7 @@ cd /path/to/your/project
 tokensave sync
 ```
 
-This creates a `.tokensave/` directory and indexes all supported files (13 languages). Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
+This creates a `.tokensave/` directory and indexes all supported files (15 languages). Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
 
 Check what was indexed:
 
@@ -58,6 +58,15 @@ Once configured, Claude has access to these tools:
 | `tokensave_files` | List indexed project files with filtering |
 | `tokensave_affected` | Find test files affected by source changes |
 | `tokensave_status` | Show graph statistics and global tokens saved |
+| `tokensave_rank` | Rank nodes by relationship count (most implemented interface, etc.) |
+| `tokensave_largest` | Rank nodes by size — largest classes, longest methods |
+| `tokensave_complexity` | Rank functions by composite complexity score |
+| `tokensave_recursion` | Detect recursive call cycles |
+| `tokensave_doc_coverage` | Find public symbols missing documentation |
+| `tokensave_god_class` | Find classes with the most members |
+| `tokensave_coupling` | Rank files by fan-in/fan-out coupling |
+
+Plus 11 more — see [README.md](README.md) for the full list of 27 tools.
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 
@@ -65,6 +74,9 @@ Claude will use these tools automatically when you ask questions about your code
 - *"What calls the `processPayment` function?"* — uses `tokensave_callers`
 - *"If I change `UserService`, what else is affected?"* — uses `tokensave_impact`
 - *"Which tests need to run after I changed db/connection.rs?"* — uses `tokensave_affected`
+- *"What's the most implemented interface?"* — uses `tokensave_rank`
+- *"Are there any god classes?"* — uses `tokensave_god_class`
+- *"Any recursive calls in the codebase?"* — uses `tokensave_recursion`
 
 ### Claude Desktop (manual)
 

@@ -93,6 +93,10 @@ async fn test_build_context_with_db() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -141,6 +145,10 @@ async fn test_get_code_reads_source_file() {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -179,6 +187,10 @@ async fn test_get_code_returns_none_for_missing_file() {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -213,6 +225,10 @@ async fn test_find_relevant_context() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();

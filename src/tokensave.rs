@@ -428,6 +428,81 @@ impl TokenSave {
         self.db.get_all_edges().await
     }
 
+    /// Returns nodes ranked by edge count for a given edge kind and direction,
+    /// optionally filtered by node kind.
+    pub async fn get_ranked_nodes_by_edge_kind(
+        &self,
+        edge_kind: &EdgeKind,
+        node_kind: Option<&NodeKind>,
+        incoming: bool,
+        limit: usize,
+    ) -> Result<Vec<(Node, u64)>> {
+        self.db
+            .get_ranked_nodes_by_edge_kind(edge_kind, node_kind, incoming, limit)
+            .await
+    }
+
+    /// Returns nodes ranked by line span, optionally filtered by node kind.
+    pub async fn get_largest_nodes(
+        &self,
+        node_kind: Option<&NodeKind>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u32)>> {
+        self.db.get_largest_nodes(node_kind, limit).await
+    }
+
+    /// Returns files ranked by coupling (fan-in or fan-out).
+    pub async fn get_file_coupling(
+        &self,
+        fan_in: bool,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        self.db.get_file_coupling(fan_in, limit).await
+    }
+
+    /// Returns classes/interfaces ranked by inheritance depth via extends chains.
+    pub async fn get_inheritance_depth(&self, limit: usize) -> Result<Vec<(Node, u64)>> {
+        self.db.get_inheritance_depth(limit).await
+    }
+
+    /// Returns node kind distribution, optionally filtered by path prefix.
+    pub async fn get_node_distribution(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, String, u64)>> {
+        self.db.get_node_distribution(path_prefix).await
+    }
+
+    /// Returns all calls edges as (source_id, target_id) pairs for cycle detection.
+    pub async fn get_call_edges(&self) -> Result<Vec<(String, String)>> {
+        self.db.get_call_edges().await
+    }
+
+    /// Returns functions/methods ranked by composite complexity score.
+    pub async fn get_complexity_ranked(
+        &self,
+        node_kind: Option<&NodeKind>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u32, u64, u64, u64)>> {
+        self.db.get_complexity_ranked(node_kind, limit).await
+    }
+
+    /// Returns public symbols missing docstrings.
+    pub async fn get_undocumented_public_symbols(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        self.db
+            .get_undocumented_public_symbols(path_prefix, limit)
+            .await
+    }
+
+    /// Returns classes ranked by member count (methods + fields).
+    pub async fn get_god_classes(&self, limit: usize) -> Result<Vec<(Node, u64, u64, u64)>> {
+        self.db.get_god_classes(limit).await
+    }
+
     /// Detects circular dependencies at the file level.
     pub async fn find_circular_dependencies(&self) -> Result<Vec<Vec<String>>> {
         let qm = GraphQueryManager::new(&self.db);

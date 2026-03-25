@@ -29,6 +29,10 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         docstring: Some(format!("Documentation for {name}")),
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 1000,
     }
 }

@@ -15,7 +15,7 @@ use crate::errors::{TokenSaveError, Result};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 2;
+const LATEST_VERSION: u32 = 3;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -113,6 +113,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
     match version {
         1 => migrate_v1(conn).await,
         2 => migrate_v2(conn).await,
+        3 => migrate_v3(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -276,6 +277,27 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
             message: format!("v2: failed to drop schema_versions: {e}"),
             operation: "migrate_v2".to_string(),
         })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V3: complexity metric columns on nodes
+// ---------------------------------------------------------------------------
+
+/// Adds branches, loops, returns, and max_nesting columns to the nodes table.
+async fn migrate_v3(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE nodes ADD COLUMN loops INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE nodes ADD COLUMN returns INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE nodes ADD COLUMN max_nesting INTEGER NOT NULL DEFAULT 0;",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v3: failed to add complexity columns: {e}"),
+        operation: "migrate_v3".to_string(),
+    })?;
 
     Ok(())
 }

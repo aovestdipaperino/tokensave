@@ -303,6 +303,159 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "tokensave_rank".to_string(),
+            description: "Rank nodes by relationship count. Answer questions like 'most implemented interface', 'most extended class', 'most called function', 'class that implements the most interfaces', or 'function that calls the most others'.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "edge_kind": {
+                        "type": "string",
+                        "enum": ["implements", "extends", "calls", "uses", "contains", "annotates", "derives_macro"],
+                        "description": "The relationship type to rank by (e.g. 'implements' to find most-implemented interfaces)"
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["incoming", "outgoing"],
+                        "description": "Edge direction: 'incoming' ranks targets (default, e.g. most-implemented interface), 'outgoing' ranks sources (e.g. class that implements the most interfaces)"
+                    },
+                    "node_kind": {
+                        "type": "string",
+                        "description": "Optional filter for node kind (e.g. 'interface', 'class', 'trait', 'function', 'method')"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                },
+                "required": ["edge_kind"]
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_largest".to_string(),
+            description: "Rank nodes by size (line count). Find the largest classes, longest methods, biggest enums, etc.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_kind": {
+                        "type": "string",
+                        "description": "Filter by node kind (e.g. 'class', 'method', 'function', 'interface', 'enum', 'struct')"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_coupling".to_string(),
+            description: "Rank files by coupling: how many other files they depend on (fan_out) or are depended on by (fan_in). Identifies highly-coupled modules.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["fan_in", "fan_out"],
+                        "description": "fan_in: files depended on by the most others. fan_out: files that depend on the most others (default: fan_in)"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_inheritance_depth".to_string(),
+            description: "Find the deepest class/interface inheritance hierarchies by walking extends chains. Identifies over-deep type hierarchies.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_distribution".to_string(),
+            description: "Show node kind distribution (classes, methods, fields, etc.) per file or directory. Useful for understanding code structure and composition.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory or file path prefix to filter (e.g. 'src/main/java/com/example'). Omit for entire codebase."
+                    },
+                    "summary": {
+                        "type": "boolean",
+                        "description": "If true, aggregate counts across all matching files instead of per-file breakdown (default: false)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_recursion".to_string(),
+            description: "Detect recursive and mutually-recursive call cycles in the call graph. Identifies violations of the 'no recursion' rule (NASA Power of 10 Rule 1).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of cycles to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_complexity".to_string(),
+            description: "Rank functions/methods by composite complexity: line count + call fan-out (×3) + call fan-in. Identifies the most complex symbols that may need decomposition.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_kind": {
+                        "type": "string",
+                        "description": "Filter by node kind (default: function and method)"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_doc_coverage".to_string(),
+            description: "Find public symbols missing documentation (docstrings). Identifies gaps in API documentation for functions, methods, classes, interfaces, traits, structs, and enums.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory or file path prefix to filter (e.g. 'src/main'). Omit for entire codebase."
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 50)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_god_class".to_string(),
+            description: "Find classes with the most members (methods + fields). Identifies 'god classes' with excessive responsibility that may need decomposition.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
             name: "tokensave_changelog".to_string(),
             description: "Generate a semantic diff/changelog between two git refs, categorizing symbols as added, removed, or modified.".to_string(),
             input_schema: json!({
@@ -361,6 +514,15 @@ pub async fn handle_tool_call(
         "tokensave_similar" => handle_similar(cg, args).await,
         "tokensave_rename_preview" => handle_rename_preview(cg, args).await,
         "tokensave_unused_imports" => handle_unused_imports(cg, args).await,
+        "tokensave_rank" => handle_rank(cg, args).await,
+        "tokensave_largest" => handle_largest(cg, args).await,
+        "tokensave_coupling" => handle_coupling(cg, args).await,
+        "tokensave_inheritance_depth" => handle_inheritance_depth(cg, args).await,
+        "tokensave_distribution" => handle_distribution(cg, args).await,
+        "tokensave_recursion" => handle_recursion(cg, args).await,
+        "tokensave_complexity" => handle_complexity(cg, args).await,
+        "tokensave_doc_coverage" => handle_doc_coverage(cg, args).await,
+        "tokensave_god_class" => handle_god_class(cg, args).await,
         "tokensave_changelog" => handle_changelog(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
@@ -635,6 +797,11 @@ async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                 "docstring": n.docstring,
                 "visibility": n.visibility.as_str(),
                 "is_async": n.is_async,
+                "branches": n.branches,
+                "loops": n.loops,
+                "returns": n.returns,
+                "max_nesting": n.max_nesting,
+                "cyclomatic_complexity": n.branches + 1,
             });
             let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
             Ok(ToolResult {
@@ -1346,6 +1513,579 @@ async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResul
     })
 }
 
+/// Handles `tokensave_rank` tool calls.
+async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::types::EdgeKind;
+
+    let edge_kind_str =
+        args.get("edge_kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: edge_kind".to_string(),
+            })?;
+
+    let edge_kind = EdgeKind::from_str(edge_kind_str).ok_or_else(|| TokenSaveError::Config {
+        message: format!(
+            "invalid edge_kind '{}'. Valid values: implements, extends, calls, uses, contains, annotates, derives_macro",
+            edge_kind_str
+        ),
+    })?;
+
+    let direction = args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("incoming");
+
+    let incoming = match direction {
+        "incoming" => true,
+        "outgoing" => false,
+        _ => {
+            return Err(TokenSaveError::Config {
+                message: format!("invalid direction '{}'. Valid values: incoming, outgoing", direction),
+            });
+        }
+    };
+
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(|s| NodeKind::from_str(s));
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg
+        .get_ranked_nodes_by_edge_kind(&edge_kind, node_kind.as_ref(), incoming, limit)
+        .await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, count)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "count": count,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "edge_kind": edge_kind_str,
+        "direction": direction,
+        "node_kind_filter": args.get("node_kind").and_then(|v| v.as_str()),
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_largest` tool calls.
+async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(|s| NodeKind::from_str(s));
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg.get_largest_nodes(node_kind.as_ref(), limit).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, lines)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "start_line": node.start_line,
+                "end_line": node.end_line,
+                "lines": lines,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "node_kind_filter": args.get("node_kind").and_then(|v| v.as_str()),
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_coupling` tool calls.
+async fn handle_coupling(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let direction = args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fan_in");
+
+    let fan_in = match direction {
+        "fan_in" => true,
+        "fan_out" => false,
+        _ => {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "invalid direction '{}'. Valid values: fan_in, fan_out",
+                    direction
+                ),
+            });
+        }
+    };
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg.get_file_coupling(fan_in, limit).await?;
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(file, count)| {
+            json!({
+                "file": file,
+                "coupled_files": count,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "direction": direction,
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_inheritance_depth` tool calls.
+async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg.get_inheritance_depth(limit).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, depth)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "depth": depth,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_distribution` tool calls.
+async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let summary = args
+        .get("summary")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let results = cg.get_node_distribution(path_prefix).await?;
+
+    let output = if summary {
+        // Aggregate counts across all files
+        let mut totals: HashMap<String, u64> = HashMap::new();
+        for (_file, kind, count) in &results {
+            *totals.entry(kind.clone()).or_insert(0) += count;
+        }
+        let mut sorted: Vec<(String, u64)> = totals.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let items: Vec<Value> = sorted
+            .iter()
+            .map(|(kind, count)| json!({ "kind": kind, "count": count }))
+            .collect();
+
+        json!({
+            "path_filter": path_prefix,
+            "mode": "summary",
+            "total_kinds": items.len(),
+            "distribution": items,
+        })
+    } else {
+        // Per-file breakdown, grouped by file
+        let mut by_file: Vec<(String, Vec<Value>)> = Vec::new();
+        let mut current_file = String::new();
+        for (file, kind, count) in &results {
+            if *file != current_file {
+                current_file = file.clone();
+                by_file.push((file.clone(), Vec::new()));
+            }
+            if let Some(last) = by_file.last_mut() {
+                last.1.push(json!({ "kind": kind, "count": count }));
+            }
+        }
+
+        let items: Vec<Value> = by_file
+            .iter()
+            .map(|(file, kinds)| json!({ "file": file, "kinds": kinds }))
+            .collect();
+
+        json!({
+            "path_filter": path_prefix,
+            "mode": "per_file",
+            "file_count": items.len(),
+            "files": items,
+        })
+    };
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_recursion` tool calls.
+///
+/// Detects cycles in the call graph using iterative DFS on the calls-only
+/// edge subgraph. Each cycle is a vec of node IDs forming the loop.
+async fn handle_recursion(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let call_edges = cg.get_call_edges().await?;
+
+    // Build adjacency list
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    for (src, tgt) in &call_edges {
+        adj.entry(src.clone()).or_default().push(tgt.clone());
+    }
+
+    // Iterative DFS cycle detection
+    let mut cycles: Vec<Vec<String>> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut on_stack: HashSet<String> = HashSet::new();
+
+    let all_nodes: Vec<String> = adj.keys().cloned().collect();
+
+    for start in &all_nodes {
+        if visited.contains(start) {
+            continue;
+        }
+        // Iterative DFS: stack of (node, neighbor_list, index, path_so_far)
+        let mut stack: Vec<(String, Vec<String>, usize)> = Vec::new();
+        let mut path: Vec<String> = Vec::new();
+
+        let neighbors = adj.get(start).cloned().unwrap_or_default();
+        visited.insert(start.clone());
+        on_stack.insert(start.clone());
+        path.push(start.clone());
+        stack.push((start.clone(), neighbors, 0));
+
+        while let Some(frame) = stack.last_mut() {
+            let idx = frame.2;
+            if idx >= frame.1.len() {
+                let Some((node, _, _)) = stack.pop() else {
+                    break;
+                };
+                path.pop();
+                on_stack.remove(&node);
+                continue;
+            }
+            frame.2 += 1;
+            let neighbor = frame.1[idx].clone();
+
+            if !visited.contains(&neighbor) {
+                let nb_neighbors = adj.get(&neighbor).cloned().unwrap_or_default();
+                visited.insert(neighbor.clone());
+                on_stack.insert(neighbor.clone());
+                path.push(neighbor.clone());
+                stack.push((neighbor, nb_neighbors, 0));
+            } else if on_stack.contains(&neighbor) {
+                // Found a cycle
+                let mut cycle = Vec::new();
+                let mut found = false;
+                for item in &path {
+                    if *item == neighbor {
+                        found = true;
+                    }
+                    if found {
+                        cycle.push(item.clone());
+                    }
+                }
+                cycle.push(neighbor.clone());
+                cycles.push(cycle);
+                if cycles.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if cycles.len() >= limit {
+            break;
+        }
+    }
+
+    // Resolve node details for each cycle
+    let mut cycle_items: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for cycle in &cycles {
+        let mut chain: Vec<Value> = Vec::new();
+        for node_id in cycle {
+            if let Some(node) = cg.get_node(node_id).await? {
+                touched.push(node.file_path.clone());
+                chain.push(json!({
+                    "id": node.id,
+                    "name": node.name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": node.start_line,
+                }));
+            } else {
+                chain.push(json!({ "id": node_id }));
+            }
+        }
+        cycle_items.push(json!({
+            "length": cycle.len() - 1,
+            "chain": chain,
+        }));
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+
+    let output = json!({
+        "cycle_count": cycle_items.len(),
+        "cycles": cycle_items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_complexity` tool calls.
+async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(|s| NodeKind::from_str(s));
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg
+        .get_complexity_ranked(node_kind.as_ref(), limit)
+        .await?;
+
+    let touched_files =
+        unique_file_paths(results.iter().map(|(n, _, _, _, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, lines, fan_out, fan_in, score)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "lines": lines,
+                "cyclomatic_complexity": node.branches + 1,
+                "branches": node.branches,
+                "loops": node.loops,
+                "returns": node.returns,
+                "max_nesting": node.max_nesting,
+                "fan_out": fan_out,
+                "fan_in": fan_in,
+                "score": score,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "formula": "lines + (fan_out × 3) + fan_in",
+        "note": "cyclomatic_complexity = branches + 1 (computed from AST during extraction)",
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_doc_coverage` tool calls.
+async fn handle_doc_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(500) as usize)
+        .unwrap_or(50);
+
+    let results = cg
+        .get_undocumented_public_symbols(path_prefix, limit)
+        .await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|n| n.file_path.as_str()));
+
+    // Group by file for readability
+    let mut by_file: HashMap<String, Vec<Value>> = HashMap::new();
+    for node in &results {
+        by_file
+            .entry(node.file_path.clone())
+            .or_default()
+            .push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "line": node.start_line,
+                "signature": node.signature,
+            }));
+    }
+
+    let mut file_items: Vec<Value> = by_file
+        .into_iter()
+        .map(|(file, symbols)| {
+            json!({
+                "file": file,
+                "count": symbols.len(),
+                "symbols": symbols,
+            })
+        })
+        .collect();
+    file_items.sort_by(|a, b| {
+        b["count"].as_u64().cmp(&a["count"].as_u64())
+    });
+
+    let output = json!({
+        "path_filter": path_prefix,
+        "total_undocumented": results.len(),
+        "file_count": file_items.len(),
+        "files": file_items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_god_class` tool calls.
+async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let results = cg.get_god_classes(limit).await?;
+
+    let touched_files =
+        unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, methods, fields, total)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "methods": methods,
+                "fields": fields,
+                "total_members": total,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 /// Handles `tokensave_changelog` tool calls.
 async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let from_ref = args
@@ -1457,7 +2197,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 27);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -1478,6 +2218,15 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_rename_preview"));
         assert!(tool_names.contains(&"tokensave_unused_imports"));
         assert!(tool_names.contains(&"tokensave_changelog"));
+        assert!(tool_names.contains(&"tokensave_rank"));
+        assert!(tool_names.contains(&"tokensave_largest"));
+        assert!(tool_names.contains(&"tokensave_coupling"));
+        assert!(tool_names.contains(&"tokensave_inheritance_depth"));
+        assert!(tool_names.contains(&"tokensave_distribution"));
+        assert!(tool_names.contains(&"tokensave_recursion"));
+        assert!(tool_names.contains(&"tokensave_complexity"));
+        assert!(tool_names.contains(&"tokensave_doc_coverage"));
+        assert!(tool_names.contains(&"tokensave_god_class"));
     }
 
     #[test]

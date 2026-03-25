@@ -44,6 +44,10 @@ async fn test_store_and_retrieve_vector() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -78,6 +82,10 @@ async fn test_brute_force_search() {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: 0,
         };
         db.insert_node(&node).await.unwrap();
@@ -109,6 +117,10 @@ fn test_create_node_text() {
         docstring: Some("Processes raw data input".to_string()),
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     let text = create_node_text(&node);
@@ -137,6 +149,10 @@ async fn test_vector_count() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -162,6 +178,10 @@ async fn test_delete_vector() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     db.insert_node(&node).await.unwrap();
@@ -191,6 +211,10 @@ async fn test_clear_vectors() {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: 0,
         };
         db.insert_node(&node).await.unwrap();
@@ -226,6 +250,10 @@ fn test_create_node_text_without_optional_fields() {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
     let text = create_node_text(&node);

@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-03-25
+
+### Added
+- 9 new MCP tools (27 total) for codebase analytics, code quality, and guideline compliance:
+  - `tokensave_rank` — rank nodes by relationship count with direction support (incoming/outgoing); answers "most implemented interface", "class that implements the most interfaces", etc.
+  - `tokensave_largest` — rank nodes by line count; find largest classes, longest methods
+  - `tokensave_coupling` — rank files by fan-in (most depended-on) or fan-out (most dependencies)
+  - `tokensave_inheritance_depth` — find deepest class hierarchies via recursive CTE on extends chains
+  - `tokensave_distribution` — node kind breakdown per file/directory with summary mode
+  - `tokensave_recursion` — detect recursive/mutually-recursive call cycles (NASA Power of 10, Rule 1)
+  - `tokensave_complexity` — rank functions by composite complexity score with real cyclomatic complexity from AST
+  - `tokensave_doc_coverage` — find public symbols missing documentation (Rust guidelines M-CANONICAL-DOCS)
+  - `tokensave_god_class` — find classes with the most members (methods + fields)
+- **Complexity metrics on every function/method node** — 4 new columns extracted from the AST during indexing:
+  - `branches` — branching statements (if, match/switch arms, ternary, catch). CC = branches + 1.
+  - `loops` — loop constructs (for, while, loop, do). Enables NASA Rule 2 audits.
+  - `returns` — early exits (return, break, continue, throw).
+  - `max_nesting` — deepest brace nesting level. Enables NASA Rule 1 (≤4 levels) audits.
+- Generic `count_complexity()` helper with per-language configs for all 15 supported languages
+- DB migration V3 adds the 4 complexity columns to the nodes table
+- All new tools use efficient SQL queries (JOINs, GROUP BY, recursive CTEs) instead of loading all edges into memory
 
 ## [1.5.4] - 2026-03-25
 

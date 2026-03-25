@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
+use crate::extraction::complexity::{count_complexity, JAVA_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -103,6 +104,10 @@ impl JavaExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -202,6 +207,10 @@ impl JavaExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -253,6 +262,10 @@ impl JavaExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -313,6 +326,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -371,6 +388,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -428,6 +449,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -490,6 +515,10 @@ impl JavaExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -532,6 +561,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -575,6 +608,7 @@ impl JavaExtractor {
         };
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+        let metrics = count_complexity(node, &JAVA_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -590,6 +624,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -625,6 +663,7 @@ impl JavaExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Constructor, &name, start_line);
+        let metrics = count_complexity(node, &JAVA_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -640,6 +679,10 @@ impl JavaExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -704,7 +747,11 @@ impl JavaExtractor {
                         docstring: None,
                         visibility: visibility.clone(),
                         is_async: false,
-                        updated_at: state.timestamp,
+                        branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -749,6 +796,10 @@ impl JavaExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1038,7 +1089,11 @@ impl JavaExtractor {
                         docstring: None,
                         visibility: Visibility::Private,
                         is_async: false,
-                        updated_at: state.timestamp,
+                        branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1116,7 +1171,11 @@ impl JavaExtractor {
                         docstring: None,
                         visibility: Visibility::Private,
                         is_async: false,
-                        updated_at: state.timestamp,
+                        branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 

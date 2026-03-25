@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 18 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave claude-install`.
+Manual test queries for verifying all 27 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave claude-install`.
 
 ---
 
@@ -145,3 +145,137 @@ Expected: Returns import/use nodes that have no matching references in the graph
 > What symbols changed between the last two commits? Use `HEAD~1` and `HEAD`.
 
 Expected: Returns a structured changelog showing added/removed/modified symbols per changed file.
+
+---
+
+## tokensave_rank
+
+> What is the most implemented interface? What class implements the most interfaces?
+
+Test incoming (default):
+```
+tokensave_rank(edge_kind="implements", node_kind="interface", limit=5)
+```
+Expected: Returns interfaces ranked by number of implementations (e.g. `Versioned` with 104).
+
+Test outgoing:
+```
+tokensave_rank(edge_kind="implements", direction="outgoing", node_kind="class", limit=5)
+```
+Expected: Returns classes ranked by how many interfaces they implement (e.g. `PartitionData` with 16).
+
+Other useful queries:
+- Most extended class: `edge_kind="extends", node_kind="class"`
+- Most called function: `edge_kind="calls", node_kind="method"`
+- Most annotated class: `edge_kind="annotates", direction="outgoing", node_kind="class"`
+
+---
+
+## tokensave_largest
+
+> What are the largest classes? What are the longest methods?
+
+Test:
+```
+tokensave_largest(node_kind="class", limit=5)
+tokensave_largest(node_kind="method", limit=5)
+```
+Expected: Returns nodes ranked by line count (end_line - start_line + 1) with start/end lines.
+
+---
+
+## tokensave_coupling
+
+> Which files are depended on by the most other files? Which files have the most outward dependencies?
+
+Test fan-in:
+```
+tokensave_coupling(direction="fan_in", limit=5)
+```
+Expected: Returns files ranked by how many other files depend on them.
+
+Test fan-out:
+```
+tokensave_coupling(direction="fan_out", limit=5)
+```
+Expected: Returns files ranked by how many other files they depend on.
+
+---
+
+## tokensave_inheritance_depth
+
+> What are the deepest class inheritance hierarchies?
+
+Test:
+```
+tokensave_inheritance_depth(limit=5)
+```
+Expected: Returns classes ranked by inheritance chain depth via `extends` edges. Uses recursive CTE.
+
+---
+
+## tokensave_distribution
+
+> How many classes vs interfaces vs methods are in a given package?
+
+Test summary mode:
+```
+tokensave_distribution(path="kafka/clients/src/main/java/org/apache/kafka/common/config", summary=true)
+```
+Expected: Returns aggregated node kind counts (e.g. 355 fields, 193 methods, 20 classes).
+
+Test per-file mode:
+```
+tokensave_distribution(path="src/mcp")
+```
+Expected: Returns per-file breakdown of node kinds.
+
+---
+
+## tokensave_recursion
+
+> Are there any recursive or mutually-recursive call cycles? (NASA Power of 10, Rule 1)
+
+Test:
+```
+tokensave_recursion(limit=5)
+```
+Expected: Returns call cycles found via DFS on the calls-only edge subgraph. Each cycle shows the chain of functions forming the loop. Self-recursive functions appear as length-1 cycles.
+
+---
+
+## tokensave_complexity
+
+> What are the most complex functions in the codebase?
+
+Test:
+```
+tokensave_complexity(limit=5)
+tokensave_complexity(node_kind="function", limit=10)
+```
+Expected: Returns functions/methods ranked by composite score: `lines + (fan_out × 3) + fan_in`. Shows individual metrics (lines, fan_out, fan_in) alongside the total score. Also includes real cyclomatic complexity (`branches + 1`), branch count, loop count, return count, and max nesting depth — all extracted from the AST during indexing.
+
+---
+
+## tokensave_doc_coverage
+
+> Which public symbols are missing documentation?
+
+Test:
+```
+tokensave_doc_coverage(limit=20)
+tokensave_doc_coverage(path="kafka/clients/src/main", limit=10)
+```
+Expected: Returns public functions, methods, classes, interfaces, traits, structs, and enums that have no docstring. Grouped by file with counts.
+
+---
+
+## tokensave_god_class
+
+> Which classes have the most members? Are there any god classes that need decomposition?
+
+Test:
+```
+tokensave_god_class(limit=5)
+```
+Expected: Returns classes ranked by total member count (methods + fields). Shows method count, field count, and total separately.

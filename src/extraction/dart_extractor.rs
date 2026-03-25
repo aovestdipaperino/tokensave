@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
+use crate::extraction::complexity::{count_complexity, DART_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -100,6 +101,10 @@ impl DartExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -191,6 +196,10 @@ impl DartExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -233,6 +242,10 @@ impl DartExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -311,6 +324,7 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
+        let metrics = body.map_or(Default::default(), |b| count_complexity(b, &DART_COMPLEXITY));
 
         let graph_node = Node {
             id: id.clone(),
@@ -326,6 +340,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -387,6 +405,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -458,6 +480,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -514,6 +540,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -571,6 +601,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -639,6 +673,10 @@ impl DartExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -686,6 +724,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -877,6 +919,7 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
+        let metrics = body.map_or(Default::default(), |b| count_complexity(b, &DART_COMPLEXITY));
 
         let graph_node = Node {
             id: id.clone(),
@@ -892,6 +935,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -933,6 +980,7 @@ impl DartExtractor {
         let end_column = decl_node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Constructor, &name, start_line);
+        let metrics = count_complexity(decl_node, &DART_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -948,6 +996,10 @@ impl DartExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1015,6 +1067,7 @@ impl DartExtractor {
         let end_column = decl_node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
+        let metrics = count_complexity(decl_node, &DART_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -1030,6 +1083,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1081,6 +1138,7 @@ impl DartExtractor {
         let end_column = decl_node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
+        let metrics = count_complexity(decl_node, &DART_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -1096,6 +1154,10 @@ impl DartExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1207,6 +1269,10 @@ impl DartExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);

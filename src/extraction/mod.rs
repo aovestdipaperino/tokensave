@@ -1,3 +1,4 @@
+pub mod complexity;
 mod go_extractor;
 mod java_extractor;
 /// Tree-sitter based source code extraction module.

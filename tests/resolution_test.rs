@@ -25,6 +25,10 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -42,6 +46,10 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -230,6 +238,10 @@ async fn test_multiple_candidates_best_match_scoring() {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -247,6 +259,10 @@ async fn test_multiple_candidates_best_match_scoring() {
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 
@@ -264,6 +280,10 @@ async fn test_multiple_candidates_best_match_scoring() {
         docstring: None,
         visibility: Visibility::Private,
         is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 0,
     };
 

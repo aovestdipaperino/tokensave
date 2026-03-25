@@ -312,6 +312,15 @@ pub struct Node {
     pub docstring: Option<String>,
     pub visibility: Visibility,
     pub is_async: bool,
+    /// Number of branching statements (if, match/switch arms, ternary).
+    /// 0 for non-function nodes. Cyclomatic complexity = branches + 1.
+    pub branches: u32,
+    /// Number of loop constructs (for, while, loop).
+    pub loops: u32,
+    /// Number of early-exit statements (return, break, continue, throw).
+    pub returns: u32,
+    /// Maximum brace nesting depth within the function body.
+    pub max_nesting: u32,
     pub updated_at: u64,
 }
 

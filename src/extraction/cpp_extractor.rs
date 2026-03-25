@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
+use crate::extraction::complexity::{count_complexity, CPP_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -105,6 +106,10 @@ impl CppExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -220,6 +225,7 @@ impl CppExtractor {
         };
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+        let metrics = count_complexity(node, &CPP_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -235,6 +241,10 @@ impl CppExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -291,6 +301,7 @@ impl CppExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Constructor, &name, start_line);
+        let metrics = count_complexity(node, &CPP_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -306,6 +317,10 @@ impl CppExtractor {
             docstring,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -336,6 +351,7 @@ impl CppExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
+        let metrics = count_complexity(node, &CPP_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -351,6 +367,10 @@ impl CppExtractor {
             docstring,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -489,6 +509,7 @@ impl CppExtractor {
                     start_line,
                 );
 
+                let metrics = count_complexity(node, &CPP_COMPLEXITY);
                 let graph_node = Node {
                     id: id.clone(),
                     kind: NodeKind::Constructor,
@@ -503,6 +524,10 @@ impl CppExtractor {
                     docstring,
                     visibility: state.access_specifier.clone(),
                     is_async: false,
+                    branches: metrics.branches,
+                    loops: metrics.loops,
+                    returns: metrics.returns,
+                    max_nesting: metrics.max_nesting,
                     updated_at: state.timestamp,
                 };
                 state.nodes.push(graph_node);
@@ -535,6 +560,7 @@ impl CppExtractor {
         };
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+        let metrics = count_complexity(node, &CPP_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -550,6 +576,10 @@ impl CppExtractor {
             docstring,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -591,6 +621,10 @@ impl CppExtractor {
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -640,6 +674,10 @@ impl CppExtractor {
             docstring,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -690,6 +728,10 @@ impl CppExtractor {
             docstring: None,
             visibility,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -796,6 +838,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -868,6 +914,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -968,6 +1018,10 @@ impl CppExtractor {
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1007,6 +1061,7 @@ impl CppExtractor {
                     start_line,
                 );
 
+                let metrics = count_complexity(node, &CPP_COMPLEXITY);
                 let graph_node = Node {
                     id: id.clone(),
                     kind: NodeKind::Constructor,
@@ -1021,6 +1076,10 @@ impl CppExtractor {
                     docstring,
                     visibility: state.access_specifier.clone(),
                     is_async: false,
+                    branches: metrics.branches,
+                    loops: metrics.loops,
+                    returns: metrics.returns,
+                    max_nesting: metrics.max_nesting,
                     updated_at: state.timestamp,
                 };
                 state.nodes.push(graph_node);
@@ -1053,6 +1112,7 @@ impl CppExtractor {
         };
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+        let metrics = count_complexity(node, &CPP_COMPLEXITY);
 
         let graph_node = Node {
             id: id.clone(),
@@ -1068,6 +1128,10 @@ impl CppExtractor {
             docstring,
             visibility: state.access_specifier.clone(),
             is_async: false,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1137,6 +1201,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1194,6 +1262,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1296,6 +1368,10 @@ impl CppExtractor {
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(typedef_graph_node);
@@ -1354,6 +1430,10 @@ impl CppExtractor {
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(typedef_graph_node);
@@ -1412,6 +1492,10 @@ impl CppExtractor {
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(typedef_graph_node);
@@ -1462,6 +1546,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1526,6 +1614,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1634,6 +1726,10 @@ impl CppExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1682,6 +1778,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1726,6 +1826,10 @@ impl CppExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1781,6 +1885,10 @@ impl CppExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1828,6 +1936,10 @@ impl CppExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -1897,6 +2009,10 @@ impl CppExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);

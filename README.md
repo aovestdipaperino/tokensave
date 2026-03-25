@@ -129,7 +129,7 @@ This single command:
 
 - Registers tokensave as an MCP server in `~/.claude/settings.json`
 - Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave
-- Adds tool permissions so Claude can call all 18 tokensave tools without prompting
+- Adds tool permissions so Claude can call all 27 tokensave tools without prompting
 - Appends rules to `~/.claude/CLAUDE.md` that instruct Claude to prefer tokensave over file reads
 
 All changes are idempotent — safe to run again after upgrading.
@@ -363,6 +363,15 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_rename_preview` | All references to a symbol (preview rename impact) |
 | `tokensave_unused_imports` | Import statements that are never referenced |
 | `tokensave_changelog` | Semantic diff between two git refs |
+| `tokensave_rank` | Rank nodes by relationship count (most implemented interface, most extended class, etc.) |
+| `tokensave_largest` | Rank nodes by size — largest classes, longest methods |
+| `tokensave_coupling` | Rank files by fan-in (most depended on) or fan-out (most dependencies) |
+| `tokensave_inheritance_depth` | Find the deepest class inheritance hierarchies |
+| `tokensave_distribution` | Node kind breakdown (classes, methods, fields) per file or directory |
+| `tokensave_recursion` | Detect recursive/mutually-recursive call cycles (NASA Power of 10, Rule 1) |
+| `tokensave_complexity` | Rank functions by composite complexity: lines + fan-out + fan-in |
+| `tokensave_doc_coverage` | Find public symbols missing documentation |
+| `tokensave_god_class` | Find classes with the most members (methods + fields) |
 
 ### `tokensave_context`
 
@@ -508,6 +517,80 @@ Generate a semantic diff between two git refs. Shows which symbols were added, r
 
 Returns a structured changelog with added/removed/modified symbols per file.
 
+### `tokensave_rank`
+
+Rank nodes by relationship count. Supports both incoming (default) and outgoing direction.
+
+- **`edge_kind`** (string, required): Relationship type — `implements`, `extends`, `calls`, `uses`, `contains`, `annotates`, `derives_macro`
+- **`direction`** (string, optional): `incoming` (default, e.g. most-implemented interface) or `outgoing` (e.g. class that implements the most interfaces)
+- **`node_kind`** (string, optional): Filter by node kind (e.g. `interface`, `class`, `method`)
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+### `tokensave_largest`
+
+Rank nodes by line count (end_line - start_line + 1). Find the largest classes, longest methods, biggest enums.
+
+- **`node_kind`** (string, optional): Filter by kind (e.g. `class`, `method`, `function`)
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+### `tokensave_coupling`
+
+Rank files by coupling — how many other files they depend on or are depended on by.
+
+- **`direction`** (string, optional): `fan_in` (default, most depended-on) or `fan_out` (most outward dependencies)
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Only considers `calls`, `uses`, `implements`, and `extends` edges across file boundaries.
+
+### `tokensave_inheritance_depth`
+
+Find the deepest class/interface inheritance hierarchies by walking `extends` chains.
+
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Uses a recursive CTE to compute the maximum depth for each class in the hierarchy.
+
+### `tokensave_distribution`
+
+Show node kind distribution (classes, methods, fields, etc.) per file or directory.
+
+- **`path`** (string, optional): Directory or file path prefix to filter
+- **`summary`** (boolean, optional): If true, aggregate counts across all matching files instead of per-file breakdown (default: false)
+
+### `tokensave_recursion`
+
+Detect recursive and mutually-recursive call cycles in the call graph. Addresses NASA Power of 10 Rule 1 ("no recursion — call graph must be acyclic").
+
+- **`limit`** (number, optional): Maximum number of cycles to return (default: 10)
+
+Returns call cycles with full node details. Self-recursive functions appear as length-1 cycles.
+
+### `tokensave_complexity`
+
+Rank functions/methods by a composite complexity score: `lines + (fan_out × 3) + fan_in`. Line count reflects size, fan-out reflects cognitive load, fan-in reflects coupling.
+
+- **`node_kind`** (string, optional): Filter by kind (default: function and method)
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Returns individual metrics (lines, fan_out, fan_in) alongside the total score.
+
+### `tokensave_doc_coverage`
+
+Find public symbols missing documentation (docstrings). Checks functions, methods, classes, interfaces, traits, structs, enums, and modules.
+
+- **`path`** (string, optional): Directory or file path prefix to filter
+- **`limit`** (number, optional): Maximum results (default: 50)
+
+Returns undocumented symbols grouped by file with counts.
+
+### `tokensave_god_class`
+
+Find classes with the most members (methods + fields). Identifies "god classes" that may have too much responsibility and need decomposition.
+
+- **`limit`** (number, optional): Maximum results (default: 10)
+
+Returns classes ranked by total member count with method and field counts shown separately.
+
 ---
 
 ## `tokensave doctor`
@@ -539,7 +622,7 @@ Claude Code integration
   ✔ Settings: /Users/you/.claude/settings.json
   ✔ MCP server registered
   ✔ PreToolUse hook installed
-  ✔ All 18 tool permissions granted
+  ✔ All 27 tool permissions granted
   ✔ CLAUDE.md contains tokensave rules
 
 Network

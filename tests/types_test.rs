@@ -123,6 +123,10 @@ fn node_serde_roundtrip() {
         docstring: Some("Does something useful.".to_string()),
         visibility: Visibility::Pub,
         is_async: true,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
         updated_at: 1700000000,
     };
 

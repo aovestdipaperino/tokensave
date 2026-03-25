@@ -15,7 +15,8 @@ use crate::types::*;
 ///
 /// Expected column order: id(0), kind(1), name(2), qualified_name(3),
 /// file_path(4), start_line(5), end_line(6), start_column(7), end_column(8),
-/// docstring(9), signature(10), visibility(11), is_async(12), updated_at(13).
+/// docstring(9), signature(10), visibility(11), is_async(12),
+/// branches(13), loops(14), returns(15), max_nesting(16), updated_at(17).
 fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
     let kind_str = row.get::<String>(1)?;
     let vis_str = row.get::<String>(11)?;
@@ -35,7 +36,11 @@ fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
         docstring: row.get::<Option<String>>(9)?,
         visibility: Visibility::from_str(&vis_str).unwrap_or_default(),
         is_async: is_async_int != 0,
-        updated_at: row.get::<u64>(13)?,
+        branches: row.get::<u32>(13)?,
+        loops: row.get::<u32>(14)?,
+        returns: row.get::<u32>(15)?,
+        max_nesting: row.get::<u32>(16)?,
+        updated_at: row.get::<u64>(17)?,
     })
 }
 
@@ -100,8 +105,9 @@ impl Database {
                 "INSERT OR REPLACE INTO nodes
                 (id, kind, name, qualified_name, file_path,
                  start_line, end_line, start_column, end_column,
-                 docstring, signature, visibility, is_async, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 docstring, signature, visibility, is_async,
+                 branches, loops, returns, max_nesting, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     node.id.as_str(),
                     node.kind.as_str(),
@@ -116,6 +122,10 @@ impl Database {
                     opt_str(&node.signature),
                     node.visibility.as_str(),
                     node.is_async as i64,
+                    node.branches as i64,
+                    node.loops as i64,
+                    node.returns as i64,
+                    node.max_nesting as i64,
                     node.updated_at as i64,
                 ],
             )
@@ -143,8 +153,9 @@ impl Database {
                 "INSERT OR REPLACE INTO nodes
                 (id, kind, name, qualified_name, file_path,
                  start_line, end_line, start_column, end_column,
-                 docstring, signature, visibility, is_async, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 docstring, signature, visibility, is_async,
+                 branches, loops, returns, max_nesting, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     node.id.as_str(),
                     node.kind.as_str(),
@@ -159,6 +170,10 @@ impl Database {
                     opt_str(&node.signature),
                     node.visibility.as_str(),
                     node.is_async as i64,
+                    node.branches as i64,
+                    node.loops as i64,
+                    node.returns as i64,
+                    node.max_nesting as i64,
                     node.updated_at as i64,
                 ],
             )
@@ -182,7 +197,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, updated_at
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
                  FROM nodes WHERE id = ?1",
                 params![id],
             )
@@ -214,7 +229,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
                  FROM nodes WHERE file_path = ?1 ORDER BY start_line",
                 params![file_path],
             )
@@ -234,7 +249,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
                  FROM nodes WHERE kind = ?1",
                 params![kind.as_str()],
             )
@@ -254,7 +269,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
                  FROM nodes",
                 (),
             )
@@ -515,6 +530,579 @@ impl Database {
         }
     }
 
+    /// Returns nodes ranked by edge count for a given edge kind and direction,
+    /// optionally filtered by node kind.
+    ///
+    /// When `incoming` is true, ranks target nodes by incoming edge count
+    /// (e.g. "most implemented interface"). When false, ranks source nodes
+    /// by outgoing edge count (e.g. "class that implements the most interfaces").
+    ///
+    /// The query is performed entirely in SQL for efficiency — no need to load
+    /// all edges into memory. Results are ordered by count descending.
+    pub async fn get_ranked_nodes_by_edge_kind(
+        &self,
+        edge_kind: &EdgeKind,
+        node_kind: Option<&NodeKind>,
+        incoming: bool,
+        limit: usize,
+    ) -> Result<Vec<(Node, u64)>> {
+        let (join_col, group_col) = if incoming {
+            ("e.target", "e.target")
+        } else {
+            ("e.source", "e.source")
+        };
+
+        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
+            Some(nk) => (
+                format!(
+                    "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                            n.start_line, n.end_line, n.start_column, n.end_column,
+                            n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                            COUNT(*) AS cnt
+                     FROM edges e
+                     JOIN nodes n ON {join_col} = n.id
+                     WHERE e.kind = ?1 AND n.kind = ?2
+                     GROUP BY {group_col}
+                     ORDER BY cnt DESC
+                     LIMIT ?3"
+                ),
+                vec![
+                    libsql::Value::Text(edge_kind.as_str().to_string()),
+                    libsql::Value::Text(nk.as_str().to_string()),
+                    libsql::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                format!(
+                    "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                            n.start_line, n.end_line, n.start_column, n.end_column,
+                            n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                            COUNT(*) AS cnt
+                     FROM edges e
+                     JOIN nodes n ON {join_col} = n.id
+                     WHERE e.kind = ?1
+                     GROUP BY {group_col}
+                     ORDER BY cnt DESC
+                     LIMIT ?2"
+                ),
+                vec![
+                    libsql::Value::Text(edge_kind.as_str().to_string()),
+                    libsql::Value::Integer(limit as i64),
+                ],
+            ),
+        };
+
+        let op = "get_ranked_nodes_by_edge_kind";
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query ranked nodes: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map row: {e}"),
+                operation: op.to_string(),
+            })?;
+            let count = row.get::<u64>(18).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read count column: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((node, count));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns nodes ranked by line span (end_line - start_line + 1), optionally
+    /// filtered by node kind. Results are ordered by size descending.
+    pub async fn get_largest_nodes(
+        &self,
+        node_kind: Option<&NodeKind>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u32)>> {
+        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
+            Some(nk) => (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at,
+                        (end_line - start_line + 1) AS lines
+                 FROM nodes
+                 WHERE kind = ?1
+                 ORDER BY lines DESC
+                 LIMIT ?2"
+                    .to_string(),
+                vec![
+                    libsql::Value::Text(nk.as_str().to_string()),
+                    libsql::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at,
+                        (end_line - start_line + 1) AS lines
+                 FROM nodes
+                 ORDER BY lines DESC
+                 LIMIT ?1"
+                    .to_string(),
+                vec![libsql::Value::Integer(limit as i64)],
+            ),
+        };
+
+        let op = "get_largest_nodes";
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query largest nodes: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map row: {e}"),
+                operation: op.to_string(),
+            })?;
+            let lines = row.get::<u32>(18).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read lines column: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((node, lines));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns files ranked by coupling (number of distinct other files connected
+    /// via cross-file edges). `fan_in` mode counts how many files depend on each
+    /// file; `fan_out` counts how many files each file depends on.
+    ///
+    /// Only `calls`, `uses`, `implements`, and `extends` edges are considered.
+    pub async fn get_file_coupling(
+        &self,
+        fan_in: bool,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        let sql = if fan_in {
+            "SELECT n_tgt.file_path, COUNT(DISTINCT n_src.file_path) AS coupling
+             FROM edges e
+             JOIN nodes n_src ON e.source = n_src.id
+             JOIN nodes n_tgt ON e.target = n_tgt.id
+             WHERE e.kind IN ('calls', 'uses', 'implements', 'extends')
+               AND n_src.file_path != n_tgt.file_path
+             GROUP BY n_tgt.file_path
+             ORDER BY coupling DESC
+             LIMIT ?1"
+        } else {
+            "SELECT n_src.file_path, COUNT(DISTINCT n_tgt.file_path) AS coupling
+             FROM edges e
+             JOIN nodes n_src ON e.source = n_src.id
+             JOIN nodes n_tgt ON e.target = n_tgt.id
+             WHERE e.kind IN ('calls', 'uses', 'implements', 'extends')
+               AND n_src.file_path != n_tgt.file_path
+             GROUP BY n_src.file_path
+             ORDER BY coupling DESC
+             LIMIT ?1"
+        };
+
+        let op = "get_file_coupling";
+        let mut rows = self
+            .conn()
+            .query(sql, params![limit as i64])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file coupling: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let file_path = row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read file_path: {e}"),
+                operation: op.to_string(),
+            })?;
+            let count = row.get::<u64>(1).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read coupling count: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((file_path, count));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns the maximum inheritance depth for classes/interfaces reachable
+    /// via `extends` edges. Uses a recursive CTE to walk the hierarchy.
+    ///
+    /// Each result is a (leaf_node, depth) pair where depth is the number of
+    /// `extends` hops from the leaf to the root of its hierarchy.
+    pub async fn get_inheritance_depth(&self, limit: usize) -> Result<Vec<(Node, u64)>> {
+        let sql =
+            "WITH RECURSIVE hierarchy(leaf_id, current_id, depth) AS (
+                 SELECT e.source, e.target, 1
+                 FROM edges e
+                 WHERE e.kind = 'extends'
+                 UNION ALL
+                 SELECT h.leaf_id, e.target, h.depth + 1
+                 FROM hierarchy h
+                 JOIN edges e ON e.source = h.current_id AND e.kind = 'extends'
+                 WHERE h.depth < 50
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                    n.start_line, n.end_line, n.start_column, n.end_column,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                    MAX(h.depth) AS max_depth
+             FROM hierarchy h
+             JOIN nodes n ON h.leaf_id = n.id
+             GROUP BY h.leaf_id
+             ORDER BY max_depth DESC
+             LIMIT ?1";
+
+        let op = "get_inheritance_depth";
+        let mut rows = self
+            .conn()
+            .query(sql, params![limit as i64])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query inheritance depth: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map row: {e}"),
+                operation: op.to_string(),
+            })?;
+            let depth = row.get::<u64>(18).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read depth column: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((node, depth));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns node kind counts grouped by file or directory prefix.
+    ///
+    /// If `path_prefix` is provided, only files under that path are included.
+    /// Results are grouped by (file_path, kind) and ordered by file then count.
+    pub async fn get_node_distribution(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, String, u64)>> {
+        let (sql, param_values): (&str, Vec<libsql::Value>) = match path_prefix {
+            Some(prefix) => (
+                "SELECT file_path, kind, COUNT(*) AS cnt
+                 FROM nodes
+                 WHERE file_path LIKE ?1
+                 GROUP BY file_path, kind
+                 ORDER BY file_path, cnt DESC",
+                vec![libsql::Value::Text(format!("{}%", prefix))],
+            ),
+            None => (
+                "SELECT file_path, kind, COUNT(*) AS cnt
+                 FROM nodes
+                 GROUP BY file_path, kind
+                 ORDER BY file_path, cnt DESC",
+                vec![],
+            ),
+        };
+
+        let op = "get_node_distribution";
+        let mut rows = self
+            .conn()
+            .query(sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query node distribution: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let file_path = row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read file_path: {e}"),
+                operation: op.to_string(),
+            })?;
+            let kind = row.get::<String>(1).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read kind: {e}"),
+                operation: op.to_string(),
+            })?;
+            let count = row.get::<u64>(2).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read count: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((file_path, kind, count));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns all `calls` edges for cycle detection in the call graph.
+    ///
+    /// Returns `(source_id, target_id)` pairs for every `calls` edge.
+    pub async fn get_call_edges(&self) -> Result<Vec<(String, String)>> {
+        let op = "get_call_edges";
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT source, target FROM edges WHERE kind = 'calls'",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query call edges: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let source = row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read source: {e}"),
+                operation: op.to_string(),
+            })?;
+            let target = row.get::<String>(1).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read target: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((source, target));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns functions/methods ranked by a composite complexity score.
+    ///
+    /// Complexity = line_count + (call_fan_out * 3) + call_fan_in.
+    /// Line count reflects size, fan-out reflects cognitive load, fan-in
+    /// reflects coupling. Results are ordered by score descending.
+    pub async fn get_complexity_ranked(
+        &self,
+        node_kind: Option<&NodeKind>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u32, u64, u64, u64)>> {
+        // line_count, fan_out, fan_in, score
+        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
+            Some(nk) => (
+                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                        n.start_line, n.end_line, n.start_column, n.end_column,
+                        n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                        (n.end_line - n.start_line + 1) AS lines,
+                        COALESCE(out_calls.cnt, 0) AS fan_out,
+                        COALESCE(in_calls.cnt, 0) AS fan_in,
+                        ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
+                 FROM nodes n
+                 LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
+                 WHERE n.kind = ?1
+                 ORDER BY score DESC
+                 LIMIT ?2"
+                    .to_string(),
+                vec![
+                    libsql::Value::Text(nk.as_str().to_string()),
+                    libsql::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                        n.start_line, n.end_line, n.start_column, n.end_column,
+                        n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                        (n.end_line - n.start_line + 1) AS lines,
+                        COALESCE(out_calls.cnt, 0) AS fan_out,
+                        COALESCE(in_calls.cnt, 0) AS fan_in,
+                        ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
+                 FROM nodes n
+                 LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
+                 WHERE n.kind IN ('function', 'method')
+                 ORDER BY score DESC
+                 LIMIT ?1"
+                    .to_string(),
+                vec![libsql::Value::Integer(limit as i64)],
+            ),
+        };
+
+        let op = "get_complexity_ranked";
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query complexity ranking: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map row: {e}"),
+                operation: op.to_string(),
+            })?;
+            let lines = row.get::<u32>(18).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read lines: {e}"),
+                operation: op.to_string(),
+            })?;
+            let fan_out = row.get::<u64>(19).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read fan_out: {e}"),
+                operation: op.to_string(),
+            })?;
+            let fan_in = row.get::<u64>(20).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read fan_in: {e}"),
+                operation: op.to_string(),
+            })?;
+            let score = row.get::<u64>(21).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read score: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((node, lines, fan_out, fan_in, score));
+        }
+
+        Ok(items)
+    }
+
+    /// Returns public symbols that are missing docstrings.
+    ///
+    /// Filters to meaningful node kinds (function, method, class, interface,
+    /// trait, struct, enum) and checks for NULL or empty docstring.
+    pub async fn get_undocumented_public_symbols(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
+            Some(prefix) => (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
+                 FROM nodes
+                 WHERE visibility = 'public'
+                   AND (docstring IS NULL OR docstring = '')
+                   AND kind IN ('function', 'method', 'class', 'interface', 'trait', 'struct', 'enum', 'module')
+                   AND file_path LIKE ?1
+                 ORDER BY file_path, start_line
+                 LIMIT ?2"
+                    .to_string(),
+                vec![
+                    libsql::Value::Text(format!("{}%", prefix)),
+                    libsql::Value::Integer(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
+                 FROM nodes
+                 WHERE visibility = 'public'
+                   AND (docstring IS NULL OR docstring = '')
+                   AND kind IN ('function', 'method', 'class', 'interface', 'trait', 'struct', 'enum', 'module')
+                 ORDER BY file_path, start_line
+                 LIMIT ?1"
+                    .to_string(),
+                vec![libsql::Value::Integer(limit as i64)],
+            ),
+        };
+
+        let op = "get_undocumented_public_symbols";
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query undocumented symbols: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_node, op).await
+    }
+
+    /// Returns classes/structs ranked by number of contained members
+    /// (methods, fields, constructors). Identifies "god classes" with
+    /// excessive responsibility.
+    pub async fn get_god_classes(&self, limit: usize) -> Result<Vec<(Node, u64, u64, u64)>> {
+        // Returns (node, method_count, field_count, total_members)
+        let sql =
+            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                    n.start_line, n.end_line, n.start_column, n.end_column,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
+                    SUM(CASE WHEN c.kind IN ('method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                    COUNT(*) AS total
+             FROM edges e
+             JOIN nodes n ON e.source = n.id
+             JOIN nodes c ON e.target = c.id
+             WHERE e.kind = 'contains'
+               AND n.kind IN ('class', 'struct', 'inner_class', 'object')
+             GROUP BY e.source
+             ORDER BY total DESC
+             LIMIT ?1";
+
+        let op = "get_god_classes";
+        let mut rows = self
+            .conn()
+            .query(sql, params![limit as i64])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query god classes: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map row: {e}"),
+                operation: op.to_string(),
+            })?;
+            let methods = row.get::<u64>(18).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read methods: {e}"),
+                operation: op.to_string(),
+            })?;
+            let fields = row.get::<u64>(19).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read fields: {e}"),
+                operation: op.to_string(),
+            })?;
+            let total = row.get::<u64>(20).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read total: {e}"),
+                operation: op.to_string(),
+            })?;
+            items.push((node, methods, fields, total));
+        }
+
+        Ok(items)
+    }
+
     /// Returns every edge in the database.
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
         let mut rows = self
@@ -767,7 +1355,7 @@ impl Database {
             .query(
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.updated_at,
                     rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
@@ -791,7 +1379,7 @@ impl Database {
                 message: format!("failed to map search result: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
-            let rank: f64 = row.get::<f64>(14).map_err(|e| TokenSaveError::Database {
+            let rank: f64 = row.get::<f64>(18).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read rank: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
@@ -813,7 +1401,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, updated_at
                  FROM nodes
                  WHERE name LIKE ?1 OR qualified_name LIKE ?1 OR docstring LIKE ?1 OR signature LIKE ?1
                  LIMIT ?2",
