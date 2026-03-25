@@ -1,4 +1,5 @@
-//! HTTP client for the worldwide token counter Cloudflare Worker.
+//! HTTP client for the worldwide token counter Cloudflare Worker and
+//! GitHub release version checking.
 //!
 //! All operations are best-effort with timeouts. Failures are silently
 //! ignored and never block the CLI.
@@ -6,8 +7,11 @@
 use std::time::Duration;
 
 /// The Cloudflare Worker endpoint URL.
-/// TODO: Replace with actual deployed worker URL before release.
 const WORKER_URL: &str = "https://tokensave-counter.enzinol.workers.dev";
+
+/// GitHub API endpoint for the latest release.
+const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/aovestdipaperino/tokensave/releases/latest";
 
 /// Timeout for flush (upload) requests.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -48,4 +52,69 @@ pub fn fetch_worldwide_total() -> Option<u64> {
         .ok()?;
     let parsed: WorkerResponse = resp.into_json().ok()?;
     Some(parsed.total)
+}
+
+/// Response from GitHub releases API (only the fields we need).
+#[derive(serde::Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+}
+
+/// Fetches the latest release version from GitHub.
+/// Returns the version string (without leading 'v') or None on failure.
+pub fn fetch_latest_version() -> Option<String> {
+    let agent = ureq::AgentBuilder::new().timeout(FETCH_TIMEOUT).build();
+    let resp = agent
+        .get(GITHUB_RELEASES_URL)
+        .set("User-Agent", "tokensave")
+        .call()
+        .ok()?;
+    let release: GitHubRelease = resp.into_json().ok()?;
+    Some(release.tag_name.trim_start_matches('v').to_string())
+}
+
+/// Returns true if `latest` is strictly newer than `current` using semver comparison.
+pub fn is_newer_version(current: &str, latest: &str) -> bool {
+    let parse = |v: &str| -> Option<(u64, u64, u64)> {
+        let mut parts = v.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        Some((major, minor, patch))
+    };
+    match (parse(current), parse(latest)) {
+        (Some(c), Some(l)) => l > c,
+        _ => false,
+    }
+}
+
+/// How tokensave was installed, detected from the binary path.
+pub enum InstallMethod {
+    Cargo,
+    Brew,
+    Unknown,
+}
+
+/// Detects how tokensave was installed by inspecting the binary path.
+pub fn detect_install_method() -> InstallMethod {
+    let Ok(exe) = std::env::current_exe() else {
+        return InstallMethod::Unknown;
+    };
+    let path = exe.to_string_lossy();
+    if path.contains(".cargo/bin") {
+        InstallMethod::Cargo
+    } else if path.contains("/homebrew/") || path.contains("/Cellar/") {
+        InstallMethod::Brew
+    } else {
+        InstallMethod::Unknown
+    }
+}
+
+/// Returns the upgrade command string for the detected install method.
+pub fn upgrade_command(method: &InstallMethod) -> &'static str {
+    match method {
+        InstallMethod::Cargo => "cargo install tokensave",
+        InstallMethod::Brew => "brew upgrade tokensave",
+        InstallMethod::Unknown => "cargo install tokensave",
+    }
 }

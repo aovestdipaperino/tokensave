@@ -235,6 +235,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     project_path.display()
                 );
             }
+            // Check for updates in parallel with indexing
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
+
             if force || !TokenSave::is_initialized(&project_path) {
                 if !force {
                     eprintln!("No existing index found — performing full index");
@@ -261,6 +264,23 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.duration_ms
                 ));
                 update_global_db(&cg).await;
+            }
+
+            // Print update notice from parallel check
+            if let Ok(Some(latest)) = version_handle.join() {
+                let current_version = env!("CARGO_PKG_VERSION");
+                let mut config = tokensave::user_config::UserConfig::load();
+                config.cached_latest_version = latest.clone();
+                config.last_version_check_at = current_unix_timestamp();
+                config.save();
+                if tokensave::cloud::is_newer_version(current_version, &latest) {
+                    let method = tokensave::cloud::detect_install_method();
+                    let cmd = tokensave::cloud::upgrade_command(&method);
+                    eprintln!(
+                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1m{}\x1b[0m",
+                        current_version, latest, cmd
+                    );
+                }
             }
         }
         Commands::Status { path, json } => {
@@ -304,6 +324,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 };
                 print!("{}", include_str!("resources/logo.ansi"));
                 print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide);
+
+                // Version check (5 min cache)
+                check_for_update(&mut config, false);
             }
         }
         Commands::Query {
@@ -606,6 +629,37 @@ fn try_flush(config: &mut tokensave::user_config::UserConfig, force: bool) {
         config.last_upload_at = now;
         config.last_worldwide_total = worldwide_total;
         config.last_worldwide_fetch_at = now;
+    }
+}
+
+/// Best-effort version check with 5-minute cache. If `skip_cache` is true,
+/// always fetches from GitHub (used during sync where the call runs in parallel).
+fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache: bool) {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let now = current_unix_timestamp();
+
+    let latest = if !skip_cache && now - config.last_version_check_at < 300 {
+        // Use cached value
+        if config.cached_latest_version.is_empty() {
+            return;
+        }
+        config.cached_latest_version.clone()
+    } else if let Some(v) = tokensave::cloud::fetch_latest_version() {
+        config.cached_latest_version = v.clone();
+        config.last_version_check_at = now;
+        config.save();
+        v
+    } else {
+        return;
+    };
+
+    if tokensave::cloud::is_newer_version(current_version, &latest) {
+        let method = tokensave::cloud::detect_install_method();
+        let cmd = tokensave::cloud::upgrade_command(&method);
+        eprintln!(
+            "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1m{}\x1b[0m",
+            current_version, latest, cmd
+        );
     }
 }
 

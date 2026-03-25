@@ -1,8 +1,0 @@
-name = "tokensave-counter"
-main = "src/index.js"
-compatibility_date = "2024-01-01"
-
-[vars]
-# Set these as secrets via `wrangler secret put`:
-# UPSTASH_URL
-# UPSTASH_TOKEN

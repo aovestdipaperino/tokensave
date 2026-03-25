@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "tokensave"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "clap",
  "dirs",
@@ -2944,6 +2944,8 @@ dependencies = [
  "once_cell",
  "rustls 0.23.37",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]

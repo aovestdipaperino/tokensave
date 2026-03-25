@@ -202,6 +202,8 @@ tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
 tokensave claude-install         # Configure Claude Code integration
 tokensave serve                  # Start MCP server
+tokensave disable-upload-counter # Opt out of worldwide counter uploads
+tokensave enable-upload-counter  # Re-enable worldwide counter uploads
 ```
 
 ### `tokensave files`
@@ -250,6 +252,70 @@ chmod +x .git/hooks/post-commit
 ```
 
 The hook checks for both the `tokensave` binary and a `.tokensave/` directory before running, so it is a no-op in repos that haven't been indexed.
+
+---
+
+## Network Calls & Privacy
+
+tokensave's core functionality (indexing, search, graph queries, MCP server) is **100% local** — your code never leaves your machine. However, starting with v1.4.0, tokensave makes two optional network calls:
+
+### 1. Worldwide token counter
+
+tokensave tracks how many tokens it saves you across all your projects. On `sync` and `status` commands, it uploads the **count of tokens saved** (a single number) to an anonymous worldwide counter. No code, no file names, no project names, no identifying information is sent — just a number like `4823`.
+
+This powers the "Worldwide ~1.0M" counter shown in `tokensave status`, which displays the total tokens saved by all tokensave users combined.
+
+**What is sent:** A single HTTP POST to `https://tokensave-counter.enzinol.workers.dev/increment` with a JSON body like `{"amount": 4823}`. That's it. No cookies, no tracking, no user ID.
+
+**When it's sent:** After `sync` or `status` (always), or after other commands if the last upload was more than 30 seconds ago. Failed uploads are silently retried on the next command with a 60-second cooldown.
+
+**How to opt out:**
+
+```bash
+tokensave disable-upload-counter
+```
+
+This sets `upload_enabled = false` in `~/.tokensave/config.toml`. When disabled, tokensave **never uploads** your token count but **still fetches and displays** the worldwide total in status. You can re-enable at any time:
+
+```bash
+tokensave enable-upload-counter
+```
+
+You can also manually edit the config file at `~/.tokensave/config.toml` — it's plain TOML and fully transparent:
+
+```toml
+upload_enabled = true       # set to false to stop uploading
+pending_upload = 4823       # tokens waiting to be uploaded
+last_upload_at = 1711375200 # last successful upload timestamp
+last_worldwide_total = 1000000
+last_worldwide_fetch_at = 1711375200
+last_flush_attempt_at = 1711375200
+cached_latest_version = "1.4.0"
+last_version_check_at = 1711375200
+```
+
+### 2. Version check
+
+tokensave checks for new releases on GitHub so it can show you an upgrade notice:
+
+```
+Update available: v1.3.0 → v1.4.0
+  Run: cargo install tokensave
+```
+
+**What is sent:** A single HTTP GET to `https://api.github.com/repos/aovestdipaperino/tokensave/releases/latest` with a `User-Agent: tokensave` header. No identifying information.
+
+**When it's sent:** During `status` (cached for 5 minutes) and during `sync` (always, runs in parallel with indexing so it adds no latency). The upgrade command is auto-detected from your install method (cargo or brew).
+
+**There is no way to disable the version check**, but it has a 1-second timeout and failures are silently ignored — it never blocks your workflow.
+
+### Summary
+
+| Call | Data sent | When | Opt-out |
+|------|-----------|------|---------|
+| Worldwide counter upload | Token count (a number) | sync, status, stale commands | `tokensave disable-upload-counter` |
+| Worldwide counter read | Nothing (GET request) | status | N/A (read-only, 1s timeout) |
+| Version check | Nothing (GET request) | status (cached 5m), sync (parallel) | N/A (1s timeout, no-op on failure) |
 
 ---
 

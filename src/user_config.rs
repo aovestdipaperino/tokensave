@@ -33,6 +33,14 @@ pub struct UserConfig {
     /// UNIX timestamp of last flush attempt (success or failure).
     #[serde(default)]
     pub last_flush_attempt_at: i64,
+
+    /// Cached latest version from GitHub releases.
+    #[serde(default)]
+    pub cached_latest_version: String,
+
+    /// UNIX timestamp of last version check.
+    #[serde(default)]
+    pub last_version_check_at: i64,
 }
 
 fn default_true() -> bool {
@@ -48,6 +56,8 @@ impl Default for UserConfig {
             last_worldwide_total: 0,
             last_worldwide_fetch_at: 0,
             last_flush_attempt_at: 0,
+            cached_latest_version: String::new(),
+            last_version_check_at: 0,
         }
     }
 }
