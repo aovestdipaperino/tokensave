@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.7.1] - 2026-03-25
 
+### Fixed
+- Database schema migrations now trigger an automatic full re-index instead of printing a warning asking users to run `tokensave sync --full` manually
+
 ### Changed
 - Decomposed 6 oversized functions for NASA Power of 10 Rule 4 compliance: `run_doctor` (389 to 31 lines + 14 helpers), `run` (359 lines, split into orchestrator + helpers), `claude_install` (265 to 35 lines + 8 helpers), `claude_uninstall` (160 to 16 lines + 6 helpers), `print_status_table` (179 to 22 lines + 6 helpers), `extract_symbols_from_query` (147 to 13 lines + helper) -- no function exceeds 47 lines
 - Split `get_tool_definitions` (445 lines) into a 30-line orchestrator + 27 private `def_*()` helpers, one per MCP tool
