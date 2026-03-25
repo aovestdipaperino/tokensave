@@ -28,3 +28,5 @@ pub mod resolution;
 pub mod sync;
 pub mod types;
 pub mod vectors;
+pub mod user_config;
+pub mod cloud;
