@@ -492,6 +492,86 @@ fn test_fixture_csharp() {
     assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
 }
 
+// ── PHP ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_php() {
+    let source = read_fixture("sample.php");
+    let extractor = tokensave::extraction::PhpExtractor;
+    let result = extractor.extract("sample.php", &source);
+    assert!(result.errors.is_empty(), "PHP errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Namespace (mapped to NodeKind::Module in PHP extractor)
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Module),
+        "expected a namespace/module node"
+    );
+
+    // Use nodes: the PHP extractor extracts trait `use` declarations inside class bodies as
+    // NodeKind::Use. Namespace-level `use` imports use a different grammar node
+    // (namespace_use_declaration) that is not yet mapped. We expect >= 2 Use nodes
+    // because both Connection (use Timestamps) and Pool (use Loggable) have trait uses.
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 2, "expected >= 2 Use nodes (trait uses), got {}", imports.len());
+
+    // Interface and Trait (both mapped to NodeKind::Trait)
+    let traits: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Trait).collect();
+    assert!(traits.len() >= 2, "expected >= 2 Trait nodes (interface + trait), got {}", traits.len());
+    assert!(traits.iter().any(|n| n.name == "ConnectionInterface"), "ConnectionInterface not found");
+    assert!(traits.iter().any(|n| n.name == "Timestamps"), "Timestamps trait not found");
+
+    // Classes
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"),
+        "Connection class not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Pool"),
+        "Pool class not found"
+    );
+
+    // Methods (>= 3)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 3, "expected >= 3 methods, got {}", methods.len());
+
+    // Enum
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "ConnectionState"),
+        "ConnectionState enum not found"
+    );
+
+    // Fields (properties)
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(!fields.is_empty(), "expected property/field nodes");
+
+    // Visibility: has private members
+    assert!(
+        result.nodes.iter().any(|n| n.visibility == Visibility::Private),
+        "expected at least one private member"
+    );
+
+    // Inheritance: Extends refs (Pool extends Connection)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends ref for Pool extends Connection"
+    );
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(
+        result.edges.iter().any(|e| e.kind == EdgeKind::Contains),
+        "expected Contains edges"
+    );
+}
+
 // ── Pascal ──────────────────────────────────────────────────────────────────
 
 #[test]
@@ -538,6 +618,82 @@ fn test_fixture_pascal() {
 
     // Visibility: private members
     assert!(result.nodes.iter().any(|n| n.visibility == Visibility::Private));
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
+
+// ── Ruby ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_ruby() {
+    let source = read_fixture("sample.rb");
+    let extractor = tokensave::extraction::RubyExtractor;
+    let result = extractor.extract("sample.rb", &source);
+    assert!(result.errors.is_empty(), "Ruby errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Module
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Module && n.name == "Networking"),
+        "Networking module not found"
+    );
+
+    // Constants
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "MAX_CONNECTIONS"),
+        "MAX_CONNECTIONS constant not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "DEFAULT_TIMEOUT"),
+        "DEFAULT_TIMEOUT constant not found"
+    );
+
+    // Classes
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Base"),
+        "Base class not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"),
+        "Connection class not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Pool"),
+        "Pool class not found"
+    );
+
+    // Nested class
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Config"),
+        "nested Config class not found"
+    );
+
+    // Methods (>= 3)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 3, "expected >= 3 methods, got {}", methods.len());
+
+    // Top-level function (log is defined inside a module, class_depth > 0, so it's a Method;
+    // but `log` is at module level — class_depth is incremented for modules too).
+    // Accept either Function or Method for `log`.
+    assert!(
+        result.nodes.iter().any(|n| (n.kind == NodeKind::Function || n.kind == NodeKind::Method) && n.name == "log"),
+        "log function/method not found"
+    );
+
+    // Inheritance: Connection < Base, Pool < Connection
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends refs for class inheritance"
+    );
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
 
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
