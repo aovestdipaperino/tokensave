@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-03-25
+
+### Added
+- PHP language support (`.php`) — functions, classes, methods, traits, interfaces, enums, constants, properties, namespaces, imports, and call sites
+- Ruby language support (`.rb`) — methods, classes, modules, constants, inheritance, and call sites
+
 ## [1.4.1] - 2026-03-25
 
 ### Added

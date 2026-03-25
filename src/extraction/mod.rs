@@ -14,6 +14,8 @@ mod kotlin_extractor;
 mod dart_extractor;
 mod csharp_extractor;
 mod pascal_extractor;
+mod php_extractor;
+mod ruby_extractor;
 
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
@@ -27,6 +29,8 @@ pub use kotlin_extractor::KotlinExtractor;
 pub use dart_extractor::DartExtractor;
 pub use csharp_extractor::CSharpExtractor;
 pub use pascal_extractor::PascalExtractor;
+pub use php_extractor::PhpExtractor;
+pub use ruby_extractor::RubyExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -72,6 +76,8 @@ impl LanguageRegistry {
                 Box::new(DartExtractor),
                 Box::new(KotlinExtractor),
                 Box::new(PascalExtractor),
+                Box::new(PhpExtractor),
+                Box::new(RubyExtractor),
             ],
         }
     }

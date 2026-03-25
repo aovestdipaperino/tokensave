@@ -84,7 +84,7 @@ impl Spinner {
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
-#[command(name = "tokensave", about = "Code intelligence for Rust, Go, Java, and Scala codebases")]
+#[command(name = "tokensave", about = "Code intelligence for 15 languages — semantic graph queries instead of file reads")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

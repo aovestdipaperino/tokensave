@@ -1,8 +1,8 @@
 [package]
 name = "tokensave"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2021"
-description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, and Pascal codebases"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, and Ruby codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/tokensave"
 homepage = "https://github.com/aovestdipaperino/tokensave"
@@ -49,6 +49,8 @@ hex = "0.4"
 tree-sitter-dart-orchard = "0.3"
 tree-sitter-kotlin-sg = "0.4.0"
 tree-sitter-pascal = "0.10"
+tree-sitter-php = "0.24.2"
+tree-sitter-ruby = "0.23.1"
 
 [build-dependencies]
 logo-art = "0.2"

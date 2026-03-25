@@ -70,8 +70,8 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything Claude needs — entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **13 Languages** | **100% Local** | **Always Fresh** |
-| Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal — all with the same API. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
+| **15 Languages** | **100% Local** | **Always Fresh** |
+| Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, Ruby — all with the same API. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
 
 ---
 
@@ -492,6 +492,8 @@ The graph supports complex queries:
 | Dart | `.dart` | 0.7.0 |
 | C# | `.cs` | 0.7.0 |
 | Pascal | `.pas`, `.pp`, `.dpr` | 0.7.0 |
+| PHP | `.php` | 1.4.2 |
+| Ruby | `.rb` | 1.4.2 |
 
 ---
 
