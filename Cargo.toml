@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "1.5.1"
+version = "1.5.2"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, and Ruby codebases"
 license = "MIT"
@@ -27,7 +27,7 @@ tree-sitter-scala = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
-tree-sitter-c = "0.23"
+tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"
 tree-sitter-cpp = "0.23"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }

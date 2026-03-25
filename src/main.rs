@@ -1070,30 +1070,82 @@ fn run_doctor() {
                 pass(&format!("Settings: {}", settings_path.display()));
 
                 // Check MCP server registration
-                let has_mcp = settings["mcpServers"]["tokensave"].is_object()
-                    || settings["mcpServers"]["tokensave"].is_string();
+                let mcp_entry = &settings["mcpServers"]["tokensave"];
+                let has_mcp = mcp_entry.is_object();
                 if has_mcp {
                     pass("MCP server registered");
+
+                    // Validate MCP binary path
+                    if let Some(mcp_cmd) = mcp_entry["command"].as_str() {
+                        let mcp_bin = Path::new(mcp_cmd);
+                        if mcp_bin.exists() {
+                            pass(&format!("MCP binary exists: {mcp_cmd}"));
+
+                            // Check if it matches the currently running binary
+                            if let Ok(current_exe) = std::env::current_exe() {
+                                let current = current_exe.canonicalize().unwrap_or(current_exe);
+                                let registered = mcp_bin.canonicalize().unwrap_or(mcp_bin.to_path_buf());
+                                if current == registered {
+                                    pass("MCP binary matches current executable");
+                                } else {
+                                    warn(&format!(
+                                        "MCP binary differs from current executable\n\
+                                         \x1b[33m      registered:\x1b[0m {mcp_cmd}\n\
+                                         \x1b[33m      running:\x1b[0m   {}",
+                                        current.display()
+                                    ));
+                                    warnings += 1;
+                                }
+                            }
+                        } else {
+                            fail(&format!("MCP binary not found: {mcp_cmd} — run `tokensave claude-install`"));
+                            issues += 1;
+                        }
+                    } else {
+                        fail("MCP server entry missing \"command\" field — run `tokensave claude-install`");
+                        issues += 1;
+                    }
+
+                    // Validate MCP args
+                    let args_ok = mcp_entry["args"]
+                        .as_array()
+                        .is_some_and(|a| a.first().and_then(|v| v.as_str()) == Some("serve"));
+                    if args_ok {
+                        pass("MCP server args include \"serve\"");
+                    } else {
+                        fail("MCP server args missing \"serve\" — run `tokensave claude-install`");
+                        issues += 1;
+                    }
                 } else {
                     fail("MCP server NOT registered — run `tokensave claude-install`");
                     issues += 1;
                 }
 
                 // Check hook
-                let has_hook = settings["hooks"]["PreToolUse"]
+                let hook_cmd_str: Option<String> = settings["hooks"]["PreToolUse"]
                     .as_array()
-                    .is_some_and(|arr| {
-                        arr.iter().any(|h| {
-                            let cmd = h["hooks"]
+                    .and_then(|arr| {
+                        arr.iter().find_map(|h| {
+                            h["hooks"]
                                 .as_array()
                                 .and_then(|a| a.first())
                                 .and_then(|c| c["command"].as_str())
-                                .unwrap_or("");
-                            cmd.contains("tokensave")
+                                .filter(|c| c.contains("tokensave"))
+                                .map(|s| s.to_string())
                         })
                     });
-                if has_hook {
+                if let Some(ref hook_cmd) = hook_cmd_str {
                     pass("PreToolUse hook installed");
+
+                    // Validate hook binary exists
+                    let hook_bin = hook_cmd.split_whitespace().next().unwrap_or(hook_cmd);
+                    let hook_path = Path::new(hook_bin);
+                    if hook_path.exists() {
+                        pass(&format!("Hook binary exists: {hook_bin}"));
+                    } else {
+                        fail(&format!("Hook binary not found: {hook_bin} — run `tokensave claude-install`"));
+                        issues += 1;
+                    }
                 } else {
                     fail("PreToolUse hook NOT installed — run `tokensave claude-install`");
                     issues += 1;
@@ -1157,6 +1209,114 @@ fn run_doctor() {
     } else {
         fail("Could not determine home directory");
         issues += 1;
+    }
+
+    // ── Local config cleanup ────────────────────────────────────────
+    eprintln!("\n\x1b[1mLocal config\x1b[0m");
+    let mut local_cleaned = false;
+
+    // Check for .mcp.json in project root
+    let mcp_json_path = project_path.join(".mcp.json");
+    if mcp_json_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&mcp_json_path) {
+            if let Ok(mcp_val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if mcp_val["mcpServers"]["tokensave"].is_object() {
+                    let mut mcp_val = mcp_val;
+                    if let Some(servers) = mcp_val["mcpServers"].as_object_mut() {
+                        servers.remove("tokensave");
+                        if servers.is_empty() {
+                            // Entire file was just tokensave — remove it
+                            if std::fs::remove_file(&mcp_json_path).is_ok() {
+                                warn(&format!("Removed {} (tokensave should only be in global config)", mcp_json_path.display()));
+                            }
+                        } else {
+                            // Other servers remain — rewrite without tokensave
+                            let pretty = serde_json::to_string_pretty(&mcp_val).unwrap_or_default();
+                            if std::fs::write(&mcp_json_path, format!("{pretty}\n")).is_ok() {
+                                warn(&format!("Removed tokensave entry from {} (should only be in global config)", mcp_json_path.display()));
+                            }
+                        }
+                        local_cleaned = true;
+                        warnings += 1;
+                    }
+                } else {
+                    pass("No tokensave in .mcp.json");
+                }
+            }
+        }
+    }
+
+    // Check for .claude/settings.local.json in project root
+    let local_settings_path = project_path.join(".claude").join("settings.local.json");
+    if local_settings_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&local_settings_path) {
+            if contents.contains("tokensave") {
+                if let Ok(mut local_val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    let mut modified = false;
+
+                    // Remove tokensave from enabledMcpjsonServers
+                    if let Some(arr) = local_val["enabledMcpjsonServers"].as_array_mut() {
+                        let before = arr.len();
+                        arr.retain(|v| v.as_str() != Some("tokensave"));
+                        if arr.len() < before {
+                            modified = true;
+                        }
+                    }
+
+                    // Remove tokensave from mcpServers if present
+                    if let Some(servers) = local_val.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                        if servers.remove("tokensave").is_some() {
+                            modified = true;
+                            if servers.is_empty() {
+                                local_val.as_object_mut().map(|o| o.remove("mcpServers"));
+                            }
+                        }
+                    }
+
+                    // Clean up orphaned keys when no local MCP servers remain
+                    if modified {
+                        let no_local_servers = local_val.get("enabledMcpjsonServers")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|a| a.is_empty())
+                            && !local_val.get("mcpServers")
+                                .and_then(|v| v.as_object())
+                                .is_some_and(|o| !o.is_empty());
+                        if no_local_servers {
+                            local_val.as_object_mut().map(|o| o.remove("enableAllProjectMcpServers"));
+                            local_val.as_object_mut().map(|o| o.remove("enabledMcpjsonServers"));
+                        }
+                    }
+
+                    if modified {
+                        let is_empty = local_val.as_object().is_some_and(|obj| obj.is_empty());
+
+                        if is_empty {
+                            if std::fs::remove_file(&local_settings_path).is_ok() {
+                                warn(&format!("Removed {} (tokensave should only be in global config)", local_settings_path.display()));
+                                // Remove .claude dir if now empty
+                                let claude_dir = project_path.join(".claude");
+                                std::fs::remove_dir(&claude_dir).ok();
+                            }
+                        } else {
+                            let pretty = serde_json::to_string_pretty(&local_val).unwrap_or_default();
+                            if std::fs::write(&local_settings_path, format!("{pretty}\n")).is_ok() {
+                                warn(&format!("Removed tokensave entries from {} (should only be in global config)", local_settings_path.display()));
+                            }
+                        }
+                        local_cleaned = true;
+                        warnings += 1;
+                    }
+                }
+            } else {
+                pass("No tokensave in .claude/settings.local.json");
+            }
+        }
+    }
+
+    if !local_cleaned && !mcp_json_path.exists() && !local_settings_path.exists() {
+        pass("No local MCP config found (correct — global only)");
+    } else if !local_cleaned {
+        pass("No tokensave in local config (correct — global only)");
     }
 
     // ── Network ─────────────────────────────────────────────────────
@@ -1341,6 +1501,87 @@ fn claude_install() -> tokensave::errors::Result<()> {
             "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
             claude_md_path.display()
         );
+    }
+
+    // 7. Clean up local project config (tokensave should only be in global settings)
+    let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // Remove tokensave from .mcp.json
+    let mcp_json_path = project_path.join(".mcp.json");
+    if mcp_json_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&mcp_json_path) {
+            if let Ok(mut mcp_val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(servers) = mcp_val.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                    if servers.remove("tokensave").is_some() {
+                        if servers.is_empty() {
+                            std::fs::remove_file(&mcp_json_path).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed local .mcp.json (using global config only)");
+                        } else {
+                            let pretty = serde_json::to_string_pretty(&mcp_val).unwrap_or_default();
+                            std::fs::write(&mcp_json_path, format!("{pretty}\n")).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed tokensave from local .mcp.json (using global config only)");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove tokensave from .claude/settings.local.json
+    let local_settings_path = project_path.join(".claude").join("settings.local.json");
+    if local_settings_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&local_settings_path) {
+            if contents.contains("tokensave") {
+                if let Ok(mut local_val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    let mut modified = false;
+
+                    if let Some(arr) = local_val.get_mut("enabledMcpjsonServers").and_then(|v| v.as_array_mut()) {
+                        let before = arr.len();
+                        arr.retain(|v| v.as_str() != Some("tokensave"));
+                        if arr.len() < before {
+                            modified = true;
+                        }
+                    }
+
+                    if let Some(servers) = local_val.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                        if servers.remove("tokensave").is_some() {
+                            modified = true;
+                            if servers.is_empty() {
+                                local_val.as_object_mut().map(|o| o.remove("mcpServers"));
+                            }
+                        }
+                    }
+
+                    // Clean up orphaned keys when no local MCP servers remain
+                    if modified {
+                        let no_local_servers = local_val.get("enabledMcpjsonServers")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|a| a.is_empty())
+                            && !local_val.get("mcpServers")
+                                .and_then(|v| v.as_object())
+                                .is_some_and(|o| !o.is_empty());
+                        if no_local_servers {
+                            local_val.as_object_mut().map(|o| o.remove("enableAllProjectMcpServers"));
+                            local_val.as_object_mut().map(|o| o.remove("enabledMcpjsonServers"));
+                        }
+                    }
+
+                    if modified {
+                        let is_empty = local_val.as_object().is_some_and(|obj| obj.is_empty());
+
+                        if is_empty {
+                            std::fs::remove_file(&local_settings_path).ok();
+                            std::fs::remove_dir(project_path.join(".claude")).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed local .claude/settings.local.json (using global config only)");
+                        } else {
+                            let pretty = serde_json::to_string_pretty(&local_val).unwrap_or_default();
+                            std::fs::write(&local_settings_path, format!("{pretty}\n")).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed tokensave from local .claude/settings.local.json (using global config only)");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     eprintln!();
