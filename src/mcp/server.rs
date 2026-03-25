@@ -187,7 +187,8 @@ impl McpServer {
     }
 
     /// Performs graceful shutdown: persists the tokens-saved counter,
-    /// checkpoints the WAL, and logs a session summary.
+    /// flushes pending tokens to the worldwide counter, checkpoints the WAL,
+    /// and logs a session summary.
     async fn shutdown(&self) {
         let uptime = self.stats.started_at.elapsed();
         let tool_calls = self.stats.tool_calls.load(Ordering::Relaxed);
@@ -199,9 +200,31 @@ impl McpServer {
         }
 
         // Update global DB with final count and checkpoint it
-        if let Some(ref gdb) = self.global_db {
+        let previous = if let Some(ref gdb) = self.global_db {
+            let prev = gdb.get_project_tokens(self.cg.project_root()).await;
             gdb.upsert(self.cg.project_root(), tokens_saved).await;
             gdb.checkpoint().await;
+            prev
+        } else {
+            0
+        };
+
+        // Flush delta to worldwide counter via user config
+        if tokens_saved > previous {
+            let delta = tokens_saved - previous;
+            let mut config = crate::user_config::UserConfig::load();
+            config.pending_upload += delta;
+            if config.upload_enabled {
+                if let Some(_total) = crate::cloud::flush_pending(config.pending_upload) {
+                    config.pending_upload = 0;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    config.last_upload_at = now;
+                }
+            }
+            config.save();
         }
 
         // Checkpoint WAL to merge it into the main database file
