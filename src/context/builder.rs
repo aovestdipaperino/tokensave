@@ -29,6 +29,8 @@ impl<'a> ContextBuilder<'a> {
     /// 4. Extract code blocks by reading source files
     /// 5. Build and return `TaskContext`
     pub async fn build_context(&self, query: &str, options: &BuildContextOptions) -> Result<TaskContext> {
+        debug_assert!(!query.is_empty(), "build_context called with empty query");
+        debug_assert!(options.max_nodes > 0, "max_nodes must be positive");
         // Step 1-3: find relevant subgraph and entry points
         let symbols = extract_symbols_from_query(query);
         let entry_points = self.find_entry_points(query, &symbols, options).await?;
@@ -75,6 +77,8 @@ impl<'a> ContextBuilder<'a> {
     ///
     /// Returns `None` if the file cannot be read or the line range is invalid.
     pub async fn get_code(&self, node: &Node) -> Result<Option<String>> {
+        debug_assert!(!node.file_path.is_empty(), "get_code called with empty file_path");
+        debug_assert!(!node.id.is_empty(), "get_code called with empty node id");
         let file_path = self.project_root.join(&node.file_path);
         // Prevent path traversal: ensure the resolved path stays within the project root.
         if let (Ok(canonical), Ok(root)) = (file_path.canonicalize(), self.project_root.canonicalize()) {
@@ -123,6 +127,8 @@ impl<'a> ContextBuilder<'a> {
         symbols: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<Node>> {
+        debug_assert!(!query.is_empty(), "find_entry_points called with empty query");
+        debug_assert!(options.search_limit > 0, "search_limit must be positive");
         let mut seen_ids: HashSet<String> = HashSet::new();
         let mut entry_points: Vec<Node> = Vec::new();
 
@@ -152,6 +158,7 @@ impl<'a> ContextBuilder<'a> {
 
         // Cap at max_nodes
         entry_points.truncate(options.max_nodes);
+        debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes after truncation");
         Ok(entry_points)
     }
 
@@ -161,6 +168,8 @@ impl<'a> ContextBuilder<'a> {
         entry_points: &[Node],
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
+        debug_assert!(options.traversal_depth > 0, "traversal_depth must be positive");
+        debug_assert!(options.max_nodes > 0, "max_nodes must be positive for expand_subgraph");
         let traverser = GraphTraverser::new(self.db);
         let mut all_nodes: Vec<Node> = Vec::new();
         let mut all_edges: Vec<Edge> = Vec::new();
@@ -223,6 +232,8 @@ impl<'a> ContextBuilder<'a> {
         entry_points: &[Node],
         options: &BuildContextOptions,
     ) -> Result<Vec<CodeBlock>> {
+        debug_assert!(options.max_code_blocks > 0, "max_code_blocks must be positive");
+        debug_assert!(options.max_code_block_size > 0, "max_code_block_size must be positive");
         let mut blocks: Vec<CodeBlock> = Vec::new();
 
         for node in entry_points {
@@ -310,6 +321,7 @@ impl<'a> ContextBuilder<'a> {
 ///
 /// Common English stop words are filtered out.
 pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
+    debug_assert!(!query.is_empty(), "extract_symbols_from_query called with empty query");
     let stop_words: HashSet<&str> = SYMBOL_STOP_WORDS.iter().copied().collect();
 
     let mut symbols: Vec<String> = Vec::new();

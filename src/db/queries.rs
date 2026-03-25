@@ -296,6 +296,8 @@ impl Database {
 
     /// Deletes all nodes (and cascading edges, unresolved refs, vectors) for a file.
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
+        debug_assert!(!file_path.is_empty(), "delete_nodes_by_file called with empty file_path");
+        debug_assert!(!file_path.starts_with('/'), "delete_nodes_by_file expects relative path, got absolute");
         // Gather node IDs for the file first.
         let node_ids: Vec<String> = {
             let mut rows = self
@@ -558,6 +560,8 @@ impl Database {
         incoming: bool,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
+        debug_assert!(limit > 0, "get_ranked_nodes_by_edge_kind limit must be positive");
+        debug_assert!(!edge_kind.as_str().is_empty(), "edge_kind must not be empty");
         let (join_col, group_col) = if incoming {
             ("e.target", "e.target")
         } else {
@@ -920,6 +924,7 @@ impl Database {
         node_kind: Option<&NodeKind>,
         limit: usize,
     ) -> Result<Vec<(Node, u32, u64, u64, u64)>> {
+        debug_assert!(limit > 0, "get_complexity_ranked limit must be positive");
         // line_count, fan_out, fan_in, score
         let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
             Some(nk) => (
@@ -1346,6 +1351,8 @@ impl Database {
     /// Attempts an FTS5 prefix match first. If no results are found, falls back
     /// to a `LIKE` query.
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        debug_assert!(!query.is_empty(), "search_nodes called with empty query");
+        debug_assert!(limit > 0, "search_nodes limit must be positive");
         // Sanitize query for FTS5: wrap each word in double quotes to escape
         // special characters (*, ?, :, etc.) and join with spaces (implicit OR).
         let fts_query: String = query

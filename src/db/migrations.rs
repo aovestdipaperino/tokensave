@@ -61,7 +61,9 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
 /// interleaving schema changes. Each migration is applied and the version
 /// is bumped inside the same transaction.
 pub async fn migrate(conn: &Connection) -> Result<()> {
+    debug_assert!(LATEST_VERSION > 0, "LATEST_VERSION must be positive");
     let current = get_version(conn).await?;
+    debug_assert!(current <= LATEST_VERSION, "database version {} is ahead of code version {}", current, LATEST_VERSION);
     if current >= LATEST_VERSION {
         return Ok(());
     }
@@ -106,6 +108,7 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
 
 /// Applies migrations sequentially from `current` up to `LATEST_VERSION`.
 async fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
+    debug_assert!(current < LATEST_VERSION, "run_migrations called when already at latest version");
     for version in (current + 1)..=LATEST_VERSION {
         run_migration(conn, version).await?;
         set_version(conn, version).await?;

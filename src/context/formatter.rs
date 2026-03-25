@@ -7,6 +7,8 @@ use crate::types::TaskContext;
 /// The output includes sections for the query, entry points, related symbols
 /// grouped by file, and extracted code blocks.
 pub fn format_context_as_markdown(context: &TaskContext) -> String {
+    debug_assert!(!context.query.is_empty(), "format_context_as_markdown called with empty query");
+    debug_assert!(!context.summary.is_empty(), "format_context_as_markdown called with empty summary");
     let mut out = String::new();
 
     out.push_str("## Code Context\n");
@@ -92,6 +94,8 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         }
     }
 
+    debug_assert!(!out.is_empty(), "format_context_as_markdown produced empty output");
+    debug_assert!(out.contains("## Code Context"), "output missing required header");
     out
 }
 

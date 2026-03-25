@@ -26,6 +26,8 @@ impl<'a> GraphTraverser<'a> {
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
     pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        debug_assert!(!start_id.is_empty(), "traverse_bfs called with empty start_id");
+        debug_assert!(opts.max_depth > 0, "traverse_bfs max_depth must be positive");
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -101,6 +103,8 @@ impl<'a> GraphTraverser<'a> {
     /// Uses an iterative approach with an explicit stack to avoid async
     /// recursion issues.
     pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        debug_assert!(!start_id.is_empty(), "traverse_dfs called with empty start_id");
+        debug_assert!(opts.max_depth > 0, "traverse_dfs max_depth must be positive");
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -169,6 +173,8 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows incoming `Calls` edges to find callers transitively.
     pub async fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
+        debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
         let mut results: Vec<(Node, Edge)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
@@ -207,6 +213,8 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows outgoing `Calls` edges to find callees transitively.
     pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        debug_assert!(!node_id.is_empty(), "get_callees called with empty node_id");
+        debug_assert!(max_depth > 0, "get_callees max_depth must be positive");
         let mut results: Vec<(Node, Edge)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
@@ -246,6 +254,8 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Performs a BFS over incoming edges of all kinds up to `max_depth`.
     pub async fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
+        debug_assert!(!node_id.is_empty(), "get_impact_radius called with empty node_id");
+        debug_assert!(max_depth > 0, "get_impact_radius max_depth must be positive");
         let opts = TraversalOptions {
             max_depth: max_depth as u32,
             edge_kinds: None,
@@ -262,6 +272,8 @@ impl<'a> GraphTraverser<'a> {
     /// Combines BFS over outgoing `Calls` edges (callees) and BFS over
     /// incoming `Calls` edges (callers) up to the specified `depth`.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
+        debug_assert!(!node_id.is_empty(), "get_call_graph called with empty node_id");
+        debug_assert!(depth > 0, "get_call_graph depth must be positive");
         // Outgoing (callees)
         let outgoing_opts = TraversalOptions {
             max_depth: depth as u32,
@@ -330,6 +342,7 @@ impl<'a> GraphTraverser<'a> {
     /// Follows both outgoing (traits this node implements) and incoming
     /// (nodes that implement this trait) `Implements` edges.
     pub async fn get_type_hierarchy(&self, node_id: &str) -> Result<Subgraph> {
+        debug_assert!(!node_id.is_empty(), "get_type_hierarchy called with empty node_id");
         let opts = TraversalOptions {
             max_depth: 10,
             edge_kinds: Some(vec![EdgeKind::Implements]),
@@ -352,6 +365,8 @@ impl<'a> GraphTraverser<'a> {
         to_id: &str,
         edge_kinds: &[EdgeKind],
     ) -> Result<Option<GraphPath>> {
+        debug_assert!(!from_id.is_empty(), "find_path called with empty from_id");
+        debug_assert!(!to_id.is_empty(), "find_path called with empty to_id");
         if from_id == to_id {
             if let Some(node) = self.db.get_node_by_id(from_id).await? {
                 return Ok(Some(vec![(node, None)]));

@@ -31,7 +31,7 @@ pub struct ToolDefinition {
 
 /// Returns the list of all tool definitions exposed by this MCP server.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let definitions = vec![
         def_search(),
         def_context(),
         def_callers(),
@@ -59,7 +59,11 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_doc_coverage(),
         def_god_class(),
         def_changelog(),
-    ]
+    ];
+    debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
+    debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
+        "all tool definitions must have 'tokensave_' prefix");
+    definitions
 }
 
 fn def_search() -> ToolDefinition {
@@ -604,6 +608,8 @@ pub async fn handle_tool_call(
     args: Value,
     server_stats: Option<Value>,
 ) -> Result<ToolResult> {
+    debug_assert!(!tool_name.is_empty(), "handle_tool_call called with empty tool_name");
+    debug_assert!(tool_name.starts_with("tokensave_"), "tool_name must start with 'tokensave_' prefix");
     match tool_name {
         "tokensave_search" => handle_search(cg, args).await,
         "tokensave_context" => handle_context(cg, args).await,
@@ -653,6 +659,7 @@ fn unique_file_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
 /// Truncates a string to the maximum response character limit, appending
 /// a truncation notice if necessary.
 fn truncate_response(s: &str) -> String {
+    debug_assert!(!s.is_empty(), "truncate_response called with empty string");
     if s.len() <= MAX_RESPONSE_CHARS {
         s.to_string()
     } else {
@@ -949,6 +956,7 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<To
 
 /// Handles `tokensave_files` tool calls.
 async fn handle_files(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_files expects an object argument");
     let mut files = cg.get_all_files().await?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -1159,6 +1167,7 @@ async fn handle_dead_code(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_diff_context` tool calls.
 async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_diff_context expects an object argument");
     let files: Vec<String> = args
         .get("files")
         .and_then(|v| v.as_array())
@@ -1358,6 +1367,7 @@ async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
+    debug_assert!(limit > 0, "handle_hotspots limit must be positive");
 
     let all_edges = cg.get_all_edges().await?;
 
@@ -1419,6 +1429,7 @@ async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_similar` tool calls.
 async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_similar expects an object argument");
     let symbol = args
         .get("symbol")
         .and_then(|v| v.as_str())
@@ -1626,6 +1637,7 @@ async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResul
 
 /// Handles `tokensave_rank` tool calls.
 async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_rank expects an object argument");
     use crate::types::EdgeKind;
 
     let edge_kind_str =
@@ -1847,6 +1859,7 @@ async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolRes
 
 /// Handles `tokensave_distribution` tool calls.
 async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_distribution expects an object argument");
     let path_prefix = args.get("path").and_then(|v| v.as_str());
     let summary = args
         .get("summary")
@@ -1921,6 +1934,7 @@ async fn handle_recursion(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
+    debug_assert!(limit > 0, "handle_recursion limit must be positive");
 
     let call_edges = cg.get_call_edges().await?;
 
@@ -2202,6 +2216,7 @@ async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_changelog` tool calls.
 async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_changelog expects an object argument");
     let from_ref = args
         .get("from_ref")
         .and_then(|v| v.as_str())

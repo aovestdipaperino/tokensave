@@ -598,6 +598,8 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
 
 /// Initializes a new project (if needed) and runs a full index.
 async fn init_and_index(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
+    debug_assert!(project_path.is_dir(), "init_and_index: project_path is not a directory");
+    debug_assert!(project_path.is_absolute(), "init_and_index: project_path must be absolute");
     let cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open(project_path).await?
     } else {
@@ -771,6 +773,10 @@ fn print_status_table(
     country_flags: &[String],
 ) {
     let num_cols = 3;
+    debug_assert!(stats.file_count > 0 || stats.node_count == 0,
+        "print_status_table: node_count should be 0 when file_count is 0");
+    debug_assert!(stats.node_count >= stats.file_count || stats.file_count == 0,
+        "print_status_table: node_count should be >= file_count");
 
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
     sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
@@ -1017,6 +1023,7 @@ impl DoctorCounters {
 
 /// Runs a comprehensive health check of the tokensave installation.
 fn run_doctor() {
+    debug_assert!(!env!("CARGO_PKG_VERSION").is_empty(), "CARGO_PKG_VERSION must not be empty");
     let mut dc = DoctorCounters::new();
 
     eprintln!("\n\x1b[1mtokensave doctor v{}\x1b[0m\n", env!("CARGO_PKG_VERSION"));
@@ -1400,6 +1407,8 @@ fn claude_install() -> tokensave::errors::Result<()> {
     let home = home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
         message: "could not determine home directory".to_string(),
     })?;
+    debug_assert!(home.is_dir(), "home directory does not exist");
+    debug_assert!(home.is_absolute(), "home directory must be an absolute path");
     let claude_dir = home.join(".claude");
     let settings_path = claude_dir.join("settings.json");
     let claude_json_path = home.join(".claude.json");
@@ -1662,6 +1671,8 @@ fn claude_uninstall() -> tokensave::errors::Result<()> {
     let home = home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
         message: "could not determine home directory".to_string(),
     })?;
+    debug_assert!(home.is_dir(), "home directory does not exist for uninstall");
+    debug_assert!(home.is_absolute(), "home directory must be an absolute path");
     let claude_dir = home.join(".claude");
     let settings_path = claude_dir.join("settings.json");
     let claude_json_path = home.join(".claude.json");
@@ -1948,6 +1959,8 @@ async fn find_affected_tests(
     max_depth: usize,
     custom_filter: Option<&str>,
 ) -> tokensave::errors::Result<Vec<String>> {
+    debug_assert!(!changed_files.is_empty(), "find_affected_tests called with no changed files");
+    debug_assert!(max_depth > 0, "find_affected_tests max_depth must be positive");
     use std::collections::{HashSet, VecDeque};
 
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());

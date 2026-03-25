@@ -84,6 +84,7 @@ impl McpServer {
         if file_paths.is_empty() {
             return;
         }
+        debug_assert!(file_paths.iter().all(|p| !p.is_empty()), "accumulate_tokens_saved received empty file path");
         let delta = {
             let map = match self.file_token_map.lock() {
                 Ok(m) => m,
@@ -158,6 +159,8 @@ impl McpServer {
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
     pub async fn run(&self) -> Result<()> {
+        debug_assert!(self.stats.total_requests.load(Ordering::Relaxed) == 0,
+            "server run() called on an already-used server");
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
         let reader = BufReader::new(stdin);
@@ -291,6 +294,7 @@ impl McpServer {
     ///
     /// Returns `None` for notifications (requests without an `id`).
     async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+        debug_assert!(!request.method.is_empty(), "handle_request called with empty method");
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();
 
@@ -349,6 +353,7 @@ impl McpServer {
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
     async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
+        debug_assert!(!id.is_null(), "handle_tools_call called with null request id");
         let params = match params {
             Some(p) => p,
             None => {

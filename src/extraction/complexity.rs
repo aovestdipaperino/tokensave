@@ -60,6 +60,9 @@ pub struct ComplexityMetrics {
 /// `source` is needed to extract method/macro names for unchecked-call and
 /// assertion detection. Pass an empty slice to skip name-based matching.
 pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig, source: &[u8]) -> ComplexityMetrics {
+    debug_assert!(!config.branch_types.is_empty() || !config.loop_types.is_empty(),
+        "count_complexity called with config that has no branch or loop types");
+    debug_assert!(node.child_count() > 0, "count_complexity called on a node with no children");
     let mut metrics = ComplexityMetrics::default();
 
     // Stack: (tree-sitter node, current nesting depth)
@@ -154,6 +157,8 @@ pub fn count_complexity(node: TsNode<'_>, config: &ComplexityConfig, source: &[u
         }
     }
 
+    debug_assert!(metrics.max_nesting <= 500, "max_nesting unexpectedly large, possible analysis error");
+    debug_assert!(iterations <= MAX_ITERATIONS, "iteration count invariant violated");
     metrics
 }
 

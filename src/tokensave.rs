@@ -136,6 +136,8 @@ impl TokenSave {
     where
         F: Fn(&str),
     {
+        debug_assert!(self.project_root.exists(), "project root does not exist");
+        debug_assert!(self.project_root.is_dir(), "project root is not a directory");
         let start = Instant::now();
 
         // 1. Clear existing data
@@ -198,12 +200,17 @@ impl TokenSave {
             }
         }
 
-        Ok(IndexResult {
+        let result = IndexResult {
             file_count: files.len(),
             node_count: total_nodes,
             edge_count: total_edges,
             duration_ms: start.elapsed().as_millis() as u64,
-        })
+        };
+        debug_assert!(result.node_count >= result.file_count || result.file_count == 0,
+            "fewer nodes than files is unexpected");
+        debug_assert!(result.duration_ms > 0 || result.file_count == 0,
+            "non-empty index completed in zero milliseconds");
+        Ok(result)
     }
 
     /// Performs an incremental sync: detects changed, new, and removed files
@@ -219,6 +226,8 @@ impl TokenSave {
     where
         F: Fn(&str, &str),
     {
+        debug_assert!(self.project_root.exists(), "sync: project root does not exist");
+        debug_assert!(self.project_root.is_dir(), "sync: project root is not a directory");
         let start = Instant::now();
 
         on_progress("scanning files", "");
@@ -311,7 +320,9 @@ impl TokenSave {
     /// Supported extensions are derived from the `LanguageRegistry` so that
     /// adding a new extractor automatically picks up its files.
     fn scan_files(&self) -> Result<Vec<String>> {
+        debug_assert!(self.project_root.is_dir(), "scan_files: project_root is not a directory");
         let supported_exts = self.registry.supported_extensions();
+        debug_assert!(!supported_exts.is_empty(), "scan_files: no supported extensions registered");
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
             .follow_links(false)
