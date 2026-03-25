@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-03-25
+
+### Added
+- Cross-platform release workflow — GitHub Actions builds prebuilt binaries for macOS (ARM), Linux (x86_64, ARM64), and Windows (x86_64) on every release
+- Scoop package manager support for Windows (`scoop install tokensave`)
+- Automated Scoop bucket updates on release
+- Automated Homebrew formula + bottle updates on release
+
+### Changed
+- README updated with all install methods (brew, scoop, cargo, prebuilt binaries)
+
+## [1.4.0] - 2026-03-25
+
+### Added
+- Worldwide token-saved counter — aggregates anonymous token counts across all tokensave users via Cloudflare Worker + Upstash Redis
+- `tokensave status` shows three tiers: Local, Global, and Worldwide token counts
+- `tokensave disable-upload-counter` / `tokensave enable-upload-counter` commands to opt out of uploading
+- All upload state stored transparently in `~/.tokensave/config.toml`
+- Version check on `status` (5-min cache) and `sync` (parallel, no added latency) with auto-detected upgrade command (cargo/brew)
+- First-run notice informing users about the worldwide counter and how to opt out
+- Flush cooldown (60s) after failed uploads to prevent sluggish CLI during outages
+- Network Calls & Privacy section in README documenting all outbound requests
+
+### Changed
+- `update_global_db()` now computes token-saved deltas for accurate pending upload accumulation
+- Moved Cloudflare Worker source to separate `tokensave-cloud` repository
+
 ## [1.3.0] - 2026-03-24
 
 ### Added
