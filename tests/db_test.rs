@@ -7,7 +7,7 @@ use tempfile::TempDir;
 async fn setup_db() -> (Database, TempDir) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
-    let db = Database::initialize(&db_path)
+    let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
     (db, dir)
@@ -44,7 +44,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
 async fn test_initialize_creates_database() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("subdir").join("code_graph.db");
-    let _db = Database::initialize(&db_path)
+    let (_db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
     assert!(

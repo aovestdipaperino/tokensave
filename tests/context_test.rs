@@ -76,7 +76,7 @@ async fn test_build_context_with_db() {
     fs::write(project.join("src/lib.rs"), "pub fn process_data() {}\n").unwrap();
 
     // Init DB and insert a node
-    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -130,7 +130,7 @@ async fn test_get_code_reads_source_file() {
     )
     .unwrap();
 
-    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
 
@@ -175,7 +175,7 @@ async fn test_get_code_returns_none_for_missing_file() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
 
@@ -217,7 +217,7 @@ async fn test_find_relevant_context() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let db = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
         .await
         .unwrap();
     let node = Node {

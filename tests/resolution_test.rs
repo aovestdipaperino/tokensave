@@ -7,7 +7,7 @@ use tempfile::TempDir;
 /// function in `src/utils.rs` and a `main` function in `src/main.rs`.
 async fn setup_db_with_nodes() -> (TempDir, Database) {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let db = Database::initialize(&dir.path().join("test.db"))
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
         .await
         .expect("failed to init db");
 
@@ -225,7 +225,7 @@ async fn test_creates_edges_from_resolved() {
 #[tokio::test]
 async fn test_multiple_candidates_best_match_scoring() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let db = Database::initialize(&dir.path().join("test.db"))
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
         .await
         .expect("failed to init db");
 

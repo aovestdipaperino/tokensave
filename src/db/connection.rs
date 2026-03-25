@@ -19,7 +19,9 @@ impl Database {
     ///
     /// Opens a libsql connection, applies performance pragmas, and runs all
     /// schema migrations up to the latest version.
-    pub async fn initialize(db_path: &Path) -> Result<Self> {
+    /// Returns `(Self, migrated)` where `migrated` is `true` if schema
+    /// migrations were applied during initialization.
+    pub async fn initialize(db_path: &Path) -> Result<(Self, bool)> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to create database directory: {e}"),
@@ -41,14 +43,16 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
-        migrations::migrate(&conn).await?;
+        let migrated = migrations::migrate(&conn).await?;
 
-        Ok(Self { conn, _db: db })
+        Ok((Self { conn, _db: db }, migrated))
     }
 
     /// Opens an existing database at `db_path`, applies performance pragmas,
     /// and runs any pending schema migrations.
-    pub async fn open(db_path: &Path) -> Result<Self> {
+    /// Returns `(Self, migrated)` where `migrated` is `true` if schema
+    /// migrations were applied during open.
+    pub async fn open(db_path: &Path) -> Result<(Self, bool)> {
         let db = Builder::new_local(db_path)
             .build()
             .await
@@ -63,9 +67,9 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
-        migrations::migrate(&conn).await?;
+        let migrated = migrations::migrate(&conn).await?;
 
-        Ok(Self { conn, _db: db })
+        Ok((Self { conn, _db: db }, migrated))
     }
 
     /// Returns a reference to the underlying libsql connection.

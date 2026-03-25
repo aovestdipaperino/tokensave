@@ -75,7 +75,7 @@ impl TokenSave {
         save_config(project_root, &config)?;
 
         let db_path = get_tokensave_dir(project_root).join("tokensave.db");
-        let db = Database::initialize(&db_path).await?;
+        let (db, _migrated) = Database::initialize(&db_path).await?;
 
         Ok(Self {
             db,
@@ -101,13 +101,23 @@ impl TokenSave {
             });
         }
 
-        let db = Database::open(&db_path).await?;
-        Ok(Self {
+        let (db, migrated) = Database::open(&db_path).await?;
+        let ts = Self {
             db,
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
-        })
+        };
+
+        if migrated {
+            eprintln!("[tokensave] schema changed — performing full re-index…");
+            ts.index_all_with_progress(|file| {
+                eprintln!("[tokensave] re-indexing {file}");
+            }).await?;
+            eprintln!("[tokensave] re-index complete.");
+        }
+
+        Ok(ts)
     }
 
     /// Returns `true` if a TokenSave project has been initialized at the given root.

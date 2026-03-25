@@ -60,17 +60,17 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
 /// Acquires an EXCLUSIVE transaction to prevent concurrent writers from
 /// interleaving schema changes. Each migration is applied and the version
 /// is bumped inside the same transaction.
-pub async fn migrate(conn: &Connection) -> Result<()> {
+/// Returns `true` if any migrations were applied, `false` if already up-to-date.
+pub async fn migrate(conn: &Connection) -> Result<bool> {
     debug_assert!(LATEST_VERSION > 0, "LATEST_VERSION must be positive");
     let current = get_version(conn).await?;
     debug_assert!(current <= LATEST_VERSION, "database version {} is ahead of code version {}", current, LATEST_VERSION);
     if current >= LATEST_VERSION {
-        return Ok(());
+        return Ok(false);
     }
 
     eprintln!(
-        "[tokensave] migrating database schema v{current} → v{LATEST_VERSION}. \
-         Run `tokensave sync --full` to populate newly added columns for existing data."
+        "[tokensave] migrating database schema v{current} → v{LATEST_VERSION}…"
     );
 
     // BEGIN EXCLUSIVE blocks other writers (including other MCP servers or
@@ -97,7 +97,7 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
                     message: format!("failed to commit migrations: {e}"),
                     operation: "migrate".to_string(),
                 })?;
-            Ok(())
+            Ok(true)
         }
         Err(e) => {
             let _ = conn.execute("ROLLBACK", ()).await;

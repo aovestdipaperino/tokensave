@@ -8,7 +8,7 @@ use tempfile::TempDir;
 async fn setup_db() -> (Database, TempDir) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
-    let db = Database::initialize(&db_path)
+    let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
     (db, dir)

@@ -27,7 +27,7 @@ fn test_cosine_similarity_zero_vector() {
 #[tokio::test]
 async fn test_store_and_retrieve_vector() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     // Must have a node to reference (FK constraint)
     let node = Node {
@@ -68,7 +68,7 @@ async fn test_store_and_retrieve_vector() {
 #[tokio::test]
 async fn test_brute_force_search() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     for i in 0..5u32 {
         let node = Node {
@@ -141,7 +141,7 @@ fn test_create_node_text() {
 #[tokio::test]
 async fn test_vector_count() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     assert_eq!(vector_count(&db).await.unwrap(), 0);
 
     let node = Node {
@@ -175,7 +175,7 @@ async fn test_vector_count() {
 #[tokio::test]
 async fn test_delete_vector() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     let node = Node {
         id: "function:del".to_string(),
         kind: NodeKind::Function,
@@ -209,7 +209,7 @@ async fn test_delete_vector() {
 #[tokio::test]
 async fn test_clear_vectors() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
 
     for i in 0..3u32 {
         let node = Node {
@@ -247,7 +247,7 @@ async fn test_clear_vectors() {
 #[tokio::test]
 async fn test_get_vector_not_found() {
     let dir = TempDir::new().unwrap();
-    let db = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
     let result = get_vector(&db, "nonexistent:id").await.unwrap();
     assert!(result.is_none());
 }
