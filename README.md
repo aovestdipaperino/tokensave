@@ -282,7 +282,7 @@ tokensave tracks how many tokens it saves you across all your projects. On `sync
 
 This powers the "Worldwide ~1.0M" counter shown in `tokensave status`, which displays the total tokens saved by all tokensave users combined.
 
-**What is sent:** A single HTTP POST to `https://tokensave-counter.enzinol.workers.dev/increment` with a JSON body like `{"amount": 4823}`. That's it. No cookies, no tracking, no user ID.
+**What is sent:** A single HTTP POST to `https://tokensave-counter.enzinol.workers.dev/increment` with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker also logs the **country of your IP address** (derived by Cloudflare from the request headers) for aggregate geographic statistics — your actual IP address is not stored.
 
 **When it's sent:** After `sync` or `status` (always), or after other commands if the last upload was more than 30 seconds ago. Failed uploads are silently retried on the next command with a 60-second cooldown.
 
@@ -330,7 +330,7 @@ Update available: v1.3.0 → v1.4.0
 
 | Call | Data sent | When | Opt-out |
 |------|-----------|------|---------|
-| Worldwide counter upload | Token count (a number) | sync, status, stale commands | `tokensave disable-upload-counter` |
+| Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, stale commands | `tokensave disable-upload-counter` |
 | Worldwide counter read | Nothing (GET request) | status | N/A (read-only, 1s timeout) |
 | Version check | Nothing (GET request) | status (cached 5m), sync (parallel) | N/A (1s timeout, no-op on failure) |
 
