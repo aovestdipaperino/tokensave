@@ -282,8 +282,28 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                     None => None,
                 };
+                // Fetch worldwide total (1s timeout, 60s client cache TTL)
+                let mut config = tokensave::user_config::UserConfig::load();
+                let now = current_unix_timestamp();
+                let worldwide = if now - config.last_worldwide_fetch_at < 60 {
+                    // Use cached value
+                    if config.last_worldwide_total > 0 {
+                        Some(config.last_worldwide_total)
+                    } else {
+                        None
+                    }
+                } else if let Some(total) = tokensave::cloud::fetch_worldwide_total() {
+                    config.last_worldwide_total = total;
+                    config.last_worldwide_fetch_at = now;
+                    config.save();
+                    Some(total)
+                } else if config.last_worldwide_total > 0 {
+                    Some(config.last_worldwide_total) // fallback to cache
+                } else {
+                    None
+                };
                 print!("{}", include_str!("resources/logo.ansi"));
-                print_status_table(&stats, tokens_saved, global_tokens_saved);
+                print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide);
             }
         }
         Commands::Query {
@@ -648,6 +668,7 @@ fn print_status_table(
     stats: &tokensave::types::GraphStats,
     tokens_saved: u64,
     global_tokens_saved: Option<u64>,
+    worldwide: Option<u64>,
 ) {
     let version = env!("CARGO_PKG_VERSION");
     let num_cols = 3;
@@ -675,13 +696,21 @@ fn print_status_table(
 
     // Title row
     let title = format!("TokenSave v{}", version);
-    let tokens_text = match global_tokens_saved {
-        Some(global) => format!(
-            "Local ~{}  Global ~{}",
-            format_token_count(tokens_saved),
-            format_token_count(global)
-        ),
-        None => format!("Tokens saved ~{}", format_token_count(tokens_saved)),
+    let tokens_text = {
+        let mut parts = Vec::new();
+        match global_tokens_saved {
+            Some(global) => {
+                parts.push(format!("Local ~{}", format_token_count(tokens_saved)));
+                parts.push(format!("Global ~{}", format_token_count(global)));
+            }
+            None => {
+                parts.push(format!("Saved ~{}", format_token_count(tokens_saved)));
+            }
+        }
+        if let Some(ww) = worldwide {
+            parts.push(format!("Worldwide ~{}", format_token_count(ww)));
+        }
+        parts.join("  ")
     };
     let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
 
