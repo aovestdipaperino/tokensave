@@ -369,7 +369,7 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_inheritance_depth` | Find the deepest class inheritance hierarchies |
 | `tokensave_distribution` | Node kind breakdown (classes, methods, fields) per file or directory |
 | `tokensave_recursion` | Detect recursive/mutually-recursive call cycles (NASA Power of 10, Rule 1) |
-| `tokensave_complexity` | Rank functions by composite complexity: lines + fan-out + fan-in |
+| `tokensave_complexity` | Rank functions by composite complexity with cyclomatic complexity from AST |
 | `tokensave_doc_coverage` | Find public symbols missing documentation |
 | `tokensave_god_class` | Find classes with the most members (methods + fields) |
 
@@ -418,7 +418,7 @@ Get detailed information about a specific symbol including source code.
 - **`symbol`** (string, required): The symbol name
 - **`file`** (string, optional): Filter by file path
 
-Returns complete symbol details with source code, location, and relationships.
+Returns complete symbol details with source code, location, relationships, and for function/method nodes: complexity metrics (`branches`, `loops`, `returns`, `max_nesting`, `cyclomatic_complexity`).
 
 ### `tokensave_files`
 
@@ -567,12 +567,12 @@ Returns call cycles with full node details. Self-recursive functions appear as l
 
 ### `tokensave_complexity`
 
-Rank functions/methods by a composite complexity score: `lines + (fan_out × 3) + fan_in`. Line count reflects size, fan-out reflects cognitive load, fan-in reflects coupling.
+Rank functions/methods by a composite complexity score: `lines + (fan_out × 3) + fan_in`. Also includes real cyclomatic complexity and structural metrics extracted from the AST during indexing.
 
 - **`node_kind`** (string, optional): Filter by kind (default: function and method)
 - **`limit`** (number, optional): Maximum results (default: 10)
 
-Returns individual metrics (lines, fan_out, fan_in) alongside the total score.
+Returns per-function: lines, fan_out, fan_in, composite score, plus AST-derived metrics: `cyclomatic_complexity` (branches + 1), `branches`, `loops`, `returns`, `max_nesting`.
 
 ### `tokensave_doc_coverage`
 
@@ -602,11 +602,11 @@ tokensave doctor
 ```
 
 ```
-tokensave doctor v1.5.0
+tokensave doctor v1.6.0
 
 Binary
   ✔ Binary: /Users/you/.cargo/bin/tokensave
-  ✔ Version: 1.5.0
+  ✔ Version: 1.6.0
 
 Current project
   ✔ Index found: /Users/you/project/.tokensave/
@@ -659,11 +659,12 @@ tokensave uses language-specific Tree-sitter grammars (native Rust bindings) to 
 - Variable and type declarations
 - Import and export statements
 - Method calls and references
+- Complexity metrics (branches, loops, returns, max nesting depth)
 
 ### 2. Storage
 
 Extracted symbols are stored in a local libSQL (Turso) database with:
-- Symbol metadata (name, kind, location, signature)
+- Symbol metadata (name, kind, location, signature, complexity metrics)
 - File information and language classification
 - FTS5 full-text search index
 - Vector embeddings for semantic search
