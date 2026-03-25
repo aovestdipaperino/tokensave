@@ -79,24 +79,41 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ### 1. Install the binary
 
-**Cargo (any platform):**
-
-```bash
-cargo install tokensave
-```
-
 **Homebrew (macOS):**
 
 ```bash
 brew install aovestdipaperino/tap/tokensave
 ```
 
-**From source:**
+**Scoop (Windows):**
+
+```powershell
+scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-tokensave
+scoop install tokensave
+```
+
+**Cargo (any platform):**
 
 ```bash
-git clone https://github.com/aovestdipaperino/tokensave.git
-cd tokensave
-cargo install --path .
+cargo install tokensave
+```
+
+**Prebuilt binaries (Linux, Windows, macOS):**
+
+Download from the [latest release](https://github.com/aovestdipaperino/tokensave/releases/latest) and place the binary in your `PATH`:
+
+| Platform | Archive |
+|---|---|
+| macOS (Apple Silicon) | `tokensave-vX.Y.Z-aarch64-macos.tar.gz` |
+| Linux (x86_64) | `tokensave-vX.Y.Z-x86_64-linux.tar.gz` |
+| Linux (ARM64) | `tokensave-vX.Y.Z-aarch64-linux.tar.gz` |
+| Windows (x86_64) | `tokensave-vX.Y.Z-x86_64-windows.zip` |
+
+```bash
+# Example: Linux x86_64
+curl -LO https://github.com/aovestdipaperino/tokensave/releases/latest/download/tokensave-v1.4.0-x86_64-linux.tar.gz
+tar xzf tokensave-v1.4.0-x86_64-linux.tar.gz
+sudo mv tokensave /usr/local/bin/
 ```
 
 ### 2. Configure Claude Code

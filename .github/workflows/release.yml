@@ -1,9 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -13,16 +12,31 @@ env:
 
 jobs:
   build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - name: aarch64-macos
+            runner: macos-14
             target: aarch64-apple-darwin
             bottle_tag: arm64_sonoma
-          - runner: ubuntu-latest
+            archive: tar.gz
+          - name: x86_64-linux
+            runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bottle_tag: x86_64_linux
-    runs-on: ${{ matrix.runner }}
+            archive: tar.gz
+          - name: aarch64-linux
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - name: x86_64-windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
     steps:
       - uses: actions/checkout@v4
 
@@ -35,62 +49,58 @@ jobs:
 
       - name: Get version
         id: version
+        shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # --- Binary archive (all platforms) ---
+
+      - name: Package binary (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../tokensave-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
+          cd ../../..
+
+      - name: Package binary (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip
+
+      - name: Upload binary archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+
+      # --- Homebrew bottle (only for platforms with bottle_tag) ---
+
       - name: Package Homebrew bottle
+        if: matrix.bottle_tag
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
-
           mkdir -p tokensave/${VERSION}/bin
           cp target/${{ matrix.target }}/release/tokensave tokensave/${VERSION}/bin/tokensave
           chmod +x tokensave/${VERSION}/bin/tokensave
-
           tar czf "tokensave--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
       - name: Upload bottle artifact
+        if: matrix.bottle_tag
         uses: actions/upload-artifact@v4
         with:
           name: bottle-${{ matrix.bottle_tag }}
           path: "tokensave--*.bottle.tar.gz"
 
-  release:
+  update-homebrew:
+    name: Update Homebrew tap
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get version
-        id: version
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Download all bottle artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: bottles
-          merge-multiple: true
-
-      - name: Create source tarball
-        run: |
-          git archive --format=tar.gz --prefix=tokensave-${{ steps.version.outputs.version }}/ \
-            -o "tokensave-${{ steps.version.outputs.version }}.tar.gz" HEAD
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            bottles/*
-            tokensave-${{ steps.version.outputs.version }}.tar.gz
-
-  update-tap:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
       - name: Get version
         id: version
         run: |
@@ -103,22 +113,24 @@ jobs:
           path: bottles
           merge-multiple: true
 
-      - name: Download source tarball from release
+      - name: Upload bottles to release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in bottles/tokensave--*.bottle.tar.gz; do
+            gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
+          done
+
+      - name: Download source tarball
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          gh release download "${GITHUB_REF_NAME}" \
-            --repo "${{ github.repository }}" \
-            --pattern "tokensave-${VERSION}.tar.gz" \
-            --dir .
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" -o "source.tar.gz"
 
       - name: Compute SHA256 hashes
         id: hashes
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-
-          SOURCE_SHA=$(sha256sum "tokensave-${VERSION}.tar.gz" | awk '{print $1}')
+          SOURCE_SHA=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
           for f in bottles/tokensave--*.bottle.tar.gz; do
@@ -127,18 +139,16 @@ jobs:
             echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
           done
 
-      - name: Clone tap repo
+      - name: Update formula
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: |
-          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/aovestdipaperino/homebrew-tap.git" tap
-
-      - name: Update formula
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SOURCE_SHA="${{ steps.hashes.outputs.source_sha }}"
           ARM64_SONOMA_SHA="${{ steps.hashes.outputs.arm64_sonoma_sha }}"
           X86_64_LINUX_SHA="${{ steps.hashes.outputs.x86_64_linux_sha }}"
+
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/aovestdipaperino/homebrew-tap.git" tap
 
           cat > tap/Formula/tokensave.rb << EOF
           class Tokensave < Formula
@@ -166,11 +176,73 @@ jobs:
           end
           EOF
 
-      - name: Commit and push formula update
-        run: |
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/tokensave.rb
-          git commit -m "tokensave ${{ steps.version.outputs.version }}"
+          git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
+          git push
+
+  update-scoop:
+    name: Update Scoop bucket
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release info
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
+            --pattern "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" \
+            --dir .
+          SHA256=$(sha256sum "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
+          echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Scoop manifest
+        env:
+          SCOOP_GITHUB_TOKEN: ${{ secrets.SCOOP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.release.outputs.version }}"
+          TAG="${{ steps.release.outputs.tag }}"
+          SHA256="${{ steps.release.outputs.sha256_win64 }}"
+
+          cat > tokensave.json << EOF
+          {
+            "version": "${VERSION}",
+            "description": "Code intelligence tool that builds semantic knowledge graphs from source code",
+            "homepage": "https://github.com/aovestdipaperino/tokensave",
+            "license": "MIT",
+            "architecture": {
+              "64bit": {
+                "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-${TAG}-x86_64-windows.zip",
+                "hash": "${SHA256}"
+              }
+            },
+            "bin": "tokensave.exe",
+            "checkver": {
+              "github": "https://github.com/aovestdipaperino/tokensave"
+            },
+            "autoupdate": {
+              "architecture": {
+                "64bit": {
+                  "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-v\$version-x86_64-windows.zip"
+                }
+              }
+            }
+          }
+          EOF
+
+          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" bucket
+          cp tokensave.json bucket/tokensave.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tokensave.json
+          git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
           git push
