@@ -233,7 +233,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     // Best-effort check: warn if claude-install needs re-running
-    check_claude_install_stale();
+    if !matches!(command, Commands::ClaudeInstall) {
+        check_claude_install_stale();
+    }
 
     match command {
         Commands::Sync { path, force } => {
