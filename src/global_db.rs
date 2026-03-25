@@ -66,6 +66,26 @@ impl GlobalDb {
             .await;
     }
 
+    /// Returns the stored tokens_saved count for a specific project, or 0 if not found.
+    pub async fn get_project_tokens(&self, project_path: &Path) -> u64 {
+        let path_str = project_path.to_string_lossy().to_string();
+        let mut rows = match self
+            .conn
+            .query(
+                "SELECT tokens_saved FROM projects WHERE path = ?1",
+                params![path_str],
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        match rows.next().await {
+            Ok(Some(row)) => row.get::<i64>(0).unwrap_or(0) as u64,
+            _ => 0,
+        }
+    }
+
     /// Returns the sum of tokens_saved across all tracked projects.
     pub async fn global_tokens_saved(&self) -> Option<u64> {
         let mut rows = self
