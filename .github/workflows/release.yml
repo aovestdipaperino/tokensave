@@ -206,7 +206,7 @@ jobs:
 
       - name: Update Scoop manifest
         env:
-          SCOOP_GITHUB_TOKEN: ${{ secrets.SCOOP_GITHUB_TOKEN }}
+          SCOOP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.release.outputs.version }}"
           TAG="${{ steps.release.outputs.tag }}"
