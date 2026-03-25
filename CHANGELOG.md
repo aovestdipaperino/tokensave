@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-03-25
+
+### Added
+- 9 new MCP tools (18 total):
+  - `tokensave_dead_code` — find unreachable symbols with no incoming edges
+  - `tokensave_diff_context` — semantic context for changed files (modified symbols, dependencies, affected tests)
+  - `tokensave_module_api` — public API surface of a file or directory
+  - `tokensave_circular` — detect circular file dependencies
+  - `tokensave_hotspots` — most connected symbols by edge count
+  - `tokensave_similar` — find symbols with similar names
+  - `tokensave_rename_preview` — all references to a symbol
+  - `tokensave_unused_imports` — import statements never referenced
+  - `tokensave_changelog` — semantic diff between two git refs
+- `get_all_edges()`, `get_nodes_by_file()`, `get_all_nodes()`, `get_incoming_edges()`, `get_outgoing_edges()` delegation methods on `TokenSave`
+- `find_circular_dependencies()` graph query for file-level cycle detection
+- `tokensave status` prompts to create index if none exists (Y/n)
+- Country flags in status output via `--show-flags`
+
 ## [1.4.3] - 2026-03-25
 
 ### Added

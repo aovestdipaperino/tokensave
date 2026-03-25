@@ -515,6 +515,23 @@ impl Database {
         }
     }
 
+    /// Returns every edge in the database.
+    pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT source, target, kind, line FROM edges",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query all edges: {e}"),
+                operation: "get_all_edges".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_edge, "get_all_edges").await
+    }
+
     /// Deletes all edges originating from a given source node.
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
         self.conn()

@@ -403,6 +403,37 @@ impl TokenSave {
         qm.find_dead_code(kinds).await
     }
 
+    /// Returns all nodes for a given file, ordered by start line.
+    pub async fn get_nodes_by_file(&self, file_path: &str) -> Result<Vec<Node>> {
+        self.db.get_nodes_by_file(file_path).await
+    }
+
+    /// Returns every node in the database.
+    pub async fn get_all_nodes(&self) -> Result<Vec<Node>> {
+        self.db.get_all_nodes().await
+    }
+
+    /// Returns incoming edges to a target node.
+    pub async fn get_incoming_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
+        self.db.get_incoming_edges(node_id, &[]).await
+    }
+
+    /// Returns outgoing edges from a source node.
+    pub async fn get_outgoing_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
+        self.db.get_outgoing_edges(node_id, &[]).await
+    }
+
+    /// Returns every edge in the database.
+    pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
+        self.db.get_all_edges().await
+    }
+
+    /// Detects circular dependencies at the file level.
+    pub async fn find_circular_dependencies(&self) -> Result<Vec<Vec<String>>> {
+        let qm = GraphQueryManager::new(&self.db);
+        qm.find_circular_dependencies().await
+    }
+
     /// Builds an AI-ready context for a given task description.
     pub async fn build_context(&self, task: &str, options: &BuildContextOptions) -> Result<TaskContext> {
         let builder = ContextBuilder::new(&self.db, &self.project_root);

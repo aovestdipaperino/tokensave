@@ -4,7 +4,7 @@
 //! Each tool maps to a `TokenSave` method. Tool definitions include JSON Schema
 //! descriptions so that MCP clients can discover available capabilities.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::tokensave::TokenSave;
 use crate::context::format_context_as_markdown;
 use crate::errors::{TokenSaveError, Result};
-use crate::types::BuildContextOptions;
+use crate::types::{BuildContextOptions, NodeKind, Visibility};
 
 /// Maximum character length for a tool response before truncation.
 const MAX_RESPONSE_CHARS: usize = 15_000;
@@ -189,6 +189,137 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["files"]
             }),
         },
+        ToolDefinition {
+            name: "tokensave_dead_code".to_string(),
+            description: "Find symbols with no incoming edges (potentially unreachable code). Excludes main, test functions, and public items.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kinds": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Node kinds to check (default: [\"function\", \"method\"])"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_diff_context".to_string(),
+            description: "Given changed file paths, return semantic context: which symbols were modified, what depends on them, and affected tests.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of changed file paths"
+                    },
+                    "depth": {
+                        "type": "number",
+                        "description": "Maximum impact traversal depth (default: 2)"
+                    }
+                },
+                "required": ["files"]
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_module_api".to_string(),
+            description: "Show the public API surface of a file or directory: all pub symbols sorted by file and line.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path or directory prefix to inspect"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_circular".to_string(),
+            description: "Detect circular dependencies between files in the code graph.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_depth": {
+                        "type": "number",
+                        "description": "Maximum cycle detection depth (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_hotspots".to_string(),
+            description: "Find symbols with the highest connectivity (most incoming + outgoing edges).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of hotspots to return (default: 10)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_similar".to_string(),
+            description: "Find symbols with similar names using full-text search and substring matching.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name to find similar matches for"
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of results (default: 10)"
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_rename_preview".to_string(),
+            description: "Show all references to a symbol — all edges where the node appears as source or target.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "The unique node ID to find references for"
+                    }
+                },
+                "required": ["node_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_unused_imports".to_string(),
+            description: "Find import/use nodes that are never referenced by any other node.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "tokensave_changelog".to_string(),
+            description: "Generate a semantic diff/changelog between two git refs, categorizing symbols as added, removed, or modified.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from_ref": {
+                        "type": "string",
+                        "description": "Starting git ref (commit, branch, tag)"
+                    },
+                    "to_ref": {
+                        "type": "string",
+                        "description": "Ending git ref (commit, branch, tag)"
+                    }
+                },
+                "required": ["from_ref", "to_ref"]
+            }),
+        },
     ]
 }
 
@@ -222,6 +353,15 @@ pub async fn handle_tool_call(
         "tokensave_status" => handle_status(cg, server_stats).await,
         "tokensave_files" => handle_files(cg, args).await,
         "tokensave_affected" => handle_affected(cg, args).await,
+        "tokensave_dead_code" => handle_dead_code(cg, args).await,
+        "tokensave_diff_context" => handle_diff_context(cg, args).await,
+        "tokensave_module_api" => handle_module_api(cg, args).await,
+        "tokensave_circular" => handle_circular(cg, args).await,
+        "tokensave_hotspots" => handle_hotspots(cg, args).await,
+        "tokensave_similar" => handle_similar(cg, args).await,
+        "tokensave_rename_preview" => handle_rename_preview(cg, args).await,
+        "tokensave_unused_imports" => handle_unused_imports(cg, args).await,
+        "tokensave_changelog" => handle_changelog(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
@@ -694,6 +834,621 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     })
 }
 
+/// Handles `tokensave_dead_code` tool calls.
+async fn handle_dead_code(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let kinds: Vec<NodeKind> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(NodeKind::from_str))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![NodeKind::Function, NodeKind::Method]);
+
+    let dead = cg.find_dead_code(&kinds).await?;
+
+    let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = dead
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "signature": n.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "dead_code_count": items.len(),
+        "symbols": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_diff_context` tool calls.
+async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(10) as usize)
+        .unwrap_or(2);
+
+    let mut modified_symbols: Vec<Value> = Vec::new();
+    let mut impacted_symbols: Vec<Value> = Vec::new();
+    let mut affected_tests: HashSet<String> = HashSet::new();
+    let mut all_touched_files: Vec<String> = Vec::new();
+
+    for file in &files {
+        let nodes = cg.get_nodes_by_file(file).await?;
+        for node in &nodes {
+            all_touched_files.push(node.file_path.clone());
+            modified_symbols.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+            }));
+
+            // Get impact radius for each modified symbol
+            let impact = cg.get_impact_radius(&node.id, depth).await?;
+            for impacted in &impact.nodes {
+                if impacted.id != node.id {
+                    impacted_symbols.push(json!({
+                        "id": impacted.id,
+                        "name": impacted.name,
+                        "kind": impacted.kind.as_str(),
+                        "file": impacted.file_path,
+                        "line": impacted.start_line,
+                    }));
+                    if is_test_file(&impacted.file_path) {
+                        affected_tests.insert(impacted.file_path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Also run affected-tests BFS at file level
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    for file in &files {
+        if is_test_file(file) {
+            affected_tests.insert(file.clone());
+        }
+        if visited.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+    while let Some((file, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        let dependents = cg.get_file_dependents(&file).await?;
+        for dep in dependents {
+            if !visited.insert(dep.clone()) {
+                continue;
+            }
+            if is_test_file(&dep) {
+                affected_tests.insert(dep.clone());
+            } else {
+                queue.push_back((dep, d + 1));
+            }
+        }
+    }
+
+    let mut tests_sorted: Vec<String> = affected_tests.into_iter().collect();
+    tests_sorted.sort();
+
+    let touched_files = unique_file_paths(
+        all_touched_files.iter().map(|s| s.as_str()).chain(files.iter().map(|s| s.as_str())),
+    );
+
+    let output = json!({
+        "changed_files": files,
+        "modified_symbols": modified_symbols,
+        "impacted_symbols_count": impacted_symbols.len(),
+        "impacted_symbols": impacted_symbols,
+        "affected_tests": tests_sorted,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_module_api` tool calls.
+async fn handle_module_api(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+
+    let all_nodes = cg.get_all_nodes().await?;
+
+    // Filter to nodes in matching files (exact path or directory prefix)
+    let prefix = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{}/", path)
+    };
+
+    let mut pub_nodes: Vec<&crate::types::Node> = all_nodes
+        .iter()
+        .filter(|n| {
+            n.visibility == Visibility::Pub
+                && (n.file_path == path || n.file_path.starts_with(&prefix))
+        })
+        .collect();
+
+    pub_nodes.sort_by(|a, b| {
+        a.file_path
+            .cmp(&b.file_path)
+            .then(a.start_line.cmp(&b.start_line))
+    });
+
+    let touched_files = unique_file_paths(pub_nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = pub_nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "signature": n.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "path": path,
+        "public_symbol_count": items.len(),
+        "symbols": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_circular` tool calls.
+async fn handle_circular(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
+    let cycles = cg.find_circular_dependencies().await?;
+
+    let items: Vec<Value> = cycles
+        .iter()
+        .map(|cycle| json!(cycle))
+        .collect();
+
+    let output = json!({
+        "cycle_count": cycles.len(),
+        "cycles": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_hotspots` tool calls.
+async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    let all_edges = cg.get_all_edges().await?;
+
+    // Count incoming + outgoing edges per node
+    let mut connectivity: HashMap<String, (usize, usize)> = HashMap::new();
+    for edge in &all_edges {
+        connectivity
+            .entry(edge.source.clone())
+            .or_insert((0, 0))
+            .1 += 1; // outgoing
+        connectivity
+            .entry(edge.target.clone())
+            .or_insert((0, 0))
+            .0 += 1; // incoming
+    }
+
+    // Sort by total connectivity descending
+    let mut sorted: Vec<(String, usize, usize)> = connectivity
+        .into_iter()
+        .map(|(id, (inc, out))| (id, inc, out))
+        .collect();
+    sorted.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+    sorted.truncate(limit);
+
+    // Resolve node details
+    let mut items: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for (node_id, incoming, outgoing) in &sorted {
+        if let Some(node) = cg.get_node(node_id).await? {
+            touched.push(node.file_path.clone());
+            items.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "incoming": incoming,
+                "outgoing": outgoing,
+                "total": incoming + outgoing,
+            }));
+        }
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+
+    let output = json!({
+        "hotspot_count": items.len(),
+        "hotspots": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_similar` tool calls.
+async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let symbol = args
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: symbol".to_string(),
+        })?;
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
+
+    // Use FTS search first
+    let mut results = cg.search(symbol, limit).await?;
+
+    // If FTS didn't return enough, supplement with substring matching
+    if results.len() < limit {
+        let all_nodes = cg.get_all_nodes().await?;
+        let lower_symbol = symbol.to_ascii_lowercase();
+        let existing_ids: HashSet<String> = results.iter().map(|r| r.node.id.clone()).collect();
+
+        let mut substring_matches: Vec<crate::types::SearchResult> = all_nodes
+            .into_iter()
+            .filter(|n| {
+                !existing_ids.contains(&n.id)
+                    && (n.name.to_ascii_lowercase().contains(&lower_symbol)
+                        || n.qualified_name.to_ascii_lowercase().contains(&lower_symbol))
+            })
+            .map(|n| crate::types::SearchResult { node: n, score: 0.5 })
+            .collect();
+
+        substring_matches.truncate(limit.saturating_sub(results.len()));
+        results.extend(substring_matches);
+    }
+
+    let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.node.id,
+                "name": r.node.name,
+                "kind": r.node.kind.as_str(),
+                "file": r.node.file_path,
+                "line": r.node.start_line,
+                "signature": r.node.signature,
+                "score": r.score,
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_rename_preview` tool calls.
+async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: node_id".to_string(),
+        })?;
+
+    // Get the node itself
+    let node = cg.get_node(node_id).await?;
+    let node_info = match &node {
+        Some(n) => json!({
+            "id": n.id,
+            "name": n.name,
+            "kind": n.kind.as_str(),
+            "file": n.file_path,
+            "line": n.start_line,
+        }),
+        None => {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("Node not found: {}", node_id) }]
+                }),
+                touched_files: vec![],
+            });
+        }
+    };
+
+    // Get all edges referencing this node
+    let incoming = cg.get_incoming_edges(node_id).await?;
+    let outgoing = cg.get_outgoing_edges(node_id).await?;
+
+    let mut references: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    if let Some(ref n) = node {
+        touched.push(n.file_path.clone());
+    }
+
+    // Incoming edges: other nodes that reference this node
+    for edge in &incoming {
+        if let Some(source_node) = cg.get_node(&edge.source).await? {
+            touched.push(source_node.file_path.clone());
+            references.push(json!({
+                "direction": "incoming",
+                "node_id": source_node.id,
+                "name": source_node.name,
+                "kind": source_node.kind.as_str(),
+                "file": source_node.file_path,
+                "line": source_node.start_line,
+                "edge_kind": edge.kind.as_str(),
+                "edge_line": edge.line,
+            }));
+        }
+    }
+
+    // Outgoing edges: nodes this node references
+    for edge in &outgoing {
+        if let Some(target_node) = cg.get_node(&edge.target).await? {
+            touched.push(target_node.file_path.clone());
+            references.push(json!({
+                "direction": "outgoing",
+                "node_id": target_node.id,
+                "name": target_node.name,
+                "kind": target_node.kind.as_str(),
+                "file": target_node.file_path,
+                "line": target_node.start_line,
+                "edge_kind": edge.kind.as_str(),
+                "edge_line": edge.line,
+            }));
+        }
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+
+    let output = json!({
+        "node": node_info,
+        "reference_count": references.len(),
+        "references": references,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_unused_imports` tool calls.
+async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
+    let all_nodes = cg.get_all_nodes().await?;
+
+    // Find all Use nodes
+    let use_nodes: Vec<&crate::types::Node> = all_nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
+
+    let mut unused: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    for use_node in &use_nodes {
+        // Check if this use node has any outgoing edges (it references something)
+        // or if any other node references it via incoming edges
+        let incoming = cg.get_incoming_edges(&use_node.id).await?;
+        let outgoing = cg.get_outgoing_edges(&use_node.id).await?;
+
+        // A use node is "unused" if nothing references it (no incoming edges)
+        // and it doesn't create any connections (no outgoing edges beyond contains)
+        let has_meaningful_outgoing = outgoing.iter().any(|e| {
+            e.kind != crate::types::EdgeKind::Contains
+        });
+
+        if incoming.is_empty() && !has_meaningful_outgoing {
+            touched.push(use_node.file_path.clone());
+            unused.push(json!({
+                "id": use_node.id,
+                "name": use_node.name,
+                "file": use_node.file_path,
+                "line": use_node.start_line,
+            }));
+        }
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+
+    let output = json!({
+        "unused_import_count": unused.len(),
+        "imports": unused,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_changelog` tool calls.
+async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let from_ref = args
+        .get("from_ref")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: from_ref".to_string(),
+        })?;
+
+    let to_ref = args
+        .get("to_ref")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: to_ref".to_string(),
+        })?;
+
+    // Run git diff to get changed files
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", from_ref, to_ref])
+        .current_dir(cg.project_root())
+        .output();
+
+    let changed_files: Vec<String> = match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Ok(ToolResult {
+                    value: json!({
+                        "content": [{ "type": "text", "text": format!("git diff failed: {}", stderr) }]
+                    }),
+                    touched_files: vec![],
+                });
+            }
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        Err(e) => {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("failed to run git: {}", e) }]
+                }),
+                touched_files: vec![],
+            });
+        }
+    };
+
+    // For each changed file, get current symbols from the graph
+    let mut added: Vec<Value> = Vec::new();
+    let mut modified: Vec<Value> = Vec::new();
+    let mut file_symbols: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for file in &changed_files {
+        let nodes = cg.get_nodes_by_file(file).await?;
+        let symbols: Vec<Value> = nodes
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "line": n.start_line,
+                    "signature": n.signature,
+                })
+            })
+            .collect();
+
+        if symbols.is_empty() {
+            // File was likely removed or not indexed
+            modified.push(json!({
+                "file": file,
+                "status": "removed_or_not_indexed",
+            }));
+        } else {
+            for sym in &symbols {
+                added.push(sym.clone());
+            }
+        }
+        file_symbols.insert(file.clone(), symbols);
+    }
+
+    let touched_files: Vec<String> = changed_files.clone();
+
+    let result = json!({
+        "from_ref": from_ref,
+        "to_ref": to_ref,
+        "changed_file_count": changed_files.len(),
+        "changed_files": changed_files,
+        "symbols_in_changed_files": added,
+        "files_not_indexed": modified,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,7 +1456,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 18);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -713,6 +1468,15 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_status"));
         assert!(tool_names.contains(&"tokensave_files"));
         assert!(tool_names.contains(&"tokensave_affected"));
+        assert!(tool_names.contains(&"tokensave_dead_code"));
+        assert!(tool_names.contains(&"tokensave_diff_context"));
+        assert!(tool_names.contains(&"tokensave_module_api"));
+        assert!(tool_names.contains(&"tokensave_circular"));
+        assert!(tool_names.contains(&"tokensave_hotspots"));
+        assert!(tool_names.contains(&"tokensave_similar"));
+        assert!(tool_names.contains(&"tokensave_rename_preview"));
+        assert!(tool_names.contains(&"tokensave_unused_imports"));
+        assert!(tool_names.contains(&"tokensave_changelog"));
     }
 
     #[test]

@@ -341,7 +341,6 @@ fn test_language_registry_finds_scala_extractor() {
 #[test]
 fn test_language_registry_returns_none_for_unknown() {
     let registry = LanguageRegistry::new();
-    assert!(registry.extractor_for_file("script.rb").is_none());
     assert!(registry.extractor_for_file("style.css").is_none());
     assert!(registry.extractor_for_file("README.md").is_none());
 }

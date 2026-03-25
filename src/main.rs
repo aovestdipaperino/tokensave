@@ -288,7 +288,28 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Status { path, json, show_flags } => {
             let project_path = resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = if TokenSave::is_initialized(&project_path) {
+                TokenSave::open(&project_path).await?
+            } else {
+                eprint!(
+                    "No TokenSave index found at '{}'. Create one now? [Y/n] ",
+                    project_path.display()
+                );
+                io::stderr().flush().ok();
+                let mut answer = String::new();
+                io::stdin()
+                    .lock()
+                    .read_line(&mut answer)
+                    .map_err(|e| tokensave::errors::TokenSaveError::Config {
+                        message: format!("failed to read stdin: {e}"),
+                    })?;
+                let answer = answer.trim();
+                if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+                    init_and_index(&project_path).await?
+                } else {
+                    return Ok(());
+                }
+            };
             let stats = cg.get_stats().await?;
             if json {
                 println!(
@@ -979,12 +1000,21 @@ fn claude_install() -> tokensave::errors::Result<()> {
         "mcp__tokensave__tokensave_affected",
         "mcp__tokensave__tokensave_callees",
         "mcp__tokensave__tokensave_callers",
+        "mcp__tokensave__tokensave_changelog",
+        "mcp__tokensave__tokensave_circular",
         "mcp__tokensave__tokensave_context",
+        "mcp__tokensave__tokensave_dead_code",
+        "mcp__tokensave__tokensave_diff_context",
         "mcp__tokensave__tokensave_files",
+        "mcp__tokensave__tokensave_hotspots",
         "mcp__tokensave__tokensave_impact",
+        "mcp__tokensave__tokensave_module_api",
         "mcp__tokensave__tokensave_node",
+        "mcp__tokensave__tokensave_rename_preview",
         "mcp__tokensave__tokensave_search",
+        "mcp__tokensave__tokensave_similar",
         "mcp__tokensave__tokensave_status",
+        "mcp__tokensave__tokensave_unused_imports",
     ];
     let existing: Vec<String> = settings["permissions"]["allow"]
         .as_array()

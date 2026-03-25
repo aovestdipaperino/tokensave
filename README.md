@@ -352,6 +352,15 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_files` | List indexed project files with filtering |
 | `tokensave_affected` | Find test files affected by source changes |
 | `tokensave_status` | Get index status, statistics, and global tokens saved |
+| `tokensave_dead_code` | Find unreachable symbols (no incoming edges) |
+| `tokensave_diff_context` | Semantic context for changed files — modified symbols, dependencies, affected tests |
+| `tokensave_module_api` | Public API surface of a file or directory |
+| `tokensave_circular` | Detect circular file dependencies |
+| `tokensave_hotspots` | Most connected symbols (highest call count) |
+| `tokensave_similar` | Find symbols with similar names |
+| `tokensave_rename_preview` | All references to a symbol (preview rename impact) |
+| `tokensave_unused_imports` | Import statements that are never referenced |
+| `tokensave_changelog` | Semantic diff between two git refs |
 
 ### `tokensave_context`
 
