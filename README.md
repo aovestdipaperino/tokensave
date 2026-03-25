@@ -127,7 +127,7 @@ tokensave claude-install
 
 This single command:
 
-- Registers tokensave as an MCP server in `~/.claude/settings.json`
+- Registers tokensave as an MCP server in `~/.claude.json`
 - Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave
 - Adds tool permissions so Claude can call all 27 tokensave tools without prompting
 - Appends rules to `~/.claude/CLAUDE.md` that instruct Claude to prefer tokensave over file reads
@@ -168,12 +168,30 @@ This creates a `.tokensave/` directory with the knowledge graph database. Subseq
       "mcp__tokensave__tokensave_affected",
       "mcp__tokensave__tokensave_callees",
       "mcp__tokensave__tokensave_callers",
+      "mcp__tokensave__tokensave_changelog",
+      "mcp__tokensave__tokensave_circular",
+      "mcp__tokensave__tokensave_complexity",
       "mcp__tokensave__tokensave_context",
+      "mcp__tokensave__tokensave_coupling",
+      "mcp__tokensave__tokensave_dead_code",
+      "mcp__tokensave__tokensave_diff_context",
+      "mcp__tokensave__tokensave_distribution",
+      "mcp__tokensave__tokensave_doc_coverage",
       "mcp__tokensave__tokensave_files",
+      "mcp__tokensave__tokensave_god_class",
+      "mcp__tokensave__tokensave_hotspots",
       "mcp__tokensave__tokensave_impact",
+      "mcp__tokensave__tokensave_inheritance_depth",
+      "mcp__tokensave__tokensave_largest",
+      "mcp__tokensave__tokensave_module_api",
       "mcp__tokensave__tokensave_node",
+      "mcp__tokensave__tokensave_rank",
+      "mcp__tokensave__tokensave_recursion",
+      "mcp__tokensave__tokensave_rename_preview",
       "mcp__tokensave__tokensave_search",
-      "mcp__tokensave__tokensave_status"
+      "mcp__tokensave__tokensave_similar",
+      "mcp__tokensave__tokensave_status",
+      "mcp__tokensave__tokensave_unused_imports"
     ]
   }
 }
