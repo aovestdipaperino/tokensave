@@ -177,6 +177,9 @@ enum Commands {
     /// Configure Claude Code integration (MCP server, permissions, hook, CLAUDE.md)
     #[command(name = "claude-install")]
     ClaudeInstall,
+    /// Remove Claude Code integration (MCP server, permissions, hook, CLAUDE.md rules)
+    #[command(name = "claude-uninstall")]
+    ClaudeUninstall,
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
     HookPreToolUse,
@@ -531,6 +534,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::ClaudeInstall => {
             claude_install()?;
+        }
+        Commands::ClaudeUninstall => {
+            claude_uninstall()?;
         }
         Commands::HookPreToolUse => {
             hook_pre_tool_use();
@@ -1060,20 +1066,20 @@ fn run_doctor() {
     eprintln!("\n\x1b[1mClaude Code integration\x1b[0m");
     let home = home_dir();
     if let Some(ref home) = home {
-        let settings_path = home.join(".claude").join("settings.json");
-        if settings_path.exists() {
-            let settings_ok = std::fs::read_to_string(&settings_path)
+        // Check MCP server in ~/.claude.json (global MCP config)
+        let claude_json_path = home.join(".claude.json");
+        if claude_json_path.exists() {
+            let claude_json_ok = std::fs::read_to_string(&claude_json_path)
                 .ok()
                 .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
 
-            if let Some(settings) = settings_ok {
-                pass(&format!("Settings: {}", settings_path.display()));
+            if let Some(claude_json) = claude_json_ok {
+                pass(&format!("Global MCP config: {}", claude_json_path.display()));
 
-                // Check MCP server registration
-                let mcp_entry = &settings["mcpServers"]["tokensave"];
+                let mcp_entry = &claude_json["mcpServers"]["tokensave"];
                 let has_mcp = mcp_entry.is_object();
                 if has_mcp {
-                    pass("MCP server registered");
+                    pass("MCP server registered in ~/.claude.json");
 
                     // Validate MCP binary path
                     if let Some(mcp_cmd) = mcp_entry["command"].as_str() {
@@ -1117,9 +1123,40 @@ fn run_doctor() {
                         issues += 1;
                     }
                 } else {
-                    fail("MCP server NOT registered — run `tokensave claude-install`");
+                    fail("MCP server NOT registered in ~/.claude.json — run `tokensave claude-install`");
                     issues += 1;
                 }
+            } else {
+                fail("Could not parse ~/.claude.json");
+                issues += 1;
+            }
+        } else {
+            fail("~/.claude.json not found — run `tokensave claude-install`");
+            issues += 1;
+        }
+
+        // Check for stale MCP server in old location (~/.claude/settings.json)
+        let settings_path = home.join(".claude").join("settings.json");
+        if settings_path.exists() {
+            if let Some(settings) = std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            {
+                if settings["mcpServers"]["tokensave"].is_object() {
+                    warn("Stale MCP server entry in ~/.claude/settings.json — run `tokensave claude-install` to migrate");
+                    warnings += 1;
+                }
+            }
+        }
+
+        // Check settings.json for hook and permissions
+        if settings_path.exists() {
+            let settings_ok = std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+
+            if let Some(settings) = settings_ok {
+                pass(&format!("Settings: {}", settings_path.display()));
 
                 // Check hook
                 let hook_cmd_str: Option<String> = settings["hooks"]["PreToolUse"]
@@ -1354,6 +1391,7 @@ fn claude_install() -> tokensave::errors::Result<()> {
     })?;
     let claude_dir = home.join(".claude");
     let settings_path = claude_dir.join("settings.json");
+    let claude_json_path = home.join(".claude.json");
     let claude_md_path = claude_dir.join("CLAUDE.md");
 
     let tokensave_bin =
@@ -1364,7 +1402,28 @@ fn claude_install() -> tokensave::errors::Result<()> {
                 .to_string(),
         })?;
 
-    // 1. Load or create settings.json
+    // 1. Load or create ~/.claude.json (global MCP config)
+    let mut claude_json: serde_json::Value = if claude_json_path.exists() {
+        let contents = std::fs::read_to_string(&claude_json_path).unwrap_or_default();
+        serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // 2. Add MCP server to ~/.claude.json
+    claude_json["mcpServers"]["tokensave"] = serde_json::json!({
+        "command": tokensave_bin,
+        "args": ["serve"]
+    });
+    let pretty_claude_json = serde_json::to_string_pretty(&claude_json).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(&claude_json_path, format!("{pretty_claude_json}\n")).map_err(|e| {
+        tokensave::errors::TokenSaveError::Config {
+            message: format!("failed to write ~/.claude.json: {e}"),
+        }
+    })?;
+    eprintln!("\x1b[32m✔\x1b[0m Added tokensave MCP server to {}", claude_json_path.display());
+
+    // 2b. Remove MCP server from old location (~/.claude/settings.json) if present
     std::fs::create_dir_all(&claude_dir).ok();
     let mut settings: serde_json::Value = if settings_path.exists() {
         let contents = std::fs::read_to_string(&settings_path).unwrap_or_default();
@@ -1372,13 +1431,14 @@ fn claude_install() -> tokensave::errors::Result<()> {
     } else {
         serde_json::json!({})
     };
-
-    // 2. Add MCP server
-    settings["mcpServers"]["tokensave"] = serde_json::json!({
-        "command": tokensave_bin,
-        "args": ["serve"]
-    });
-    eprintln!("\x1b[32m✔\x1b[0m Added tokensave MCP server");
+    if let Some(servers) = settings.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        if servers.remove("tokensave").is_some() {
+            if servers.is_empty() {
+                settings.as_object_mut().map(|o| o.remove("mcpServers"));
+            }
+            eprintln!("\x1b[32m✔\x1b[0m Removed tokensave MCP server from old location ({})", settings_path.display());
+        }
+    }
 
     // 3. Add PreToolUse hook pointing to `tokensave hook-pre-tool-use` (idempotent)
     let hook_command = format!("{} hook-pre-tool-use", tokensave_bin);
@@ -1588,6 +1648,168 @@ fn claude_install() -> tokensave::errors::Result<()> {
     eprintln!("Setup complete. Next steps:");
     eprintln!("  1. cd into your project and run: tokensave sync");
     eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
+    Ok(())
+}
+
+/// Removes Claude Code integration: MCP server, permissions, hook, CLAUDE.md rules.
+fn claude_uninstall() -> tokensave::errors::Result<()> {
+    let home = home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+        message: "could not determine home directory".to_string(),
+    })?;
+    let claude_dir = home.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+    let claude_json_path = home.join(".claude.json");
+    let claude_md_path = claude_dir.join("CLAUDE.md");
+
+    // 1. Remove MCP server from ~/.claude.json
+    if claude_json_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&claude_json_path) {
+            if let Ok(mut claude_json) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(servers) = claude_json.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                    if servers.remove("tokensave").is_some() {
+                        if servers.is_empty() {
+                            claude_json.as_object_mut().map(|o| o.remove("mcpServers"));
+                        }
+                        let is_empty = claude_json.as_object().is_some_and(|o| o.is_empty());
+                        if is_empty {
+                            std::fs::remove_file(&claude_json_path).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed {} (was empty)", claude_json_path.display());
+                        } else {
+                            let pretty = serde_json::to_string_pretty(&claude_json).unwrap_or_default();
+                            std::fs::write(&claude_json_path, format!("{pretty}\n")).ok();
+                            eprintln!("\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}", claude_json_path.display());
+                        }
+                    } else {
+                        eprintln!("  No tokensave MCP server in ~/.claude.json, skipping");
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Remove from old location (~/.claude/settings.json mcpServers) if present
+    if settings_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&settings_path) {
+            if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) {
+                let mut modified = false;
+
+                // Remove MCP server from old location
+                if let Some(servers) = settings.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+                    if servers.remove("tokensave").is_some() {
+                        if servers.is_empty() {
+                            settings.as_object_mut().map(|o| o.remove("mcpServers"));
+                        }
+                        modified = true;
+                        eprintln!("\x1b[32m✔\x1b[0m Removed stale tokensave MCP server from settings.json");
+                    }
+                }
+
+                // Remove PreToolUse hook
+                if let Some(arr) = settings["hooks"]["PreToolUse"].as_array().cloned() {
+                    let filtered: Vec<serde_json::Value> = arr
+                        .into_iter()
+                        .filter(|h| {
+                            !h.get("hooks")
+                                .and_then(|a| a.as_array())
+                                .map(|arr| {
+                                    arr.iter().any(|entry| {
+                                        entry
+                                            .get("command")
+                                            .and_then(|c| c.as_str())
+                                            .is_some_and(|c| c.contains("tokensave"))
+                                    })
+                                })
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    if filtered.len() < settings["hooks"]["PreToolUse"].as_array().map_or(0, |a| a.len()) {
+                        if filtered.is_empty() {
+                            if let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+                                hooks.remove("PreToolUse");
+                                if hooks.is_empty() {
+                                    settings.as_object_mut().map(|o| o.remove("hooks"));
+                                }
+                            }
+                        } else {
+                            settings["hooks"]["PreToolUse"] = serde_json::Value::Array(filtered);
+                        }
+                        modified = true;
+                        eprintln!("\x1b[32m✔\x1b[0m Removed PreToolUse hook");
+                    }
+                }
+
+                // Remove tokensave permissions
+                if let Some(arr) = settings["permissions"]["allow"].as_array().cloned() {
+                    let filtered: Vec<serde_json::Value> = arr
+                        .into_iter()
+                        .filter(|v| {
+                            !v.as_str()
+                                .is_some_and(|s| s.starts_with("mcp__tokensave__"))
+                        })
+                        .collect();
+                    if filtered.len() < settings["permissions"]["allow"].as_array().map_or(0, |a| a.len()) {
+                        if filtered.is_empty() {
+                            if let Some(perms) = settings.get_mut("permissions").and_then(|v| v.as_object_mut()) {
+                                perms.remove("allow");
+                                if perms.is_empty() {
+                                    settings.as_object_mut().map(|o| o.remove("permissions"));
+                                }
+                            }
+                        } else {
+                            settings["permissions"]["allow"] = serde_json::Value::Array(filtered);
+                        }
+                        modified = true;
+                        eprintln!("\x1b[32m✔\x1b[0m Removed tokensave tool permissions");
+                    }
+                }
+
+                if modified {
+                    let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
+                    std::fs::write(&settings_path, format!("{pretty}\n")).ok();
+                    eprintln!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
+                }
+            }
+        }
+    }
+
+    // 3. Remove tokensave rules from CLAUDE.md
+    if claude_md_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&claude_md_path) {
+            if contents.contains("tokensave") {
+                // Remove the tokensave section (from marker to end of section)
+                let marker = "## MANDATORY: No Explore Agents When Tokensave Is Available";
+                if let Some(start) = contents.find(marker) {
+                    // Find the end: next ## heading or end of file
+                    let after_marker = start + marker.len();
+                    let end = contents[after_marker..]
+                        .find("\n## ")
+                        .map(|pos| after_marker + pos)
+                        .unwrap_or(contents.len());
+                    let mut new_contents = String::new();
+                    new_contents.push_str(contents[..start].trim_end());
+                    let remainder = &contents[end..];
+                    if !remainder.is_empty() {
+                        new_contents.push_str("\n\n");
+                        new_contents.push_str(remainder.trim_start());
+                    }
+                    let new_contents = new_contents.trim().to_string();
+                    if new_contents.is_empty() {
+                        std::fs::remove_file(&claude_md_path).ok();
+                        eprintln!("\x1b[32m✔\x1b[0m Removed {} (was empty)", claude_md_path.display());
+                    } else {
+                        std::fs::write(&claude_md_path, format!("{new_contents}\n")).ok();
+                        eprintln!("\x1b[32m✔\x1b[0m Removed tokensave rules from {}", claude_md_path.display());
+                    }
+                }
+            } else {
+                eprintln!("  CLAUDE.md does not contain tokensave rules, skipping");
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
+    eprintln!("Start a new Claude Code session for changes to take effect.");
     Ok(())
 }
 
