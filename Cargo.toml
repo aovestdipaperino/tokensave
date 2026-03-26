@@ -2,7 +2,7 @@
 name = "tokensave"
 version = "1.10.0"
 edition = "2021"
-description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, Ruby, Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch, Perl, and Objective-C codebases"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, Ruby, Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch, Perl, Objective-C, and Fortran codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/tokensave"
 homepage = "https://github.com/aovestdipaperino/tokensave"
@@ -62,6 +62,7 @@ tree-sitter-powershell = "0.26"
 tree-sitter-batch = "0.3"
 tree-sitter-perl = "1.1"
 tree-sitter-objc = "3.0"
+tree-sitter-fortran = "0.5"
 
 [build-dependencies]
 logo-art = "0.2"
