@@ -1132,3 +1132,100 @@ fn test_fixture_nix() {
         assert_eq!(node.visibility, Visibility::Pub, "node {} should be Pub", node.name);
     }
 }
+
+// ── VB.NET ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_vbnet() {
+    let source = read_fixture("sample.vb");
+    let extractor = tokensave::extraction::VbNetExtractor;
+    let result = extractor.extract("sample.vb", &source);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports, got {}", imports.len());
+    assert!(imports.iter().any(|u| u.name == "System"));
+    assert!(imports.iter().any(|u| u.name == "System.Collections.Generic"));
+
+    // Const (top-level)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert!(consts.iter().any(|c| c.name == "MaxConnections"), "MaxConnections const not found");
+
+    // Enum with variants
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "LogLevel"));
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert!(variants.len() >= 4, "expected >= 4 enum variants, got {}", variants.len());
+    assert!(variants.iter().any(|v| v.name == "Debug"));
+    assert!(variants.iter().any(|v| v.name == "Info"));
+    assert!(variants.iter().any(|v| v.name == "Warning"));
+
+    // Interface
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Interface && n.name == "ISerializable"),
+        "ISerializable interface not found"
+    );
+
+    // Classes
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Base"),
+        "Base class not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"),
+        "Connection class not found"
+    );
+
+    // Struct
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Point"),
+        "Point struct not found"
+    );
+
+    // Module
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Module && n.name == "Helpers"),
+        "Helpers module not found"
+    );
+
+    // Methods
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 5, "expected >= 5 methods, got {}", methods.len());
+
+    // Constructor
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Constructor),
+        "expected at least one Constructor node"
+    );
+
+    // Properties
+    let props: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Property).collect();
+    assert!(props.len() >= 2, "expected >= 2 properties, got {}", props.len());
+
+    // Docstrings on classes
+    let base = result.nodes.iter().find(|n| n.kind == NodeKind::Class && n.name == "Base").unwrap();
+    assert!(base.docstring.is_some(), "Base class should have docstring");
+
+    // Inheritance: Connection extends Base
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends && r.reference_name == "Base"),
+        "expected Extends ref to Base"
+    );
+
+    // Implements: Connection implements ISerializable
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Implements && r.reference_name == "ISerializable"),
+        "expected Implements ref to ISerializable"
+    );
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}

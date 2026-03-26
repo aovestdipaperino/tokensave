@@ -22,6 +22,7 @@ mod proto_extractor;
 mod nix_extractor;
 mod ruby_extractor;
 mod swift_extractor;
+mod vbnet_extractor;
 mod zig_extractor;
 
 pub use bash_extractor::BashExtractor;
@@ -43,6 +44,7 @@ pub use proto_extractor::ProtoExtractor;
 pub use nix_extractor::NixExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
+pub use vbnet_extractor::VbNetExtractor;
 pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
@@ -97,6 +99,7 @@ impl LanguageRegistry {
                 Box::new(LuaExtractor),
                 Box::new(ZigExtractor),
                 Box::new(ProtoExtractor),
+                Box::new(VbNetExtractor),
             ],
         }
     }
