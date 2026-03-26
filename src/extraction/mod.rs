@@ -19,6 +19,7 @@ mod csharp_extractor;
 mod pascal_extractor;
 mod php_extractor;
 mod proto_extractor;
+mod nix_extractor;
 mod ruby_extractor;
 mod swift_extractor;
 mod zig_extractor;
@@ -39,6 +40,7 @@ pub use csharp_extractor::CSharpExtractor;
 pub use pascal_extractor::PascalExtractor;
 pub use php_extractor::PhpExtractor;
 pub use proto_extractor::ProtoExtractor;
+pub use nix_extractor::NixExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
 pub use zig_extractor::ZigExtractor;
@@ -88,6 +90,7 @@ impl LanguageRegistry {
                 Box::new(KotlinExtractor),
                 Box::new(PascalExtractor),
                 Box::new(PhpExtractor),
+                Box::new(NixExtractor),
                 Box::new(RubyExtractor),
                 Box::new(SwiftExtractor),
                 Box::new(BashExtractor),

@@ -1080,3 +1080,55 @@ fn test_fixture_proto() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 10, "expected >= 10 Contains edges, got {}", contains.len());
 }
+
+// ── Nix ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_nix() {
+    let source = read_fixture("sample.nix");
+    let extractor = tokensave::extraction::NixExtractor;
+    let result = extractor.extract("sample.nix", &source);
+    assert!(result.errors.is_empty(), "Nix errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Functions
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert!(fns.iter().any(|f| f.name == "log"), "log function not found");
+    assert!(fns.iter().any(|f| f.name == "mkConnection"), "mkConnection function not found");
+
+    // Constants
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "defaultPort"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "maxRetries"));
+
+    // Module
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Module && n.name == "networking"));
+
+    // Nested functions inside networking
+    assert!(fns.iter().any(|f| f.name == "mkPool"), "mkPool not found");
+    assert!(fns.iter().any(|f| f.name == "validateConfig"), "validateConfig not found");
+
+    // Docstrings
+    let log_fn = fns.iter().find(|f| f.name == "log").unwrap();
+    assert!(log_fn.docstring.is_some(), "log should have docstring");
+
+    let net = result.nodes.iter().find(|n| n.kind == NodeKind::Module && n.name == "networking").unwrap();
+    assert!(net.docstring.is_some(), "networking should have docstring");
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls), "expected call refs");
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 5, "expected >= 5 Contains edges, got {}", contains.len());
+
+    // Inherit (Use) nodes
+    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(uses.iter().any(|u| u.name == "networking"), "inherit networking Use not found");
+
+    // All visibility should be Pub
+    for node in &result.nodes {
+        assert_eq!(node.visibility, Visibility::Pub, "node {} should be Pub", node.name);
+    }
+}
