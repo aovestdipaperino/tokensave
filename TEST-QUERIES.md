@@ -1,6 +1,15 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 27 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave claude-install`.
+Manual test queries for verifying all 29 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
+
+### Staleness warnings
+
+All tool responses may be prepended with staleness warnings when the index is out of date:
+
+- **Per-file**: `WARNING: STALE INDEX — N file(s) modified since last sync: file1.rs, file2.rs. Run tokensave sync to update.`
+- **Index age**: `WARNING: Index last synced Xh Ym ago. Run tokensave sync to update.`
+
+To test staleness: edit a file without re-syncing, then call any tool that touches that file.
 
 ---
 
@@ -8,7 +17,12 @@ Manual test queries for verifying all 27 tokensave MCP tools. Run these in a Cla
 
 > What's the current status of the tokensave index?
 
-Expected: Returns node/edge/file counts, DB size, language distribution, tokens saved.
+Expected: Returns node/edge/file counts, DB size, language distribution, tokens saved. Also includes staleness info:
+- `stale_commits`: number of git commits since last sync (if > 0)
+- `stale_warning`: human-readable message about stale commits
+- `stale_files`: count of files modified on disk since indexing (sampled up to 100)
+
+To test staleness: make a git commit without running `tokensave sync`, then call status.
 
 ---
 
@@ -279,3 +293,45 @@ Test:
 tokensave_god_class(limit=5)
 ```
 Expected: Returns classes ranked by total member count (methods + fields). Shows method count, field count, and total separately.
+
+---
+
+## tokensave_port_status
+
+> Compare porting progress between `src/python/` (source) and `src/rust/` (target).
+
+Test:
+```
+tokensave_port_status(source_dir="src/python/", target_dir="src/rust/")
+```
+Expected: Returns coverage summary with matched/unmatched/target-only counts. Matches by name (case-insensitive) with cross-language kind compatibility (`class` matches `struct`, `interface` matches `trait`). Unmatched symbols are grouped by source file. Shows `coverage_percent`.
+
+Custom kinds filter:
+```
+tokensave_port_status(source_dir="lib/old/", target_dir="lib/new/", kinds=["function", "method"])
+```
+Expected: Only compares functions and methods between the two directories.
+
+---
+
+## tokensave_port_order
+
+> What order should I port symbols from `src/python/` to minimize dependency issues?
+
+Test:
+```
+tokensave_port_order(source_dir="src/python/", limit=30)
+```
+Expected: Returns symbols in topological dependency order, organized into levels:
+- **Level 0**: No internal dependencies (utilities, constants) — port these first
+- **Level 1**: Depends only on level 0 symbols
+- **Level N**: Depends on levels 0 through N-1
+- **Cycles**: Mutually dependent symbols flagged as "port together"
+
+Each symbol shows its `depends_on` list (names of dependencies within the source dir).
+
+Custom kinds:
+```
+tokensave_port_order(source_dir="src/legacy/", kinds=["function", "class"], limit=50)
+```
+Expected: Only includes functions and classes in the topological sort.
