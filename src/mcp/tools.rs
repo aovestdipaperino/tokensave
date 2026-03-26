@@ -1001,6 +1001,29 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<To
     if let Some(ss) = server_stats {
         output["server"] = ss;
     }
+
+    // Git commit staleness: count commits since last index
+    let stale_commit_count = cg.git_commits_since(stats.last_updated as i64);
+    if stale_commit_count > 0 {
+        output["stale_commits"] = json!(stale_commit_count);
+        output["stale_warning"] = json!(format!(
+            "{} commit(s) since last sync. Run `tokensave sync` to update the index.",
+            stale_commit_count
+        ));
+    }
+
+    // File-level staleness summary (sample up to 100 files for efficiency)
+    let all_files = cg.get_all_files().await.unwrap_or_default();
+    let sample_paths: Vec<String> = all_files
+        .iter()
+        .take(100)
+        .map(|f| f.path.clone())
+        .collect();
+    let stale_files = cg.check_file_staleness(&sample_paths).await;
+    if !stale_files.is_empty() {
+        output["stale_files"] = json!(stale_files.len());
+    }
+
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
     Ok(ToolResult {
         value: json!({

@@ -501,6 +501,48 @@ impl McpServer {
                     }
                 }
 
+                // Check per-file staleness for files touched by this tool call.
+                if !result.touched_files.is_empty() {
+                    let stale_files = self.cg.check_file_staleness(&result.touched_files).await;
+                    if !stale_files.is_empty() {
+                        let warning = format!(
+                            "WARNING: STALE INDEX — {} file(s) modified since last sync: {}. Run `tokensave sync` to update.",
+                            stale_files.len(),
+                            stale_files.join(", ")
+                        );
+                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                            content.insert(0, json!({"type": "text", "text": &warning}));
+                        }
+                    }
+                }
+
+                // Check overall index age (warn if older than 1 hour).
+                if let Ok(last_time) = self.cg.last_index_time().await {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let age_secs = now - last_time;
+                    if age_secs > 3600 {
+                        let hours = age_secs / 3600;
+                        let mins = (age_secs % 3600) / 60;
+                        let warning = if hours >= 24 {
+                            format!(
+                                "WARNING: Index last synced {}d {}h ago. Run `tokensave sync` to update.",
+                                hours / 24, hours % 24
+                            )
+                        } else {
+                            format!(
+                                "WARNING: Index last synced {}h {}m ago. Run `tokensave sync` to update.",
+                                hours, mins
+                            )
+                        };
+                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                            content.insert(0, json!({"type": "text", "text": &warning}));
+                        }
+                    }
+                }
+
                 JsonRpcResponse::success(id, result.value)
             }
             Err(e) => JsonRpcResponse::error(

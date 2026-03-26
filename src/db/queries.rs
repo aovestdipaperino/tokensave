@@ -1585,6 +1585,17 @@ impl Database {
             files_by_language,
         })
     }
+
+    /// Returns the most recent `indexed_at` timestamp across all files,
+    /// or 0 if the files table is empty.
+    pub async fn last_index_time(&self) -> Result<i64> {
+        query_scalar_i64(
+            self.conn(),
+            "SELECT COALESCE(MAX(indexed_at), 0) FROM files",
+            "last_index_time",
+        )
+        .await
+    }
 }
 
 // ---------------------------------------------------------------------------

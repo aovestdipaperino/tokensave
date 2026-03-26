@@ -593,3 +593,55 @@ impl TokenSave {
         &self.project_root
     }
 }
+
+// ---------------------------------------------------------------------------
+// Staleness detection
+// ---------------------------------------------------------------------------
+
+impl TokenSave {
+    /// Check if specific files have been modified on disk since they were indexed.
+    /// Returns a list of relative paths for files whose mtime is newer than `indexed_at`.
+    pub async fn check_file_staleness(&self, file_paths: &[String]) -> Vec<String> {
+        let mut stale = Vec::new();
+        for path in file_paths {
+            if let Ok(Some(record)) = self.db.get_file(path).await {
+                let abs_path = self.project_root.join(path);
+                if let Ok(metadata) = std::fs::metadata(&abs_path) {
+                    if let Ok(mtime) = metadata.modified() {
+                        let mtime_secs = mtime
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        if mtime_secs > record.indexed_at {
+                            stale.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        stale
+    }
+
+    /// Returns the most recent `indexed_at` timestamp across all indexed files.
+    pub async fn last_index_time(&self) -> Result<i64> {
+        self.db.last_index_time().await
+    }
+
+    /// Count git commits newer than the given UNIX timestamp.
+    /// Returns 0 if git is unavailable or the directory is not a git repository.
+    pub fn git_commits_since(&self, since_timestamp: i64) -> usize {
+        use std::process::Command;
+        let output = Command::new("git")
+            .arg("log")
+            .arg("--oneline")
+            .arg(format!("--after={}", since_timestamp))
+            .current_dir(&self.project_root)
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).lines().count()
+            }
+            _ => 0,
+        }
+    }
+}
