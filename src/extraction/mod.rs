@@ -58,7 +58,9 @@ mod msbasic2_extractor;
 #[cfg(feature = "lang-gwbasic")]
 mod gwbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
-mod qbasic_extractor;
+pub(crate) mod qbasic_extractor;
+#[cfg(feature = "lang-qbasic")]
+mod quickbasic_extractor;
 
 // Lite — always available (no cfg needed)
 pub use rust_extractor::RustExtractor;
@@ -114,6 +116,8 @@ pub use msbasic2_extractor::MsBasic2Extractor;
 pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use qbasic_extractor::QBasicExtractor;
+#[cfg(feature = "lang-qbasic")]
+pub use quickbasic_extractor::QuickBasicExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -202,6 +206,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(GwBasicExtractor));
         #[cfg(feature = "lang-qbasic")]
         extractors.push(Box::new(QBasicExtractor));
+        #[cfg(feature = "lang-qbasic")]
+        extractors.push(Box::new(QuickBasicExtractor));
 
         Self { extractors }
     }

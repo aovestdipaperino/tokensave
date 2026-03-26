@@ -1454,124 +1454,71 @@ impl Database {
 impl Database {
     /// Returns aggregate statistics about the code graph.
     pub async fn get_stats(&self) -> Result<GraphStats> {
-        let node_count = query_scalar_i64(self.conn(), "SELECT COUNT(*) FROM nodes", "get_stats")
-            .await? as u64;
-
-        let edge_count = query_scalar_i64(self.conn(), "SELECT COUNT(*) FROM edges", "get_stats")
-            .await? as u64;
-
-        let file_count = query_scalar_i64(self.conn(), "SELECT COUNT(*) FROM files", "get_stats")
-            .await? as u64;
+        // Single query for all scalar counts: nodes, edges, files, last_updated, total_source_bytes
+        let mut counts_rows = self
+            .conn()
+            .query(
+                "SELECT \
+                   (SELECT COUNT(*) FROM nodes), \
+                   (SELECT COUNT(*) FROM edges), \
+                   (SELECT COUNT(*) FROM files), \
+                   (SELECT COALESCE(MAX(indexed_at), 0) FROM files), \
+                   (SELECT COALESCE(SUM(size), 0) FROM files)",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query counts: {e}"),
+                operation: "get_stats".to_string(),
+            })?;
+        let counts_row = counts_rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read counts row: {e}"),
+            operation: "get_stats".to_string(),
+        })?;
+        let (node_count, edge_count, file_count, last_updated, total_source_bytes) =
+            match counts_row {
+                Some(r) => {
+                    let nc: i64 = r.get(0).unwrap_or(0);
+                    let ec: i64 = r.get(1).unwrap_or(0);
+                    let fc: i64 = r.get(2).unwrap_or(0);
+                    let lu: i64 = r.get(3).unwrap_or(0);
+                    let ts: i64 = r.get(4).unwrap_or(0);
+                    (nc as u64, ec as u64, fc as u64, lu as u64, ts as u64)
+                }
+                None => (0, 0, 0, 0, 0),
+            };
 
         // Nodes grouped by kind
-        let mut nodes_by_kind = HashMap::new();
-        {
-            let mut rows = self
-                .conn()
-                .query("SELECT kind, COUNT(*) FROM nodes GROUP BY kind", ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query nodes by kind: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read stats row: {e}"),
-                operation: "get_stats".to_string(),
-            })? {
-                let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read kind: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read count: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                nodes_by_kind.insert(kind, count as u64);
-            }
-        }
+        let nodes_by_kind = query_kind_counts(
+            self.conn(),
+            "SELECT kind, COUNT(*) FROM nodes GROUP BY kind",
+        )
+        .await?;
 
         // Edges grouped by kind
-        let mut edges_by_kind = HashMap::new();
-        {
-            let mut rows = self
-                .conn()
-                .query("SELECT kind, COUNT(*) FROM edges GROUP BY kind", ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query edges by kind: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read stats row: {e}"),
-                operation: "get_stats".to_string(),
-            })? {
-                let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read kind: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read count: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                edges_by_kind.insert(kind, count as u64);
-            }
-        }
+        let edges_by_kind = query_kind_counts(
+            self.conn(),
+            "SELECT kind, COUNT(*) FROM edges GROUP BY kind",
+        )
+        .await?;
 
         let db_size_bytes = self.size().await.unwrap_or(0);
 
-        let last_updated =
-            query_scalar_i64(self.conn(), "SELECT COALESCE(MAX(indexed_at), 0) FROM files", "get_stats")
-                .await
-                .unwrap_or(0) as u64;
-
-        let total_source_bytes =
-            query_scalar_i64(self.conn(), "SELECT COALESCE(SUM(size), 0) FROM files", "get_stats")
-                .await
-                .unwrap_or(0) as u64;
-
         // Files grouped by language (derived from file extension)
-        let mut files_by_language = HashMap::new();
-        {
-            let mut rows = self
-                .conn()
-                .query(
-                    "SELECT \
-                       CASE \
-                         WHEN path LIKE '%.rs' THEN 'Rust' \
-                         WHEN path LIKE '%.go' THEN 'Go' \
-                         WHEN path LIKE '%.java' THEN 'Java' \
-                         WHEN path LIKE '%.scala' OR path LIKE '%.sc' THEN 'Scala' \
-                         ELSE 'Other' \
-                       END AS lang, \
-                       COUNT(*) \
-                     FROM files GROUP BY lang",
-                    (),
-                )
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query files by language: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read stats row: {e}"),
-                operation: "get_stats".to_string(),
-            })? {
-                let lang: String = row.get(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read language: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read count: {e}"),
-                    operation: "get_stats".to_string(),
-                })?;
-                if count > 0 {
-                    files_by_language.insert(lang, count as u64);
-                }
-            }
-        }
+        let files_by_language = query_kind_counts(
+            self.conn(),
+            "SELECT \
+               CASE \
+                 WHEN path LIKE '%.rs' THEN 'Rust' \
+                 WHEN path LIKE '%.go' THEN 'Go' \
+                 WHEN path LIKE '%.java' THEN 'Java' \
+                 WHEN path LIKE '%.scala' OR path LIKE '%.sc' THEN 'Scala' \
+                 ELSE 'Other' \
+               END AS lang, \
+               COUNT(*) \
+             FROM files GROUP BY lang",
+        )
+        .await?;
 
         Ok(GraphStats {
             node_count,
@@ -1805,6 +1752,36 @@ async fn collect_rows<T>(
         })?);
     }
     Ok(items)
+}
+
+/// Executes a `SELECT label, COUNT(*) ... GROUP BY` query and returns
+/// the results as a `HashMap<String, u64>`.
+async fn query_kind_counts(
+    conn: &libsql::Connection,
+    sql: &str,
+) -> Result<HashMap<String, u64>> {
+    let mut map = HashMap::new();
+    let mut rows = conn.query(sql, ()).await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to query kind counts: {e}"),
+        operation: "get_stats".to_string(),
+    })?;
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read kind count row: {e}"),
+        operation: "get_stats".to_string(),
+    })? {
+        let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read kind: {e}"),
+            operation: "get_stats".to_string(),
+        })?;
+        let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read count: {e}"),
+            operation: "get_stats".to_string(),
+        })?;
+        if count > 0 {
+            map.insert(kind, count as u64);
+        }
+    }
+    Ok(map)
 }
 
 /// Executes a scalar query returning a single `i64` value.

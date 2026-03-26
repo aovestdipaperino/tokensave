@@ -16,10 +16,12 @@
 #![allow(clippy::wildcard_imports)]
 
 pub mod agents;
-pub mod tokensave;
+pub mod cloud;
 pub mod config;
 pub mod context;
 pub mod db;
+pub mod display;
+pub mod doctor;
 pub mod errors;
 pub mod extraction;
 pub mod global_db;
@@ -27,12 +29,8 @@ pub mod graph;
 pub mod mcp;
 pub mod resolution;
 pub mod sync;
+pub mod tokensave;
+pub mod tree_sitter;
 pub mod types;
-pub mod vectors;
 pub mod user_config;
-pub mod cloud;
-#[cfg(feature = "lang-protobuf")]
-pub mod tree_sitter_protobuf;
-
-#[cfg(feature = "lang-cobol")]
-pub mod tree_sitter_cobol;
+pub mod vectors;

@@ -5,7 +5,6 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use tokensave::agents::DoctorCounters;
 use tokensave::tokensave::TokenSave;
 use tokensave::context::{format_context_as_json, format_context_as_markdown};
 use tokensave::types::*;
@@ -387,7 +386,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     Vec::new()
                 };
                 print!("{}", include_str!("resources/logo.ansi"));
-                print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
 
                 // Version check (5 min cache)
                 check_for_update(&mut config, false);
@@ -638,7 +637,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Doctor { agent } => {
-            run_doctor(agent.as_deref());
+            tokensave::doctor::run_doctor(agent.as_deref());
         }
     }
     Ok(())
@@ -786,367 +785,11 @@ fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache:
     }
 }
 
-/// Formats a token count into a human-readable string (e.g. "12.3k", "1.5M").
-fn format_token_count(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
+// display, doctor, and is_test_file functions moved to:
+// - src/display.rs (status table rendering)
+// - src/doctor.rs (health checks)
+// - src/tokensave.rs (is_test_file)
 
-/// Formats a byte count into a human-readable string (e.g. "798.0 MB").
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-/// Formats a number with comma separators (e.g. 243302 -> "243,302").
-fn format_number(n: u64) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(ch);
-    }
-    result.chars().rev().collect()
-}
-
-/// Formats a single table cell with left-aligned label and right-aligned value.
-fn format_cell(label: &str, value: &str, width: usize) -> String {
-    let content_len = label.len() + value.len();
-    let pad = width.saturating_sub(2 + content_len);
-    format!(" {}{}{} ", label, " ".repeat(pad), value)
-}
-
-/// Builds a horizontal separator line (e.g. ├──┬──┬──┤).
-fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_cols: usize) -> String {
-    let mut line = String::from(left);
-    for i in 0..num_cols {
-        line.push_str(&"─".repeat(cell_width));
-        line.push(if i < num_cols - 1 { mid } else { right });
-    }
-    line
-}
-
-/// Prints the status output as a compact bordered table.
-fn print_status_table(
-    stats: &tokensave::types::GraphStats,
-    tokens_saved: u64,
-    global_tokens_saved: Option<u64>,
-    worldwide: Option<u64>,
-    country_flags: &[String],
-) {
-    let num_cols = 3;
-    debug_assert!(stats.file_count > 0 || stats.node_count == 0,
-        "print_status_table: node_count should be 0 when file_count is 0");
-    debug_assert!(stats.node_count >= stats.file_count || stats.file_count == 0,
-        "print_status_table: node_count should be >= file_count");
-
-    let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
-    sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
-    let num_kind_rows = sorted_kinds.len().div_ceil(num_cols);
-
-    let cell_width = compute_cell_width(&sorted_kinds);
-    let inner_width = cell_width * num_cols + (num_cols - 1);
-
-    println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
-    print_title_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
-    print_flags_row(country_flags, inner_width);
-    println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
-
-    let stats_rows = build_stats_rows(stats, num_cols);
-    print_table_rows(&stats_rows, cell_width, num_cols);
-
-    if !sorted_kinds.is_empty() {
-        println!("{}", table_separator('├', '┼', '┤', cell_width, num_cols));
-        print_kind_rows(&sorted_kinds, num_kind_rows, num_cols, cell_width);
-    }
-
-    println!("{}", table_separator('╰', '┴', '╯', cell_width, num_cols));
-}
-
-/// Compute cell width from the widest node-kind entry.
-fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
-    let max_kind_len = sorted_kinds.iter().map(|(k, _)| k.len()).max().unwrap_or(10);
-    let max_count_len = sorted_kinds.iter().map(|(_, c)| format_number(**c).len()).max().unwrap_or(5);
-    (max_kind_len + max_count_len + 3).max(22)
-}
-
-/// Print the title row with version and token counts.
-fn print_title_row(
-    tokens_saved: u64,
-    global_tokens_saved: Option<u64>,
-    worldwide: Option<u64>,
-    inner_width: usize,
-) {
-    let version = env!("CARGO_PKG_VERSION");
-    let title = format!("TokenSave v{}", version);
-    let tokens_text = {
-        let mut parts = Vec::new();
-        match global_tokens_saved {
-            Some(global) => {
-                parts.push(format!("Project ~{}", format_token_count(tokens_saved)));
-                parts.push(format!("All projects ~{}", format_token_count(tokens_saved + global)));
-            }
-            None => {
-                parts.push(format!("Saved ~{}", format_token_count(tokens_saved)));
-            }
-        }
-        if let Some(ww) = worldwide {
-            parts.push(format!("Worldwide ~{}", format_token_count(ww)));
-        }
-        parts.join("  ")
-    };
-    let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
-    println!(
-        "│ {}{}\x1b[32m{}\x1b[0m │",
-        title,
-        " ".repeat(title_pad),
-        tokens_text
-    );
-}
-
-/// Print centered country flags row if any flags are provided.
-fn print_flags_row(country_flags: &[String], inner_width: usize) {
-    if country_flags.is_empty() { return; }
-    let available = inner_width.saturating_sub(2);
-    let mut flags_str = String::new();
-    let mut display_width = 0;
-    let flag_width = 2;
-    for (i, flag) in country_flags.iter().enumerate() {
-        let needed = if i == 0 { flag_width } else { 1 + flag_width };
-        let reserve = if i + 1 < country_flags.len() { 2 } else { 0 };
-        if display_width + needed + reserve > available {
-            flags_str.push_str(" …");
-            display_width += 2;
-            break;
-        }
-        if i > 0 {
-            flags_str.push(' ');
-            display_width += 1;
-        }
-        flags_str.push_str(flag);
-        display_width += flag_width;
-    }
-    let left_pad = (available.saturating_sub(display_width)) / 2;
-    let right_pad = available.saturating_sub(display_width + left_pad);
-    println!("│ {}{}{} │", " ".repeat(left_pad), flags_str, " ".repeat(right_pad));
-}
-
-/// Build the stats rows (files/nodes/edges, DB size, languages).
-fn build_stats_rows<'a>(
-    stats: &'a tokensave::types::GraphStats,
-    num_cols: usize,
-) -> Vec<Vec<(&'a str, String)>> {
-    let mut sorted_langs: Vec<_> = stats.files_by_language.iter().collect();
-    sorted_langs.sort_by(|a, b| b.1.cmp(a.1));
-
-    let mut rows: Vec<Vec<(&str, String)>> = vec![vec![
-        ("Files", format_number(stats.file_count)),
-        ("Nodes", format_number(stats.node_count)),
-        ("Edges", format_number(stats.edge_count)),
-    ]];
-
-    let mut second_row: Vec<(&str, String)> = vec![("DB Size", format_bytes(stats.db_size_bytes))];
-    if stats.total_source_bytes > 0 {
-        second_row.push(("Source", format_bytes(stats.total_source_bytes)));
-    }
-    let mut lang_idx = 0;
-    while second_row.len() < num_cols && lang_idx < sorted_langs.len() {
-        let (lang, count) = sorted_langs[lang_idx];
-        second_row.push((lang.as_str(), format_number(*count)));
-        lang_idx += 1;
-    }
-    while second_row.len() < num_cols {
-        second_row.push(("", String::new()));
-    }
-    rows.push(second_row);
-
-    while lang_idx < sorted_langs.len() {
-        let mut row: Vec<(&str, String)> = Vec::new();
-        for _ in 0..num_cols {
-            if lang_idx < sorted_langs.len() {
-                let (lang, count) = sorted_langs[lang_idx];
-                row.push((lang.as_str(), format_number(*count)));
-                lang_idx += 1;
-            } else {
-                row.push(("", String::new()));
-            }
-        }
-        rows.push(row);
-    }
-    rows
-}
-
-/// Print rows of label-value pairs in a bordered table.
-fn print_table_rows(rows: &[Vec<(&str, String)>], cell_width: usize, num_cols: usize) {
-    for row in rows {
-        print!("│");
-        for (i, (label, value)) in row.iter().enumerate() {
-            if label.is_empty() {
-                print!("{}", " ".repeat(cell_width));
-            } else {
-                print!("{}", format_cell(label, value, cell_width));
-            }
-            print!("{}", if i < num_cols - 1 { "│" } else { "│\n" });
-        }
-    }
-}
-
-/// Print node kinds in column-major order.
-fn print_kind_rows(sorted_kinds: &[(&String, &u64)], num_kind_rows: usize, num_cols: usize, cell_width: usize) {
-    for r in 0..num_kind_rows {
-        print!("│");
-        for c in 0..num_cols {
-            let idx = r + c * num_kind_rows;
-            if idx < sorted_kinds.len() {
-                let (kind, count) = &sorted_kinds[idx];
-                print!("{}", format_cell(kind, &format_number(**count), cell_width));
-            } else {
-                print!("{}", " ".repeat(cell_width));
-            }
-            print!("{}", if c < num_cols - 1 { "│" } else { "│\n" });
-        }
-    }
-}
-
-/// Runs a comprehensive health check of the tokensave installation.
-fn run_doctor(agent_filter: Option<&str>) {
-    use tokensave::agents::{self, DoctorCounters, HealthcheckContext};
-
-    debug_assert!(!env!("CARGO_PKG_VERSION").is_empty(), "CARGO_PKG_VERSION must not be empty");
-    let mut dc = DoctorCounters::new();
-
-    eprintln!("\n\x1b[1mtokensave doctor v{}\x1b[0m\n", env!("CARGO_PKG_VERSION"));
-
-    doctor_check_binary(&mut dc);
-
-    eprintln!("\n\x1b[1mCurrent project\x1b[0m");
-    let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if TokenSave::is_initialized(&project_path) {
-        dc.pass(&format!("Index found: {}/.tokensave/", project_path.display()));
-    } else {
-        dc.warn(&format!("No index at {}/.tokensave/ — run `tokensave sync`", project_path.display()));
-    }
-
-    doctor_check_global_db(&mut dc);
-    doctor_check_user_config(&mut dc);
-
-    // Agent-specific health checks
-    if let Some(ref home) = agents::home_dir() {
-        let hctx = HealthcheckContext {
-            home: home.clone(),
-            project_path: project_path.clone(),
-        };
-        let agents_to_check: Vec<Box<dyn agents::Agent>> = match agent_filter {
-            Some(id) => match agents::get_agent(id) {
-                Ok(ag) => vec![ag],
-                Err(e) => {
-                    dc.fail(&format!("{e}"));
-                    vec![]
-                }
-            },
-            None => agents::all_agents(),
-        };
-        for ag in &agents_to_check {
-            ag.healthcheck(&mut dc, &hctx);
-        }
-    } else {
-        dc.fail("Could not determine home directory");
-    }
-
-    doctor_check_network(&mut dc);
-    doctor_print_summary(&dc);
-}
-
-/// Doctor: check binary location and version.
-fn doctor_check_binary(dc: &mut DoctorCounters) {
-    eprintln!("\x1b[1mBinary\x1b[0m");
-    if let Ok(exe) = std::env::current_exe() {
-        dc.pass(&format!("Binary: {}", exe.display()));
-    } else {
-        dc.fail("Could not determine binary path");
-    }
-    dc.pass(&format!("Version: {}", env!("CARGO_PKG_VERSION")));
-}
-
-/// Doctor: check global database exists.
-fn doctor_check_global_db(dc: &mut DoctorCounters) {
-    eprintln!("\n\x1b[1mGlobal database\x1b[0m");
-    if let Some(db_path) = tokensave::global_db::global_db_path() {
-        if db_path.exists() {
-            dc.pass(&format!("Global DB: {}", db_path.display()));
-        } else {
-            dc.warn("Global DB not yet created (created on first sync)");
-        }
-    } else {
-        dc.fail("Could not determine home directory for global DB");
-    }
-}
-
-/// Doctor: check user config file.
-fn doctor_check_user_config(dc: &mut DoctorCounters) {
-    eprintln!("\n\x1b[1mUser config\x1b[0m");
-    if let Some(config_path) = tokensave::user_config::config_path() {
-        if config_path.exists() {
-            let config = tokensave::user_config::UserConfig::load();
-            dc.pass(&format!("Config: {}", config_path.display()));
-            if config.upload_enabled {
-                dc.pass("Upload enabled");
-            } else {
-                dc.info("Upload disabled (opt-out)");
-            }
-            if config.pending_upload > 0 {
-                dc.info(&format!("Pending upload: {} tokens", config.pending_upload));
-            }
-        } else {
-            dc.warn("Config not yet created (created on first sync)");
-        }
-    } else {
-        dc.fail("Could not determine home directory for config");
-    }
-}
-
-/// Doctor: check network connectivity.
-fn doctor_check_network(dc: &mut DoctorCounters) {
-    eprintln!("\n\x1b[1mNetwork\x1b[0m");
-    if let Some(total) = tokensave::cloud::fetch_worldwide_total() {
-        dc.pass(&format!("Worldwide counter reachable (total: {})", format_token_count(total)));
-    } else {
-        dc.warn("Worldwide counter unreachable (offline or timeout)");
-    }
-    if tokensave::cloud::fetch_latest_version().is_some() {
-        dc.pass("GitHub releases API reachable");
-    } else {
-        dc.warn("GitHub releases API unreachable (offline or timeout)");
-    }
-}
-
-/// Doctor: print final summary.
-fn doctor_print_summary(dc: &DoctorCounters) {
-    eprintln!();
-    if dc.issues == 0 && dc.warnings == 0 {
-        eprintln!("\x1b[32mAll checks passed.\x1b[0m");
-    } else if dc.issues == 0 {
-        eprintln!("\x1b[33m{} warning(s), no issues.\x1b[0m", dc.warnings);
-    } else {
-        eprintln!("\x1b[31m{} issue(s), {} warning(s).\x1b[0m", dc.issues, dc.warnings);
-        eprintln!("Run \x1b[1mtokensave install\x1b[0m to fix most issues.");
-    }
-    eprintln!();
-}
 
 /// PreToolUse hook handler for Claude Code's Agent tool matcher.
 ///
@@ -1201,16 +844,6 @@ fn resolve_path(path: Option<String>) -> PathBuf {
     }
 }
 
-/// Returns `true` if the file path looks like a test file.
-fn is_test_file(path: &str) -> bool {
-    // Common test file naming conventions
-    let test_segments = [
-        "test/", "tests/", "__tests__/", "spec/", "e2e/",
-        ".test.", ".spec.", "_test.", "_spec.",
-    ];
-    let lower = path.to_ascii_lowercase();
-    test_segments.iter().any(|s| lower.contains(s))
-}
 
 /// BFS through file dependents to find test files affected by changes.
 async fn find_affected_tests(
@@ -1229,7 +862,7 @@ async fn find_affected_tests(
         if let Some(ref g) = custom_glob {
             g.matches(path)
         } else {
-            is_test_file(path)
+            tokensave::tokensave::is_test_file(path)
         }
     };
 

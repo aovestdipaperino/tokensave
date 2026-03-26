@@ -1016,7 +1016,7 @@ impl CppExtractor {
     fn visit_field_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Check if this is actually a method declaration (has a function_declarator)
         if Self::find_descendant_by_kind(node, "function_declarator").is_some() {
-            Self::visit_field_method_declaration(state, node);
+            Self::visit_class_method_declaration(state, node);
             return;
         }
 
@@ -1072,121 +1072,8 @@ impl CppExtractor {
         }
     }
 
-    /// Visit a method declaration inside a field_declaration node.
-    fn visit_field_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        let is_pure_virtual = Self::is_pure_virtual(state, node);
-
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
-
-        // Check if constructor
-        if let Some((class_name, _)) = state.node_stack.last() {
-            if name == *class_name {
-                let text = state.node_text(node);
-                let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
-                let docstring = Self::extract_docstring(state, node);
-                let start_line = node.start_position().row as u32;
-                let end_line = node.end_position().row as u32;
-                let start_column = node.start_position().column as u32;
-                let end_column = node.end_position().column as u32;
-                let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-                let id = generate_node_id(
-                    &state.file_path,
-                    &NodeKind::Constructor,
-                    &name,
-                    start_line,
-                );
-
-                let metrics = count_complexity(node, &CPP_COMPLEXITY, &state.source);
-                let graph_node = Node {
-                    id: id.clone(),
-                    kind: NodeKind::Constructor,
-                    name,
-                    qualified_name,
-                    file_path: state.file_path.clone(),
-                    start_line,
-                    end_line,
-                    start_column,
-                    end_column,
-                    signature,
-                    docstring,
-                    visibility: state.access_specifier.clone(),
-                    is_async: false,
-                    branches: metrics.branches,
-                    loops: metrics.loops,
-                    returns: metrics.returns,
-                    max_nesting: metrics.max_nesting,
-                    unsafe_blocks: metrics.unsafe_blocks,
-                    unchecked_calls: metrics.unchecked_calls,
-                    assertions: metrics.assertions,
-                    updated_at: state.timestamp,
-                };
-                state.nodes.push(graph_node);
-
-                if let Some(parent_id) = state.parent_node_id() {
-                    state.edges.push(Edge {
-                        source: parent_id.to_string(),
-                        target: id,
-                        kind: EdgeKind::Contains,
-                        line: Some(start_line),
-                    });
-                }
-                return;
-            }
-        }
-
-        let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
-        let docstring = Self::extract_docstring(state, node);
-        let start_line = node.start_position().row as u32;
-        let end_line = node.end_position().row as u32;
-        let start_column = node.start_position().column as u32;
-        let end_column = node.end_position().column as u32;
-        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-
-        let kind = if is_pure_virtual {
-            NodeKind::AbstractMethod
-        } else {
-            NodeKind::Method
-        };
-
-        let id = generate_node_id(&state.file_path, &kind, &name, start_line);
-        let metrics = count_complexity(node, &CPP_COMPLEXITY, &state.source);
-
-        let graph_node = Node {
-            id: id.clone(),
-            kind,
-            name,
-            qualified_name,
-            file_path: state.file_path.clone(),
-            start_line,
-            end_line,
-            start_column,
-            end_column,
-            signature,
-            docstring,
-            visibility: state.access_specifier.clone(),
-            is_async: false,
-            branches: metrics.branches,
-            loops: metrics.loops,
-            returns: metrics.returns,
-            max_nesting: metrics.max_nesting,
-            unsafe_blocks: metrics.unsafe_blocks,
-            unchecked_calls: metrics.unchecked_calls,
-            assertions: metrics.assertions,
-            updated_at: state.timestamp,
-        };
-        state.nodes.push(graph_node);
-
-        if let Some(parent_id) = state.parent_node_id() {
-            state.edges.push(Edge {
-                source: parent_id.to_string(),
-                target: id,
-                kind: EdgeKind::Contains,
-                line: Some(start_line),
-            });
-        }
-    }
+    // visit_field_method_declaration was identical to visit_class_method_declaration
+    // and has been removed. Both call sites now use visit_class_method_declaration.
 
     // -------------------------------------------------------
     // access_specifier

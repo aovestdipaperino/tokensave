@@ -71,7 +71,7 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything Claude needs — entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **30 Languages** | **100% Local** | **Always Fresh** |
+| **31 Languages** | **100% Local** | **Always Fresh** |
 | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 22 more — all with the same API. Three tiers (lite/medium/full) let you control binary size. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
 
 ---
@@ -80,16 +80,16 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ### 30 Language Support (up from 15)
 
-tokensave now understands **30 programming languages** — more than doubling coverage from v1.x. New extractors added for: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, and QBasic.
+tokensave now understands **30 programming languages** — more than doubling coverage from v1.x. New extractors added for: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, and QuickBASIC 4.5.
 
 Every language gets the same deep extraction: functions, classes, methods, fields, imports, call graphs, inheritance chains, docstrings, complexity metrics, and cross-file dependency tracking.
 
 ### Feature Flag Tiers
 
-Not every project needs 30 languages. v2.0.0 introduces **three compilation tiers** to control binary size:
+Not every project needs 31 languages. v2.0.0 introduces **three compilation tiers** to control binary size:
 
 ```
-Full (default)  ── 30 languages, ~largest binary
+Full (default)  ── 31 languages, largest binary
 Medium          ── 20 languages, smaller binary
 Lite            ── 11 languages, smallest binary
 ```
@@ -178,7 +178,7 @@ scoop install tokensave
 **Cargo (any platform):**
 
 ```bash
-cargo install tokensave                          # full (30 languages, default)
+cargo install tokensave                          # full (31 languages, default)
 cargo install tokensave --features medium        # medium (20 languages)
 cargo install tokensave --no-default-features    # lite (11 languages, smallest binary)
 ```
@@ -833,7 +833,7 @@ The graph supports complex queries:
 
 ## Supported Languages
 
-tokensave supports 30 languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it.
+tokensave supports 31 languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it.
 
 ### Lite (11 languages) — `--no-default-features`
 
@@ -870,7 +870,7 @@ Adds scripting, config, and additional systems languages.
 | Nix | `.nix` | `lang-nix` |
 | VB.NET | `.vb` | `lang-vbnet` |
 
-### Full (Medium + 10 = 30 languages) — default
+### Full (Medium + 11 = 31 languages) — default
 
 Everything. Includes legacy, niche, and domain-specific languages.
 
@@ -886,6 +886,7 @@ Everything. Includes legacy, niche, and domain-specific languages.
 | MS BASIC 2.0 | `.bas` | `lang-msbasic2` |
 | GW-BASIC | `.gw` | `lang-gwbasic` |
 | QBasic | `.qb` | `lang-qbasic` |
+| QuickBASIC 4.5 | `.bi`, `.bm` | `lang-qbasic` |
 
 ### Mixing individual languages
 
@@ -943,7 +944,7 @@ This project is a Rust port of the original [CodeGraph](https://github.com/colby
 ## Building
 
 ```bash
-cargo build --release                          # full (30 languages, default)
+cargo build --release                          # full (31 languages, default)
 cargo build --release --features medium        # medium (20 languages)
 cargo build --release --no-default-features    # lite (11 languages)
 

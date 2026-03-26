@@ -686,18 +686,36 @@ impl TokenSave {
     /// Count git commits newer than the given UNIX timestamp.
     /// Returns 0 if git is unavailable or the directory is not a git repository.
     pub fn git_commits_since(&self, since_timestamp: i64) -> usize {
-        use std::process::Command;
-        let output = Command::new("git")
-            .arg("log")
-            .arg("--oneline")
-            .arg(format!("--after={}", since_timestamp))
-            .current_dir(&self.project_root)
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).lines().count()
-            }
-            _ => 0,
-        }
+        let repo = match gix::open(&self.project_root) {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        let head = match repo.head_commit() {
+            Ok(h) => h,
+            Err(_) => return 0,
+        };
+        let sorting = gix::revision::walk::Sorting::ByCommitTimeCutoff {
+            order: gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            seconds: since_timestamp,
+        };
+        let walk = match head.ancestors().sorting(sorting).all() {
+            Ok(w) => w,
+            Err(_) => return 0,
+        };
+        walk.filter_map(|r| r.ok()).count()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared utilities
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the file path looks like a test file.
+pub fn is_test_file(path: &str) -> bool {
+    let test_segments = [
+        "test/", "tests/", "__tests__/", "spec/", "e2e/",
+        ".test.", ".spec.", "_test.", "_spec.",
+    ];
+    let lower = path.to_ascii_lowercase();
+    test_segments.iter().any(|s| lower.contains(s))
 }
