@@ -568,6 +568,16 @@ impl TokenSave {
             .await
     }
 
+    /// Returns all nodes under a directory prefix filtered by kinds.
+    pub async fn get_nodes_by_dir(&self, dir: &str, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+        self.db.get_nodes_by_dir(dir, kinds).await
+    }
+
+    /// Returns edges where both source and target are in the given node ID set.
+    pub async fn get_internal_edges(&self, node_ids: &[String]) -> Result<Vec<Edge>> {
+        self.db.get_internal_edges(node_ids).await
+    }
+
     /// Checkpoints the WAL and closes the database connection.
     pub async fn checkpoint(&self) -> Result<()> {
         self.db.checkpoint().await

@@ -59,6 +59,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_doc_coverage(),
         def_god_class(),
         def_changelog(),
+        def_port_status(),
+        def_port_order(),
     ];
     debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
     debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
@@ -588,6 +590,58 @@ fn def_changelog() -> ToolDefinition {
     }
 }
 
+fn def_port_status() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_port_status".to_string(),
+        description: "Compare symbols between a source directory and a target directory to track porting progress. Matches by name (case-insensitive) and compatible kind (e.g. class↔struct, interface↔trait).".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source_dir": {
+                    "type": "string",
+                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                },
+                "target_dir": {
+                    "type": "string",
+                    "description": "Path prefix for target code (e.g. 'src/rust/')"
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node kinds to compare (default: [\"function\", \"method\", \"class\", \"struct\", \"interface\", \"trait\", \"enum\", \"module\"])"
+                }
+            },
+            "required": ["source_dir", "target_dir"]
+        }),
+    }
+}
+
+fn def_port_order() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_port_order".to_string(),
+        description: "Return symbols from a source directory in topological dependency order — port leaves first (symbols with no internal dependencies), then symbols that depend only on already-listed symbols.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source_dir": {
+                    "type": "string",
+                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node kinds to include (default: [\"function\", \"method\", \"class\", \"struct\", \"interface\", \"trait\", \"enum\", \"module\"])"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of symbols to return (default: 50)"
+                }
+            },
+            "required": ["source_dir"]
+        }),
+    }
+}
+
 /// The result of a tool call, including the JSON response and the file
 /// paths that were touched (used to track saved tokens).
 pub struct ToolResult {
@@ -638,6 +692,8 @@ pub async fn handle_tool_call(
         "tokensave_doc_coverage" => handle_doc_coverage(cg, args).await,
         "tokensave_god_class" => handle_god_class(cg, args).await,
         "tokensave_changelog" => handle_changelog(cg, args).await,
+        "tokensave_port_status" => handle_port_status(cg, args).await,
+        "tokensave_port_order" => handle_port_order(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
@@ -2319,6 +2375,422 @@ async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     })
 }
 
+/// Default node kinds for port comparisons.
+const PORT_DEFAULT_KINDS: &[&str] = &[
+    "function", "method", "class", "struct", "interface", "trait", "enum", "module",
+];
+
+/// Returns the compatibility group for a node kind string used in port matching.
+///
+/// Kinds in the same group are considered cross-language equivalents:
+/// - group 0: class, struct (cross-language data type)
+/// - group 1: function
+/// - group 2: method
+/// - group 3: interface, trait
+/// - group 4: enum
+/// - group 5: module
+fn kind_compat_group(kind: &str) -> u8 {
+    match kind {
+        "class" | "struct" => 0,
+        "function" => 1,
+        "method" => 2,
+        "interface" | "trait" => 3,
+        "enum" => 4,
+        "module" => 5,
+        _ => 255,
+    }
+}
+
+/// Handles `tokensave_port_status` tool calls.
+async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_port_status expects an object argument");
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let target_dir = args
+        .get("target_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: target_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_else(|| PORT_DEFAULT_KINDS.iter().map(|s| s.to_string()).collect());
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let source_nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let target_nodes = cg.get_nodes_by_dir(target_dir, &kinds).await?;
+
+    // Build target lookup: (lowercase_name, compat_group) -> Vec<&Node>
+    let mut target_map: HashMap<(String, u8), Vec<&crate::types::Node>> = HashMap::new();
+    for node in &target_nodes {
+        let key = (node.name.to_lowercase(), kind_compat_group(node.kind.as_str()));
+        target_map.entry(key).or_default().push(node);
+    }
+
+    let mut matched_symbols: Vec<Value> = Vec::new();
+    let mut matched_target_ids: HashSet<String> = HashSet::new();
+    let mut unmatched_by_file: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for src_node in &source_nodes {
+        let key = (
+            src_node.name.to_lowercase(),
+            kind_compat_group(src_node.kind.as_str()),
+        );
+        if let Some(targets) = target_map.get(&key) {
+            // Take the first match
+            let tgt = targets[0];
+            matched_symbols.push(json!({
+                "name": src_node.name,
+                "source_kind": src_node.kind.as_str(),
+                "target_kind": tgt.kind.as_str(),
+                "source_file": src_node.file_path,
+                "target_file": tgt.file_path,
+            }));
+            matched_target_ids.insert(tgt.id.clone());
+        } else {
+            unmatched_by_file
+                .entry(src_node.file_path.clone())
+                .or_default()
+                .push(json!({
+                    "name": src_node.name,
+                    "kind": src_node.kind.as_str(),
+                    "line": src_node.start_line,
+                }));
+        }
+    }
+
+    // Target-only symbols (in target but no source match)
+    let target_only: Vec<Value> = target_nodes
+        .iter()
+        .filter(|n| !matched_target_ids.contains(&n.id))
+        .map(|n| {
+            json!({
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+            })
+        })
+        .collect();
+
+    let source_count = source_nodes.len();
+    let matched_count = matched_symbols.len();
+    let unmatched_count = source_count - matched_count;
+    let coverage = if source_count > 0 {
+        (matched_count as f64 / source_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let touched_files = unique_file_paths(
+        source_nodes
+            .iter()
+            .chain(target_nodes.iter())
+            .map(|n| n.file_path.as_str()),
+    );
+
+    let result = json!({
+        "source_dir": source_dir,
+        "target_dir": target_dir,
+        "source_count": source_count,
+        "target_count": target_nodes.len(),
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "target_only": target_only.len(),
+        "coverage_percent": (coverage * 10.0).round() / 10.0,
+        "unmatched_by_file": unmatched_by_file,
+        "matched_symbols": matched_symbols,
+        "target_only_symbols": target_only,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_port_order` tool calls.
+async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_port_order expects an object argument");
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_else(|| PORT_DEFAULT_KINDS.iter().map(|s| s.to_string()).collect());
+
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(500) as usize)
+        .unwrap_or(50);
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let total_symbols = nodes.len();
+
+    if nodes.is_empty() {
+        let result = json!({
+            "source_dir": source_dir,
+            "total_symbols": 0,
+            "returned": 0,
+            "levels": [],
+            "cycles": [],
+        });
+        let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": formatted }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    // Build node ID lookup
+    let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let node_map: HashMap<&str, &crate::types::Node> =
+        nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let id_set: HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
+
+    // Get internal edges (dependency edges between these nodes)
+    let edges = cg.get_internal_edges(&node_ids).await?;
+
+    // Build adjacency list and in-degree map for Kahn's algorithm.
+    // Edge direction: source depends on target (source calls/uses target),
+    // so in the dependency graph, source -> target means "source needs target".
+    // For topological sort, we want nodes with in_degree 0 (nothing depends on
+    // them internally, OR they have no dependencies). Actually, for porting
+    // order we want leaves first = nodes that DON'T depend on other internal
+    // nodes. So in-degree in the dependency DAG = number of things this node
+    // depends on = outgoing edges in the call/uses graph.
+    //
+    // Reframe: dependency_graph[A] = {B, C} means A depends on B and C.
+    // in_degree[A] = number of nodes A depends on.
+    // Kahn's starts with in_degree 0 = nodes with no dependencies = safe to port first.
+    let dep_edge_kinds: HashSet<&str> = ["calls", "uses", "extends", "implements"]
+        .iter()
+        .copied()
+        .collect();
+
+    let mut dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+
+    // Initialize all nodes
+    for id in &node_ids {
+        dep_graph.entry(id.as_str()).or_default();
+        in_degree.entry(id.as_str()).or_insert(0);
+    }
+
+    for edge in &edges {
+        if !dep_edge_kinds.contains(edge.kind.as_str()) {
+            continue;
+        }
+        if !id_set.contains(edge.source.as_str()) || !id_set.contains(edge.target.as_str()) {
+            continue;
+        }
+        // source depends on target: add dependency source -> target
+        dep_graph
+            .entry(edge.source.as_str())
+            .or_default()
+            .push(edge.target.as_str());
+        *in_degree.entry(edge.source.as_str()).or_insert(0) += 1;
+    }
+
+    // Kahn's algorithm (BFS topological sort)
+    let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+    for (&id, &deg) in &in_degree {
+        if deg == 0 {
+            queue.push_back(id);
+        }
+    }
+
+    let mut levels: Vec<Vec<&str>> = Vec::new();
+    let mut sorted_set: HashSet<&str> = HashSet::new();
+    let mut emitted = 0usize;
+
+    while !queue.is_empty() && emitted < limit {
+        let mut current_level: Vec<&str> = Vec::new();
+        let level_size = queue.len();
+        for _ in 0..level_size {
+            // Safety: we checked queue is non-empty above and iterate exactly level_size times
+            let Some(id) = queue.pop_front() else { break };
+            if sorted_set.contains(id) {
+                continue;
+            }
+            sorted_set.insert(id);
+            current_level.push(id);
+            emitted += 1;
+            if emitted >= limit {
+                break;
+            }
+        }
+
+        // For each node in this level, reduce in-degree of its reverse deps
+        // (nodes that depend on it). We need to find who depends on each sorted node.
+        // Build reverse: for each (A depends on B), when B is sorted, decrement in_degree[A].
+        for &sorted_id in &current_level {
+            for (&node_id, deps) in &dep_graph {
+                if sorted_set.contains(node_id) {
+                    continue;
+                }
+                if deps.contains(&sorted_id) {
+                    let deg = in_degree.entry(node_id).or_insert(0);
+                    if *deg > 0 {
+                        *deg -= 1;
+                    }
+                    if *deg == 0 {
+                        queue.push_back(node_id);
+                    }
+                }
+            }
+        }
+
+        if !current_level.is_empty() {
+            levels.push(current_level);
+        }
+    }
+
+    // Detect cycles: any unsorted nodes form cycles
+    let cycle_node_ids: Vec<&str> = node_ids
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|id| !sorted_set.contains(id))
+        .collect();
+
+    // Group cycles: find strongly connected components among remaining nodes
+    // For simplicity, report all cycle nodes as one group with a note.
+    let mut cycles_json: Vec<Value> = Vec::new();
+    if !cycle_node_ids.is_empty() {
+        let cycle_names: Vec<&str> = cycle_node_ids
+            .iter()
+            .filter_map(|id| node_map.get(id).map(|n| n.name.as_str()))
+            .collect();
+        cycles_json.push(json!({
+            "symbols": cycle_names,
+            "note": "Mutual dependency — port together"
+        }));
+    }
+
+    // Build output levels
+    let levels_json: Vec<Value> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, level_ids)| {
+            let description = if i == 0 {
+                "No internal dependencies — port these first".to_string()
+            } else {
+                format!("Depends only on levels 0–{}", i - 1)
+            };
+
+            let symbols: Vec<Value> = level_ids
+                .iter()
+                .filter_map(|id| {
+                    let node = node_map.get(id)?;
+                    // Find what this node depends on (for depends_on field)
+                    let deps: Vec<&str> = dep_graph
+                        .get(id)
+                        .map(|d| {
+                            d.iter()
+                                .filter_map(|dep_id| {
+                                    node_map.get(dep_id).map(|n| n.name.as_str())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let mut sym = json!({
+                        "name": node.name,
+                        "kind": node.kind.as_str(),
+                        "file": node.file_path,
+                        "line": node.start_line,
+                    });
+                    if !deps.is_empty() {
+                        sym["depends_on"] = json!(deps);
+                    }
+                    Some(sym)
+                })
+                .collect();
+
+            json!({
+                "level": i,
+                "description": description,
+                "symbols": symbols,
+            })
+        })
+        .collect();
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let result = json!({
+        "source_dir": source_dir,
+        "total_symbols": total_symbols,
+        "returned": emitted,
+        "levels": levels_json,
+        "cycles": cycles_json,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2326,7 +2798,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 29);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -2356,6 +2828,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_complexity"));
         assert!(tool_names.contains(&"tokensave_doc_coverage"));
         assert!(tool_names.contains(&"tokensave_god_class"));
+        assert!(tool_names.contains(&"tokensave_port_status"));
+        assert!(tool_names.contains(&"tokensave_port_order"));
     }
 
     #[test]

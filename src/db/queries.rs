@@ -1659,6 +1659,109 @@ impl Database {
             })?;
         Ok(())
     }
+
+    /// Returns all nodes under a directory prefix filtered by kinds.
+    ///
+    /// Uses `LIKE dir || '%'` for the path prefix and an `IN` clause for kinds.
+    pub async fn get_nodes_by_dir(&self, dir: &str, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let kind_placeholders: Vec<String> = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect();
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    docstring, signature, visibility, is_async,
+                    branches, loops, returns, max_nesting,
+                    unsafe_blocks, unchecked_calls, assertions, updated_at
+             FROM nodes
+             WHERE file_path LIKE ?1 || '%' AND kind IN ({})
+             ORDER BY file_path, start_line",
+            kind_placeholders.join(", ")
+        );
+
+        let mut param_values: Vec<libsql::Value> = Vec::new();
+        param_values.push(libsql::Value::Text(dir.to_string()));
+        for k in kinds {
+            param_values.push(libsql::Value::Text(k.as_str().to_string()));
+        }
+
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query nodes by dir: {e}"),
+                operation: "get_nodes_by_dir".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_node, "get_nodes_by_dir").await
+    }
+
+    /// Returns edges where both source and target are in the given node ID set.
+    ///
+    /// Batches queries in groups of 500 IDs to avoid SQL parameter limits.
+    pub async fn get_internal_edges(&self, node_ids: &[String]) -> Result<Vec<Edge>> {
+        if node_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build a set of IDs for filtering targets in memory, then query
+        // edges from each batch of sources.
+        let id_set: std::collections::HashSet<&str> =
+            node_ids.iter().map(|s| s.as_str()).collect();
+        let mut all_edges = Vec::new();
+
+        const BATCH_SIZE: usize = 500;
+        let mut offset = 0;
+        while offset < node_ids.len() {
+            let end = (offset + BATCH_SIZE).min(node_ids.len());
+            let batch = &node_ids[offset..end];
+
+            let placeholders: Vec<String> = batch
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect();
+            let sql = format!(
+                "SELECT source, target, kind, line FROM edges WHERE source IN ({})",
+                placeholders.join(", ")
+            );
+
+            let param_values: Vec<libsql::Value> = batch
+                .iter()
+                .map(|id| libsql::Value::Text(id.clone()))
+                .collect();
+
+            let mut rows = self
+                .conn()
+                .query(&sql, libsql::params_from_iter(param_values))
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query internal edges: {e}"),
+                    operation: "get_internal_edges".to_string(),
+                })?;
+
+            let batch_edges: Vec<Edge> =
+                collect_rows(&mut rows, row_to_edge, "get_internal_edges").await?;
+
+            // Keep only edges whose target is also in the node set.
+            for edge in batch_edges {
+                if id_set.contains(edge.target.as_str()) {
+                    all_edges.push(edge);
+                }
+            }
+
+            offset = end;
+        }
+
+        Ok(all_edges)
+    }
 }
 
 // ---------------------------------------------------------------------------
