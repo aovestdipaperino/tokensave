@@ -207,9 +207,10 @@ const HOOK_MARKER: &str = "# tokensave: auto-sync";
 
 /// The hook snippet appended to (or written as) the post-commit script.
 fn post_commit_snippet(tokensave_bin: &str) -> String {
+    let bin = tokensave_bin.replace('\\', "/");
     format!(
         "{HOOK_MARKER}\n\
-         {tokensave_bin} sync >/dev/null 2>&1 &\n"
+         {bin} sync >/dev/null 2>&1 &\n"
     )
 }
 
@@ -393,7 +394,7 @@ fn parse_gitconfig_value(path: &Path, section: &str, key: &str) -> Option<String
 /// necessary. Appends to an existing `[core]` section if one exists,
 /// otherwise adds a new one at the end of the file.
 fn set_global_hooks_path(gitconfig_path: &Path, hooks_dir: &Path) -> std::result::Result<(), String> {
-    let hooks_str = hooks_dir.to_string_lossy();
+    let hooks_str = hooks_dir.to_string_lossy().replace('\\', "/");
     let contents = if gitconfig_path.exists() {
         std::fs::read_to_string(gitconfig_path)
             .map_err(|e| format!("Failed to read {}: {e}", gitconfig_path.display()))?

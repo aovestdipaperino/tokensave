@@ -129,6 +129,7 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 pub enum InstallMethod {
     Cargo,
     Brew,
+    Scoop,
     Unknown,
 }
 
@@ -138,10 +139,12 @@ pub fn detect_install_method() -> InstallMethod {
         return InstallMethod::Unknown;
     };
     let path = exe.to_string_lossy();
-    if path.contains(".cargo/bin") {
+    if path.contains(".cargo/bin") || path.contains(".cargo\\bin") {
         InstallMethod::Cargo
     } else if path.contains("/homebrew/") || path.contains("/Cellar/") {
         InstallMethod::Brew
+    } else if path.contains("\\scoop\\") || path.contains("/scoop/") {
+        InstallMethod::Scoop
     } else {
         InstallMethod::Unknown
     }
@@ -152,6 +155,7 @@ pub fn upgrade_command(method: &InstallMethod) -> &'static str {
     match method {
         InstallMethod::Cargo => "cargo install tokensave",
         InstallMethod::Brew => "brew upgrade tokensave",
+        InstallMethod::Scoop => "scoop update tokensave",
         InstallMethod::Unknown => "cargo install tokensave",
     }
 }

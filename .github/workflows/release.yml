@@ -238,11 +238,13 @@ jobs:
           }
           EOF
 
-          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" bucket
-          cp tokensave.json bucket/tokensave.json
-          cd bucket
+          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" scoop-repo
+          cd scoop-repo
+          mkdir -p bucket
+          cp ../tokensave.json bucket/tokensave.json
+          git rm -f --ignore-unmatch tokensave.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add tokensave.json
+          git add bucket/tokensave.json
           git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
           git push

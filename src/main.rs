@@ -350,11 +350,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             } else {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
-                // Register project and read global total in one open
+                // Register project and read global total in one open.
+                // Subtract this project's count so "Global" means "all other projects".
                 let global_tokens_saved = match tokensave::global_db::GlobalDb::open().await {
                     Some(gdb) => {
                         gdb.upsert(&project_path, tokens_saved).await;
                         gdb.global_tokens_saved().await
+                            .map(|total| total.saturating_sub(tokens_saved))
+                            .filter(|&other| other > 0)
                     }
                     None => None,
                 };
@@ -894,8 +897,8 @@ fn print_title_row(
         let mut parts = Vec::new();
         match global_tokens_saved {
             Some(global) => {
-                parts.push(format!("Local ~{}", format_token_count(tokens_saved)));
-                parts.push(format!("Global ~{}", format_token_count(global)));
+                parts.push(format!("Project ~{}", format_token_count(tokens_saved)));
+                parts.push(format!("All projects ~{}", format_token_count(tokens_saved + global)));
             }
             None => {
                 parts.push(format!("Saved ~{}", format_token_count(tokens_saved)));

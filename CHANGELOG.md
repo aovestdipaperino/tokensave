@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-03-26
+
+### Fixed
+- **Windows: sync re-adding files** — normalize all relative file paths to forward slashes in the scanner, preventing path mismatch between index and sync on Windows
+- **Windows: wrong upgrade command** — detect Scoop installations (`\scoop\` in binary path) and suggest `scoop update tokensave` instead of `cargo install tokensave`
+- **Windows: git hook backslashes** — write forward slashes in `core.hooksPath` and the post-commit hook snippet, since Git's shell expects `/` separators
+- **Scoop bucket structure** — moved manifest to `bucket/` subdirectory for better compatibility with `scoop update`
+- **Double-counted token savings** — "Global" total no longer includes the current project's count; display now shows "Project" and "All projects" labels
+
 ## [2.0.2] - 2026-03-26
 
 ### Fixed

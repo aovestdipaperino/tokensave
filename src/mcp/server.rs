@@ -573,7 +573,8 @@ impl McpServer {
 
         if let Some(ref gdb) = self.global_db {
             if let Some(global_total) = gdb.global_tokens_saved().await {
-                stats["global_tokens_saved"] = json!(global_total);
+                let local = self.tokens_saved.load(Ordering::Relaxed);
+                stats["global_tokens_saved"] = json!(global_total.saturating_sub(local));
             }
         }
 

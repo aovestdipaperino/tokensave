@@ -421,7 +421,9 @@ impl TokenSave {
             return None;
         }
         let relative = path.strip_prefix(&self.project_root).ok()?;
-        let rel_str = relative.to_string_lossy().to_string();
+        // Normalize to forward slashes so paths are consistent across
+        // platforms and between different directory walkers on Windows.
+        let rel_str = relative.to_string_lossy().replace('\\', "/");
         if is_excluded(&rel_str, &self.config) {
             return None;
         }
