@@ -117,22 +117,23 @@ tar xzf tokensave-v1.4.0-x86_64-linux.tar.gz
 sudo mv tokensave /usr/local/bin/
 ```
 
-### 2. Configure Claude Code
+### 2. Configure your agent
 
 Run the built-in installer — no scripts, no `jq`, works on macOS/Linux/Windows:
 
 ```bash
-tokensave claude-install
+tokensave install              # defaults to Claude Code
+tokensave install --agent claude   # explicit
 ```
 
 This single command:
 
-- Registers tokensave as an MCP server in `~/.claude.json`
-- Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave
+- Registers tokensave as an MCP server in the agent's config
+- Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave (Claude Code)
 - Adds tool permissions so Claude can call all 27 tokensave tools without prompting
 - Appends rules to `~/.claude/CLAUDE.md` that instruct Claude to prefer tokensave over file reads
 
-All changes are idempotent — safe to run again after upgrading.
+All changes are idempotent — safe to run again after upgrading. The old `tokensave claude-install` command still works as an alias.
 
 ### 3. Index your project
 
@@ -144,7 +145,7 @@ tokensave sync
 This creates a `.tokensave/` directory with the knowledge graph database. Subsequent runs are incremental — only changed files are re-indexed.
 
 <details>
-<summary><strong>What claude-install writes to settings.json</strong></summary>
+<summary><strong>What install writes to settings.json (Claude Code)</strong></summary>
 
 #### MCP server
 
@@ -237,11 +238,12 @@ tokensave status --show-flags    # Show statistics with country flags
 tokensave query <search> [path]  # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
-tokensave claude-install         # Configure Claude Code integration
+tokensave install [--agent NAME] # Configure agent integration (default: claude)
+tokensave uninstall [--agent NAME] # Remove agent integration (default: claude)
 tokensave serve                  # Start MCP server
 tokensave disable-upload-counter # Opt out of worldwide counter uploads
 tokensave enable-upload-counter  # Re-enable worldwide counter uploads
-tokensave doctor                 # Check installation and configuration health
+tokensave doctor [--agent NAME]  # Check installation health (default: all agents)
 ```
 
 ### `tokensave files`
@@ -620,11 +622,11 @@ tokensave doctor
 ```
 
 ```
-tokensave doctor v1.6.0
+tokensave doctor v1.8.0
 
 Binary
   ✔ Binary: /Users/you/.cargo/bin/tokensave
-  ✔ Version: 1.6.0
+  ✔ Version: 1.8.0
 
 Current project
   ✔ Index found: /Users/you/project/.tokensave/
@@ -650,7 +652,7 @@ Network
 All checks passed.
 ```
 
-Checks: binary location, project index, global DB, user config, Claude Code settings (MCP server, hook, permissions, CLAUDE.md rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave claude-install`.
+Checks: binary location, project index, global DB, user config, agent integration (MCP server, hook, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
 ---
 

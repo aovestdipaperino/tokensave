@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-03-26
+
+### Added
+- **Multi-agent architecture** with a trait-based `Agent` abstraction (`install`, `uninstall`, `healthcheck`) to support CLI agents beyond Claude Code (e.g. OpenCode, Codex)
+- `tokensave install [--agent NAME]` replaces `claude-install` — defaults to `claude` when no agent is specified
+- `tokensave uninstall [--agent NAME]` replaces `claude-uninstall` — defaults to `claude`
+- `tokensave doctor [--agent NAME]` now checks all registered agents by default; use `--agent` to narrow to one
+- Agent registry with `get_agent()`, `all_agents()`, and `available_agents()` for programmatic access
+- `tokensave install --agent unknown` returns a clear error listing available agents
+
+### Changed
+- Extracted ~600 lines of Claude-specific install/uninstall/doctor logic from `main.rs` into `src/agents/claude.rs`
+- Shared helpers (`load_json_file`, `write_json_file`, `which_tokensave`, `home_dir`, `DoctorCounters`, `EXPECTED_TOOL_PERMS`) moved to `src/agents/mod.rs`
+- Error messages updated from `tokensave claude-install` to `tokensave install`
+- Backward compatibility preserved: `tokensave claude-install` and `tokensave claude-uninstall` still work as aliases
+
+### New files
+- `src/agents/mod.rs` — `Agent` trait, `InstallContext`, `HealthcheckContext`, `DoctorCounters`, agent registry, shared helpers
+- `src/agents/claude.rs` — `ClaudeAgent` implementing `Agent`
+
 ## [1.7.1] - 2026-03-25
 
 ### Fixed

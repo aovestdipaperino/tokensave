@@ -15,6 +15,7 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::wildcard_imports)]
 
+pub mod agents;
 pub mod tokensave;
 pub mod config;
 pub mod context;
