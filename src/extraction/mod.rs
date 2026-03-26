@@ -20,6 +20,7 @@ mod pascal_extractor;
 mod php_extractor;
 mod ruby_extractor;
 mod swift_extractor;
+mod zig_extractor;
 
 pub use bash_extractor::BashExtractor;
 pub use go_extractor::GoExtractor;
@@ -38,6 +39,7 @@ pub use pascal_extractor::PascalExtractor;
 pub use php_extractor::PhpExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
+pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -88,6 +90,7 @@ impl LanguageRegistry {
                 Box::new(SwiftExtractor),
                 Box::new(BashExtractor),
                 Box::new(LuaExtractor),
+                Box::new(ZigExtractor),
             ],
         }
     }
