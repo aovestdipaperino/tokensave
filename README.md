@@ -76,6 +76,78 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
+## What's New in v2.0.0
+
+### 30 Language Support (up from 15)
+
+tokensave now understands **30 programming languages** — more than doubling coverage from v1.x. New extractors added for: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, and QBasic.
+
+Every language gets the same deep extraction: functions, classes, methods, fields, imports, call graphs, inheritance chains, docstrings, complexity metrics, and cross-file dependency tracking.
+
+### Feature Flag Tiers
+
+Not every project needs 30 languages. v2.0.0 introduces **three compilation tiers** to control binary size:
+
+```
+Full (default)  ── 30 languages, ~largest binary
+Medium          ── 20 languages, smaller binary
+Lite            ── 11 languages, smallest binary
+```
+
+```bash
+cargo install tokensave                          # full (default)
+cargo install tokensave --features medium        # medium
+cargo install tokensave --no-default-features    # lite
+```
+
+Individual `lang-*` feature flags let you cherry-pick exactly the languages you need:
+```bash
+cargo install tokensave --no-default-features --features lang-nix,lang-bash
+```
+
+See [Supported Languages](#supported-languages) for the full tier breakdown and feature flag names.
+
+### Deep Nix Support
+
+The Nix extractor goes beyond basic function/variable extraction:
+
+- **Derivation field extraction** — `mkDerivation`, `mkShell`, `buildPythonPackage`, `buildGoModule`, and other builder calls have their attrset arguments extracted as Field nodes. `tokensave_search("my-app")` finds the `pname` field, and `tokensave_search("buildInputs")` shows what each derivation depends on.
+
+- **Import path resolution** — `import ./path.nix` now creates a file-level dependency edge. `tokensave_callers` and `tokensave_impact` can trace which Nix files depend on which, enabling cross-file change impact analysis.
+
+- **Flake output schema awareness** — In `flake.nix` files, standard output attributes (`packages`, `devShells`, `apps`, `nixosModules`, `checks`, `overlays`, `lib`, `formatter`) are recognized as semantic Module nodes. `tokensave_search("devShells")` finds your dev shell definition with its `buildInputs` as child Field nodes.
+
+### Protobuf Schema Graphs
+
+Protobuf files are now first-class citizens with dedicated node kinds:
+
+- `message` definitions become `ProtoMessage` nodes with their fields as children
+- `service` definitions become `ProtoService` nodes
+- `rpc` methods become `ProtoRpc` nodes
+- Nested messages, enums, `oneof` fields, and `import` statements are all tracked
+
+This enables queries like "what services depend on this message type?" via `tokensave_callers`.
+
+### SQLite Fallback & Feedback Loop
+
+Agent prompt rules now include two new instructions:
+
+1. **SQLite fallback** — when MCP tools can't answer a code analysis question, the agent is instructed to query `.tokensave/tokensave.db` directly via SQL (tables: `nodes`, `edges`, `files`). This handles edge cases and complex structural queries that go beyond the built-in tools.
+
+2. **Improvement feedback** — when the agent discovers a gap where an extractor, schema, or tool could be improved, it proposes to the user to open an issue at [github.com/aovestdipaperino/tokensave](https://github.com/aovestdipaperino/tokensave), reminding them to strip sensitive data from the description.
+
+### Upgrading from v1.x
+
+```bash
+cargo install tokensave          # or brew upgrade tokensave
+tokensave install                # re-run to get updated prompt rules
+tokensave sync --force           # re-index to pick up new languages
+```
+
+The `--force` re-index is recommended to rebuild the graph with the new extractors. Subsequent `sync` calls are incremental as before.
+
+---
+
 ## Quick Start
 
 ### 1. Install the binary

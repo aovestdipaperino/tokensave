@@ -8,18 +8,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-03-26
 
 ### Added
-- **30 language support** — added 16 new language extractors: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic
-- **Nix deep extraction** — derivation field extraction (`pname`, `buildInputs`, etc.), `import ./path` file dependency resolution, and flake.nix output schema awareness (`packages`, `devShells`, `apps`, etc.)
-- **Feature flag tiers** for controlling binary size:
-  - `lite` (11 languages, always compiled): Rust, Go, Java, Scala, TypeScript/JS, Python, C, C++, Kotlin, C#, Swift
-  - `medium` (20 languages): lite + Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET
-  - `full` (30 languages, default): medium + Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic
-- Individual `lang-*` feature flags for fine-grained control (e.g., `--features lang-nix,lang-bash`)
-- `ProtoMessage`, `ProtoService`, `ProtoRpc` node kinds for Protobuf schema graph support
+
+#### 16 new language extractors (15 → 30 languages)
+- **Swift** — classes, structs, protocols, enums, extensions, init constructors, async methods, visibility modifiers, inheritance
+- **Bash** — functions, `readonly` constants, `source` imports, command call sites, comment docstrings
+- **Lua** — functions, colon-methods (OOP via metatables), `require()` imports, LDoc comments, `local` constants
+- **Zig** — structs, enums, unions, pub/private visibility, `@import` resolution, `test` blocks as functions, doc comments
+- **Protobuf** — `message` → `ProtoMessage`, `service` → `ProtoService`, `rpc` → `ProtoRpc` (new node kinds), enums, fields with type signatures, nested messages, `oneof`, package, imports
+- **Nix** — functions, modules (attrsets), constants, `inherit` as imports, `apply_expression` call sites, `#` comments
+- **VB.NET** — classes, structures, interfaces, modules, enums, `Sub`/`Function`, `Sub New` constructors, properties, `Inherits`/`Implements`, XML doc comments
+- **PowerShell** — functions, typed constants, `Import-Module` / dot-source imports, command call sites, `<# ... #>` block comments
+- **Batch/CMD** — labels as functions, `SET` as constants, `CALL :label` as call sites, `REM` docstrings (no complexity counting — too flat)
+- **Perl** — `sub` functions/methods, `package` as modules, `use`/`require` imports, `our` constants, method invocations (`->`), `#` comments
+- **Objective-C** — `@interface`/`@implementation`/`@protocol`, instance (`-`) and class (`+`) methods, `@property`, `NS_ENUM`, `#import`, message expression call sites, inheritance and protocol conformance
+- **Fortran** — `module`, `program`, `subroutine`, `function`, derived `type` with fields, `type extends()` inheritance, `interface`, `parameter` constants, `use` imports, `!` comments
+- **COBOL** — `PROGRAM-ID` as module, paragraph labels as functions, `WORKING-STORAGE` data items as fields/constants, `PERFORM` as call sites, `REM` comments (vendored grammar)
+- **MS BASIC 2.0** — subroutine synthesis from `REM...RETURN` blocks, `LET` constants, `GOSUB`/`GOTO` call sites
+- **GW-BASIC** — `DEF FN` functions, `WHILE/WEND` loops, subroutine synthesis, typed constants
+- **QBasic** — `SUB`/`FUNCTION` blocks, `TYPE...END TYPE` as structs with fields, `CONST`, `DIM SHARED`, `CALL` sites, `SELECT CASE`
+
+#### Enhanced Nix extraction
+- **Derivation field extraction** — `mkDerivation`, `mkShell`, `buildPythonPackage`, `buildGoModule`, `buildRustPackage`, `buildNpmPackage` calls have their attrset arguments extracted as `Field` nodes (`pname`, `version`, `buildInputs`, `nativeBuildInputs`, `src`, `meta`, etc.)
+- **Import path resolution** — `import ./path.nix` creates a `Use` node with a `Uses` unresolved ref, enabling cross-file dependency tracking via `tokensave_callers` and `tokensave_impact`
+- **Flake output schema awareness** — in `flake.nix` files, standard output attributes (`packages`, `devShells`, `apps`, `nixosModules`, `nixosConfigurations`, `overlays`, `lib`, `checks`, `formatter`) are force-classified as `Module` nodes with recursive child extraction
+
+#### Feature flag tiers
+- Three compilation tiers via Cargo feature flags to control binary size:
+  - **`lite`** (11 languages, always compiled): Rust, Go, Java, Scala, TypeScript/JS, Python, C, C++, Kotlin, C#, Swift
+  - **`medium`** (20 languages): lite + Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET
+  - **`full`** (30 languages, default): medium + Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic
+- Individual `lang-*` feature flags for cherry-picking languages (e.g., `--no-default-features --features lang-nix,lang-bash`)
+- `default = ["full"]` — existing users get all 30 languages with no config changes
+
+#### New node kinds
+- `ProtoMessage` — Protobuf message definitions
+- `ProtoService` — Protobuf service definitions
+- `ProtoRpc` — Protobuf RPC method definitions
+
+#### Agent prompt improvements
+- **SQLite fallback instruction** — agents are told to query `.tokensave/tokensave.db` directly via SQL when MCP tools can't answer a code analysis question
+- **Improvement feedback loop** — agents propose opening a GitHub issue when they discover an extractor/schema/tool gap, reminding the user to strip sensitive data
+
+### Changed
+- Cargo.toml `description` now lists lite-tier languages with "and many more" instead of all 30
+- Vendored tree-sitter grammars for Protobuf and COBOL (no compatible crates for tree-sitter 0.26)
 
 ### Breaking
-- Tree-sitter grammar dependencies for medium/full tier languages are now optional. Downstream crates depending on specific extractors must enable the corresponding `lang-*` feature.
-- `cargo install tokensave --no-default-features` now builds a lite binary (11 languages) instead of all 15.
+- Tree-sitter grammar dependencies for medium/full tier languages are now **optional** behind feature flags. Downstream crates depending on specific extractors must enable the corresponding `lang-*` feature.
+- `cargo install tokensave --no-default-features` now builds a **lite** binary (11 languages) instead of the previous 15. To get the old behavior, use `cargo install tokensave` (default = full, 30 languages).
+- Three new `NodeKind` variants (`ProtoMessage`, `ProtoService`, `ProtoRpc`) added — code matching exhaustively on `NodeKind` will need updating.
+
+### Upgrade guide
+```bash
+cargo install tokensave          # or: brew upgrade tokensave
+tokensave install                # re-run to get updated prompt rules
+tokensave sync --force           # re-index to pick up new language extractors
+```
 
 ## [1.10.0] - 2026-03-26
 
