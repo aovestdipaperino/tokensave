@@ -26,6 +26,7 @@ mod swift_extractor;
 mod batch_extractor;
 mod powershell_extractor;
 mod vbnet_extractor;
+mod objc_extractor;
 mod zig_extractor;
 
 pub use bash_extractor::BashExtractor;
@@ -51,6 +52,7 @@ pub use swift_extractor::SwiftExtractor;
 pub use batch_extractor::BatchExtractor;
 pub use powershell_extractor::PowerShellExtractor;
 pub use vbnet_extractor::VbNetExtractor;
+pub use objc_extractor::ObjcExtractor;
 pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
@@ -108,6 +110,7 @@ impl LanguageRegistry {
                 Box::new(ProtoExtractor),
                 Box::new(PowerShellExtractor),
                 Box::new(VbNetExtractor),
+                Box::new(ObjcExtractor),
                 Box::new(BatchExtractor),
             ],
         }

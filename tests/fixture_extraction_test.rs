@@ -1383,3 +1383,81 @@ fn test_fixture_perl() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 15, "expected >= 15 Contains edges, got {}", contains.len());
 }
+
+// ── Objective-C ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_objc() {
+    let source = read_fixture("sample.m");
+    let extractor = tokensave::extraction::ObjcExtractor;
+    let result = extractor.extract("sample.m", &source);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports/includes
+    let includes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Include).collect();
+    assert_eq!(includes.len(), 2, "expected 2 includes, got {}", includes.len());
+
+    // Preprocessor defines
+    let defs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::PreprocessorDef).collect();
+    assert_eq!(defs.len(), 2, "expected 2 preprocessor defs");
+    assert!(defs.iter().any(|n| n.name == "MAX_RETRIES"));
+    assert!(defs.iter().any(|n| n.name == "DEFAULT_PORT"));
+
+    // Enum (NS_ENUM)
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "LogLevel"));
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert_eq!(variants.len(), 4, "expected 4 enum variants");
+
+    // Protocol
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Interface && n.name == "Serializable"));
+
+    // Classes
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Base"));
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"));
+
+    // Docstring on Base class
+    let base = result.nodes.iter().find(|n| n.kind == NodeKind::Class && n.name == "Base").unwrap();
+    assert!(base.docstring.is_some(), "Base should have docstring");
+
+    // Implementation blocks
+    let impls: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Impl).collect();
+    assert_eq!(impls.len(), 2, "expected 2 implementation blocks");
+
+    // Properties
+    let props: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Property).collect();
+    assert!(props.len() >= 3, "expected >= 3 properties, got {}", props.len());
+
+    // Methods (from both @interface declarations and @implementation definitions)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 6, "expected >= 6 methods, got {}", methods.len());
+
+    // C function
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "logMessage"));
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "logMessage").unwrap();
+    assert!(log_fn.docstring.is_some(), "logMessage should have docstring");
+
+    // Inheritance
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends && r.reference_name == "NSObject"),
+        "expected Extends ref to NSObject"
+    );
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends && r.reference_name == "Base"),
+        "expected Extends ref to Base"
+    );
+
+    // Protocol conformance
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Implements),
+        "expected Implements refs for protocol conformance"
+    );
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 15, "expected >= 15 Contains edges, got {}", contains.len());
+}
