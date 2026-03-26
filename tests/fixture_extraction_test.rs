@@ -1461,3 +1461,89 @@ fn test_fixture_objc() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 15, "expected >= 15 Contains edges, got {}", contains.len());
 }
+
+// -- Fortran ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_fortran() {
+    let source = read_fixture("sample.f90");
+    let extractor = tokensave::extraction::FortranExtractor;
+    let result = extractor.extract("sample.f90", &source);
+    assert!(result.errors.is_empty(), "Fortran errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Module
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Module && n.name == "networking"),
+        "networking module not found"
+    );
+
+    // Program as Function
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "main"),
+        "program main not found"
+    );
+
+    // Constants
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "MAX_RETRIES"),
+        "MAX_RETRIES constant not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "DEFAULT_PORT"),
+        "DEFAULT_PORT constant not found"
+    );
+
+    // Derived types (Struct)
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Endpoint"),
+        "Endpoint type not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "PooledEndpoint"),
+        "PooledEndpoint type not found"
+    );
+
+    // Fields
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(fields.len() >= 4, "expected >= 4 fields, got {}", fields.len());
+
+    // Interface
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Interface && n.name == "Connectable"),
+        "Connectable interface not found"
+    );
+
+    // Subroutines and functions
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert!(fns.iter().any(|f| f.name == "log_message"), "log_message not found");
+    assert!(fns.iter().any(|f| f.name == "create_endpoint"), "create_endpoint not found");
+    assert!(fns.iter().any(|f| f.name == "connect_endpoint"), "connect_endpoint not found");
+    assert!(fns.iter().any(|f| f.name == "disconnect_endpoint"), "disconnect_endpoint not found");
+    assert!(fns.iter().any(|f| f.name == "is_connected"), "is_connected not found");
+
+    // Docstrings
+    let log_msg = fns.iter().find(|f| f.name == "log_message").unwrap();
+    assert!(log_msg.docstring.is_some(), "log_message should have docstring");
+
+    // Use imports
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Use && n.name == "networking"),
+        "use networking not found"
+    );
+
+    // Inheritance (PooledEndpoint extends Endpoint)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends && r.reference_name == "Endpoint"),
+        "expected Extends ref for PooledEndpoint -> Endpoint"
+    );
+
+    // Call sites
+    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 5, "expected >= 5 Contains edges, got {}", contains.len());
+}

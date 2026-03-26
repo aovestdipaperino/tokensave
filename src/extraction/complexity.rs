@@ -571,3 +571,17 @@ pub static OBJC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &["NSAssert", "NSCAssert", "XCTAssert", "XCTAssertTrue", "XCTAssertFalse", "XCTAssertEqual", "XCTAssertNil", "XCTAssertNotNil"],
     macro_invocation_types: &[],
 };
+
+pub static FORTRAN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elseif_clause", "else_clause", "case_statement", "where_statement"],
+    loop_types: &["do_loop_statement", "forall_statement"],
+    return_types: &["return_statement", "stop_statement", "exit_statement", "cycle_statement"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
