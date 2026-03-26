@@ -2561,6 +2561,7 @@ dependencies = [
  "tree-sitter-kotlin-sg",
  "tree-sitter-language",
  "tree-sitter-lua",
+ "tree-sitter-msbasic2",
  "tree-sitter-nix",
  "tree-sitter-objc",
  "tree-sitter-pascal",
@@ -2987,6 +2988,16 @@ name = "tree-sitter-lua"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8daaf5f4235188a58603c39760d5fa5d4b920d36a299c934adddae757f32a10c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-msbasic2"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a51b94d74b985151f3b267a879248db7a4c0d05ac9a4fc71ea19b6aca7e240"
 dependencies = [
  "cc",
  "tree-sitter-language",

@@ -1596,3 +1596,47 @@ fn test_fixture_cobol() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 10, "expected >= 10 Contains edges, got {}", contains.len());
 }
+
+// ── MS BASIC 2.0 ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_msbasic2() {
+    let source = read_fixture("sample.bas");
+    let extractor = tokensave::extraction::MsBasic2Extractor;
+    let result = extractor.extract("sample.bas", &source);
+    assert!(result.errors.is_empty(), "MS BASIC 2.0 errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Constants from LET statements (MR, DP)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|c| c.name == "MR"), "MR const not found");
+    assert!(consts.iter().any(|c| c.name == "DP"), "DP const not found");
+
+    // Subroutines synthesized from REM...RETURN blocks (3)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 3, "expected 3 functions, got {}", fns.len());
+    assert!(fns.iter().any(|f| f.name == "LOG_A_MESSAGE"), "LOG_A_MESSAGE not found");
+    assert!(fns.iter().any(|f| f.name == "CONNECT_TO_SERVER"), "CONNECT_TO_SERVER not found");
+    assert!(fns.iter().any(|f| f.name == "DISCONNECT"), "DISCONNECT not found");
+
+    // Docstrings
+    let log_fn = fns.iter().find(|f| f.name == "LOG_A_MESSAGE").unwrap();
+    assert!(log_fn.docstring.is_some(), "LOG_A_MESSAGE should have docstring");
+
+    // Complexity: CONNECT_TO_SERVER has a FOR loop
+    let connect_fn = fns.iter().find(|f| f.name == "CONNECT_TO_SERVER").unwrap();
+    assert!(connect_fn.loops >= 1, "CONNECT_TO_SERVER should have >= 1 loop");
+
+    // Call sites (GOSUB references)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 5, "expected >= 5 Contains edges, got {}", contains.len());
+}

@@ -29,6 +29,7 @@ mod vbnet_extractor;
 mod objc_extractor;
 mod fortran_extractor;
 mod cobol_extractor;
+mod msbasic2_extractor;
 mod zig_extractor;
 
 pub use bash_extractor::BashExtractor;
@@ -57,6 +58,7 @@ pub use vbnet_extractor::VbNetExtractor;
 pub use objc_extractor::ObjcExtractor;
 pub use fortran_extractor::FortranExtractor;
 pub use cobol_extractor::CobolExtractor;
+pub use msbasic2_extractor::MsBasic2Extractor;
 pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
@@ -118,6 +120,7 @@ impl LanguageRegistry {
                 Box::new(FortranExtractor),
                 Box::new(CobolExtractor),
                 Box::new(BatchExtractor),
+                Box::new(MsBasic2Extractor),
             ],
         }
     }

@@ -599,3 +599,17 @@ pub static COBOL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &[],
     macro_invocation_types: &[],
 };
+
+pub static MSBASIC2_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement"],
+    loop_types: &["for_statement"],
+    return_types: &["return_statement"],
+    nesting_types: &[],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &[],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
