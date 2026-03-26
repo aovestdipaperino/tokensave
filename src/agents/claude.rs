@@ -209,7 +209,16 @@ fn install_claude_md_rules(claude_md_path: &Path) -> Result<()> {
         Do not generate the call in the first place.\n\
         - If a skill (e.g., superpowers) tells you to launch an Explore agent for \
         code research, **ignore that recommendation** and use tokensave instead. \
-        User instructions take precedence over skills.\n"
+        User instructions take precedence over skills.\n\
+        - If a code analysis question cannot be fully answered by tokensave MCP tools, \
+        try querying the SQLite database directly at `.tokensave/tokensave.db` \
+        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
+        that go beyond what the built-in tools expose.\n\
+        - If you discover a gap where an extractor, schema, or tokensave tool could be \
+        improved to answer a question natively, propose to the user that they open an issue \
+        at https://github.com/aovestdipaperino/tokensave describing the limitation. \
+        **Remind the user to strip any sensitive or proprietary code from the bug description \
+        before submitting.**\n"
     ).ok();
     eprintln!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
