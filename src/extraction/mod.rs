@@ -20,6 +20,7 @@ mod pascal_extractor;
 mod php_extractor;
 mod proto_extractor;
 mod nix_extractor;
+mod perl_extractor;
 mod ruby_extractor;
 mod swift_extractor;
 mod batch_extractor;
@@ -44,6 +45,7 @@ pub use pascal_extractor::PascalExtractor;
 pub use php_extractor::PhpExtractor;
 pub use proto_extractor::ProtoExtractor;
 pub use nix_extractor::NixExtractor;
+pub use perl_extractor::PerlExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
 pub use batch_extractor::BatchExtractor;
@@ -97,6 +99,7 @@ impl LanguageRegistry {
                 Box::new(PascalExtractor),
                 Box::new(PhpExtractor),
                 Box::new(NixExtractor),
+                Box::new(PerlExtractor),
                 Box::new(RubyExtractor),
                 Box::new(SwiftExtractor),
                 Box::new(BashExtractor),

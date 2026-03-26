@@ -1317,3 +1317,69 @@ fn test_fixture_batch() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── Perl ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_perl() {
+    let source = read_fixture("sample.pl");
+    let extractor = tokensave::extraction::PerlExtractor;
+    let result = extractor.extract("sample.pl", &source);
+    assert!(result.errors.is_empty(), "Perl errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports (4: strict, warnings, File::Path, Carp)
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(imports.len(), 4, "expected 4 imports, got {}", imports.len());
+    assert!(imports.iter().any(|n| n.name == "strict"));
+    assert!(imports.iter().any(|n| n.name == "warnings"));
+    assert!(imports.iter().any(|n| n.name == "File::Path"));
+    assert!(imports.iter().any(|n| n.name == "Carp"));
+
+    // Constants (2: MAX_RETRIES, DEFAULT_PORT)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
+    assert!(consts.iter().any(|n| n.name == "DEFAULT_PORT"));
+
+    // Packages as Modules (2: Connection, Pool)
+    let modules: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Module).collect();
+    assert_eq!(modules.len(), 2, "expected 2 modules, got {}", modules.len());
+    assert!(modules.iter().any(|n| n.name == "Connection"));
+    assert!(modules.iter().any(|n| n.name == "Pool"));
+
+    // Top-level functions (2: log_message, validate_config)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 2, "expected 2 functions, got {}", fns.len());
+    assert!(fns.iter().any(|n| n.name == "log_message"));
+    assert!(fns.iter().any(|n| n.name == "validate_config"));
+
+    // Methods inside packages (7: Connection::new, connect, disconnect, is_connected,
+    //                              Pool::new, acquire, release)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert_eq!(methods.len(), 7, "expected 7 methods, got {}", methods.len());
+    assert!(methods.iter().any(|n| n.name == "connect"));
+    assert!(methods.iter().any(|n| n.name == "disconnect"));
+    assert!(methods.iter().any(|n| n.name == "is_connected"));
+    assert!(methods.iter().any(|n| n.name == "acquire"));
+    assert!(methods.iter().any(|n| n.name == "release"));
+
+    // Docstrings
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "log_message").unwrap();
+    assert!(log_fn.docstring.is_some(), "log_message should have docstring");
+
+    let max_retries = result.nodes.iter().find(|n| n.kind == NodeKind::Const && n.name == "MAX_RETRIES").unwrap();
+    assert!(max_retries.docstring.is_some(), "MAX_RETRIES should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 15, "expected >= 15 Contains edges, got {}", contains.len());
+}
