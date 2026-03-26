@@ -8,22 +8,26 @@ fn main() {
     println!("cargo::rerun-if-changed=src/resources/logo.png");
 
     // Compile vendored tree-sitter-protobuf grammar (no compatible crate for tree-sitter 0.26)
-    let proto_dir = Path::new("vendor/tree-sitter-protobuf/src");
-    cc::Build::new()
-        .include(proto_dir)
-        .file(proto_dir.join("parser.c"))
-        .warnings(false)
-        .compile("tree_sitter_protobuf");
-    println!("cargo::rerun-if-changed=vendor/tree-sitter-protobuf/src/parser.c");
+    if std::env::var("CARGO_FEATURE_LANG_PROTOBUF").is_ok() {
+        let proto_dir = Path::new("vendor/tree-sitter-protobuf/src");
+        cc::Build::new()
+            .include(proto_dir)
+            .file(proto_dir.join("parser.c"))
+            .warnings(false)
+            .compile("tree_sitter_protobuf");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-protobuf/src/parser.c");
+    }
 
     // Compile vendored tree-sitter-cobol grammar (no compatible crate for tree-sitter 0.26)
-    let cobol_dir = Path::new("vendor/tree-sitter-cobol/src");
-    cc::Build::new()
-        .include(cobol_dir)
-        .file(cobol_dir.join("parser.c"))
-        .file(cobol_dir.join("scanner.c"))
-        .warnings(false)
-        .compile("tree_sitter_cobol");
-    println!("cargo::rerun-if-changed=vendor/tree-sitter-cobol/src/parser.c");
-    println!("cargo::rerun-if-changed=vendor/tree-sitter-cobol/src/scanner.c");
+    if std::env::var("CARGO_FEATURE_LANG_COBOL").is_ok() {
+        let cobol_dir = Path::new("vendor/tree-sitter-cobol/src");
+        cc::Build::new()
+            .include(cobol_dir)
+            .file(cobol_dir.join("parser.c"))
+            .file(cobol_dir.join("scanner.c"))
+            .warnings(false)
+            .compile("tree_sitter_cobol");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-cobol/src/parser.c");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-cobol/src/scanner.c");
+    }
 }

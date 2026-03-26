@@ -10,6 +10,39 @@ readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
 
+[features]
+default = ["full"]
+
+# Lite tier (11 languages) — always compiled, no feature flag needed:
+# Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
+lite = []
+
+medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
+full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
+
+# Medium-tier languages
+lang-dart = ["dep:tree-sitter-dart-orchard"]
+lang-pascal = ["dep:tree-sitter-pascal"]
+lang-php = ["dep:tree-sitter-php"]
+lang-ruby = ["dep:tree-sitter-ruby"]
+lang-bash = ["dep:tree-sitter-bash"]
+lang-protobuf = ["dep:tree-sitter-language"]
+lang-powershell = ["dep:tree-sitter-powershell"]
+lang-nix = ["dep:tree-sitter-nix"]
+lang-vbnet = ["dep:tree-sitter-vb-dotnet"]
+
+# Full-tier languages
+lang-lua = ["dep:tree-sitter-lua"]
+lang-zig = ["dep:tree-sitter-zig"]
+lang-objc = ["dep:tree-sitter-objc"]
+lang-perl = ["dep:tree-sitter-perl"]
+lang-batch = ["dep:tree-sitter-batch"]
+lang-fortran = ["dep:tree-sitter-fortran"]
+lang-cobol = []
+lang-msbasic2 = ["dep:tree-sitter-msbasic2"]
+lang-gwbasic = ["dep:tree-sitter-gwbasic"]
+lang-qbasic = ["dep:tree-sitter-qbasic"]
+
 [lib]
 name = "tokensave"
 
@@ -46,26 +79,26 @@ glob = "0.3"
 walkdir = "2"
 dirs = "6"
 hex = "0.4"
-tree-sitter-dart-orchard = "0.3"
+tree-sitter-dart-orchard = { version = "0.3", optional = true }
 tree-sitter-kotlin-sg = "0.4.0"
-tree-sitter-pascal = "0.10"
-tree-sitter-php = "0.24.2"
-tree-sitter-ruby = "0.23.1"
+tree-sitter-pascal = { version = "0.10", optional = true }
+tree-sitter-php = { version = "0.24.2", optional = true }
+tree-sitter-ruby = { version = "0.23.1", optional = true }
 tree-sitter-swift = "0.7"
-tree-sitter-bash = "0.25"
-tree-sitter-lua = "0.5"
-tree-sitter-zig = "1.1"
-tree-sitter-language = "0.1"
-tree-sitter-nix = "0.3"
-tree-sitter-vb-dotnet = "0.1"
-tree-sitter-powershell = "0.26"
-tree-sitter-batch = "0.3"
-tree-sitter-perl = "1.1"
-tree-sitter-objc = "3.0"
-tree-sitter-fortran = "0.5"
-tree-sitter-msbasic2 = "0.1"
-tree-sitter-gwbasic = "0.1"
-tree-sitter-qbasic = "0.1"
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-lua = { version = "0.5", optional = true }
+tree-sitter-zig = { version = "1.1", optional = true }
+tree-sitter-language = { version = "0.1", optional = true }
+tree-sitter-nix = { version = "0.3", optional = true }
+tree-sitter-vb-dotnet = { version = "0.1", optional = true }
+tree-sitter-powershell = { version = "0.26", optional = true }
+tree-sitter-batch = { version = "0.3", optional = true }
+tree-sitter-perl = { version = "1.1", optional = true }
+tree-sitter-objc = { version = "3.0", optional = true }
+tree-sitter-fortran = { version = "0.5", optional = true }
+tree-sitter-msbasic2 = { version = "0.1", optional = true }
+tree-sitter-gwbasic = { version = "0.1", optional = true }
+tree-sitter-qbasic = { version = "0.1", optional = true }
 
 [build-dependencies]
 logo-art = "0.2"

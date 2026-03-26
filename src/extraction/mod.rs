@@ -1,69 +1,119 @@
-mod bash_extractor;
-pub mod complexity;
+// Lite — always available (no cfg needed)
+mod rust_extractor;
 mod go_extractor;
 mod java_extractor;
-mod lua_extractor;
-/// Tree-sitter based source code extraction module.
-///
-/// This module provides extractors that parse source files using tree-sitter
-/// and produce structured graph nodes and edges.
-mod rust_extractor;
 mod scala_extractor;
 mod typescript_extractor;
 mod python_extractor;
 mod c_extractor;
 mod cpp_extractor;
 mod kotlin_extractor;
-mod dart_extractor;
 mod csharp_extractor;
-mod pascal_extractor;
-mod php_extractor;
-mod proto_extractor;
-mod nix_extractor;
-mod perl_extractor;
-mod ruby_extractor;
 mod swift_extractor;
-mod batch_extractor;
-mod powershell_extractor;
-mod vbnet_extractor;
-mod objc_extractor;
-mod fortran_extractor;
-mod cobol_extractor;
-mod msbasic2_extractor;
-mod gwbasic_extractor;
-mod qbasic_extractor;
-mod zig_extractor;
 
-pub use bash_extractor::BashExtractor;
-pub use go_extractor::GoExtractor;
-pub use lua_extractor::LuaExtractor;
-pub use java_extractor::JavaExtractor;
+pub mod complexity;
+
+/// Tree-sitter based source code extraction module.
+///
+/// This module provides extractors that parse source files using tree-sitter
+/// and produce structured graph nodes and edges.
+
+// Medium
+#[cfg(feature = "lang-dart")]
+mod dart_extractor;
+#[cfg(feature = "lang-pascal")]
+mod pascal_extractor;
+#[cfg(feature = "lang-php")]
+mod php_extractor;
+#[cfg(feature = "lang-ruby")]
+mod ruby_extractor;
+#[cfg(feature = "lang-bash")]
+mod bash_extractor;
+#[cfg(feature = "lang-protobuf")]
+mod proto_extractor;
+#[cfg(feature = "lang-powershell")]
+mod powershell_extractor;
+#[cfg(feature = "lang-nix")]
+mod nix_extractor;
+#[cfg(feature = "lang-vbnet")]
+mod vbnet_extractor;
+
+// Full
+#[cfg(feature = "lang-lua")]
+mod lua_extractor;
+#[cfg(feature = "lang-zig")]
+mod zig_extractor;
+#[cfg(feature = "lang-objc")]
+mod objc_extractor;
+#[cfg(feature = "lang-perl")]
+mod perl_extractor;
+#[cfg(feature = "lang-batch")]
+mod batch_extractor;
+#[cfg(feature = "lang-fortran")]
+mod fortran_extractor;
+#[cfg(feature = "lang-cobol")]
+mod cobol_extractor;
+#[cfg(feature = "lang-msbasic2")]
+mod msbasic2_extractor;
+#[cfg(feature = "lang-gwbasic")]
+mod gwbasic_extractor;
+#[cfg(feature = "lang-qbasic")]
+mod qbasic_extractor;
+
+// Lite — always available (no cfg needed)
 pub use rust_extractor::RustExtractor;
+pub use go_extractor::GoExtractor;
+pub use java_extractor::JavaExtractor;
 pub use scala_extractor::ScalaExtractor;
 pub use typescript_extractor::TypeScriptExtractor;
 pub use python_extractor::PythonExtractor;
 pub use c_extractor::CExtractor;
 pub use cpp_extractor::CppExtractor;
 pub use kotlin_extractor::KotlinExtractor;
-pub use dart_extractor::DartExtractor;
 pub use csharp_extractor::CSharpExtractor;
-pub use pascal_extractor::PascalExtractor;
-pub use php_extractor::PhpExtractor;
-pub use proto_extractor::ProtoExtractor;
-pub use nix_extractor::NixExtractor;
-pub use perl_extractor::PerlExtractor;
-pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
-pub use batch_extractor::BatchExtractor;
+
+// Medium
+#[cfg(feature = "lang-dart")]
+pub use dart_extractor::DartExtractor;
+#[cfg(feature = "lang-pascal")]
+pub use pascal_extractor::PascalExtractor;
+#[cfg(feature = "lang-php")]
+pub use php_extractor::PhpExtractor;
+#[cfg(feature = "lang-ruby")]
+pub use ruby_extractor::RubyExtractor;
+#[cfg(feature = "lang-bash")]
+pub use bash_extractor::BashExtractor;
+#[cfg(feature = "lang-protobuf")]
+pub use proto_extractor::ProtoExtractor;
+#[cfg(feature = "lang-powershell")]
 pub use powershell_extractor::PowerShellExtractor;
+#[cfg(feature = "lang-nix")]
+pub use nix_extractor::NixExtractor;
+#[cfg(feature = "lang-vbnet")]
 pub use vbnet_extractor::VbNetExtractor;
-pub use objc_extractor::ObjcExtractor;
-pub use fortran_extractor::FortranExtractor;
-pub use cobol_extractor::CobolExtractor;
-pub use msbasic2_extractor::MsBasic2Extractor;
-pub use gwbasic_extractor::GwBasicExtractor;
-pub use qbasic_extractor::QBasicExtractor;
+
+// Full
+#[cfg(feature = "lang-lua")]
+pub use lua_extractor::LuaExtractor;
+#[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
+#[cfg(feature = "lang-objc")]
+pub use objc_extractor::ObjcExtractor;
+#[cfg(feature = "lang-perl")]
+pub use perl_extractor::PerlExtractor;
+#[cfg(feature = "lang-batch")]
+pub use batch_extractor::BatchExtractor;
+#[cfg(feature = "lang-fortran")]
+pub use fortran_extractor::FortranExtractor;
+#[cfg(feature = "lang-cobol")]
+pub use cobol_extractor::CobolExtractor;
+#[cfg(feature = "lang-msbasic2")]
+pub use msbasic2_extractor::MsBasic2Extractor;
+#[cfg(feature = "lang-gwbasic")]
+pub use gwbasic_extractor::GwBasicExtractor;
+#[cfg(feature = "lang-qbasic")]
+pub use qbasic_extractor::QBasicExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -95,40 +145,65 @@ pub struct LanguageRegistry {
 impl LanguageRegistry {
     /// Creates a new registry with all built-in language extractors.
     pub fn new() -> Self {
-        Self {
-            extractors: vec![
-                Box::new(RustExtractor),
-                Box::new(GoExtractor),
-                Box::new(JavaExtractor),
-                Box::new(ScalaExtractor),
-                Box::new(TypeScriptExtractor),
-                Box::new(PythonExtractor),
-                Box::new(CExtractor),
-                Box::new(CppExtractor),
-                Box::new(CSharpExtractor),
-                Box::new(DartExtractor),
-                Box::new(KotlinExtractor),
-                Box::new(PascalExtractor),
-                Box::new(PhpExtractor),
-                Box::new(NixExtractor),
-                Box::new(PerlExtractor),
-                Box::new(RubyExtractor),
-                Box::new(SwiftExtractor),
-                Box::new(BashExtractor),
-                Box::new(LuaExtractor),
-                Box::new(ZigExtractor),
-                Box::new(ProtoExtractor),
-                Box::new(PowerShellExtractor),
-                Box::new(VbNetExtractor),
-                Box::new(ObjcExtractor),
-                Box::new(FortranExtractor),
-                Box::new(CobolExtractor),
-                Box::new(BatchExtractor),
-                Box::new(MsBasic2Extractor),
-                Box::new(GwBasicExtractor),
-                Box::new(QBasicExtractor),
-            ],
-        }
+        #[allow(unused_mut)]
+        let mut extractors: Vec<Box<dyn LanguageExtractor>> = vec![
+            // Lite — always available
+            Box::new(RustExtractor),
+            Box::new(GoExtractor),
+            Box::new(JavaExtractor),
+            Box::new(ScalaExtractor),
+            Box::new(TypeScriptExtractor),
+            Box::new(PythonExtractor),
+            Box::new(CExtractor),
+            Box::new(CppExtractor),
+            Box::new(CSharpExtractor),
+            Box::new(KotlinExtractor),
+            Box::new(SwiftExtractor),
+        ];
+
+        // Medium
+        #[cfg(feature = "lang-dart")]
+        extractors.push(Box::new(DartExtractor));
+        #[cfg(feature = "lang-pascal")]
+        extractors.push(Box::new(PascalExtractor));
+        #[cfg(feature = "lang-php")]
+        extractors.push(Box::new(PhpExtractor));
+        #[cfg(feature = "lang-ruby")]
+        extractors.push(Box::new(RubyExtractor));
+        #[cfg(feature = "lang-bash")]
+        extractors.push(Box::new(BashExtractor));
+        #[cfg(feature = "lang-protobuf")]
+        extractors.push(Box::new(ProtoExtractor));
+        #[cfg(feature = "lang-powershell")]
+        extractors.push(Box::new(PowerShellExtractor));
+        #[cfg(feature = "lang-nix")]
+        extractors.push(Box::new(NixExtractor));
+        #[cfg(feature = "lang-vbnet")]
+        extractors.push(Box::new(VbNetExtractor));
+
+        // Full
+        #[cfg(feature = "lang-lua")]
+        extractors.push(Box::new(LuaExtractor));
+        #[cfg(feature = "lang-zig")]
+        extractors.push(Box::new(ZigExtractor));
+        #[cfg(feature = "lang-objc")]
+        extractors.push(Box::new(ObjcExtractor));
+        #[cfg(feature = "lang-perl")]
+        extractors.push(Box::new(PerlExtractor));
+        #[cfg(feature = "lang-batch")]
+        extractors.push(Box::new(BatchExtractor));
+        #[cfg(feature = "lang-fortran")]
+        extractors.push(Box::new(FortranExtractor));
+        #[cfg(feature = "lang-cobol")]
+        extractors.push(Box::new(CobolExtractor));
+        #[cfg(feature = "lang-msbasic2")]
+        extractors.push(Box::new(MsBasic2Extractor));
+        #[cfg(feature = "lang-gwbasic")]
+        extractors.push(Box::new(GwBasicExtractor));
+        #[cfg(feature = "lang-qbasic")]
+        extractors.push(Box::new(QBasicExtractor));
+
+        Self { extractors }
     }
 
     /// Returns the extractor for a file path based on its extension.

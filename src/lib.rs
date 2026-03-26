@@ -31,5 +31,8 @@ pub mod types;
 pub mod vectors;
 pub mod user_config;
 pub mod cloud;
+#[cfg(feature = "lang-protobuf")]
 pub mod tree_sitter_protobuf;
+
+#[cfg(feature = "lang-cobol")]
 pub mod tree_sitter_cobol;

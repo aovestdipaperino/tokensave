@@ -76,8 +76,11 @@ pub enum NodeKind {
     PascalProgram,
     PascalRecord,
     // Protobuf-specific
+    #[cfg(feature = "lang-protobuf")]
     ProtoMessage,
+    #[cfg(feature = "lang-protobuf")]
     ProtoService,
+    #[cfg(feature = "lang-protobuf")]
     ProtoRpc,
 }
 
@@ -146,8 +149,11 @@ impl NodeKind {
             NodeKind::PascalUnit => "pascal_unit",
             NodeKind::PascalProgram => "pascal_program",
             NodeKind::PascalRecord => "pascal_record",
+            #[cfg(feature = "lang-protobuf")]
             NodeKind::ProtoMessage => "proto_message",
+            #[cfg(feature = "lang-protobuf")]
             NodeKind::ProtoService => "proto_service",
+            #[cfg(feature = "lang-protobuf")]
             NodeKind::ProtoRpc => "proto_rpc",
         }
     }
@@ -215,8 +221,11 @@ impl NodeKind {
             "pascal_unit" => Some(NodeKind::PascalUnit),
             "pascal_program" => Some(NodeKind::PascalProgram),
             "pascal_record" => Some(NodeKind::PascalRecord),
+            #[cfg(feature = "lang-protobuf")]
             "proto_message" => Some(NodeKind::ProtoMessage),
+            #[cfg(feature = "lang-protobuf")]
             "proto_service" => Some(NodeKind::ProtoService),
+            #[cfg(feature = "lang-protobuf")]
             "proto_rpc" => Some(NodeKind::ProtoRpc),
             _ => None,
         }

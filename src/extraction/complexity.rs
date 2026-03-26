@@ -376,6 +376,7 @@ pub static SCALA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-dart")]
 pub static DART_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "switch_statement_case", "catch_clause", "conditional_expression"],
     loop_types: &["for_statement", "while_statement", "do_statement"],
@@ -404,6 +405,7 @@ pub static CSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-pascal")]
 pub static PASCAL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "case_item", "else_clause"],
     loop_types: &["for_statement", "while_statement", "repeat_statement"],
@@ -418,6 +420,7 @@ pub static PASCAL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-php")]
 pub static PHP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "case_statement", "catch_clause", "else_clause", "else_if_clause"],
     loop_types: &["for_statement", "foreach_statement", "while_statement", "do_statement"],
@@ -432,6 +435,7 @@ pub static PHP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-ruby")]
 pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if", "elsif", "when", "rescue", "conditional"],
     loop_types: &["for", "while", "until"],
@@ -460,6 +464,7 @@ pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-bash")]
 pub static BASH_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elif_clause", "else_clause", "case_item"],
     loop_types: &["for_statement", "while_statement", "c_style_for_statement"],
@@ -474,6 +479,7 @@ pub static BASH_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-lua")]
 pub static LUA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elseif_statement", "else_statement"],
     loop_types: &["for_statement", "for_in_statement", "while_statement", "repeat_statement"],
@@ -488,6 +494,7 @@ pub static LUA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-zig")]
 pub static ZIG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_expression", "switch_expression", "else_expression", "catch"],
     loop_types: &["for_expression", "while_expression"],
@@ -502,6 +509,7 @@ pub static ZIG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-nix")]
 pub static NIX_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_expression"],
     loop_types: &[],
@@ -516,6 +524,7 @@ pub static NIX_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-vbnet")]
 pub static VBNET_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elseif_clause", "else_clause", "select_case_statement", "catch_clause"],
     loop_types: &["for_statement", "for_each_statement", "while_statement", "do_loop_statement"],
@@ -530,6 +539,7 @@ pub static VBNET_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-powershell")]
 pub static POWERSHELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elseif_clause", "else_clause", "switch_statement", "catch_clause"],
     loop_types: &["for_statement", "foreach_statement", "while_statement", "do_while_statement"],
@@ -544,6 +554,7 @@ pub static POWERSHELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-perl")]
 pub static PERL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elsif_clause", "else_clause", "unless_statement", "conditional_expression"],
     loop_types: &["for_statement", "foreach_statement", "while_statement", "until_statement"],
@@ -558,6 +569,7 @@ pub static PERL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-objc")]
 pub static OBJC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "case_statement", "conditional_expression", "catch_clause", "else_clause"],
     loop_types: &["for_statement", "while_statement", "do_statement", "for_in_statement"],
@@ -572,6 +584,7 @@ pub static OBJC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-fortran")]
 pub static FORTRAN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement", "elseif_clause", "else_clause", "case_statement", "where_statement"],
     loop_types: &["do_loop_statement", "forall_statement"],
@@ -586,6 +599,7 @@ pub static FORTRAN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-cobol")]
 pub static COBOL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_header", "evaluate_statement", "when_phrase"],
     loop_types: &["perform_statement_loop"],
@@ -600,6 +614,7 @@ pub static COBOL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-msbasic2")]
 pub static MSBASIC2_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement"],
     loop_types: &["for_statement"],
@@ -614,6 +629,7 @@ pub static MSBASIC2_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-gwbasic")]
 pub static GWBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["if_statement"],
     loop_types: &["for_statement", "while_statement"],
@@ -628,6 +644,7 @@ pub static GWBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     macro_invocation_types: &[],
 };
 
+#[cfg(feature = "lang-qbasic")]
 pub static QBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &["block_if_statement"],
     loop_types: &["for_statement", "while_statement", "do_loop_statement"],
