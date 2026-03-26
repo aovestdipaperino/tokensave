@@ -75,6 +75,10 @@ pub enum NodeKind {
     PascalUnit,
     PascalProgram,
     PascalRecord,
+    // Protobuf-specific
+    ProtoMessage,
+    ProtoService,
+    ProtoRpc,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -142,6 +146,9 @@ impl NodeKind {
             NodeKind::PascalUnit => "pascal_unit",
             NodeKind::PascalProgram => "pascal_program",
             NodeKind::PascalRecord => "pascal_record",
+            NodeKind::ProtoMessage => "proto_message",
+            NodeKind::ProtoService => "proto_service",
+            NodeKind::ProtoRpc => "proto_rpc",
         }
     }
 
@@ -208,6 +215,9 @@ impl NodeKind {
             "pascal_unit" => Some(NodeKind::PascalUnit),
             "pascal_program" => Some(NodeKind::PascalProgram),
             "pascal_record" => Some(NodeKind::PascalRecord),
+            "proto_message" => Some(NodeKind::ProtoMessage),
+            "proto_service" => Some(NodeKind::ProtoService),
+            "proto_rpc" => Some(NodeKind::ProtoRpc),
             _ => None,
         }
     }

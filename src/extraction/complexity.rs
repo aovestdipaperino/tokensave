@@ -445,3 +445,129 @@ pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &["assert", "assert_equal", "assert_not_equal", "assert_nil", "assert_not_nil", "assert_raises", "assert_match", "refute"],
     macro_invocation_types: &[],
 };
+
+pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "switch_entry", "guard_statement", "catch_keyword"],
+    loop_types: &["for_in_statement", "while_statement", "repeat_while_statement"],
+    return_types: &["control_transfer_statement"],
+    nesting_types: &["code_block"],
+    unsafe_types: &[],
+    unchecked_types: &["force_unwrap_expression"],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "",
+    assertion_names: &["assert", "precondition", "assertionFailure", "XCTAssert", "XCTAssertEqual", "XCTAssertTrue", "XCTAssertFalse", "XCTAssertNil", "XCTAssertNotNil"],
+    macro_invocation_types: &[],
+};
+
+pub static BASH_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elif_clause", "else_clause", "case_item"],
+    loop_types: &["for_statement", "while_statement", "c_style_for_statement"],
+    return_types: &["return_statement"],
+    nesting_types: &["compound_statement", "subshell"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["command"],
+    call_method_field: "name",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
+
+pub static LUA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elseif_statement", "else_statement"],
+    loop_types: &["for_statement", "for_in_statement", "while_statement", "repeat_statement"],
+    return_types: &["return_statement", "break_statement"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["function_call"],
+    call_method_field: "",
+    assertion_names: &["assert", "assert_equal", "assert_true", "assert_false"],
+    macro_invocation_types: &[],
+};
+
+pub static ZIG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_expression", "switch_expression", "else_expression", "catch"],
+    loop_types: &["for_expression", "while_expression"],
+    return_types: &["return_expression", "break_expression", "continue_expression"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &["orelse"],
+    call_expression_types: &["call_expression"],
+    call_method_field: "",
+    assertion_names: &["expect", "expectEqual", "expectEqualStrings", "expectError"],
+    macro_invocation_types: &[],
+};
+
+pub static NIX_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_expression"],
+    loop_types: &[],
+    return_types: &[],
+    nesting_types: &["attrset_expression", "let_expression"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["apply_expression"],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
+
+pub static VBNET_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elseif_clause", "else_clause", "select_case_statement", "catch_clause"],
+    loop_types: &["for_statement", "for_each_statement", "while_statement", "do_loop_statement"],
+    return_types: &["return_statement", "exit_statement", "throw_statement"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["invocation_expression"],
+    call_method_field: "",
+    assertion_names: &["Assert", "AreEqual", "AreNotEqual", "IsTrue", "IsFalse", "IsNull", "IsNotNull"],
+    macro_invocation_types: &[],
+};
+
+pub static POWERSHELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elseif_clause", "else_clause", "switch_statement", "catch_clause"],
+    loop_types: &["for_statement", "foreach_statement", "while_statement", "do_while_statement"],
+    return_types: &["return_statement", "break_statement", "continue_statement", "throw_statement"],
+    nesting_types: &["script_block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["command_expression"],
+    call_method_field: "",
+    assertion_names: &["Should", "Assert"],
+    macro_invocation_types: &[],
+};
+
+pub static PERL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elsif_clause", "else_clause", "unless_statement", "conditional_expression"],
+    loop_types: &["for_statement", "foreach_statement", "while_statement", "until_statement"],
+    return_types: &["return_expression", "last_expression", "next_expression"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression", "method_call_expression"],
+    call_method_field: "",
+    assertion_names: &["ok", "is", "isnt", "like", "unlike", "cmp_ok", "is_deeply"],
+    macro_invocation_types: &[],
+};
+
+pub static OBJC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "case_statement", "conditional_expression", "catch_clause", "else_clause"],
+    loop_types: &["for_statement", "while_statement", "do_statement", "for_in_statement"],
+    return_types: &["return_statement", "break_statement", "continue_statement"],
+    nesting_types: &["compound_statement"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression", "message_expression"],
+    call_method_field: "",
+    assertion_names: &["NSAssert", "NSCAssert", "XCTAssert", "XCTAssertTrue", "XCTAssertFalse", "XCTAssertEqual", "XCTAssertNil", "XCTAssertNotNil"],
+    macro_invocation_types: &[],
+};
