@@ -204,6 +204,15 @@ enum Commands {
     /// Enable uploading token counts to the worldwide counter
     #[command(name = "enable-upload-counter")]
     EnableUploadCounter,
+    /// Show or change whether .gitignore rules are respected during indexing
+    #[command(name = "gitignore")]
+    Gitignore {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+        /// "on" to enable, "off" to disable, omit to show current setting
+        action: Option<String>,
+    },
     /// Check tokensave installation, configuration, and agent integration
     Doctor {
         /// Check only this agent (default: all agents)
@@ -597,6 +606,33 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.upload_enabled = true;
             config.save();
             eprintln!("Worldwide counter upload enabled.");
+        }
+        Commands::Gitignore { path, action } => {
+            let project_path = resolve_path(path);
+            let mut config = tokensave::config::load_config(&project_path)?;
+            match action.as_deref() {
+                Some("on") => {
+                    config.git_ignore = true;
+                    tokensave::config::save_config(&project_path, &config)?;
+                    eprintln!("gitignore enabled — .gitignore rules will be respected during indexing.");
+                    eprintln!("Run `tokensave sync` to re-index with the new setting.");
+                }
+                Some("off") => {
+                    config.git_ignore = false;
+                    tokensave::config::save_config(&project_path, &config)?;
+                    eprintln!("gitignore disabled — .gitignore rules will be ignored during indexing.");
+                    eprintln!("Run `tokensave sync` to re-index with the new setting.");
+                }
+                Some(other) => {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!("unknown action '{other}': expected 'on' or 'off'"),
+                    });
+                }
+                None => {
+                    let status = if config.git_ignore { "on" } else { "off" };
+                    eprintln!("gitignore: {status}");
+                }
+            }
         }
         Commands::Doctor { agent } => {
             run_doctor(agent.as_deref());
