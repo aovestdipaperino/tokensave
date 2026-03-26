@@ -1229,3 +1229,50 @@ fn test_fixture_vbnet() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── PowerShell ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_powershell() {
+    let source = read_fixture("sample.ps1");
+    let extractor = tokensave::extraction::PowerShellExtractor;
+    let result = extractor.extract("sample.ps1", &source);
+    assert!(result.errors.is_empty(), "PowerShell errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Functions (5: Write-Log, Test-Config, Connect-Server, Disconnect-Server, Main)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 5, "expected 5 functions, got {}", fns.len());
+    assert!(fns.iter().any(|n| n.name == "Write-Log"));
+    assert!(fns.iter().any(|n| n.name == "Test-Config"));
+    assert!(fns.iter().any(|n| n.name == "Connect-Server"));
+    assert!(fns.iter().any(|n| n.name == "Disconnect-Server"));
+    assert!(fns.iter().any(|n| n.name == "Main"));
+
+    // Typed constants (2: MaxRetries, DefaultPort)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|n| n.name == "MaxRetries"));
+    assert!(consts.iter().any(|n| n.name == "DefaultPort"));
+
+    // Imports (2: Import-Module ActiveDirectory, . .\Utils.ps1)
+    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(uses.len(), 2, "expected 2 Use nodes, got {}", uses.len());
+    assert!(uses.iter().any(|n| n.name == "ActiveDirectory"));
+    assert!(uses.iter().any(|n| n.name.contains("Utils.ps1")));
+
+    // Docstrings
+    let write_log = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "Write-Log").unwrap();
+    assert!(write_log.docstring.is_some(), "Write-Log should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
