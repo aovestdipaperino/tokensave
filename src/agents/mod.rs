@@ -7,6 +7,8 @@
 //! plumbing (registering the MCP server, permissions, hooks, prompt rules).
 
 pub mod claude;
+pub mod codex;
+pub mod opencode;
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +16,8 @@ use crate::errors::Result;
 use crate::errors::TokenSaveError;
 
 pub use claude::ClaudeAgent;
+pub use codex::CodexAgent;
+pub use opencode::OpenCodeAgent;
 
 // ---------------------------------------------------------------------------
 // Agent trait
@@ -58,6 +62,8 @@ pub struct HealthcheckContext {
 pub fn get_agent(id: &str) -> Result<Box<dyn Agent>> {
     match id {
         "claude" => Ok(Box::new(ClaudeAgent)),
+        "opencode" => Ok(Box::new(OpenCodeAgent)),
+        "codex" => Ok(Box::new(CodexAgent)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -69,12 +75,16 @@ pub fn get_agent(id: &str) -> Result<Box<dyn Agent>> {
 
 /// Returns all registered agents.
 pub fn all_agents() -> Vec<Box<dyn Agent>> {
-    vec![Box::new(ClaudeAgent)]
+    vec![
+        Box::new(ClaudeAgent),
+        Box::new(OpenCodeAgent),
+        Box::new(CodexAgent),
+    ]
 }
 
 /// Returns the CLI identifiers of all registered agents (for help text).
 pub fn available_agents() -> Vec<&'static str> {
-    vec!["claude"]
+    vec!["claude", "opencode", "codex"]
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +175,61 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Expected MCP tool permissions for the current version.
+/// Load a TOML file, returning an empty table on missing/invalid.
+pub fn load_toml_file(path: &Path) -> toml::Value {
+    if path.exists() {
+        let contents = std::fs::read_to_string(path).unwrap_or_default();
+        contents
+            .parse::<toml::Value>()
+            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    }
+}
+
+/// Write a TOML value to a file.
+pub fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
+    let contents =
+        toml::to_string_pretty(value).unwrap_or_else(|_| String::new());
+    std::fs::write(path, contents).map_err(|e| TokenSaveError::Config {
+        message: format!("failed to write {}: {e}", path.display()),
+    })?;
+    eprintln!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
+    Ok(())
+}
+
+/// Bare MCP tool names (without any agent-specific prefix).
+pub const TOOL_NAMES: &[&str] = &[
+    "tokensave_affected",
+    "tokensave_callees",
+    "tokensave_callers",
+    "tokensave_changelog",
+    "tokensave_circular",
+    "tokensave_complexity",
+    "tokensave_context",
+    "tokensave_coupling",
+    "tokensave_dead_code",
+    "tokensave_diff_context",
+    "tokensave_distribution",
+    "tokensave_doc_coverage",
+    "tokensave_files",
+    "tokensave_god_class",
+    "tokensave_hotspots",
+    "tokensave_impact",
+    "tokensave_inheritance_depth",
+    "tokensave_largest",
+    "tokensave_module_api",
+    "tokensave_node",
+    "tokensave_rank",
+    "tokensave_recursion",
+    "tokensave_rename_preview",
+    "tokensave_search",
+    "tokensave_similar",
+    "tokensave_status",
+    "tokensave_unused_imports",
+];
+
+/// Expected MCP tool permissions for the current version (Claude Code format).
 pub const EXPECTED_TOOL_PERMS: &[&str] = &[
     "mcp__tokensave__tokensave_affected",
     "mcp__tokensave__tokensave_callees",

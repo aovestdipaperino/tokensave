@@ -5,10 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-03-26
+
+### Added
+- **OpenCode agent** (`tokensave install --agent opencode`) — registers MCP server in `.opencode.json`, appends prompt rules to `OPENCODE.md`; healthcheck validates config and prompt file
+- **Codex CLI agent** (`tokensave install --agent codex`) — registers MCP server in `~/.codex/config.toml` with auto-approval for all 27 tools, appends prompt rules to `~/.codex/AGENTS.md`; healthcheck validates config, tool approval counts, and prompt file
+- TOML helpers (`load_toml_file`, `write_toml_file`) in agents module for Codex config support
+- `TOOL_NAMES` constant with bare tool names (without agent-specific prefix) for cross-agent use
+
+### New files
+- `src/agents/opencode.rs` — `OpenCodeAgent` implementing `Agent`
+- `src/agents/codex.rs` — `CodexAgent` implementing `Agent`
+
 ## [1.8.0] - 2026-03-26
 
 ### Added
-- **Multi-agent architecture** with a trait-based `Agent` abstraction (`install`, `uninstall`, `healthcheck`) to support CLI agents beyond Claude Code (e.g. OpenCode, Codex)
+- **Multi-agent architecture** with a trait-based `Agent` abstraction (`install`, `uninstall`, `healthcheck`) to support CLI agents beyond Claude Code
 - `tokensave install [--agent NAME]` replaces `claude-install` — defaults to `claude` when no agent is specified
 - `tokensave uninstall [--agent NAME]` replaces `claude-uninstall` — defaults to `claude`
 - `tokensave doctor [--agent NAME]` now checks all registered agents by default; use `--agent` to narrow to one

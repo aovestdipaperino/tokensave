@@ -122,16 +122,20 @@ sudo mv tokensave /usr/local/bin/
 Run the built-in installer — no scripts, no `jq`, works on macOS/Linux/Windows:
 
 ```bash
-tokensave install              # defaults to Claude Code
-tokensave install --agent claude   # explicit
+tokensave install                    # defaults to Claude Code
+tokensave install --agent claude     # Claude Code (explicit)
+tokensave install --agent opencode   # OpenCode
+tokensave install --agent codex      # OpenAI Codex CLI
 ```
 
-This single command:
+What each agent gets:
 
-- Registers tokensave as an MCP server in the agent's config
-- Adds a native PreToolUse hook that blocks Explore agents in favor of tokensave (Claude Code)
-- Adds tool permissions so Claude can call all 27 tokensave tools without prompting
-- Appends rules to `~/.claude/CLAUDE.md` that instruct Claude to prefer tokensave over file reads
+| | Claude Code | OpenCode | Codex CLI |
+|---|---|---|---|
+| MCP server registration | `~/.claude.json` | `.opencode.json` | `~/.codex/config.toml` |
+| Tool permissions | Auto-allowed in `settings.json` | Runtime approval (interactive) | Auto-approved per tool |
+| Hook (blocks Explore agents) | PreToolUse hook | N/A | N/A |
+| Prompt rules | `~/.claude/CLAUDE.md` | `OPENCODE.md` | `~/.codex/AGENTS.md` |
 
 All changes are idempotent — safe to run again after upgrading. The old `tokensave claude-install` command still works as an alias.
 
@@ -622,11 +626,11 @@ tokensave doctor
 ```
 
 ```
-tokensave doctor v1.8.0
+tokensave doctor v1.8.1
 
 Binary
   ✔ Binary: /Users/you/.cargo/bin/tokensave
-  ✔ Version: 1.8.0
+  ✔ Version: 1.8.1
 
 Current project
   ✔ Index found: /Users/you/project/.tokensave/
