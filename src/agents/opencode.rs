@@ -13,10 +13,7 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{
-    Agent, DoctorCounters, HealthcheckContext, InstallContext,
-    load_json_file,
-};
+use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// OpenCode agent.
 pub struct OpenCodeAgent;
@@ -69,13 +66,16 @@ impl Agent for OpenCodeAgent {
 // Config path resolution
 // ---------------------------------------------------------------------------
 
-/// Returns the path to `.opencode.json` (global).
-/// Checks `$XDG_CONFIG_HOME/opencode/.opencode.json` first, then `$HOME/.opencode.json`.
+/// Returns the path to opencode config (global).
+/// Checks `$HOME/.config/opencode/opencode.json` first (modern location),
+/// then `$XDG_CONFIG_HOME/opencode/opencode.json`, then `$HOME/.opencode.json` (legacy).
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
+    let modern = home.join(".config/opencode/opencode.json");
+    if modern.exists() {
+        return modern;
+    }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        let xdg_path = std::path::PathBuf::from(xdg)
-            .join("opencode")
-            .join(".opencode.json");
+        let xdg_path = std::path::PathBuf::from(xdg).join("opencode/opencode.json");
         if xdg_path.exists() {
             return xdg_path;
         }
@@ -85,6 +85,10 @@ fn opencode_config_path(home: &Path) -> std::path::PathBuf {
 
 /// Returns the path to the global OPENCODE.md prompt file.
 fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
+    let modern = home.join(".config/opencode/OPENCODE.md");
+    if modern.exists() || home.join(".config/opencode").exists() {
+        return modern;
+    }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_dir = std::path::PathBuf::from(xdg).join("opencode");
         if xdg_dir.exists() {
@@ -171,14 +175,14 @@ fn uninstall_mcp_server(config_path: &Path) {
     let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return;
     };
-    let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(|v| v.as_object_mut())
-    else {
+    let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) else {
         return;
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!("  No tokensave MCP server in {}, skipping", config_path.display());
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            config_path.display()
+        );
         return;
     }
     if servers.is_empty() {
@@ -294,7 +298,9 @@ fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
         if has_rules {
             dc.pass("OPENCODE.md contains tokensave rules");
         } else {
-            dc.fail("OPENCODE.md missing tokensave rules — run `tokensave install --agent opencode`");
+            dc.fail(
+                "OPENCODE.md missing tokensave rules — run `tokensave install --agent opencode`",
+            );
         }
     } else {
         dc.warn("OPENCODE.md does not exist");
