@@ -275,3 +275,189 @@ fn test_nix_function_signature() {
         mk_conn.signature.as_ref().unwrap()
     );
 }
+
+fn extract_flake() -> ExtractionResult {
+    let source = std::fs::read_to_string("tests/fixtures/sample-flake.nix")
+        .expect("failed to read sample-flake.nix");
+    let extractor = NixExtractor;
+    extractor.extract("flake.nix", &source)
+}
+
+// -------------------------------------------------------------------
+// Enhancement 2: Import path resolution
+// -------------------------------------------------------------------
+
+#[test]
+fn test_nix_import_path_resolution() {
+    let result = extract_sample();
+
+    // Should have a Use node for `import ./utils.nix`
+    let uses: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use && n.name == "./utils.nix")
+        .collect();
+    assert!(
+        !uses.is_empty(),
+        "should have Use node for import ./utils.nix, got uses: {:?}",
+        result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Use)
+            .map(|n| &n.name)
+            .collect::<Vec<_>>()
+    );
+
+    // Should have an unresolved Uses ref for ./utils.nix
+    let uses_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "./utils.nix")
+        .collect();
+    assert!(
+        !uses_refs.is_empty(),
+        "should have unresolved Uses ref for ./utils.nix, got: {:?}",
+        result
+            .unresolved_refs
+            .iter()
+            .map(|r| (&r.reference_kind, &r.reference_name))
+            .collect::<Vec<_>>()
+    );
+}
+
+// -------------------------------------------------------------------
+// Enhancement 1: Derivation field extraction
+// -------------------------------------------------------------------
+
+#[test]
+fn test_nix_derivation_fields() {
+    let result = extract_flake();
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .collect();
+
+    // mkDerivation calls should produce Field nodes for pname, version, buildInputs, etc.
+    let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+
+    assert!(
+        field_names.contains(&"pname"),
+        "should have pname Field, got: {:?}",
+        field_names
+    );
+    assert!(
+        field_names.contains(&"version"),
+        "should have version Field, got: {:?}",
+        field_names
+    );
+    assert!(
+        field_names.contains(&"src"),
+        "should have src Field, got: {:?}",
+        field_names
+    );
+    assert!(
+        field_names.contains(&"buildInputs"),
+        "should have buildInputs Field, got: {:?}",
+        field_names
+    );
+    assert!(
+        field_names.contains(&"nativeBuildInputs"),
+        "should have nativeBuildInputs Field, got: {:?}",
+        field_names
+    );
+
+    // Fields should have signatures (first line of the binding text)
+    let pname = fields.iter().find(|f| f.name == "pname").unwrap();
+    assert!(
+        pname.signature.is_some(),
+        "pname field should have a signature"
+    );
+    assert!(
+        pname.signature.as_ref().unwrap().contains("pname"),
+        "pname signature should contain 'pname', got: {}",
+        pname.signature.as_ref().unwrap()
+    );
+}
+
+// -------------------------------------------------------------------
+// Enhancement 3: Flake output schema awareness
+// -------------------------------------------------------------------
+
+#[test]
+fn test_nix_flake_output_modules() {
+    let result = extract_flake();
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let modules: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Module)
+        .collect();
+    let module_names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+
+    // packages, devShells, apps, checks should all be Module nodes
+    assert!(
+        module_names.contains(&"packages"),
+        "packages should be Module, got modules: {:?}",
+        module_names
+    );
+    assert!(
+        module_names.contains(&"devShells"),
+        "devShells should be Module, got modules: {:?}",
+        module_names
+    );
+    assert!(
+        module_names.contains(&"apps"),
+        "apps should be Module, got modules: {:?}",
+        module_names
+    );
+    assert!(
+        module_names.contains(&"checks"),
+        "checks should be Module, got modules: {:?}",
+        module_names
+    );
+
+    // Verify that these are nested under outputs
+    let packages = modules.iter().find(|m| m.name == "packages").unwrap();
+    assert!(
+        packages.qualified_name.contains("outputs"),
+        "packages should be qualified under outputs, got: {}",
+        packages.qualified_name
+    );
+}
+
+// -------------------------------------------------------------------
+// Enhancement 1+3: mkShell field extraction
+// -------------------------------------------------------------------
+
+#[test]
+fn test_nix_mkshell_fields() {
+    let result = extract_flake();
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // devShells is forced to Module and its value is a mkShell call
+    // The mkShell attrset should produce Field nodes
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.kind == NodeKind::Field
+                && n.qualified_name.contains("devShells")
+        })
+        .collect();
+    let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+
+    assert!(
+        field_names.contains(&"buildInputs"),
+        "mkShell should have buildInputs Field, got: {:?}",
+        field_names
+    );
+    assert!(
+        field_names.contains(&"shellHook"),
+        "mkShell should have shellHook Field, got: {:?}",
+        field_names
+    );
+}

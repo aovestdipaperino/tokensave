@@ -2,6 +2,8 @@
 { pkgs ? import <nixpkgs> {} }:
 
 let
+  utils = import ./utils.nix;
+
   # Default port for the service.
   defaultPort = 8080;
 
