@@ -31,13 +31,16 @@ char* any_content_keyword[] = {
     "procedure division",
 };
 
+#define MAX_KEYWORDS 16
+
 static bool start_with_word( TSLexer *lexer, char *words[], int number_of_words) {
     while(lexer->lookahead == ' ' || lexer->lookahead == '\t') {
         lexer->advance(lexer, true);
     }
 
-    char *keyword_pointer[number_of_words];
-    bool continue_check[number_of_words];
+    if(number_of_words > MAX_KEYWORDS) return false;
+    char *keyword_pointer[MAX_KEYWORDS];
+    bool continue_check[MAX_KEYWORDS];
     for(int i=0; i<number_of_words; ++i) {
         keyword_pointer[i] = words[i];
         continue_check[i] = true;

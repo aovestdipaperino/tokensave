@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "tokensave"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "cc",
  "clap",
