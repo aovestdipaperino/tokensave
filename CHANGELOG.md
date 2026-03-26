@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-03-26
+
+### Added
+- **Version update notifications** — the MCP server checks GitHub releases (with a 5-minute cache) and warns users when a newer version is available, via both a `notifications/message` logging notification and a text block prepended to tool responses
+- **Global git post-commit hook** — `tokensave install` now offers to install a global `post-commit` hook that auto-runs `tokensave sync` after each commit, keeping the index up to date without manual intervention
+- MCP `logging` capability advertised in `initialize` response
+- Minimal gitconfig parser for reading `core.hooksPath` from `~/.gitconfig` and `~/.config/git/config` without shelling out to `git`
+- 12 unit tests for gitconfig parsing, insertion, and tilde expansion
+
 ## [1.8.3] - 2026-03-26
 
 ### Fixed

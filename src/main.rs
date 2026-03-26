@@ -559,10 +559,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             })?;
             let ctx = tokensave::agents::InstallContext {
                 home,
-                tokensave_bin,
+                tokensave_bin: tokensave_bin.clone(),
                 tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
             };
             ag.install(&ctx)?;
+            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
         }
         Commands::Uninstall { agent } => {
             let ag = tokensave::agents::get_agent(&agent)?;

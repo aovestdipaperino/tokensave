@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -38,6 +38,15 @@ impl ServerStats {
     }
 }
 
+/// Cache duration for version checks (5 minutes).
+const VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(300);
+
+/// Cached result of a latest-version check against GitHub releases.
+struct VersionCheckState {
+    latest: Option<String>,
+    checked_at: Option<Instant>,
+}
+
 /// The MCP server wrapping a `TokenSave` instance.
 // Lock ordering: file_token_map -> tool_call_counts (never nested)
 pub struct McpServer {
@@ -54,6 +63,10 @@ pub struct McpServer {
     last_flush_at: AtomicI64,
     /// User-level database tracking all projects (best-effort).
     global_db: Option<GlobalDb>,
+    /// Cached latest-version check result.
+    version_cache: std::sync::Mutex<VersionCheckState>,
+    /// Pending JSON-RPC notifications to send before the next response.
+    pending_notifications: std::sync::Mutex<Vec<Value>>,
 }
 
 impl McpServer {
@@ -75,6 +88,11 @@ impl McpServer {
             last_flushed_tokens: AtomicU64::new(persisted),
             last_flush_at: AtomicI64::new(0),
             global_db,
+            version_cache: std::sync::Mutex::new(VersionCheckState {
+                latest: None,
+                checked_at: None,
+            }),
+            pending_notifications: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -155,6 +173,56 @@ impl McpServer {
         }
     }
 
+    /// Returns a version-update warning if a newer release is available.
+    /// Results are cached for `VERSION_CHECK_INTERVAL` (5 minutes).
+    async fn check_version_update(&self) -> Option<String> {
+        let current = env!("CARGO_PKG_VERSION");
+
+        // Fast path: serve from cache if still fresh.
+        {
+            let cache = self.version_cache.lock().ok()?;
+            if let Some(checked_at) = cache.checked_at {
+                if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
+                    let latest = cache.latest.as_deref()?;
+                    return if crate::cloud::is_newer_version(current, latest) {
+                        let method = crate::cloud::detect_install_method();
+                        let cmd = crate::cloud::upgrade_command(&method);
+                        Some(format!(
+                            "⚠️ tokensave v{current} is installed, but v{latest} is available. \
+                             Run `{cmd}` to upgrade."
+                        ))
+                    } else {
+                        None
+                    };
+                }
+            }
+        }
+
+        // Cache miss or expired – fetch from GitHub (best-effort, 1 s timeout).
+        let latest = tokio::task::spawn_blocking(crate::cloud::fetch_latest_version)
+            .await
+            .ok()
+            .flatten();
+
+        // Update cache regardless of fetch outcome so we don't retry immediately.
+        if let Ok(mut cache) = self.version_cache.lock() {
+            cache.latest = latest.clone();
+            cache.checked_at = Some(Instant::now());
+        }
+
+        let latest = latest?;
+        if crate::cloud::is_newer_version(current, &latest) {
+            let method = crate::cloud::detect_install_method();
+            let cmd = crate::cloud::upgrade_command(&method);
+            Some(format!(
+                "⚠️ tokensave v{current} is installed, but v{latest} is available. \
+                 Run `{cmd}` to upgrade."
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Runs the server, reading JSON-RPC requests from stdin and writing
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
@@ -215,6 +283,21 @@ impl McpServer {
                     format!("failed to parse JSON-RPC request: {}", e),
                 )),
             };
+
+            // Drain and write any pending notifications (e.g., version warnings).
+            {
+                let notifications: Vec<Value> = self
+                    .pending_notifications
+                    .lock()
+                    .map(|mut p| p.drain(..).collect())
+                    .unwrap_or_default();
+                for notification in notifications {
+                    if let Ok(s) = serde_json::to_string(&notification) {
+                        let _ = stdout.write_all(format!("{}\n", s).as_bytes()).await;
+                        let _ = stdout.flush().await;
+                    }
+                }
+            }
 
             // Write response (if any) as a single line to stdout
             if let Some(resp) = response {
@@ -335,7 +418,8 @@ impl McpServer {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
-                    "tools": {}
+                    "tools": {},
+                    "logging": {}
                 },
                 "serverInfo": {
                     "name": "tokensave",
@@ -391,9 +475,32 @@ impl McpServer {
         };
 
         match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
-            Ok(result) => {
+            Ok(mut result) => {
                 self.accumulate_tokens_saved(&result.touched_files).await;
                 self.maybe_flush_worldwide().await;
+
+                // Prepend version-update warning + queue logging notification.
+                if let Some(warning) = self.check_version_update().await {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": &warning}));
+                    }
+                    if let Ok(mut pending) = self.pending_notifications.lock() {
+                        pending.push(json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/message",
+                            "params": {
+                                "level": "warning",
+                                "logger": "tokensave",
+                                "data": warning
+                            }
+                        }));
+                    }
+                }
+
                 JsonRpcResponse::success(id, result.value)
             }
             Err(e) => JsonRpcResponse::error(
