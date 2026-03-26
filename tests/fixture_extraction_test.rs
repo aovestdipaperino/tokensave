@@ -822,3 +822,49 @@ fn test_fixture_swift() {
         "expected at least one private member"
     );
 }
+
+// ── Bash ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_bash() {
+    let source = read_fixture("sample.sh");
+    let extractor = tokensave::extraction::BashExtractor;
+    let result = extractor.extract("sample.sh", &source);
+    assert!(result.errors.is_empty(), "Bash errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Functions (5: log, validate_config, connect, disconnect, main)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 5, "expected 5 functions, got {}", fns.len());
+    assert!(fns.iter().any(|n| n.name == "log"));
+    assert!(fns.iter().any(|n| n.name == "validate_config"));
+    assert!(fns.iter().any(|n| n.name == "connect"));
+    assert!(fns.iter().any(|n| n.name == "disconnect"));
+    assert!(fns.iter().any(|n| n.name == "main"));
+
+    // Readonly constants (2: MAX_RETRIES, DEFAULT_PORT)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
+    assert!(consts.iter().any(|n| n.name == "DEFAULT_PORT"));
+
+    // Source import (1 Use: ./utils.sh)
+    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(uses.len(), 1, "expected 1 Use node, got {}", uses.len());
+    assert_eq!(uses[0].name, "./utils.sh");
+
+    // Docstrings
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "log").unwrap();
+    assert!(log_fn.docstring.is_some(), "log should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}

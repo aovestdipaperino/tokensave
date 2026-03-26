@@ -1,3 +1,4 @@
+mod bash_extractor;
 pub mod complexity;
 mod go_extractor;
 mod java_extractor;
@@ -19,6 +20,7 @@ mod php_extractor;
 mod ruby_extractor;
 mod swift_extractor;
 
+pub use bash_extractor::BashExtractor;
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
 pub use rust_extractor::RustExtractor;
@@ -82,6 +84,7 @@ impl LanguageRegistry {
                 Box::new(PhpExtractor),
                 Box::new(RubyExtractor),
                 Box::new(SwiftExtractor),
+                Box::new(BashExtractor),
             ],
         }
     }
