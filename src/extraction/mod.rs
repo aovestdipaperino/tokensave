@@ -30,6 +30,7 @@ mod objc_extractor;
 mod fortran_extractor;
 mod cobol_extractor;
 mod msbasic2_extractor;
+mod gwbasic_extractor;
 mod zig_extractor;
 
 pub use bash_extractor::BashExtractor;
@@ -59,6 +60,7 @@ pub use objc_extractor::ObjcExtractor;
 pub use fortran_extractor::FortranExtractor;
 pub use cobol_extractor::CobolExtractor;
 pub use msbasic2_extractor::MsBasic2Extractor;
+pub use gwbasic_extractor::GwBasicExtractor;
 pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
@@ -121,6 +123,7 @@ impl LanguageRegistry {
                 Box::new(CobolExtractor),
                 Box::new(BatchExtractor),
                 Box::new(MsBasic2Extractor),
+                Box::new(GwBasicExtractor),
             ],
         }
     }

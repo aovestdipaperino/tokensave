@@ -1640,3 +1640,48 @@ fn test_fixture_msbasic2() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 5, "expected >= 5 Contains edges, got {}", contains.len());
 }
+
+// ── GW-BASIC ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_gwbasic() {
+    let source = read_fixture("sample.gw");
+    let extractor = tokensave::extraction::GwBasicExtractor;
+    let result = extractor.extract("sample.gw", &source);
+    assert!(result.errors.is_empty(), "GW-BASIC errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Constants from LET statements (MR, DP)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|c| c.name == "MR"), "MR const not found");
+    assert!(consts.iter().any(|c| c.name == "DP"), "DP const not found");
+
+    // Functions: 1 DEF FN + 3 subroutines = 4
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert!(fns.len() >= 4, "expected >= 4 functions, got {}", fns.len());
+    assert!(fns.iter().any(|f| f.name == "FNLOG"), "FNLOG not found");
+    assert!(fns.iter().any(|f| f.name == "VALIDATE_CONFIGURATION"), "VALIDATE_CONFIGURATION not found");
+    assert!(fns.iter().any(|f| f.name == "CONNECT_TO_SERVER"), "CONNECT_TO_SERVER not found");
+    assert!(fns.iter().any(|f| f.name == "DISCONNECT"), "DISCONNECT not found");
+
+    // Docstrings
+    let validate_fn = fns.iter().find(|f| f.name == "VALIDATE_CONFIGURATION").unwrap();
+    assert!(validate_fn.docstring.is_some(), "VALIDATE_CONFIGURATION should have docstring");
+
+    // Complexity: CONNECT_TO_SERVER has a WHILE loop
+    let connect_fn = fns.iter().find(|f| f.name == "CONNECT_TO_SERVER").unwrap();
+    assert!(connect_fn.loops >= 1, "CONNECT_TO_SERVER should have >= 1 loop");
+
+    // Call sites (GOSUB references)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 6, "expected >= 6 Contains edges, got {}", contains.len());
+}

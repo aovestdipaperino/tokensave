@@ -2556,6 +2556,7 @@ dependencies = [
  "tree-sitter-dart-orchard",
  "tree-sitter-fortran",
  "tree-sitter-go",
+ "tree-sitter-gwbasic",
  "tree-sitter-java",
  "tree-sitter-javascript",
  "tree-sitter-kotlin-sg",
@@ -2942,6 +2943,16 @@ name = "tree-sitter-go"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-gwbasic"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8fcf7d8b3cf730c097837c0565c4e856dd27226d33f06f24f33413731992e61"
 dependencies = [
  "cc",
  "tree-sitter-language",
