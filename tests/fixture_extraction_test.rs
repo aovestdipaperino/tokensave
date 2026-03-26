@@ -1547,3 +1547,52 @@ fn test_fixture_fortran() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 5, "expected >= 5 Contains edges, got {}", contains.len());
 }
+
+// -- COBOL ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_cobol() {
+    let source = read_fixture("sample.cob");
+    let extractor = tokensave::extraction::CobolExtractor;
+    let result = extractor.extract("sample.cob", &source);
+    assert!(result.errors.is_empty(), "COBOL errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Module (PROGRAM-ID)
+    let modules: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Module).collect();
+    assert_eq!(modules.len(), 1, "expected 1 module, got {}", modules.len());
+    assert_eq!(modules[0].name, "NETWORKING");
+
+    // Paragraphs as functions (5: MAIN-PROGRAM, VALIDATE-CONFIG, LOG-MESSAGE, CONNECT-SERVER, DISCONNECT-SERVER)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 5, "expected 5 functions, got {}", fns.len());
+    assert!(fns.iter().any(|f| f.name == "MAIN-PROGRAM"), "MAIN-PROGRAM not found");
+    assert!(fns.iter().any(|f| f.name == "VALIDATE-CONFIG"), "VALIDATE-CONFIG not found");
+    assert!(fns.iter().any(|f| f.name == "LOG-MESSAGE"), "LOG-MESSAGE not found");
+    assert!(fns.iter().any(|f| f.name == "CONNECT-SERVER"), "CONNECT-SERVER not found");
+    assert!(fns.iter().any(|f| f.name == "DISCONNECT-SERVER"), "DISCONNECT-SERVER not found");
+
+    // Data items: consts and fields
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert!(consts.iter().any(|c| c.name == "WS-MAX-RETRIES"), "WS-MAX-RETRIES const not found");
+    assert!(consts.iter().any(|c| c.name == "WS-DEFAULT-PORT"), "WS-DEFAULT-PORT const not found");
+
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(fields.iter().any(|f| f.name == "WS-HOST"), "WS-HOST field not found");
+
+    // Docstrings
+    let validate = fns.iter().find(|f| f.name == "VALIDATE-CONFIG").unwrap();
+    assert!(validate.docstring.is_some(), "VALIDATE-CONFIG should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 10, "expected >= 10 Contains edges, got {}", contains.len());
+}

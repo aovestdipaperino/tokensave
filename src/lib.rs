@@ -32,3 +32,4 @@ pub mod vectors;
 pub mod user_config;
 pub mod cloud;
 pub mod tree_sitter_protobuf;
+pub mod tree_sitter_cobol;

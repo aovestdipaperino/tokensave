@@ -585,3 +585,17 @@ pub static FORTRAN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &[],
     macro_invocation_types: &[],
 };
+
+pub static COBOL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_header", "evaluate_statement", "when_phrase"],
+    loop_types: &["perform_statement_loop"],
+    return_types: &["stop_statement", "goback_statement"],
+    nesting_types: &[],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["perform_statement_call_proc"],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
