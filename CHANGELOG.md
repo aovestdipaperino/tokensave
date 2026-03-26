@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProtoService` — Protobuf service definitions
 - `ProtoRpc` — Protobuf RPC method definitions
 
+#### Porting assessment tools
+- **`tokensave_port_status`** — compare symbols between source and target directories within the same project to track porting progress; matches by name with cross-language kind compatibility (`class` ↔ `struct`, `interface` ↔ `trait`); reports matched/unmatched/target-only counts and coverage percentage
+- **`tokensave_port_order`** — topological sort of source symbols for porting; uses Kahn's algorithm on the internal dependency graph to produce levels (port leaves first, then dependents); detects and reports dependency cycles
+
 #### Agent prompt improvements
 - **SQLite fallback instruction** — agents are told to query `.tokensave/tokensave.db` directly via SQL when MCP tools can't answer a code analysis question
 - **Improvement feedback loop** — agents propose opening a GitHub issue when they discover an extractor/schema/tool gap, reminding the user to strip sensitive data

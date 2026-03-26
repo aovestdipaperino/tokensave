@@ -128,6 +128,16 @@ Protobuf files are now first-class citizens with dedicated node kinds:
 
 This enables queries like "what services depend on this message type?" via `tokensave_callers`.
 
+### Porting Assessment Tools
+
+Two new MCP tools help assess and plan cross-language porting:
+
+- **`tokensave_port_status`** — compare symbols between a source and target directory in the same project. Matches by name with cross-language kind compatibility (`class` ↔ `struct`, `interface` ↔ `trait`). Reports coverage percentage, unmatched symbols grouped by file, and target-only symbols.
+
+- **`tokensave_port_order`** — topological sort of source symbols for porting. Returns symbols in dependency-leaf-first order: utility functions and constants at level 0, classes that use them at level 1, services that depend on those classes at level 2, etc. Detects and flags dependency cycles that should be ported together.
+
+Both tools assume source and target live in the same indexed project (e.g., `src/python/` and `src/rust/` side by side).
+
 ### SQLite Fallback & Feedback Loop
 
 Agent prompt rules now include two new instructions:
@@ -470,6 +480,8 @@ These tools are exposed via the MCP server and available to Claude Code when `.t
 | `tokensave_complexity` | Rank functions by composite complexity with cyclomatic complexity, safety metrics (unsafe, unchecked, assertions) from AST |
 | `tokensave_doc_coverage` | Find public symbols missing documentation |
 | `tokensave_god_class` | Find classes with the most members (methods + fields) |
+| `tokensave_port_status` | Compare symbols between source/target directories to track porting progress |
+| `tokensave_port_order` | Topological sort of symbols for porting — port leaves first, then dependents |
 
 ### `tokensave_context`
 
@@ -688,6 +700,40 @@ Find classes with the most members (methods + fields). Identifies "god classes" 
 - **`limit`** (number, optional): Maximum results (default: 10)
 
 Returns classes ranked by total member count with method and field counts shown separately.
+
+### `tokensave_port_status`
+
+Compare symbols between a source directory and a target directory to track porting progress. Both directories must be within the same indexed project.
+
+- **`source_dir`** (string, required): Path prefix for the source code (e.g., `src/python/`)
+- **`target_dir`** (string, required): Path prefix for the target code (e.g., `src/rust/`)
+- **`kinds`** (array of strings, optional): Node kinds to compare (default: function, method, class, struct, interface, trait, enum, module)
+
+Matches symbols by name (case-insensitive) with cross-language kind compatibility — `class` matches `struct`, `interface` matches `trait`. Returns:
+
+- **`matched`**: symbols found in both source and target (with kind mapping)
+- **`unmatched`**: source symbols not yet ported (grouped by file)
+- **`target_only`**: new symbols in target with no source equivalent
+- **`coverage_percent`**: percentage of source symbols matched in target
+
+Example: "We've ported 45 of 87 functions (51.7%). Here are the 42 remaining, grouped by source file."
+
+### `tokensave_port_order`
+
+Return symbols from a source directory in topological dependency order for porting. Symbols with no internal dependencies come first (safe to port immediately), then symbols whose dependencies are all earlier in the list.
+
+- **`source_dir`** (string, required): Path prefix for the source code
+- **`kinds`** (array of strings, optional): Node kinds to include (default: function, method, class, struct, interface, trait, enum, module)
+- **`limit`** (number, optional): Maximum symbols to return (default: 50)
+
+Uses Kahn's algorithm on the internal call/uses/extends/implements graph. Output is organized into levels:
+
+- **Level 0**: No internal dependencies — port these first (utilities, constants, base types)
+- **Level 1**: Depends only on level 0 — port these next
+- **Level N**: Depends only on levels 0 through N-1
+- **Cycles**: Mutually dependent symbols that should be ported together
+
+Example: "Port `log_message` and `MAX_RETRIES` first (no deps), then `Connection` (uses both), then `Pool` (uses `Connection`)."
 
 ---
 
