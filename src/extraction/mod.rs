@@ -2,6 +2,7 @@ mod bash_extractor;
 pub mod complexity;
 mod go_extractor;
 mod java_extractor;
+mod lua_extractor;
 /// Tree-sitter based source code extraction module.
 ///
 /// This module provides extractors that parse source files using tree-sitter
@@ -22,6 +23,7 @@ mod swift_extractor;
 
 pub use bash_extractor::BashExtractor;
 pub use go_extractor::GoExtractor;
+pub use lua_extractor::LuaExtractor;
 pub use java_extractor::JavaExtractor;
 pub use rust_extractor::RustExtractor;
 pub use scala_extractor::ScalaExtractor;
@@ -85,6 +87,7 @@ impl LanguageRegistry {
                 Box::new(RubyExtractor),
                 Box::new(SwiftExtractor),
                 Box::new(BashExtractor),
+                Box::new(LuaExtractor),
             ],
         }
     }

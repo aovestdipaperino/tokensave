@@ -868,3 +868,55 @@ fn test_fixture_bash() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── Lua ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_lua() {
+    let source = read_fixture("sample.lua");
+    let extractor = tokensave::extraction::LuaExtractor;
+    let result = extractor.extract("sample.lua", &source);
+    assert!(result.errors.is_empty(), "Lua errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Requires (2: json, socket)
+    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(uses.len(), 2, "expected 2 Use nodes, got {}", uses.len());
+    assert!(uses.iter().any(|n| n.name == "json"));
+    assert!(uses.iter().any(|n| n.name == "socket"));
+
+    // Constants (2: MAX_RETRIES, DEFAULT_PORT)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
+    assert!(consts.iter().any(|n| n.name == "DEFAULT_PORT"));
+
+    // Functions (3: log, Connection.new, Pool.new)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 3, "expected 3 functions, got {}", fns.len());
+    assert!(fns.iter().any(|n| n.name == "log"));
+
+    // Methods (5: connect, disconnect, isConnected, acquire, release)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert_eq!(methods.len(), 5, "expected 5 methods, got {}", methods.len());
+    assert!(methods.iter().any(|n| n.name == "connect"));
+    assert!(methods.iter().any(|n| n.name == "disconnect"));
+    assert!(methods.iter().any(|n| n.name == "isConnected"));
+    assert!(methods.iter().any(|n| n.name == "acquire"));
+    assert!(methods.iter().any(|n| n.name == "release"));
+
+    // Docstrings
+    let lua_log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "log").unwrap();
+    assert!(lua_log_fn.docstring.is_some(), "log should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
