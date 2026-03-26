@@ -8,6 +8,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 pub mod opencode;
 
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use crate::errors::TokenSaveError;
 
 pub use claude::ClaudeAgent;
 pub use codex::CodexAgent;
+pub use gemini::GeminiAgent;
 pub use opencode::OpenCodeAgent;
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,7 @@ pub fn get_agent(id: &str) -> Result<Box<dyn Agent>> {
         "claude" => Ok(Box::new(ClaudeAgent)),
         "opencode" => Ok(Box::new(OpenCodeAgent)),
         "codex" => Ok(Box::new(CodexAgent)),
+        "gemini" => Ok(Box::new(GeminiAgent)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -79,12 +82,13 @@ pub fn all_agents() -> Vec<Box<dyn Agent>> {
         Box::new(ClaudeAgent),
         Box::new(OpenCodeAgent),
         Box::new(CodexAgent),
+        Box::new(GeminiAgent),
     ]
 }
 
 /// Returns the CLI identifiers of all registered agents (for help text).
 pub fn available_agents() -> Vec<&'static str> {
-    vec!["claude", "opencode", "codex"]
+    vec!["claude", "opencode", "codex", "gemini"]
 }
 
 // ---------------------------------------------------------------------------
