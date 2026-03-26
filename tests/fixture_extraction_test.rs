@@ -1685,3 +1685,60 @@ fn test_fixture_gwbasic() {
     let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
     assert!(contains.len() >= 6, "expected >= 6 Contains edges, got {}", contains.len());
 }
+
+// ── QBasic ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_qbasic() {
+    let source = read_fixture("sample.qb");
+    let extractor = tokensave::extraction::QBasicExtractor;
+    let result = extractor.extract("sample.qb", &source);
+    assert!(result.errors.is_empty(), "QBasic errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // TYPE as Struct (Endpoint)
+    let structs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Struct).collect();
+    assert_eq!(structs.len(), 1, "expected 1 struct (Endpoint), got {}", structs.len());
+    assert_eq!(structs[0].name, "Endpoint");
+
+    // Struct fields (host, port, connected)
+    let struct_fields: Vec<_> = result.nodes.iter().filter(|n| {
+        n.kind == NodeKind::Field && n.qualified_name.contains("Endpoint")
+    }).collect();
+    assert!(struct_fields.len() >= 3, "expected >= 3 Endpoint fields, got {}", struct_fields.len());
+
+    // SUBs and FUNCTION as Function nodes
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert!(fns.len() >= 5, "expected >= 5 functions, got {}", fns.len());
+    assert!(fns.iter().any(|f| f.name == "LogMessage"), "LogMessage not found");
+    assert!(fns.iter().any(|f| f.name == "ValidateConfig"), "ValidateConfig not found");
+    assert!(fns.iter().any(|f| f.name == "ConnectServer"), "ConnectServer not found");
+    assert!(fns.iter().any(|f| f.name == "DisconnectServer"), "DisconnectServer not found");
+    assert!(fns.iter().any(|f| f.name == "IsConnected"), "IsConnected not found");
+
+    // Docstrings on functions
+    let log_fn = fns.iter().find(|f| f.name == "LogMessage").unwrap();
+    assert!(log_fn.docstring.is_some(), "LogMessage should have docstring");
+
+    // Complexity: ValidateConfig has IF branches, ConnectServer has FOR loop
+    let validate_fn = fns.iter().find(|f| f.name == "ValidateConfig").unwrap();
+    assert!(validate_fn.branches >= 1, "ValidateConfig should have >= 1 branch");
+    let connect_fn = fns.iter().find(|f| f.name == "ConnectServer").unwrap();
+    assert!(connect_fn.loops >= 1, "ConnectServer should have >= 1 loop");
+
+    // CONST nodes
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert!(!consts.is_empty(), "expected at least 1 CONST node");
+
+    // Call sites (CALL references)
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 10, "expected >= 10 Contains edges, got {}", contains.len());
+}

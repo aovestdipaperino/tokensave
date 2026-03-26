@@ -1,0 +1,74 @@
+' Sample QBasic program
+' Networking simulator
+
+DECLARE SUB LogMessage (level AS STRING, message AS STRING)
+DECLARE SUB ValidateConfig ()
+DECLARE SUB ConnectServer ()
+DECLARE SUB DisconnectServer ()
+DECLARE FUNCTION IsConnected% ()
+
+CONST MAX_RETRIES = 3
+CONST DEFAULT_PORT = 8080
+
+TYPE Endpoint
+    host AS STRING * 256
+    port AS INTEGER
+    connected AS INTEGER
+END TYPE
+
+DIM SHARED conn AS Endpoint
+DIM SHARED logLevel AS STRING
+DIM SHARED logMsg AS STRING
+
+' Main program
+conn.host = "localhost"
+conn.port = DEFAULT_PORT
+conn.connected = 0
+
+CALL ValidateConfig
+CALL ConnectServer
+CALL DisconnectServer
+END
+
+' Logs a message with the given level.
+SUB LogMessage (level AS STRING, message AS STRING)
+    PRINT "["; level; "] "; message
+END SUB
+
+' Validates the configuration.
+SUB ValidateConfig
+    IF conn.host = "" THEN
+        CALL LogMessage("ERROR", "HOST is not set")
+        EXIT SUB
+    END IF
+    IF conn.port < 1 OR conn.port > 65535 THEN
+        CALL LogMessage("ERROR", "Invalid port")
+        EXIT SUB
+    END IF
+    CALL LogMessage("INFO", "Config valid")
+END SUB
+
+' Connects to the remote server.
+SUB ConnectServer
+    DIM i AS INTEGER
+    CALL LogMessage("INFO", "Connecting to " + conn.host)
+    FOR i = 1 TO MAX_RETRIES
+        conn.connected = 1
+        IF conn.connected = 1 THEN
+            CALL LogMessage("INFO", "Connected")
+            EXIT FOR
+        END IF
+        CALL LogMessage("WARN", "Retry" + STR$(i))
+    NEXT i
+END SUB
+
+' Disconnects from the server.
+SUB DisconnectServer
+    conn.connected = 0
+    CALL LogMessage("INFO", "Disconnecting")
+END SUB
+
+' Checks if connected.
+FUNCTION IsConnected%
+    IsConnected% = conn.connected
+END FUNCTION

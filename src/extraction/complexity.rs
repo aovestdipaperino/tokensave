@@ -627,3 +627,17 @@ pub static GWBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &[],
     macro_invocation_types: &[],
 };
+
+pub static QBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["block_if_statement"],
+    loop_types: &["for_statement", "while_statement", "do_loop_statement"],
+    return_types: &["exit_statement"],
+    nesting_types: &[],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_statement"],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
