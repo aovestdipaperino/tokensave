@@ -18,6 +18,7 @@ mod dart_extractor;
 mod csharp_extractor;
 mod pascal_extractor;
 mod php_extractor;
+mod proto_extractor;
 mod ruby_extractor;
 mod swift_extractor;
 mod zig_extractor;
@@ -37,6 +38,7 @@ pub use dart_extractor::DartExtractor;
 pub use csharp_extractor::CSharpExtractor;
 pub use pascal_extractor::PascalExtractor;
 pub use php_extractor::PhpExtractor;
+pub use proto_extractor::ProtoExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
 pub use zig_extractor::ZigExtractor;
@@ -91,6 +93,7 @@ impl LanguageRegistry {
                 Box::new(BashExtractor),
                 Box::new(LuaExtractor),
                 Box::new(ZigExtractor),
+                Box::new(ProtoExtractor),
             ],
         }
     }

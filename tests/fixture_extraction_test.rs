@@ -1019,3 +1019,64 @@ fn test_fixture_zig() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── Protobuf ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_proto() {
+    let source = read_fixture("sample.proto");
+    let extractor = tokensave::extraction::ProtoExtractor;
+    let result = extractor.extract("sample.proto", &source);
+    assert!(result.errors.is_empty(), "Proto errors: {:?}", result.errors);
+
+    // File root
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Package
+    let pkgs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Package).collect();
+    assert_eq!(pkgs.len(), 1);
+    assert_eq!(pkgs[0].name, "networking");
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports, got {}", imports.len());
+
+    // Messages
+    let msgs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::ProtoMessage).collect();
+    assert!(msgs.len() >= 7, "expected >= 7 messages, got {}", msgs.len());
+    assert!(msgs.iter().any(|m| m.name == "Endpoint"));
+    assert!(msgs.iter().any(|m| m.name == "ConnectionConfig"));
+    assert!(msgs.iter().any(|m| m.name == "AuthConfig")); // nested
+
+    // Enum + variants
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "LogLevel"));
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert_eq!(variants.len(), 5, "expected 5 enum variants, got {}", variants.len());
+
+    // Service
+    let services: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::ProtoService).collect();
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0].name, "ConnectionService");
+
+    // RPCs
+    let rpcs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::ProtoRpc).collect();
+    assert_eq!(rpcs.len(), 3, "expected 3 rpcs, got {}", rpcs.len());
+    assert!(rpcs.iter().any(|r| r.name == "Connect"));
+    assert!(rpcs.iter().any(|r| r.name == "Disconnect"));
+    assert!(rpcs.iter().any(|r| r.name == "HealthCheck"));
+
+    // Fields
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(fields.len() >= 15, "expected >= 15 fields, got {}", fields.len());
+
+    // Docstrings
+    let endpoint = result.nodes.iter().find(|n| n.kind == NodeKind::ProtoMessage && n.name == "Endpoint").unwrap();
+    assert!(endpoint.docstring.is_some(), "Endpoint should have docstring");
+
+    let log_level = result.nodes.iter().find(|n| n.kind == NodeKind::Enum && n.name == "LogLevel").unwrap();
+    assert!(log_level.docstring.is_some(), "LogLevel should have docstring");
+
+    // Contains edges
+    let contains: Vec<_> = result.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
+    assert!(contains.len() >= 10, "expected >= 10 Contains edges, got {}", contains.len());
+}

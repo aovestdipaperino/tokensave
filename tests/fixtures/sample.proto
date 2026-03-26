@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package networking;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Represents the log level.
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARNING = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+// A network endpoint.
+message Endpoint {
+  string host = 1;
+  int32 port = 2;
+  bool tls = 3;
+}
+
+// Connection configuration.
+message ConnectionConfig {
+  Endpoint endpoint = 1;
+  int32 max_retries = 2;
+  int32 timeout_ms = 3;
+  LogLevel log_level = 4;
+
+  // Nested authentication config.
+  message AuthConfig {
+    string token = 1;
+    string username = 2;
+  }
+
+  AuthConfig auth = 5;
+
+  oneof strategy {
+    string round_robin = 6;
+    string least_connections = 7;
+  }
+}
+
+// Manages network connections.
+service ConnectionService {
+  // Establishes a new connection.
+  rpc Connect(ConnectionConfig) returns (ConnectionStatus);
+  // Disconnects an existing connection.
+  rpc Disconnect(DisconnectRequest) returns (google.protobuf.Empty);
+  // Streams connection health checks.
+  rpc HealthCheck(HealthCheckRequest) returns (stream HealthCheckResponse);
+}
+
+message ConnectionStatus {
+  bool connected = 1;
+  string connection_id = 2;
+}
+
+message DisconnectRequest {
+  string connection_id = 1;
+}
+
+message HealthCheckRequest {
+  string connection_id = 1;
+}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  int64 latency_ms = 2;
+}
