@@ -698,3 +698,127 @@ fn test_fixture_ruby() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// -- Swift ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_swift() {
+    let source = read_fixture("sample.swift");
+    let extractor = tokensave::extraction::SwiftExtractor;
+    let result = extractor.extract("sample.swift", &source);
+    assert!(result.errors.is_empty(), "Swift errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert!(imports.len() >= 2, "expected >= 2 imports, got {}", imports.len());
+    assert!(imports.iter().any(|n| n.name == "Foundation"));
+    assert!(imports.iter().any(|n| n.name == "UIKit"));
+
+    // Top-level constant
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Const && n.name == "maxConnections"),
+        "maxConnections constant not found"
+    );
+
+    // Typealias
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::TypeAlias && n.name == "CompletionHandler"),
+        "CompletionHandler typealias not found"
+    );
+
+    // Enum
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "LogLevel"),
+        "LogLevel enum not found"
+    );
+
+    // Enum variants
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert!(variants.len() >= 4, "expected >= 4 enum variants, got {}", variants.len());
+
+    // Protocol as Interface
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Interface && n.name == "Serializable"),
+        "Serializable protocol not found"
+    );
+
+    // Classes
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Base"),
+        "Base class not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "Connection"),
+        "Connection class not found"
+    );
+
+    // Struct
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Point"),
+        "Point struct not found"
+    );
+
+    // Extension
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Extension && n.name == "String"),
+        "String extension not found"
+    );
+
+    // Constructor
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Constructor),
+        "expected at least one Constructor node"
+    );
+
+    // Methods (>= 3: description, validate, connect, disconnect, distance, toSlug, toJson, toJsonString)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 3, "expected >= 3 methods, got {}", methods.len());
+
+    // Top-level function
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "processUsers"),
+        "processUsers function not found"
+    );
+
+    // Properties (inside classes/structs)
+    let props: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Property).collect();
+    assert!(props.len() >= 2, "expected >= 2 properties, got {}", props.len());
+
+    // Docstrings
+    let base = result.nodes.iter().find(|n| n.kind == NodeKind::Class && n.name == "Base").unwrap();
+    assert!(base.docstring.is_some(), "Base class should have docstring");
+
+    // Inheritance: Connection extends Base
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends),
+        "expected Extends refs for class inheritance"
+    );
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Extends && r.reference_name == "Base"),
+        "expected Extends ref to Base"
+    );
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+
+    // Async method
+    let connect = result.nodes.iter().find(|n| n.name == "connect");
+    if let Some(c) = connect {
+        assert!(c.is_async, "connect should be async");
+    }
+
+    // Private visibility
+    assert!(
+        result.nodes.iter().any(|n| n.visibility == Visibility::Private),
+        "expected at least one private member"
+    );
+}

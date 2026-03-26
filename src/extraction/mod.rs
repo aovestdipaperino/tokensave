@@ -17,6 +17,7 @@ mod csharp_extractor;
 mod pascal_extractor;
 mod php_extractor;
 mod ruby_extractor;
+mod swift_extractor;
 
 pub use go_extractor::GoExtractor;
 pub use java_extractor::JavaExtractor;
@@ -32,6 +33,7 @@ pub use csharp_extractor::CSharpExtractor;
 pub use pascal_extractor::PascalExtractor;
 pub use php_extractor::PhpExtractor;
 pub use ruby_extractor::RubyExtractor;
+pub use swift_extractor::SwiftExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -79,6 +81,7 @@ impl LanguageRegistry {
                 Box::new(PascalExtractor),
                 Box::new(PhpExtractor),
                 Box::new(RubyExtractor),
+                Box::new(SwiftExtractor),
             ],
         }
     }
