@@ -22,6 +22,7 @@ mod proto_extractor;
 mod nix_extractor;
 mod ruby_extractor;
 mod swift_extractor;
+mod batch_extractor;
 mod powershell_extractor;
 mod vbnet_extractor;
 mod zig_extractor;
@@ -45,6 +46,7 @@ pub use proto_extractor::ProtoExtractor;
 pub use nix_extractor::NixExtractor;
 pub use ruby_extractor::RubyExtractor;
 pub use swift_extractor::SwiftExtractor;
+pub use batch_extractor::BatchExtractor;
 pub use powershell_extractor::PowerShellExtractor;
 pub use vbnet_extractor::VbNetExtractor;
 pub use zig_extractor::ZigExtractor;
@@ -103,6 +105,7 @@ impl LanguageRegistry {
                 Box::new(ProtoExtractor),
                 Box::new(PowerShellExtractor),
                 Box::new(VbNetExtractor),
+                Box::new(BatchExtractor),
             ],
         }
     }

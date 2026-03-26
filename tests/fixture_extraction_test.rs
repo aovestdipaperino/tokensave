@@ -1276,3 +1276,44 @@ fn test_fixture_powershell() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── Batch ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_batch() {
+    let source = read_fixture("sample.bat");
+    let extractor = tokensave::extraction::BatchExtractor;
+    let result = extractor.extract("sample.bat", &source);
+    assert!(result.errors.is_empty(), "Batch errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Labels as functions (5: Log, ValidateConfig, Connect, Disconnect, Main)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert_eq!(fns.len(), 5, "expected 5 functions, got {}", fns.len());
+    assert!(fns.iter().any(|n| n.name == "Log"));
+    assert!(fns.iter().any(|n| n.name == "ValidateConfig"));
+    assert!(fns.iter().any(|n| n.name == "Connect"));
+    assert!(fns.iter().any(|n| n.name == "Disconnect"));
+    assert!(fns.iter().any(|n| n.name == "Main"));
+
+    // Set constants (2: MAX_RETRIES, DEFAULT_PORT)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert_eq!(consts.len(), 2, "expected 2 consts, got {}", consts.len());
+    assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
+    assert!(consts.iter().any(|n| n.name == "DEFAULT_PORT"));
+
+    // Docstrings
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "Log").unwrap();
+    assert!(log_fn.docstring.is_some(), "Log should have docstring");
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
