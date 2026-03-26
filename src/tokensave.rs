@@ -327,23 +327,37 @@ impl TokenSave {
     /// Scans the project root for source files in all supported languages,
     /// respecting the configured exclude patterns and max file size.
     ///
+    /// When `git_ignore` is enabled in the config, `.gitignore` rules are
+    /// applied via the `ignore` crate. Otherwise, hidden directories and
+    /// `target/` are skipped with a simple name-based filter.
+    ///
     /// Supported extensions are derived from the `LanguageRegistry` so that
     /// adding a new extractor automatically picks up its files.
     fn scan_files(&self) -> Result<Vec<String>> {
         debug_assert!(self.project_root.is_dir(), "scan_files: project_root is not a directory");
         let supported_exts = self.registry.supported_extensions();
         debug_assert!(!supported_exts.is_empty(), "scan_files: no supported extensions registered");
+
+        if self.config.git_ignore {
+            self.scan_files_with_gitignore(&supported_exts)
+        } else {
+            self.scan_files_walkdir(&supported_exts)
+        }
+    }
+
+    /// Walk using `walkdir`, skipping hidden directories and `target/`.
+    fn scan_files_walkdir(
+        &self,
+        supported_exts: &[&str],
+    ) -> Result<Vec<String>> {
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| {
-                // Always allow the root directory itself (depth 0), even if
-                // its name starts with '.' (e.g. temp dirs on macOS).
                 if e.depth() == 0 {
                     return true;
                 }
-                // Skip hidden directories and target/
                 let name = e.file_name().to_string_lossy();
                 !name.starts_with('.') && name != "target"
             })
@@ -355,27 +369,67 @@ impl TokenSave {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let path = entry.path();
-            // Check extension against registry-supported languages
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            if !supported_exts.contains(&ext) {
-                continue;
-            }
-            if let Ok(relative) = path.strip_prefix(&self.project_root) {
-                let rel_str = relative.to_string_lossy().to_string();
-                if !is_excluded(&rel_str, &self.config) {
-                    if let Ok(metadata) = std::fs::metadata(path) {
-                        if metadata.len() <= self.config.max_file_size {
-                            files.push(rel_str);
-                        }
-                    }
-                }
+            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts) {
+                files.push(rel_str);
             }
         }
         Ok(files)
+    }
+
+    /// Walk using the `ignore` crate, which respects `.gitignore` rules,
+    /// `.git/info/exclude`, and the user's global gitignore.
+    fn scan_files_with_gitignore(
+        &self,
+        supported_exts: &[&str],
+    ) -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        let walker = ignore::WalkBuilder::new(&self.project_root)
+            .follow_links(false)
+            .hidden(true) // skip hidden files/dirs
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .build();
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let Some(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_file() {
+                continue;
+            }
+            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts) {
+                files.push(rel_str);
+            }
+        }
+        Ok(files)
+    }
+
+    /// Checks whether a file should be included: correct extension, not
+    /// excluded by config globs, and within the max file size.
+    fn accept_file(
+        &self,
+        path: &Path,
+        supported_exts: &[&str],
+    ) -> Option<String> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            return None;
+        }
+        let relative = path.strip_prefix(&self.project_root).ok()?;
+        let rel_str = relative.to_string_lossy().to_string();
+        if is_excluded(&rel_str, &self.config) {
+            return None;
+        }
+        let metadata = std::fs::metadata(path).ok()?;
+        if metadata.len() > self.config.max_file_size {
+            return None;
+        }
+        Some(rel_str)
     }
 }
 
