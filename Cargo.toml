@@ -1,8 +1,8 @@
 [package]
 name = "tokensave"
-version = "1.10.0"
+version = "2.0.0"
 edition = "2021"
-description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, Ruby, Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, and QBasic codebases"
+description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/tokensave"
 homepage = "https://github.com/aovestdipaperino/tokensave"

@@ -71,8 +71,8 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything Claude needs — entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **15 Languages** | **100% Local** | **Always Fresh** |
-| Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, Dart, C#, Pascal, PHP, Ruby — all with the same API. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
+| **30 Languages** | **100% Local** | **Always Fresh** |
+| Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 22 more — all with the same API. Three tiers (lite/medium/full) let you control binary size. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Git hooks automatically sync the index as you work. Your code intelligence is always up to date. |
 
 ---
 
@@ -96,7 +96,9 @@ scoop install tokensave
 **Cargo (any platform):**
 
 ```bash
-cargo install tokensave
+cargo install tokensave                          # full (30 languages, default)
+cargo install tokensave --features medium        # medium (20 languages)
+cargo install tokensave --no-default-features    # lite (11 languages, smallest binary)
 ```
 
 **Prebuilt binaries (Linux, Windows, macOS):**
@@ -713,23 +715,68 @@ The graph supports complex queries:
 
 ## Supported Languages
 
-| Language | Extensions | Since |
-|----------|-----------|-------|
-| Rust | `.rs` | 0.4.0 |
-| Go | `.go` | 0.5.0 |
-| Java | `.java` | 0.5.0 |
-| Scala | `.scala`, `.sc` | 0.6.0 |
-| TypeScript | `.ts`, `.tsx` | 0.7.0 |
-| JavaScript | `.js`, `.jsx` | 0.7.0 |
-| Python | `.py` | 0.7.0 |
-| C | `.c`, `.h` | 0.7.0 |
-| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hh` | 0.7.0 |
-| Kotlin | `.kt`, `.kts` | 0.7.0 |
-| Dart | `.dart` | 0.7.0 |
-| C# | `.cs` | 0.7.0 |
-| Pascal | `.pas`, `.pp`, `.dpr` | 0.7.0 |
-| PHP | `.php` | 1.4.2 |
-| Ruby | `.rb` | 1.4.2 |
+tokensave supports 30 languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it.
+
+### Lite (11 languages) — `--no-default-features`
+
+Always compiled. The smallest binary for the most popular languages.
+
+| Language | Extensions |
+|----------|-----------|
+| Rust | `.rs` |
+| Go | `.go` |
+| Java | `.java` |
+| Scala | `.scala`, `.sc` |
+| TypeScript | `.ts`, `.tsx` |
+| JavaScript | `.js`, `.jsx` |
+| Python | `.py` |
+| C | `.c`, `.h` |
+| C++ | `.cpp`, `.hpp`, `.cc`, `.cxx`, `.hh` |
+| Kotlin | `.kt`, `.kts` |
+| C# | `.cs` |
+| Swift | `.swift` |
+
+### Medium (Lite + 9 = 20 languages) — `--features medium`
+
+Adds scripting, config, and additional systems languages.
+
+| Language | Extensions | Feature flag |
+|----------|-----------|-------------|
+| Dart | `.dart` | `lang-dart` |
+| Pascal | `.pas`, `.pp`, `.dpr` | `lang-pascal` |
+| PHP | `.php` | `lang-php` |
+| Ruby | `.rb` | `lang-ruby` |
+| Bash | `.sh`, `.bash` | `lang-bash` |
+| Protobuf | `.proto` | `lang-protobuf` |
+| PowerShell | `.ps1`, `.psm1` | `lang-powershell` |
+| Nix | `.nix` | `lang-nix` |
+| VB.NET | `.vb` | `lang-vbnet` |
+
+### Full (Medium + 10 = 30 languages) — default
+
+Everything. Includes legacy, niche, and domain-specific languages.
+
+| Language | Extensions | Feature flag |
+|----------|-----------|-------------|
+| Lua | `.lua` | `lang-lua` |
+| Zig | `.zig` | `lang-zig` |
+| Objective-C | `.m`, `.mm` | `lang-objc` |
+| Perl | `.pl`, `.pm` | `lang-perl` |
+| Batch/CMD | `.bat`, `.cmd` | `lang-batch` |
+| Fortran | `.f90`, `.f95`, `.f03`, `.f08`, `.f18`, `.f`, `.for` | `lang-fortran` |
+| COBOL | `.cob`, `.cbl`, `.cpy` | `lang-cobol` |
+| MS BASIC 2.0 | `.bas` | `lang-msbasic2` |
+| GW-BASIC | `.gw` | `lang-gwbasic` |
+| QBasic | `.qb` | `lang-qbasic` |
+
+### Mixing individual languages
+
+You can also enable individual languages without a full tier:
+
+```bash
+# Lite + just Nix and Bash
+cargo install tokensave --no-default-features --features lang-nix,lang-bash
+```
 
 ---
 
@@ -778,8 +825,12 @@ This project is a Rust port of the original [CodeGraph](https://github.com/colby
 ## Building
 
 ```bash
-cargo build --release
-cargo test
+cargo build --release                          # full (30 languages, default)
+cargo build --release --features medium        # medium (20 languages)
+cargo build --release --no-default-features    # lite (11 languages)
+
+cargo test                                     # run all tests (requires full)
+cargo check --no-default-features              # verify lite compiles
 cargo clippy --all
 ```
 

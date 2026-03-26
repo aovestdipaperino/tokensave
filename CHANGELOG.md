@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-26
+
+### Added
+- **30 language support** — added 16 new language extractors: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic
+- **Nix deep extraction** — derivation field extraction (`pname`, `buildInputs`, etc.), `import ./path` file dependency resolution, and flake.nix output schema awareness (`packages`, `devShells`, `apps`, etc.)
+- **Feature flag tiers** for controlling binary size:
+  - `lite` (11 languages, always compiled): Rust, Go, Java, Scala, TypeScript/JS, Python, C, C++, Kotlin, C#, Swift
+  - `medium` (20 languages): lite + Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET
+  - `full` (30 languages, default): medium + Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic
+- Individual `lang-*` feature flags for fine-grained control (e.g., `--features lang-nix,lang-bash`)
+- `ProtoMessage`, `ProtoService`, `ProtoRpc` node kinds for Protobuf schema graph support
+
+### Breaking
+- Tree-sitter grammar dependencies for medium/full tier languages are now optional. Downstream crates depending on specific extractors must enable the corresponding `lang-*` feature.
+- `cargo install tokensave --no-default-features` now builds a lite binary (11 languages) instead of all 15.
+
 ## [1.10.0] - 2026-03-26
 
 ### Added
