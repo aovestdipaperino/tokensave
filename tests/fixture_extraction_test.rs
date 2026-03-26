@@ -920,3 +920,102 @@ fn test_fixture_lua() {
     // Contains edges
     assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
 }
+
+// ── Zig ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_zig() {
+    let source = read_fixture("sample.zig");
+    let extractor = tokensave::extraction::ZigExtractor;
+    let result = extractor.extract("sample.zig", &source);
+    assert!(result.errors.is_empty(), "Zig errors: {:?}", result.errors);
+
+    // File root node
+    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+
+    // Imports (2: std, std.mem)
+    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    assert_eq!(imports.len(), 2, "expected 2 imports, got {}", imports.len());
+    assert!(imports.iter().any(|n| n.name == "std"));
+
+    // Const (max_connections)
+    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    assert!(
+        consts.iter().any(|n| n.name == "max_connections"),
+        "max_connections constant not found"
+    );
+
+    // Enum (LogLevel)
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Enum && n.name == "LogLevel"),
+        "LogLevel enum not found"
+    );
+
+    // Enum variants (4: debug, info, warning, err)
+    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
+    assert_eq!(variants.len(), 4, "expected 4 enum variants, got {}", variants.len());
+    assert!(variants.iter().any(|v| v.name == "debug"));
+    assert!(variants.iter().any(|v| v.name == "info"));
+    assert!(variants.iter().any(|v| v.name == "warning"));
+    assert!(variants.iter().any(|v| v.name == "err"));
+
+    // Structs (Point, Connection)
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Point"),
+        "Point struct not found"
+    );
+    assert!(
+        result.nodes.iter().any(|n| n.kind == NodeKind::Struct && n.name == "Connection"),
+        "Connection struct not found"
+    );
+
+    // Fields
+    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    assert!(fields.len() >= 5, "expected >= 5 fields, got {}", fields.len());
+    assert!(fields.iter().any(|f| f.name == "x"));
+    assert!(fields.iter().any(|f| f.name == "host"));
+
+    // Methods inside structs (distance, origin, init, connect, disconnect, isConnected)
+    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    assert!(methods.len() >= 6, "expected >= 6 methods, got {}", methods.len());
+    assert!(methods.iter().any(|m| m.name == "distance"));
+    assert!(methods.iter().any(|m| m.name == "origin"));
+    assert!(methods.iter().any(|m| m.name == "init"));
+    assert!(methods.iter().any(|m| m.name == "connect"));
+    assert!(methods.iter().any(|m| m.name == "disconnect"));
+    assert!(methods.iter().any(|m| m.name == "isConnected"));
+
+    // Top-level functions (log, processConnections)
+    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    assert!(fns.iter().any(|f| f.name == "log"), "log function not found");
+    assert!(
+        fns.iter().any(|f| f.name == "processConnections"),
+        "processConnections function not found"
+    );
+
+    // Test declaration as Function
+    assert!(
+        fns.iter().any(|f| f.name == "point distance"),
+        "test 'point distance' not found"
+    );
+
+    // Visibility: pub functions
+    let log_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "log").unwrap();
+    assert_eq!(log_fn.visibility, Visibility::Pub, "log should be pub");
+    let process_fn = result.nodes.iter().find(|n| n.kind == NodeKind::Function && n.name == "processConnections").unwrap();
+    assert_eq!(process_fn.visibility, Visibility::Pub, "processConnections should be pub");
+
+    // Docstrings
+    let point = result.nodes.iter().find(|n| n.kind == NodeKind::Struct && n.name == "Point").unwrap();
+    assert!(point.docstring.is_some(), "Point should have docstring");
+    assert!(point.docstring.as_ref().unwrap().contains("2D point"));
+
+    // Call sites
+    assert!(
+        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        "expected Calls refs"
+    );
+
+    // Contains edges
+    assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Contains));
+}
