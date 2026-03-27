@@ -22,6 +22,7 @@ fn round_trip_serialization() {
         last_flush_attempt_at: 1711375100,
         cached_latest_version: String::new(),
         last_version_check_at: 0,
+        last_version_warning_at: 0,
         cached_country_flags: Vec::new(),
         last_flags_fetch_at: 0,
     };

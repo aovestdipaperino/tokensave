@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-03-27
+
+### Changed
+- **Version-update warning suppressed for 15 minutes** — the "Update available" notice shown after `sync` and in MCP tool responses is now suppressed for 15 minutes after it was last displayed, reducing noise for frequent users; `tokensave status` always shows the warning regardless of suppression
+
 ## [2.3.0] - 2026-03-27
 
 ### Added

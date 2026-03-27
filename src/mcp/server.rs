@@ -38,8 +38,8 @@ impl ServerStats {
     }
 }
 
-/// Cache duration for version checks (5 minutes).
-const VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(300);
+/// Cache duration for version checks (15 minutes).
+const VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(900);
 
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
@@ -174,7 +174,7 @@ impl McpServer {
     }
 
     /// Returns a version-update warning if a newer release is available.
-    /// Results are cached for `VERSION_CHECK_INTERVAL` (5 minutes).
+    /// Results are cached for `VERSION_CHECK_INTERVAL` (15 minutes).
     async fn check_version_update(&self) -> Option<String> {
         let current = env!("CARGO_PKG_VERSION");
 
