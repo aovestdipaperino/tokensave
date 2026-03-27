@@ -2194,7 +2194,7 @@ fn git_diff_files(
                     changed.push(location.to_string());
                 }
             }
-            Ok::<_, std::convert::Infallible>(gix::object::tree::diff::Action::Continue)
+            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
         })
         .map_err(|e| format!("tree diff failed: {e}"))?;
 

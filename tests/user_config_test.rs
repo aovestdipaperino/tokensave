@@ -22,6 +22,8 @@ fn round_trip_serialization() {
         last_flush_attempt_at: 1711375100,
         cached_latest_version: String::new(),
         last_version_check_at: 0,
+        cached_country_flags: Vec::new(),
+        last_flags_fetch_at: 0,
     };
     let toml_str = toml::to_string_pretty(&config).unwrap();
     let parsed: UserConfig = toml::from_str(&toml_str).unwrap();

@@ -81,8 +81,8 @@ pub fn print_status_table(
     let inner_width = cell_width * num_cols + (num_cols - 1);
 
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
-    print_title_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
-    print_flags_row(country_flags, inner_width);
+    print_version_flags_row(country_flags, inner_width);
+    print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
     let stats_rows = build_stats_rows(stats, num_cols);
@@ -96,22 +96,73 @@ pub fn print_status_table(
     println!("{}", table_separator('╰', '┴', '╯', cell_width, num_cols));
 }
 
-/// Compute cell width from the widest node-kind entry.
+/// Maximum cell width — caps total table width at 100 columns.
+const MAX_CELL_WIDTH: usize = 32;
+
+/// Maximum number of country flags to display in the title row.
+/// Derived from MAX_CELL_WIDTH: available = 3*32 = 96, title ~16, gap 2 → 78 cols for flags.
+/// Each flag = 3 cols (2 emoji + 1 space), first = 2 → fits 26; use 25 for margin.
+const MAX_DISPLAY_FLAGS: usize = 25;
+
+/// Compute cell width from the widest node-kind entry, capped at MAX_CELL_WIDTH.
 fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
     let max_kind_len = sorted_kinds.iter().map(|(k, _)| k.len()).max().unwrap_or(10);
     let max_count_len = sorted_kinds.iter().map(|(_, c)| format_number(**c).len()).max().unwrap_or(5);
-    (max_kind_len + max_count_len + 3).max(22)
+    (max_kind_len + max_count_len + 3).clamp(22, MAX_CELL_WIDTH)
 }
 
-/// Print the title row with version and token counts.
-fn print_title_row(
+/// Print the top title row: version (left) + country flags (right).
+fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
+    let version = env!("CARGO_PKG_VERSION");
+    let title = format!("TokenSave v{version}");
+    let available = inner_width.saturating_sub(2);
+
+    if country_flags.is_empty() {
+        let pad = available.saturating_sub(title.len());
+        println!("│ {}{} │", title, " ".repeat(pad));
+        return;
+    }
+
+    // Build flags string, capped at MAX_DISPLAY_FLAGS and fitting within available width
+    let capped = &country_flags[..country_flags.len().min(MAX_DISPLAY_FLAGS)];
+    let has_overflow = country_flags.len() > MAX_DISPLAY_FLAGS;
+    let mut flags_str = String::new();
+    let mut display_width = 0;
+    let flag_width = 2; // emoji flags are 2 columns wide
+    // Reserve space for title + at least 2 spaces gap
+    let max_flags_width = available.saturating_sub(title.len() + 2);
+    for (i, flag) in capped.iter().enumerate() {
+        let needed = if i == 0 { flag_width } else { 1 + flag_width };
+        let more_coming = has_overflow || i + 1 < capped.len();
+        let reserve = if more_coming { 2 } else { 0 };
+        if display_width + needed + reserve > max_flags_width {
+            flags_str.push_str(" …");
+            display_width += 2;
+            break;
+        }
+        if i > 0 {
+            flags_str.push(' ');
+            display_width += 1;
+        }
+        flags_str.push_str(flag);
+        display_width += flag_width;
+        if i + 1 == capped.len() && has_overflow {
+            flags_str.push_str(" …");
+            display_width += 2;
+        }
+    }
+
+    let pad = available.saturating_sub(title.len() + display_width);
+    println!("│ {}{}{} │", title, " ".repeat(pad), flags_str);
+}
+
+/// Print the second title row: token counts right-aligned in green.
+fn print_tokens_row(
     tokens_saved: u64,
     global_tokens_saved: Option<u64>,
     worldwide: Option<u64>,
     inner_width: usize,
 ) {
-    let version = env!("CARGO_PKG_VERSION");
-    let title = format!("TokenSave v{version}");
     let tokens_text = {
         let mut parts = Vec::new();
         match global_tokens_saved {
@@ -128,40 +179,13 @@ fn print_title_row(
         }
         parts.join("  ")
     };
-    let title_pad = inner_width.saturating_sub(2 + title.len() + tokens_text.len());
+    let available = inner_width.saturating_sub(2);
+    let pad = available.saturating_sub(tokens_text.len());
     println!(
-        "│ {}{}\x1b[32m{}\x1b[0m │",
-        title,
-        " ".repeat(title_pad),
+        "│ {}\x1b[32m{}\x1b[0m │",
+        " ".repeat(pad),
         tokens_text
     );
-}
-
-/// Print centered country flags row if any flags are provided.
-fn print_flags_row(country_flags: &[String], inner_width: usize) {
-    if country_flags.is_empty() { return; }
-    let available = inner_width.saturating_sub(2);
-    let mut flags_str = String::new();
-    let mut display_width = 0;
-    let flag_width = 2;
-    for (i, flag) in country_flags.iter().enumerate() {
-        let needed = if i == 0 { flag_width } else { 1 + flag_width };
-        let reserve = if i + 1 < country_flags.len() { 2 } else { 0 };
-        if display_width + needed + reserve > available {
-            flags_str.push_str(" …");
-            display_width += 2;
-            break;
-        }
-        if i > 0 {
-            flags_str.push(' ');
-            display_width += 1;
-        }
-        flags_str.push_str(flag);
-        display_width += flag_width;
-    }
-    let left_pad = (available.saturating_sub(display_width)) / 2;
-    let right_pad = available.saturating_sub(display_width + left_pad);
-    println!("│ {}{}{} │", " ".repeat(left_pad), flags_str, " ".repeat(right_pad));
 }
 
 /// Build the stats rows (files/nodes/edges, DB size, languages).

@@ -107,9 +107,6 @@ enum Commands {
         /// Output as JSON
         #[arg(short, long)]
         json: bool,
-        /// Show country flags of worldwide users
-        #[arg(long)]
-        show_flags: bool,
     },
     /// Search for symbols
     Query {
@@ -317,7 +314,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json, show_flags } => {
+        Commands::Status { path, json } => {
             let project_path = resolve_path(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
@@ -380,10 +377,21 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 } else {
                     None
                 };
-                let country_flags = if show_flags {
-                    tokensave::cloud::fetch_country_flags()
+                // Fetch country flags (30 min cache)
+                let country_flags = if now - config.last_flags_fetch_at < 1800 {
+                    config.cached_country_flags.clone()
                 } else {
-                    Vec::new()
+                    let fresh = tokensave::cloud::fetch_country_flags();
+                    if !fresh.is_empty() {
+                        config.cached_country_flags = fresh.clone();
+                        config.last_flags_fetch_at = now;
+                        config.save();
+                    }
+                    if fresh.is_empty() && !config.cached_country_flags.is_empty() {
+                        config.cached_country_flags.clone()
+                    } else {
+                        fresh
+                    }
                 };
                 print!("{}", include_str!("resources/logo.ansi"));
                 tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);

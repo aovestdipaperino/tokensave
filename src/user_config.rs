@@ -41,6 +41,14 @@ pub struct UserConfig {
     /// UNIX timestamp of last version check.
     #[serde(default)]
     pub last_version_check_at: i64,
+
+    /// Cached country flags from the worldwide counter.
+    #[serde(default)]
+    pub cached_country_flags: Vec<String>,
+
+    /// UNIX timestamp of last country flags fetch.
+    #[serde(default)]
+    pub last_flags_fetch_at: i64,
 }
 
 fn default_true() -> bool {
@@ -58,6 +66,8 @@ impl Default for UserConfig {
             last_flush_attempt_at: 0,
             cached_latest_version: String::new(),
             last_version_check_at: 0,
+            cached_country_flags: Vec::new(),
+            last_flags_fetch_at: 0,
         }
     }
 }

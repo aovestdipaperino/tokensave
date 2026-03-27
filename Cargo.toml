@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
@@ -78,7 +78,7 @@ sha2 = "0.10"
 glob = "0.3"
 walkdir = "2"
 ignore = "0.4"
-gix = { version = "0.72", default-features = false, features = ["revision", "blob-diff"] }
+gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
 dirs = "6"
 hex = "0.4"
 tree-sitter-dart-orchard = { version = "0.3", optional = true }
