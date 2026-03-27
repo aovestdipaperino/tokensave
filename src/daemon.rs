@@ -1,12 +1,16 @@
 //! Background daemon that watches all tracked tokensave projects for file
 //! changes and runs incremental syncs automatically.
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use daemon_kit::{Daemon, DaemonConfig};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::mpsc;
+use tokio::time::{self, Instant};
 
-use crate::errors::TokenSaveError;
+use crate::errors::{Result, TokenSaveError};
 
 /// Parse a human-readable duration string like "15s" or "1m" into a Duration.
 pub fn parse_duration(s: &str) -> Option<Duration> {
@@ -46,6 +50,258 @@ pub fn running_daemon_pid() -> Option<u32> {
 /// Returns true if an autostart service is installed.
 pub fn is_autostart_enabled() -> bool {
     build_daemon().ok().is_some_and(|d| d.is_service_installed())
+}
+
+/// Directories to ignore inside watched projects.
+const IGNORED_DIRS: &[&str] = &[
+    ".tokensave", ".git", "node_modules", "target", ".build",
+    "__pycache__", ".next", "dist", "build", ".cache",
+];
+
+/// The core daemon event loop. Watches projects, debounces changes, syncs.
+async fn run_loop(debounce: Duration) -> Result<()> {
+    let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
+
+    let mut watchers: HashMap<PathBuf, RecommendedWatcher> = HashMap::new();
+    let mut dirty: HashMap<PathBuf, Instant> = HashMap::new();
+
+    // Initial project discovery
+    let project_paths = discover_projects().await;
+    for path in &project_paths {
+        if let Some(w) = create_watcher(path, tx.clone()) {
+            watchers.insert(path.clone(), w);
+        }
+    }
+
+    daemon_log(&format!("started, watching {} projects", watchers.len()));
+
+    let mut discovery_interval = time::interval(Duration::from_secs(60));
+    discovery_interval.tick().await; // consume first immediate tick
+
+    // Set up ctrl-c handler
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        shutdown_tx.send(()).await.ok();
+    });
+
+    loop {
+        // Find the next debounce deadline
+        let next_deadline = dirty.values().copied().min();
+        let sleep_dur = match next_deadline {
+            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+            None => Duration::from_secs(3600),
+        };
+
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                daemon_log("shutting down (signal)");
+                break;
+            }
+            Some(project_root) = rx.recv() => {
+                dirty.insert(project_root, Instant::now() + debounce);
+            }
+            _ = tokio::time::sleep(sleep_dur), if next_deadline.is_some() => {
+                let now = Instant::now();
+                let ready: Vec<PathBuf> = dirty
+                    .iter()
+                    .filter(|(_, deadline)| **deadline <= now)
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                for path in ready {
+                    dirty.remove(&path);
+                    sync_project(&path).await;
+                }
+            }
+            _ = discovery_interval.tick() => {
+                let current = discover_projects().await;
+                let current_set: HashSet<PathBuf> = current.into_iter().collect();
+                let watched_set: HashSet<PathBuf> = watchers.keys().cloned().collect();
+
+                for path in current_set.difference(&watched_set) {
+                    if let Some(w) = create_watcher(path, tx.clone()) {
+                        daemon_log(&format!("discovered new project: {}", path.display()));
+                        watchers.insert(path.clone(), w);
+                    }
+                }
+                let stale: Vec<PathBuf> = watched_set.difference(&current_set).cloned().collect();
+                for path in stale {
+                    watchers.remove(&path);
+                    dirty.remove(&path);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Query the global DB for all tracked project paths.
+async fn discover_projects() -> Vec<PathBuf> {
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return Vec::new();
+    };
+    gdb.list_project_paths()
+        .await
+        .into_iter()
+        .filter_map(|s| {
+            let p = PathBuf::from(&s);
+            if p.is_dir() && crate::tokensave::TokenSave::is_initialized(&p) {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Create a notify watcher for a project root.
+fn create_watcher(project_root: &Path, tx: mpsc::Sender<PathBuf>) -> Option<RecommendedWatcher> {
+    let root = project_root.to_path_buf();
+    let mut watcher = notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
+        let Ok(event) = res else { return };
+        if !matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(_)
+                | notify::EventKind::Remove(_)
+        ) {
+            return;
+        }
+        let dominated_by_ignored = event.paths.iter().all(|p| {
+            p.components().any(|c| {
+                IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or(""))
+            })
+        });
+        if dominated_by_ignored {
+            return;
+        }
+        let _ = tx.blocking_send(root.clone());
+    })
+    .ok()?;
+    watcher.watch(project_root, RecursiveMode::Recursive).ok()?;
+    Some(watcher)
+}
+
+/// Run an incremental sync on a single project. Best-effort.
+async fn sync_project(project_root: &Path) {
+    let start = std::time::Instant::now();
+    let Ok(cg) = crate::tokensave::TokenSave::open(project_root).await else {
+        daemon_log(&format!("failed to open {}", project_root.display()));
+        return;
+    };
+    match cg.sync().await {
+        Ok(result) => {
+            let ms = start.elapsed().as_millis();
+            if result.files_added > 0 || result.files_modified > 0 || result.files_removed > 0 {
+                daemon_log(&format!(
+                    "synced {} — {} added, {} modified, {} removed ({}ms)",
+                    project_root.display(),
+                    result.files_added,
+                    result.files_modified,
+                    result.files_removed,
+                    ms
+                ));
+            }
+            // Best-effort update global DB
+            if let Some(gdb) = crate::global_db::GlobalDb::open().await {
+                let tokens = cg.get_tokens_saved().await.unwrap_or(0);
+                gdb.upsert(project_root, tokens).await;
+            }
+        }
+        Err(e) => {
+            daemon_log(&format!("sync failed for {}: {e}", project_root.display()));
+        }
+    }
+}
+
+/// Append a timestamped line to the daemon log file.
+fn daemon_log(msg: &str) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{secs}] {msg}\n");
+    eprint!("{line}");
+    if let Some(home) = dirs::home_dir() {
+        let log_path = home.join(".tokensave").join("daemon.log");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+/// Start the daemon. Forks to background on Unix unless `foreground` is true.
+pub async fn run(foreground: bool) -> Result<()> {
+    let daemon = build_daemon()?;
+
+    let config = crate::user_config::UserConfig::load();
+    let debounce = parse_duration(&config.daemon_debounce)
+        .unwrap_or(Duration::from_secs(15));
+
+    daemon
+        .start(foreground, move || {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
+            })?;
+            rt.block_on(async {
+                run_loop(debounce).await.map_err(|e| {
+                    daemon_kit::DaemonError::Daemonize(e.to_string())
+                })
+            })
+        })
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("daemon error: {e}"),
+        })
+}
+
+/// Stop the running daemon.
+pub fn stop() -> Result<()> {
+    let daemon = build_daemon()?;
+    daemon.stop().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
+    })?;
+    eprintln!("tokensave daemon stopped");
+    Ok(())
+}
+
+/// Print daemon status and return exit code (0 = running, 1 = not running).
+pub fn status() -> i32 {
+    match running_daemon_pid() {
+        Some(pid) => {
+            eprintln!("tokensave daemon is running (PID: {pid})");
+            0
+        }
+        None => {
+            eprintln!("tokensave daemon is not running");
+            1
+        }
+    }
+}
+
+/// Install autostart service (launchd/systemd/Windows Service).
+pub fn enable_autostart() -> Result<()> {
+    let daemon = build_daemon()?;
+    daemon.install_service().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
+    })?;
+    eprintln!("\x1b[32m✔\x1b[0m Autostart service installed");
+    Ok(())
+}
+
+/// Remove autostart service.
+pub fn disable_autostart() -> Result<()> {
+    let daemon = build_daemon()?;
+    daemon.uninstall_service().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
+    })?;
+    eprintln!("\x1b[32m✔\x1b[0m Autostart service removed");
+    Ok(())
 }
 
 #[cfg(test)]
