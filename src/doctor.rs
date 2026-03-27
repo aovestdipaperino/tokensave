@@ -52,6 +52,7 @@ pub fn run_doctor(agent_filter: Option<&str>) {
         dc.fail("Could not determine home directory");
     }
 
+    check_daemon(&mut dc);
     check_network(&mut dc);
     print_summary(&dc);
 }
@@ -101,6 +102,20 @@ fn check_user_config(dc: &mut DoctorCounters) {
         }
     } else {
         dc.fail("Could not determine home directory for config");
+    }
+}
+
+/// Check daemon status and autostart configuration.
+fn check_daemon(dc: &mut DoctorCounters) {
+    eprintln!("\n\x1b[1mDaemon\x1b[0m");
+    match crate::daemon::running_daemon_pid() {
+        Some(pid) => dc.pass(&format!("Daemon is running (PID: {pid})")),
+        None => dc.warn("Daemon is not running — run `tokensave daemon` to start"),
+    }
+    if crate::daemon::is_autostart_enabled() {
+        dc.pass("Autostart enabled");
+    } else {
+        dc.warn("Autostart not configured — run `tokensave daemon --enable-autostart`");
     }
 }
 

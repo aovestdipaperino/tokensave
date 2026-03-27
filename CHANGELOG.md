@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-03-27
+
+### Added
+- **Daemon mode** — `tokensave daemon` watches all tracked projects for file changes and runs incremental syncs automatically; debounce configurable via `daemon_debounce` in `~/.tokensave/config.toml` (default `"15s"`)
+- **Daemon management** — `--stop`, `--status`, `--foreground` flags for process control; PID file at `~/.tokensave/daemon.pid`
+- **Autostart service** — `--enable-autostart` / `--disable-autostart` generates and manages a launchd plist (macOS) or systemd user unit (Linux); cross-platform via `daemon-kit` crate
+- **Doctor daemon checks** — `tokensave doctor` now reports daemon running status and autostart configuration
+- **`daemon-kit` crate** — new standalone cross-platform daemon/service toolkit published to crates.io, using `daemonize2` on Unix and `windows-service` on Windows
+
 ## [2.3.2] - 2026-03-27
 
 ### Added

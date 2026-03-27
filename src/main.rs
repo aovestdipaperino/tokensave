@@ -218,6 +218,24 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Background file watcher daemon
+    Daemon {
+        /// Run in foreground (don't fork)
+        #[arg(long)]
+        foreground: bool,
+        /// Stop the running daemon
+        #[arg(long)]
+        stop: bool,
+        /// Show daemon status
+        #[arg(long)]
+        status: bool,
+        /// Install autostart service (launchd/systemd)
+        #[arg(long)]
+        enable_autostart: bool,
+        /// Remove autostart service
+        #[arg(long)]
+        disable_autostart: bool,
+    },
 }
 
 #[tokio::main]
@@ -713,6 +731,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Doctor { agent } => {
             tokensave::doctor::run_doctor(agent.as_deref());
+        }
+        Commands::Daemon { foreground, stop, status, enable_autostart, disable_autostart } => {
+            if stop {
+                tokensave::daemon::stop()?;
+            } else if status {
+                let code = tokensave::daemon::status();
+                std::process::exit(code);
+            } else if enable_autostart {
+                tokensave::daemon::enable_autostart()?;
+            } else if disable_autostart {
+                tokensave::daemon::disable_autostart()?;
+            } else {
+                tokensave::daemon::run(foreground).await?;
+            }
         }
     }
     Ok(())
