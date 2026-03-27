@@ -41,6 +41,14 @@ pub trait Agent {
 
     /// Verify installation health (replaces agent-specific doctor checks).
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext);
+
+    /// Returns true if this agent appears to be installed on the system
+    /// (its config directory exists).
+    fn is_detected(&self, _home: &Path) -> bool { false }
+
+    /// Returns true if tokensave MCP server is already registered in this
+    /// agent's config. Used for migration backfill.
+    fn has_tokensave(&self, _home: &Path) -> bool { false }
 }
 
 /// Context passed to [`Agent::install`] and [`Agent::uninstall`].
@@ -177,6 +185,218 @@ pub fn home_dir() -> Option<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(PathBuf::from)
+}
+
+/// Strip `//` line comments, `/* */` block comments, and trailing commas
+/// before `}` / `]` from a JSONC string, then parse with `serde_json`.
+/// Falls back to `serde_json::json!({})` on any parse failure.
+pub fn parse_jsonc(input: &str) -> serde_json::Value {
+    let stripped = strip_jsonc_comments(input);
+    serde_json::from_str(&stripped).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+/// Internal helper: removes JSONC comments and trailing commas.
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_string = false;
+
+    while i < len {
+        // Handle string literals (skip comment stripping inside strings).
+        if in_string {
+            if chars[i] == '\\' && i + 1 < len {
+                out.push(chars[i]);
+                out.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if chars[i] == '"' {
+                in_string = false;
+            }
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        // Start of string.
+        if chars[i] == '"' {
+            in_string = true;
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        // Line comment `//`.
+        if chars[i] == '/' && i + 1 < len && chars[i + 1] == '/' {
+            // Skip until newline.
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment `/* ... */`.
+        if chars[i] == '/' && i + 1 < len && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2; // consume `*/`
+            continue;
+        }
+
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    // Remove trailing commas before `}` or `]`.
+    // Simple regex-free approach: repeatedly collapse ", <whitespace> }" patterns.
+    remove_trailing_commas(&out)
+}
+
+/// Removes trailing commas that appear immediately before `}` or `]` (with
+/// optional whitespace/newlines in between).
+fn remove_trailing_commas(input: &str) -> String {
+    // We scan for comma, optional whitespace, then `}` or `]`.
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b',' {
+            // Peek ahead past whitespace.
+            let mut j = i + 1;
+            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n' || bytes[j] == b'\r') {
+                j += 1;
+            }
+            if j < len && (bytes[j] == b'}' || bytes[j] == b']') {
+                // Skip the comma; whitespace will be included normally.
+                i += 1;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
+}
+
+/// Read a file and parse it as JSONC. Falls back to `json!({})` if the file
+/// is missing, unreadable, or unparseable.
+pub fn load_jsonc_file(path: &Path) -> serde_json::Value {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return serde_json::json!({}),
+    };
+    parse_jsonc(&contents)
+}
+
+/// Returns the VS Code user data directory, platform-specific.
+pub fn vscode_data_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    { home.join("Library/Application Support/Code") }
+    #[cfg(target_os = "linux")]
+    { home.join(".config/Code") }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .map(|a| PathBuf::from(a).join("Code"))
+            .unwrap_or_else(|_| home.join("AppData/Roaming/Code"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    { home.join(".config/Code") }
+}
+
+/// Backfill `installed_agents` for users upgrading from older versions.
+/// Scans all agents and checks if tokensave is already configured.
+pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::UserConfig) {
+    if !config.installed_agents.is_empty() {
+        return; // already populated
+    }
+    let mut found = Vec::new();
+    for ag in all_agents() {
+        if ag.has_tokensave(home) {
+            found.push(ag.id().to_string());
+        }
+    }
+    if !found.is_empty() {
+        config.installed_agents = found;
+        config.save();
+    }
+}
+
+/// Interactively pick which agents to install/uninstall.
+///
+/// - 0 detected agents → returns an error.
+/// - 1 detected and not already installed → returns it directly (no UI).
+/// - Otherwise → shows a `dialoguer::MultiSelect` with detected agents,
+///   pre-checked if already in `installed`.
+///
+/// Returns `(to_install, to_uninstall)`.
+pub fn pick_agents_interactive(home: &Path, installed: &[String])
+    -> Result<(Vec<String>, Vec<String>)>
+{
+    let detected: Vec<Box<dyn Agent>> = all_agents()
+        .into_iter()
+        .filter(|ag| ag.is_detected(home))
+        .collect();
+
+    if detected.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: "No supported agents detected on this system".to_string(),
+        });
+    }
+
+    // Fast path: exactly one detected agent and it isn't installed yet.
+    if detected.len() == 1 && !installed.contains(&detected[0].id().to_string()) {
+        let id = detected[0].id().to_string();
+        return Ok((vec![id], vec![]));
+    }
+
+    // Build item labels and pre-check state.
+    let items: Vec<String> = detected
+        .iter()
+        .map(|ag| ag.name().to_string())
+        .collect();
+    let defaults: Vec<bool> = detected
+        .iter()
+        .map(|ag| installed.contains(&ag.id().to_string()))
+        .collect();
+
+    let selections = dialoguer::MultiSelect::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("Select agents to configure with tokensave MCP")
+        .items(&items)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("interactive selection failed: {e}"),
+        })?;
+
+    let selected_ids: Vec<String> = selections
+        .iter()
+        .map(|&idx| detected[idx].id().to_string())
+        .collect();
+
+    let to_install: Vec<String> = selected_ids
+        .iter()
+        .filter(|id| !installed.contains(id))
+        .cloned()
+        .collect();
+
+    let to_uninstall: Vec<String> = detected
+        .iter()
+        .filter(|ag| {
+            installed.contains(&ag.id().to_string())
+                && !selected_ids.contains(&ag.id().to_string())
+        })
+        .map(|ag| ag.id().to_string())
+        .collect();
+
+    Ok((to_install, to_uninstall))
 }
 
 /// Load a TOML file, returning an empty table on missing/invalid.
@@ -708,3 +928,80 @@ pub const EXPECTED_TOOL_PERMS: &[&str] = &[
     "mcp__tokensave__tokensave_status",
     "mcp__tokensave__tokensave_unused_imports",
 ];
+
+#[cfg(test)]
+mod jsonc_tests {
+    use super::*;
+
+    #[test]
+    fn parse_jsonc_plain_json() {
+        let input = r#"{"key": "value", "num": 42}"#;
+        let v = parse_jsonc(input);
+        assert_eq!(v["key"], "value");
+        assert_eq!(v["num"], 42);
+    }
+
+    #[test]
+    fn parse_jsonc_line_comment() {
+        let input = "{\n  // this is a comment\n  \"key\": \"val\"\n}";
+        let v = parse_jsonc(input);
+        assert_eq!(v["key"], "val");
+    }
+
+    #[test]
+    fn parse_jsonc_block_comment() {
+        let input = "{ /* block comment */ \"key\": \"val\" }";
+        let v = parse_jsonc(input);
+        assert_eq!(v["key"], "val");
+    }
+
+    #[test]
+    fn parse_jsonc_trailing_comma_object() {
+        let input = r#"{"a": 1, "b": 2,}"#;
+        let v = parse_jsonc(input);
+        assert_eq!(v["a"], 1);
+        assert_eq!(v["b"], 2);
+    }
+
+    #[test]
+    fn parse_jsonc_trailing_comma_array() {
+        let input = r#"{"items": [1, 2, 3,]}"#;
+        let v = parse_jsonc(input);
+        assert_eq!(v["items"][2], 3);
+    }
+
+    #[test]
+    fn parse_jsonc_combined() {
+        let input = "{\n  // comment\n  \"x\": /* inline */ 99,\n}";
+        let v = parse_jsonc(input);
+        assert_eq!(v["x"], 99);
+    }
+
+    #[test]
+    fn parse_jsonc_url_in_string_not_stripped() {
+        // A URL containing `//` inside a string must NOT be treated as a comment.
+        let input = r#"{"url": "https://example.com/path"}"#;
+        let v = parse_jsonc(input);
+        assert_eq!(v["url"], "https://example.com/path");
+    }
+
+    #[test]
+    fn parse_jsonc_invalid_falls_back_to_empty() {
+        let input = "not valid json at all !!!";
+        let v = parse_jsonc(input);
+        assert_eq!(v, serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_jsonc_empty_string() {
+        let v = parse_jsonc("");
+        assert_eq!(v, serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_jsonc_trailing_comma_with_whitespace() {
+        let input = "{\n  \"a\": 1  ,\n}";
+        let v = parse_jsonc(input);
+        assert_eq!(v["a"], 1);
+    }
+}
