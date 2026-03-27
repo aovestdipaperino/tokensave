@@ -4,9 +4,9 @@
 
 **Goal:** A background daemon that watches all tracked tokensave projects for file changes and automatically runs incremental syncs.
 
-**Architecture:** A new `tokensave daemon` subcommand backed by `src/daemon.rs`. Uses the `notify` crate for filesystem watching and tokio timers for per-project debounce. Discovers projects from the global DB, re-polls every 60s for new ones. Self-daemonizes via Unix fork, with PID file management and optional launchd/systemd service generation.
+**Architecture:** A new `tokensave daemon` subcommand backed by `src/daemon.rs`. Uses `notify` for filesystem watching, tokio timers for per-project debounce, and `daemon-kit` for cross-platform daemonization (fork on Unix via daemonize2, Windows Service via windows-service), PID file management, and service installation (launchd/systemd/Windows Service). Discovers projects from the global DB, re-polls every 60s for new ones.
 
-**Tech Stack:** Rust, `notify` v7 (file watcher), `nix` crate (fork/setsid/signals), tokio (async runtime, timers), existing `TokenSave::sync()`, existing `GlobalDb`.
+**Tech Stack:** Rust, `daemon-kit` (cross-platform daemon/service), `notify` v7 (file watcher), tokio (async runtime, timers), existing `TokenSave::sync()`, existing `GlobalDb`.
 
 ---
 
@@ -14,10 +14,10 @@
 
 | Action | File | Responsibility |
 |--------|------|----------------|
-| Modify | `Cargo.toml` | Add `notify` and `nix` dependencies |
+| Modify | `Cargo.toml` | Add `daemon-kit` and `notify` dependencies |
 | Modify | `src/user_config.rs` | Add `daemon_debounce: String` field |
 | Modify | `src/global_db.rs` | Add `list_project_paths()` method |
-| Create | `src/daemon.rs` | Core daemon: watcher, debounce, sync loop, PID management, service installer |
+| Create | `src/daemon.rs` | Core daemon: watcher, debounce, sync loop (uses daemon-kit for daemonize/PID/service) |
 | Modify | `src/lib.rs` | Add `pub mod daemon;` |
 | Modify | `src/main.rs` | Add `Commands::Daemon` variant and handler |
 | Modify | `src/doctor.rs` | Add daemon running/autostart checks |
@@ -32,12 +32,12 @@
 - Modify: `src/user_config.rs`
 - Modify: `tests/user_config_test.rs`
 
-- [ ] **Step 1: Add notify and nix to Cargo.toml**
+- [ ] **Step 1: Add daemon-kit and notify to Cargo.toml**
 
 In `[dependencies]`, add:
 ```toml
+daemon-kit = "0.1"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
-nix = { version = "0.29", features = ["signal", "process"] }
 ```
 
 - [ ] **Step 2: Add `daemon_debounce` to UserConfig**
@@ -121,20 +121,22 @@ feat: add GlobalDb::list_project_paths()
 
 ---
 
-### Task 3: Create `src/daemon.rs` — duration parser and PID management
+### Task 3: Create `src/daemon.rs` — duration parser and daemon-kit setup
 
 **Files:**
 - Create: `src/daemon.rs`
 - Modify: `src/lib.rs`
 
-- [ ] **Step 1: Create daemon.rs with module doc, imports, and duration parser**
+- [ ] **Step 1: Create daemon.rs with duration parser and daemon-kit Daemon instance**
 
 ```rust
 //! Background daemon that watches all tracked tokensave projects for file
 //! changes and runs incremental syncs automatically.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
+
+use daemon_kit::{Daemon, DaemonConfig};
 
 use crate::errors::{Result, TokenSaveError};
 
@@ -147,73 +149,36 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     } else if let Some(mins) = s.strip_suffix('m') {
         mins.trim().parse::<u64>().ok().map(|m| Duration::from_secs(m * 60))
     } else {
-        // Try bare number as seconds
         s.parse::<u64>().ok().map(Duration::from_secs)
     }
 }
 
-/// Path to the PID file: `~/.tokensave/daemon.pid`.
-fn pid_file_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".tokensave").join("daemon.pid"))
-}
-
-/// Path to the daemon log file: `~/.tokensave/daemon.log`.
-fn log_file_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".tokensave").join("daemon.log"))
-}
-
-/// Write the current PID to the PID file.
-fn write_pid_file() -> Result<()> {
-    let path = pid_file_path().ok_or_else(|| TokenSaveError::Config {
+/// Build the daemon-kit Daemon instance with tokensave paths.
+fn build_daemon() -> std::result::Result<Daemon, TokenSaveError> {
+    let home = dirs::home_dir().ok_or_else(|| TokenSaveError::Config {
         message: "cannot determine home directory".to_string(),
     })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::write(&path, std::process::id().to_string()).map_err(|e| TokenSaveError::Config {
-        message: format!("failed to write PID file: {e}"),
-    })
+    let ts_dir = home.join(".tokensave");
+    let bin = crate::agents::which_tokensave().unwrap_or_else(|| "tokensave".to_string());
+
+    let config = DaemonConfig::new("tokensave-daemon")
+        .pid_dir(&ts_dir)
+        .log_file(ts_dir.join("daemon.log"))
+        .executable(PathBuf::from(bin))
+        .service_args(vec!["daemon".to_string(), "--foreground".to_string()])
+        .description("tokensave file watcher daemon");
+
+    Ok(Daemon::new(config))
 }
 
-/// Remove the PID file.
-fn remove_pid_file() {
-    if let Some(path) = pid_file_path() {
-        std::fs::remove_file(path).ok();
-    }
-}
-
-/// Read the PID from the PID file. Returns None if missing or unreadable.
-fn read_pid() -> Option<u32> {
-    let path = pid_file_path()?;
-    let contents = std::fs::read_to_string(path).ok()?;
-    contents.trim().parse().ok()
-}
-
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid as i32),
-        None, // signal 0: check existence
-    )
-    .is_ok()
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    false
-}
-
-/// Returns the PID of the running daemon, or None if not running.
+/// Returns the PID of the running daemon, or None.
 pub fn running_daemon_pid() -> Option<u32> {
-    let pid = read_pid()?;
-    if is_process_alive(pid) {
-        Some(pid)
-    } else {
-        // Stale PID file
-        remove_pid_file();
-        None
-    }
+    build_daemon().ok()?.running_pid()
+}
+
+/// Returns true if an autostart service is installed.
+pub fn is_autostart_enabled() -> bool {
+    build_daemon().ok().is_some_and(|d| d.is_service_installed())
 }
 
 #[cfg(test)]
@@ -260,7 +225,7 @@ Run: `cargo build && cargo test daemon`
 
 - [ ] **Step 4: Commit**
 ```
-feat: daemon duration parser and PID file management
+feat: daemon duration parser and daemon-kit setup
 ```
 
 ---
@@ -539,113 +504,53 @@ feat: daemon core event loop with file watching and debounced sync
 
 ---
 
-### Task 5: Daemonize (fork) and stop/status commands
+### Task 5: Daemon run/stop/status/autostart via daemon-kit
 
 **Files:**
 - Modify: `src/daemon.rs`
 
-- [ ] **Step 1: Add daemonize function**
+All daemonization, PID management, stop/status, and service installation is delegated to the `daemon-kit` crate. Add these thin wrapper functions:
+
+- [ ] **Step 1: Add run, stop, status, enable/disable_autostart functions**
 
 ```rust
-/// Fork to background, detach from terminal, redirect stdio to log.
-#[cfg(unix)]
-fn daemonize() -> Result<()> {
-    use nix::unistd::{fork, setsid, ForkResult};
+/// Start the daemon. Forks to background on Unix unless `foreground` is true.
+/// On Windows, runs as a Windows Service.
+pub async fn run(foreground: bool) -> Result<()> {
+    let daemon = build_daemon()?;
 
-    // First fork
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { .. }) => {
-            // Parent exits immediately
-            std::process::exit(0);
-        }
-        Ok(ForkResult::Child) => {}
-        Err(e) => {
-            return Err(TokenSaveError::Config {
-                message: format!("fork failed: {e}"),
-            });
-        }
-    }
+    let config = crate::user_config::UserConfig::load();
+    let debounce = parse_duration(&config.daemon_debounce)
+        .unwrap_or(Duration::from_secs(15));
 
-    // Create new session
-    setsid().map_err(|e| TokenSaveError::Config {
-        message: format!("setsid failed: {e}"),
-    })?;
-
-    // Redirect stdout/stderr to log file
-    if let Some(log_path) = log_file_path() {
-        use std::os::unix::io::AsRawFd;
-        if let Ok(f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            let fd = f.as_raw_fd();
-            unsafe {
-                libc::dup2(fd, libc::STDOUT_FILENO);
-                libc::dup2(fd, libc::STDERR_FILENO);
-            }
-        }
-        // Close stdin
-        unsafe { libc::close(libc::STDIN_FILENO); }
-    }
-
-    Ok(())
+    // daemon-kit handles fork/PID/detach; we pass it the event loop closure
+    daemon
+        .start(foreground, move || {
+            // Build a new tokio runtime inside the forked child
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
+            })?;
+            rt.block_on(async {
+                run_loop(debounce).await.map_err(|e| {
+                    daemon_kit::DaemonError::Daemonize(e.to_string())
+                })
+            })
+        })
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("daemon error: {e}"),
+        })
 }
 
-#[cfg(not(unix))]
-fn daemonize() -> Result<()> {
-    Err(TokenSaveError::Config {
-        message: "daemon mode requires Unix (use --foreground on Windows)".to_string(),
-    })
-}
-```
-
-- [ ] **Step 2: Add stop command**
-
-```rust
 /// Stop the running daemon.
 pub fn stop() -> Result<()> {
-    let Some(pid) = running_daemon_pid() else {
-        eprintln!("tokensave daemon is not running");
-        return Ok(());
-    };
-
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{self, Signal};
-        use nix::unistd::Pid;
-
-        let nix_pid = Pid::from_raw(pid as i32);
-        signal::kill(nix_pid, Signal::SIGTERM).ok();
-
-        // Wait up to 5 seconds
-        for _ in 0..50 {
-            std::thread::sleep(Duration::from_millis(100));
-            if !is_process_alive(pid) {
-                remove_pid_file();
-                eprintln!("tokensave daemon stopped (PID: {pid})");
-                return Ok(());
-            }
-        }
-
-        // Force kill
-        signal::kill(nix_pid, Signal::SIGKILL).ok();
-        remove_pid_file();
-        eprintln!("tokensave daemon killed (PID: {pid})");
-    }
-
-    #[cfg(not(unix))]
-    {
-        eprintln!("stop not supported on this platform");
-    }
-
+    let daemon = build_daemon()?;
+    daemon.stop().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
+    })?;
+    eprintln!("tokensave daemon stopped");
     Ok(())
 }
-```
 
-- [ ] **Step 3: Add status command**
-
-```rust
 /// Print daemon status and return exit code (0 = running, 1 = not running).
 pub fn status() -> i32 {
     match running_daemon_pid() {
@@ -659,223 +564,40 @@ pub fn status() -> i32 {
         }
     }
 }
-```
 
-- [ ] **Step 4: Build**
-
-Run: `cargo build`
-
-- [ ] **Step 5: Commit**
-```
-feat: daemon daemonize, stop, and status commands
-```
-
----
-
-### Task 6: Service installer (--enable-autostart / --disable-autostart)
-
-**Files:**
-- Modify: `src/daemon.rs`
-
-- [ ] **Step 1: Add enable_autostart**
-
-```rust
-/// Install a system service for automatic daemon startup.
+/// Install autostart service (launchd/systemd/Windows Service).
 pub fn enable_autostart() -> Result<()> {
-    let tokensave_bin = crate::agents::which_tokensave().ok_or_else(|| TokenSaveError::Config {
-        message: "tokensave not found on PATH".to_string(),
+    let daemon = build_daemon()?;
+    daemon.install_service().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
     })?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let plist_dir = dirs::home_dir()
-            .ok_or_else(|| TokenSaveError::Config { message: "no home dir".to_string() })?
-            .join("Library/LaunchAgents");
-        std::fs::create_dir_all(&plist_dir).ok();
-        let plist_path = plist_dir.join("com.tokensave.daemon.plist");
-
-        let log_path = log_file_path().unwrap_or_else(|| PathBuf::from("/tmp/tokensave-daemon.log"));
-
-        let plist = format!(
-r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.tokensave.daemon</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{tokensave_bin}</string>
-        <string>daemon</string>
-        <string>--foreground</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{log}</string>
-    <key>StandardErrorPath</key>
-    <string>{log}</string>
-</dict>
-</plist>"#,
-            log = log_path.display()
-        );
-
-        std::fs::write(&plist_path, plist).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to write plist: {e}"),
-        })?;
-        eprintln!("\x1b[32m✔\x1b[0m Wrote {}", plist_path.display());
-
-        let output = std::process::Command::new("launchctl")
-            .args(["load", &plist_path.to_string_lossy()])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                eprintln!("\x1b[32m✔\x1b[0m Loaded launchd service");
-            }
-            _ => {
-                eprintln!("\x1b[33m!\x1b[0m Could not load service — run: launchctl load {}", plist_path.display());
-            }
-        }
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let unit_dir = dirs::home_dir()
-            .ok_or_else(|| TokenSaveError::Config { message: "no home dir".to_string() })?
-            .join(".config/systemd/user");
-        std::fs::create_dir_all(&unit_dir).ok();
-        let unit_path = unit_dir.join("tokensave-daemon.service");
-
-        let unit = format!(
-r#"[Unit]
-Description=tokensave file watcher daemon
-
-[Service]
-ExecStart={tokensave_bin} daemon --foreground
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"#);
-
-        std::fs::write(&unit_path, unit).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to write unit file: {e}"),
-        })?;
-        eprintln!("\x1b[32m✔\x1b[0m Wrote {}", unit_path.display());
-
-        let _ = std::process::Command::new("systemctl")
-            .args(["--user", "daemon-reload"])
-            .status();
-        let output = std::process::Command::new("systemctl")
-            .args(["--user", "enable", "--now", "tokensave-daemon.service"])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                eprintln!("\x1b[32m✔\x1b[0m Enabled and started systemd service");
-            }
-            _ => {
-                eprintln!("\x1b[33m!\x1b[0m Could not enable service — run: systemctl --user enable --now tokensave-daemon.service");
-            }
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        return Err(TokenSaveError::Config {
-            message: "autostart not supported on this platform".to_string(),
-        });
-    }
+    eprintln!("\x1b[32m✔\x1b[0m Autostart service installed");
+    Ok(())
 }
-```
 
-- [ ] **Step 2: Add disable_autostart**
-
-```rust
-/// Remove the autostart service.
+/// Remove autostart service.
 pub fn disable_autostart() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let plist_path = dirs::home_dir()
-            .ok_or_else(|| TokenSaveError::Config { message: "no home dir".to_string() })?
-            .join("Library/LaunchAgents/com.tokensave.daemon.plist");
-        if plist_path.exists() {
-            let _ = std::process::Command::new("launchctl")
-                .args(["unload", &plist_path.to_string_lossy()])
-                .status();
-            std::fs::remove_file(&plist_path).ok();
-            eprintln!("\x1b[32m✔\x1b[0m Removed launchd service");
-        } else {
-            eprintln!("No launchd service found");
-        }
-        return Ok(());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let unit_path = dirs::home_dir()
-            .ok_or_else(|| TokenSaveError::Config { message: "no home dir".to_string() })?
-            .join(".config/systemd/user/tokensave-daemon.service");
-        if unit_path.exists() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "disable", "--now", "tokensave-daemon.service"])
-                .status();
-            std::fs::remove_file(&unit_path).ok();
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "daemon-reload"])
-                .status();
-            eprintln!("\x1b[32m✔\x1b[0m Removed systemd service");
-        } else {
-            eprintln!("No systemd service found");
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        return Err(TokenSaveError::Config {
-            message: "autostart not supported on this platform".to_string(),
-        });
-    }
-}
-
-/// Returns true if an autostart service is installed.
-pub fn is_autostart_enabled() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        return dirs::home_dir()
-            .map(|h| h.join("Library/LaunchAgents/com.tokensave.daemon.plist").exists())
-            .unwrap_or(false);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return dirs::home_dir()
-            .map(|h| h.join(".config/systemd/user/tokensave-daemon.service").exists())
-            .unwrap_or(false);
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        false
-    }
+    let daemon = build_daemon()?;
+    daemon.uninstall_service().map_err(|e| TokenSaveError::Config {
+        message: format!("{e}"),
+    })?;
+    eprintln!("\x1b[32m✔\x1b[0m Autostart service removed");
+    Ok(())
 }
 ```
 
-- [ ] **Step 3: Build**
+- [ ] **Step 2: Build**
 
 Run: `cargo build`
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 ```
-feat: daemon autostart service installer (launchd/systemd)
+feat: daemon run/stop/status/autostart via daemon-kit
 ```
 
 ---
 
-### Task 7: CLI integration and doctor checks
+### Task 6: CLI integration and doctor checks
 
 **Files:**
 - Modify: `src/main.rs`
@@ -972,7 +694,7 @@ feat: daemon CLI subcommand and doctor integration
 
 ---
 
-### Task 8: CHANGELOG and final verification
+### Task 7: CHANGELOG and final verification
 
 **Files:**
 - Modify: `CHANGELOG.md`
