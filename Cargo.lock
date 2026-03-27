@@ -589,9 +589,9 @@ dependencies = [
 
 [[package]]
 name = "daemon-kit"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88be6d250271afe07ee0506bea67236a4942b2ebc56f101a738da76240e86973"
+checksum = "3c63e34b1c5d152e919bfc2dbf8089f54201dfde616f3110b4a89b0ad04f3373"
 dependencies = [
  "daemonize2",
  "dirs",
