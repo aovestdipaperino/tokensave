@@ -24,6 +24,7 @@ fn round_trip_serialization() {
         last_version_check_at: 0,
         last_version_warning_at: 0,
         installed_agents: vec!["claude".to_string()],
+        daemon_debounce: "30s".to_string(),
         cached_country_flags: Vec::new(),
         last_flags_fetch_at: 0,
     };

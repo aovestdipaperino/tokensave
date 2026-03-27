@@ -98,6 +98,26 @@ impl GlobalDb {
         Some(total as u64)
     }
 
+    /// Returns all tracked project paths.
+    pub async fn list_project_paths(&self) -> Vec<String> {
+        let mut rows = match self.conn.query("SELECT path FROM projects", ()).await {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut paths = Vec::new();
+        loop {
+            match rows.next().await {
+                Ok(Some(row)) => {
+                    if let Ok(path) = row.get::<String>(0) {
+                        paths.push(path);
+                    }
+                }
+                _ => break,
+            }
+        }
+        paths
+    }
+
     /// Checkpoints the WAL. Best-effort.
     pub async fn checkpoint(&self) {
         let _ = self

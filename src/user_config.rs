@@ -50,6 +50,10 @@ pub struct UserConfig {
     #[serde(default)]
     pub installed_agents: Vec<String>,
 
+    /// Debounce duration for the daemon file watcher (e.g. "15s", "1m").
+    #[serde(default = "default_daemon_debounce")]
+    pub daemon_debounce: String,
+
     /// Cached country flags from the worldwide counter.
     #[serde(default)]
     pub cached_country_flags: Vec<String>,
@@ -61,6 +65,10 @@ pub struct UserConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_daemon_debounce() -> String {
+    "15s".to_string()
 }
 
 impl Default for UserConfig {
@@ -76,6 +84,7 @@ impl Default for UserConfig {
             last_version_check_at: 0,
             last_version_warning_at: 0,
             installed_agents: Vec::new(),
+            daemon_debounce: default_daemon_debounce(),
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
         }

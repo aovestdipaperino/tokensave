@@ -17,6 +17,7 @@
 
 pub mod agents;
 pub mod cloud;
+pub mod daemon;
 pub mod config;
 pub mod context;
 pub mod db;
