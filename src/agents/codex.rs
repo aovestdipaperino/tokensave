@@ -66,6 +66,19 @@ impl Agent for CodexAgent {
         doctor_check_config(dc, &config_path);
         doctor_check_prompt(dc, &codex_dir);
     }
+
+    fn is_detected(&self, home: &Path) -> bool {
+        home.join(".codex").is_dir()
+    }
+
+    fn has_tokensave(&self, home: &Path) -> bool {
+        let config = home.join(".codex").join("config.toml");
+        if !config.exists() { return false; }
+        let toml = super::load_toml_file(&config);
+        toml.get("mcp_servers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------

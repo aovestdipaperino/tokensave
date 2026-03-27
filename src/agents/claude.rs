@@ -77,6 +77,19 @@ impl Agent for ClaudeAgent {
         doctor_check_claude_md(dc, &ctx.home);
         doctor_check_local_config(dc, &ctx.project_path);
     }
+
+    fn is_detected(&self, home: &Path) -> bool {
+        home.join(".claude").is_dir()
+    }
+
+    fn has_tokensave(&self, home: &Path) -> bool {
+        let claude_json = home.join(".claude.json");
+        if !claude_json.exists() { return false; }
+        let json = super::load_json_file(&claude_json);
+        json.get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------

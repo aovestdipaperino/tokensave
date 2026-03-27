@@ -63,6 +63,19 @@ impl Agent for GeminiAgent {
         doctor_check_settings(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
+
+    fn is_detected(&self, home: &Path) -> bool {
+        home.join(".gemini").is_dir()
+    }
+
+    fn has_tokensave(&self, home: &Path) -> bool {
+        let settings = home.join(".gemini").join("settings.json");
+        if !settings.exists() { return false; }
+        let json = super::load_json_file(&settings);
+        json.get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------

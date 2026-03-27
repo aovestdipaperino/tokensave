@@ -60,6 +60,19 @@ impl Agent for OpenCodeAgent {
         doctor_check_config(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
+
+    fn is_detected(&self, home: &Path) -> bool {
+        home.join(".config").join("opencode").is_dir()
+    }
+
+    fn has_tokensave(&self, home: &Path) -> bool {
+        let config_path = opencode_config_path(home);
+        if !config_path.exists() { return false; }
+        let json = super::load_json_file(&config_path);
+        json.get("mcp")
+            .and_then(|v| v.get("tokensave"))
+            .is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
