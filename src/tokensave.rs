@@ -111,8 +111,8 @@ impl TokenSave {
 
         if migrated {
             eprintln!("[tokensave] schema changed — performing full re-index…");
-            ts.index_all_with_progress(|file| {
-                eprintln!("[tokensave] re-indexing {file}");
+            ts.index_all_with_progress(|current, total, file| {
+                eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
             }).await?;
             eprintln!("[tokensave] re-index complete.");
         }
@@ -133,18 +133,29 @@ impl TokenSave {
 // ---------------------------------------------------------------------------
 
 impl TokenSave {
+    /// Appends runtime skip-folder patterns to the exclude list.
+    ///
+    /// Each folder name is converted to a `folder/**` glob so that all
+    /// files underneath it are excluded during scanning.
+    pub fn add_skip_folders(&mut self, folders: &[String]) {
+        for folder in folders {
+            self.config.exclude.push(format!("{folder}/**"));
+        }
+    }
+
     /// Performs a full index: clears existing data, scans all Rust files,
     /// extracts nodes and edges, resolves references, and stores everything
     /// in the database.
     pub async fn index_all(&self) -> Result<IndexResult> {
-        self.index_all_with_progress(|_| {}).await
+        self.index_all_with_progress(|_, _, _| {}).await
     }
 
-    /// Like `index_all()`, but calls `on_file` with each file path before
-    /// processing it. Use this to drive a progress spinner in the CLI.
+    /// Like `index_all()`, but calls `on_file(current, total, path)` before
+    /// processing each file. Use this to drive a progress spinner with ETA in
+    /// the CLI.
     pub async fn index_all_with_progress<F>(&self, on_file: F) -> Result<IndexResult>
     where
-        F: Fn(&str),
+        F: Fn(usize, usize, &str),
     {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(self.project_root.is_dir(), "project root is not a directory");
@@ -155,13 +166,14 @@ impl TokenSave {
 
         // 2. Scan for Rust files using walkdir
         let files = self.scan_files()?;
+        let total = files.len();
 
         // 3. For each file: read, extract with RustExtractor, store nodes/edges/unresolved_refs
         let mut total_nodes = 0;
         let mut total_edges = 0;
 
-        for file_path in &files {
-            on_file(file_path);
+        for (idx, file_path) in files.iter().enumerate() {
+            on_file(idx + 1, total, file_path);
 
             let abs_path = self.project_root.join(file_path);
             let source = match std::fs::read_to_string(&abs_path) {

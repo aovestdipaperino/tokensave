@@ -99,6 +99,9 @@ enum Commands {
         /// Force a full re-index
         #[arg(short, long)]
         force: bool,
+        /// Folders to skip during indexing (can be repeated)
+        #[arg(long = "skip-folder", num_args = 1..)]
+        skip_folders: Vec<String>,
     },
     /// Show project statistics
     Status {
@@ -256,7 +259,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Sync { path, force } => {
+        Commands::Sync { path, force, skip_folders } => {
             let project_path = resolve_path(path);
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -273,9 +276,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 if !force {
                     eprintln!("No existing index found — performing full index");
                 }
-                init_and_index(&project_path).await?;
+                init_and_index(&project_path, &skip_folders).await?;
             } else {
-                let cg = TokenSave::open(&project_path).await?;
+                let mut cg = TokenSave::open(&project_path).await?;
+                cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let result = cg
                     .sync_with_progress(|phase, detail| {
@@ -333,7 +337,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    init_and_index(&project_path).await?
+                    init_and_index(&project_path, &[]).await?
                 } else {
                     return Ok(());
                 }
@@ -674,25 +678,39 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
         })?;
     let answer = answer.trim();
     if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-        init_and_index(&project_path).await?;
+        init_and_index(&project_path, &[]).await?;
     }
     Ok(())
 }
 
 /// Initializes a new project (if needed) and runs a full index.
-async fn init_and_index(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
+async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensave::errors::Result<TokenSave> {
     debug_assert!(project_path.is_dir(), "init_and_index: project_path is not a directory");
     debug_assert!(project_path.is_absolute(), "init_and_index: project_path must be absolute");
-    let cg = if TokenSave::is_initialized(project_path) {
+    let mut cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open(project_path).await?
     } else {
         let cg = TokenSave::init(project_path).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
         cg
     };
+    cg.add_skip_folders(skip_folders);
     let spinner = Spinner::new();
-    let result = cg.index_all_with_progress(|file| {
-        spinner.set_message(&format!("indexing {}", file));
+    let index_start = std::time::Instant::now();
+    let result = cg.index_all_with_progress(|current, total, file| {
+        let elapsed = index_start.elapsed().as_secs_f64();
+        let eta = if current > 1 {
+            let per_file = elapsed / (current - 1) as f64;
+            let remaining = per_file * (total - current) as f64;
+            if remaining >= 1.0 {
+                format!(" (ETA: {remaining:.0}s)")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
     }).await?;
     spinner.done(&format!(
         "indexing done — {} files, {} nodes, {} edges in {}ms",

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-03-27
+
+### Added
+- **`--skip-folder` flag for sync** — accepts one or more folder names to exclude during indexing (e.g. `tokensave sync --skip-folder tests benches`); each folder is converted to a `folder/**` glob pattern at runtime
+- **ETA during full index** — the progress spinner now shows `[current/total]` file counts and an estimated time remaining (e.g. `[12/150] indexing src/main.rs (ETA: 8s)`)
+
+### Changed
+- `index_all_with_progress` callback signature now provides `(current, total, path)` for richer progress reporting
+- Schema migration re-index also shows `[current/total]` progress
+
 ## [2.2.0] - 2026-03-27
 
 ### Changed
