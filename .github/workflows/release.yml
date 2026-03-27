@@ -3,6 +3,7 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -70,6 +71,7 @@ jobs:
           Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip
 
       - name: Upload binary archive
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -78,7 +80,7 @@ jobs:
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
       - name: Package Homebrew bottle
-        if: matrix.bottle_tag
+        if: matrix.bottle_tag && github.event_name == 'release'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
@@ -88,7 +90,7 @@ jobs:
           tar czf "tokensave--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
       - name: Upload bottle artifact
-        if: matrix.bottle_tag
+        if: matrix.bottle_tag && github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: bottle-${{ matrix.bottle_tag }}
@@ -96,6 +98,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -185,6 +188,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
