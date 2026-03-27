@@ -13,14 +13,14 @@ use serde_json::json;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    Agent, DoctorCounters, HealthcheckContext, InstallContext,
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
     load_json_file, write_json_file, EXPECTED_TOOL_PERMS,
 };
 
 /// Claude Code agent.
 pub struct ClaudeAgent;
 
-impl Agent for ClaudeAgent {
+impl AgentIntegration for ClaudeAgent {
     fn name(&self) -> &'static str {
         "Claude Code"
     }

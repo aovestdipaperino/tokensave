@@ -1,15 +1,20 @@
 // Rust guideline compliant 2025-10-17
 //! Agent integration layer for CLI tools (Claude Code, OpenCode, Codex, etc.).
 //!
-//! Each supported agent implements the [`Agent`] trait which provides
+//! Each supported agent implements the [`AgentIntegration`] trait which provides
 //! `install`, `uninstall`, and `healthcheck` operations. The MCP server
 //! itself is agent-agnostic; this module handles the per-agent config
 //! plumbing (registering the MCP server, permissions, hooks, prompt rules).
 
 pub mod claude;
+pub mod cline;
 pub mod codex;
+pub mod copilot;
+pub mod cursor;
 pub mod gemini;
 pub mod opencode;
+pub mod roo_code;
+pub mod zed;
 
 use std::path::{Path, PathBuf};
 
@@ -17,16 +22,21 @@ use crate::errors::Result;
 use crate::errors::TokenSaveError;
 
 pub use claude::ClaudeAgent;
+pub use cline::ClineAgent;
 pub use codex::CodexAgent;
+pub use copilot::CopilotAgent;
+pub use cursor::CursorAgent;
 pub use gemini::GeminiAgent;
 pub use opencode::OpenCodeAgent;
+pub use roo_code::RooCodeAgent;
+pub use zed::ZedAgent;
 
 // ---------------------------------------------------------------------------
-// Agent trait
+// AgentIntegration trait
 // ---------------------------------------------------------------------------
 
 /// A CLI agent that can be configured to use tokensave via MCP.
-pub trait Agent {
+pub trait AgentIntegration {
     /// Human-readable name (e.g. "Claude Code").
     fn name(&self) -> &'static str;
 
@@ -36,7 +46,7 @@ pub trait Agent {
     /// Register MCP server, permissions, hooks, and prompt rules.
     fn install(&self, ctx: &InstallContext) -> Result<()>;
 
-    /// Remove everything installed by [`Agent::install`].
+    /// Remove everything installed by [`AgentIntegration::install`].
     fn uninstall(&self, ctx: &InstallContext) -> Result<()>;
 
     /// Verify installation health (replaces agent-specific doctor checks).
@@ -51,14 +61,14 @@ pub trait Agent {
     fn has_tokensave(&self, _home: &Path) -> bool { false }
 }
 
-/// Context passed to [`Agent::install`] and [`Agent::uninstall`].
+/// Context passed to [`AgentIntegration::install`] and [`AgentIntegration::uninstall`].
 pub struct InstallContext {
     pub home: PathBuf,
     pub tokensave_bin: String,
     pub tool_permissions: &'static [&'static str],
 }
 
-/// Context passed to [`Agent::healthcheck`].
+/// Context passed to [`AgentIntegration::healthcheck`].
 pub struct HealthcheckContext {
     pub home: PathBuf,
     pub project_path: PathBuf,
@@ -69,12 +79,17 @@ pub struct HealthcheckContext {
 // ---------------------------------------------------------------------------
 
 /// Returns the agent matching `id`, or an error if unknown.
-pub fn get_agent(id: &str) -> Result<Box<dyn Agent>> {
+pub fn get_agent(id: &str) -> Result<Box<dyn AgentIntegration>> {
     match id {
         "claude" => Ok(Box::new(ClaudeAgent)),
         "opencode" => Ok(Box::new(OpenCodeAgent)),
         "codex" => Ok(Box::new(CodexAgent)),
         "gemini" => Ok(Box::new(GeminiAgent)),
+        "copilot" => Ok(Box::new(CopilotAgent)),
+        "cursor" => Ok(Box::new(CursorAgent)),
+        "zed" => Ok(Box::new(ZedAgent)),
+        "cline" => Ok(Box::new(ClineAgent)),
+        "roo-code" => Ok(Box::new(RooCodeAgent)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -85,18 +100,23 @@ pub fn get_agent(id: &str) -> Result<Box<dyn Agent>> {
 }
 
 /// Returns all registered agents.
-pub fn all_agents() -> Vec<Box<dyn Agent>> {
+pub fn all_agents() -> Vec<Box<dyn AgentIntegration>> {
     vec![
         Box::new(ClaudeAgent),
         Box::new(OpenCodeAgent),
         Box::new(CodexAgent),
         Box::new(GeminiAgent),
+        Box::new(CopilotAgent),
+        Box::new(CursorAgent),
+        Box::new(ZedAgent),
+        Box::new(ClineAgent),
+        Box::new(RooCodeAgent),
     ]
 }
 
 /// Returns the CLI identifiers of all registered agents (for help text).
 pub fn available_agents() -> Vec<&'static str> {
-    vec!["claude", "opencode", "codex", "gemini"]
+    vec!["claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code"]
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +360,7 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
 pub fn pick_agents_interactive(home: &Path, installed: &[String])
     -> Result<(Vec<String>, Vec<String>)>
 {
-    let detected: Vec<Box<dyn Agent>> = all_agents()
+    let detected: Vec<Box<dyn AgentIntegration>> = all_agents()
         .into_iter()
         .filter(|ag| ag.is_detected(home))
         .collect();

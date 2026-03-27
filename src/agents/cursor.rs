@@ -9,12 +9,12 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Cursor agent.
 pub struct CursorAgent;
 
-impl Agent for CursorAgent {
+impl AgentIntegration for CursorAgent {
     fn name(&self) -> &'static str {
         "Cursor"
     }

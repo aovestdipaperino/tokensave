@@ -11,14 +11,14 @@ use std::path::Path;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    Agent, DoctorCounters, HealthcheckContext, InstallContext,
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
     load_toml_file, write_toml_file, TOOL_NAMES,
 };
 
 /// OpenAI Codex CLI agent.
 pub struct CodexAgent;
 
-impl Agent for CodexAgent {
+impl AgentIntegration for CodexAgent {
     fn name(&self) -> &'static str {
         "Codex CLI"
     }

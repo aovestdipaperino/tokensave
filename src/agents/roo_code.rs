@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Roo Code agent.
 pub struct RooCodeAgent;
@@ -20,7 +20,7 @@ fn roo_ext_dir(home: &Path) -> PathBuf {
         .join("User/globalStorage/rooveterinaryinc.roo-cline")
 }
 
-impl Agent for RooCodeAgent {
+impl AgentIntegration for RooCodeAgent {
     fn name(&self) -> &'static str {
         "Roo Code"
     }

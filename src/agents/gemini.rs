@@ -12,12 +12,12 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Gemini CLI agent.
 pub struct GeminiAgent;
 
-impl Agent for GeminiAgent {
+impl AgentIntegration for GeminiAgent {
     fn name(&self) -> &'static str {
         "Gemini CLI"
     }
