@@ -12,7 +12,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_jsonc_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Zed agent.
-pub struct ZedAgent;
+pub struct ZedIntegration;
 
 /// Returns the Zed config directory, platform-specific.
 fn zed_config_dir(home: &Path) -> PathBuf {
@@ -22,7 +22,7 @@ fn zed_config_dir(home: &Path) -> PathBuf {
     { home.join(".config/zed") }
 }
 
-impl AgentIntegration for ZedAgent {
+impl AgentIntegration for ZedIntegration {
     fn name(&self) -> &'static str {
         "Zed"
     }

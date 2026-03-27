@@ -588,7 +588,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
             if let Some(id) = agent {
-                let ag = tokensave::agents::get_agent(&id)?;
+                let ag = tokensave::agents::get_integration(&id)?;
                 let ctx = tokensave::agents::InstallContext {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
@@ -601,10 +601,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 user_cfg.save();
             } else {
                 let (to_install, to_uninstall) =
-                    tokensave::agents::pick_agents_interactive(&home, &user_cfg.installed_agents)?;
+                    tokensave::agents::pick_integrations_interactive(&home, &user_cfg.installed_agents)?;
 
                 for id in &to_uninstall {
-                    let ag = tokensave::agents::get_agent(id)?;
+                    let ag = tokensave::agents::get_integration(id)?;
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
@@ -614,7 +614,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     user_cfg.installed_agents.retain(|a| a != id);
                 }
                 for id in &to_install {
-                    let ag = tokensave::agents::get_agent(id)?;
+                    let ag = tokensave::agents::get_integration(id)?;
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
@@ -638,7 +638,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
             if let Some(id) = agent {
-                let ag = tokensave::agents::get_agent(&id)?;
+                let ag = tokensave::agents::get_integration(&id)?;
                 let ctx = tokensave::agents::InstallContext {
                     home,
                     tokensave_bin: String::new(),
@@ -649,7 +649,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 user_cfg.save();
             } else {
                 for id in user_cfg.installed_agents.clone() {
-                    if let Ok(ag) = tokensave::agents::get_agent(&id) {
+                    if let Ok(ag) = tokensave::agents::get_integration(&id) {
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: String::new(),

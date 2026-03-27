@@ -15,9 +15,9 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Gemini CLI agent.
-pub struct GeminiAgent;
+pub struct GeminiIntegration;
 
-impl AgentIntegration for GeminiAgent {
+impl AgentIntegration for GeminiIntegration {
     fn name(&self) -> &'static str {
         "Gemini CLI"
     }

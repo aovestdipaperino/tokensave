@@ -12,9 +12,9 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_jsonc_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// GitHub Copilot (VS Code) agent.
-pub struct CopilotAgent;
+pub struct CopilotIntegration;
 
-impl AgentIntegration for CopilotAgent {
+impl AgentIntegration for CopilotIntegration {
     fn name(&self) -> &'static str {
         "GitHub Copilot (VS Code)"
     }

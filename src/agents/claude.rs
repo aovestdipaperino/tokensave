@@ -18,9 +18,9 @@ use super::{
 };
 
 /// Claude Code agent.
-pub struct ClaudeAgent;
+pub struct ClaudeIntegration;
 
-impl AgentIntegration for ClaudeAgent {
+impl AgentIntegration for ClaudeIntegration {
     fn name(&self) -> &'static str {
         "Claude Code"
     }

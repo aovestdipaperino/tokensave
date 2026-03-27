@@ -12,7 +12,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Roo Code agent.
-pub struct RooCodeAgent;
+pub struct RooCodeIntegration;
 
 /// Returns the Roo Code VS Code extension global storage directory.
 fn roo_ext_dir(home: &Path) -> PathBuf {
@@ -20,7 +20,7 @@ fn roo_ext_dir(home: &Path) -> PathBuf {
         .join("User/globalStorage/rooveterinaryinc.roo-cline")
 }
 
-impl AgentIntegration for RooCodeAgent {
+impl AgentIntegration for RooCodeIntegration {
     fn name(&self) -> &'static str {
         "Roo Code"
     }

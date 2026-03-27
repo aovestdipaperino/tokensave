@@ -16,9 +16,9 @@ use super::{
 };
 
 /// OpenAI Codex CLI agent.
-pub struct CodexAgent;
+pub struct CodexIntegration;
 
-impl AgentIntegration for CodexAgent {
+impl AgentIntegration for CodexIntegration {
     fn name(&self) -> &'static str {
         "Codex CLI"
     }

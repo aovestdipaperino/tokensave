@@ -12,7 +12,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Cline agent.
-pub struct ClineAgent;
+pub struct ClineIntegration;
 
 /// Returns the Cline VS Code extension global storage directory.
 fn cline_ext_dir(home: &Path) -> PathBuf {
@@ -20,7 +20,7 @@ fn cline_ext_dir(home: &Path) -> PathBuf {
         .join("User/globalStorage/saoudrizwan.claude-dev")
 }
 
-impl AgentIntegration for ClineAgent {
+impl AgentIntegration for ClineIntegration {
     fn name(&self) -> &'static str {
         "Cline"
     }

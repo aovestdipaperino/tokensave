@@ -21,15 +21,15 @@ use std::path::{Path, PathBuf};
 use crate::errors::Result;
 use crate::errors::TokenSaveError;
 
-pub use claude::ClaudeAgent;
-pub use cline::ClineAgent;
-pub use codex::CodexAgent;
-pub use copilot::CopilotAgent;
-pub use cursor::CursorAgent;
-pub use gemini::GeminiAgent;
-pub use opencode::OpenCodeAgent;
-pub use roo_code::RooCodeAgent;
-pub use zed::ZedAgent;
+pub use claude::ClaudeIntegration;
+pub use cline::ClineIntegration;
+pub use codex::CodexIntegration;
+pub use copilot::CopilotIntegration;
+pub use cursor::CursorIntegration;
+pub use gemini::GeminiIntegration;
+pub use opencode::OpenCodeIntegration;
+pub use roo_code::RooCodeIntegration;
+pub use zed::ZedIntegration;
 
 // ---------------------------------------------------------------------------
 // AgentIntegration trait
@@ -79,43 +79,43 @@ pub struct HealthcheckContext {
 // ---------------------------------------------------------------------------
 
 /// Returns the agent matching `id`, or an error if unknown.
-pub fn get_agent(id: &str) -> Result<Box<dyn AgentIntegration>> {
+pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
     match id {
-        "claude" => Ok(Box::new(ClaudeAgent)),
-        "opencode" => Ok(Box::new(OpenCodeAgent)),
-        "codex" => Ok(Box::new(CodexAgent)),
-        "gemini" => Ok(Box::new(GeminiAgent)),
-        "copilot" => Ok(Box::new(CopilotAgent)),
-        "cursor" => Ok(Box::new(CursorAgent)),
-        "zed" => Ok(Box::new(ZedAgent)),
-        "cline" => Ok(Box::new(ClineAgent)),
-        "roo-code" => Ok(Box::new(RooCodeAgent)),
+        "claude" => Ok(Box::new(ClaudeIntegration)),
+        "opencode" => Ok(Box::new(OpenCodeIntegration)),
+        "codex" => Ok(Box::new(CodexIntegration)),
+        "gemini" => Ok(Box::new(GeminiIntegration)),
+        "copilot" => Ok(Box::new(CopilotIntegration)),
+        "cursor" => Ok(Box::new(CursorIntegration)),
+        "zed" => Ok(Box::new(ZedIntegration)),
+        "cline" => Ok(Box::new(ClineIntegration)),
+        "roo-code" => Ok(Box::new(RooCodeIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
-                available_agents().join(", ")
+                available_integrations().join(", ")
             ),
         }),
     }
 }
 
 /// Returns all registered agents.
-pub fn all_agents() -> Vec<Box<dyn AgentIntegration>> {
+pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
     vec![
-        Box::new(ClaudeAgent),
-        Box::new(OpenCodeAgent),
-        Box::new(CodexAgent),
-        Box::new(GeminiAgent),
-        Box::new(CopilotAgent),
-        Box::new(CursorAgent),
-        Box::new(ZedAgent),
-        Box::new(ClineAgent),
-        Box::new(RooCodeAgent),
+        Box::new(ClaudeIntegration),
+        Box::new(OpenCodeIntegration),
+        Box::new(CodexIntegration),
+        Box::new(GeminiIntegration),
+        Box::new(CopilotIntegration),
+        Box::new(CursorIntegration),
+        Box::new(ZedIntegration),
+        Box::new(ClineIntegration),
+        Box::new(RooCodeIntegration),
     ]
 }
 
 /// Returns the CLI identifiers of all registered agents (for help text).
-pub fn available_agents() -> Vec<&'static str> {
+pub fn available_integrations() -> Vec<&'static str> {
     vec!["claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code"]
 }
 
@@ -338,7 +338,7 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
         return; // already populated
     }
     let mut found = Vec::new();
-    for ag in all_agents() {
+    for ag in all_integrations() {
         if ag.has_tokensave(home) {
             found.push(ag.id().to_string());
         }
@@ -357,10 +357,10 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
 ///   pre-checked if already in `installed`.
 ///
 /// Returns `(to_install, to_uninstall)`.
-pub fn pick_agents_interactive(home: &Path, installed: &[String])
+pub fn pick_integrations_interactive(home: &Path, installed: &[String])
     -> Result<(Vec<String>, Vec<String>)>
 {
-    let detected: Vec<Box<dyn AgentIntegration>> = all_agents()
+    let detected: Vec<Box<dyn AgentIntegration>> = all_integrations()
         .into_iter()
         .filter(|ag| ag.is_detected(home))
         .collect();

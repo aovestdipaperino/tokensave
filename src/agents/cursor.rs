@@ -12,9 +12,9 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Cursor agent.
-pub struct CursorAgent;
+pub struct CursorIntegration;
 
-impl AgentIntegration for CursorAgent {
+impl AgentIntegration for CursorIntegration {
     fn name(&self) -> &'static str {
         "Cursor"
     }

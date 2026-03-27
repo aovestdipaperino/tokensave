@@ -36,14 +36,14 @@ pub fn run_doctor(agent_filter: Option<&str>) {
             project_path: project_path.clone(),
         };
         let agents_to_check: Vec<Box<dyn agents::AgentIntegration>> = match agent_filter {
-            Some(id) => match agents::get_agent(id) {
+            Some(id) => match agents::get_integration(id) {
                 Ok(ag) => vec![ag],
                 Err(e) => {
                     dc.fail(&format!("{e}"));
                     vec![]
                 }
             },
-            None => agents::all_agents(),
+            None => agents::all_integrations(),
         };
         for ag in &agents_to_check {
             ag.healthcheck(&mut dc, &hctx);

@@ -16,9 +16,9 @@ use crate::errors::{Result, TokenSaveError};
 use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// OpenCode agent.
-pub struct OpenCodeAgent;
+pub struct OpenCodeIntegration;
 
-impl AgentIntegration for OpenCodeAgent {
+impl AgentIntegration for OpenCodeIntegration {
     fn name(&self) -> &'static str {
         "OpenCode"
     }
