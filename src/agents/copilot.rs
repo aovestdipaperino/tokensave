@@ -9,12 +9,12 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_jsonc_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_jsonc_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// GitHub Copilot (VS Code) agent.
 pub struct CopilotAgent;
 
-impl Agent for CopilotAgent {
+impl AgentIntegration for CopilotAgent {
     fn name(&self) -> &'static str {
         "GitHub Copilot (VS Code)"
     }

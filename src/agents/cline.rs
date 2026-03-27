@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Cline agent.
 pub struct ClineAgent;
@@ -20,7 +20,7 @@ fn cline_ext_dir(home: &Path) -> PathBuf {
         .join("User/globalStorage/saoudrizwan.claude-dev")
 }
 
-impl Agent for ClineAgent {
+impl AgentIntegration for ClineAgent {
     fn name(&self) -> &'static str {
         "Cline"
     }

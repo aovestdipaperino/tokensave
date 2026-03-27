@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_jsonc_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_jsonc_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// Zed agent.
 pub struct ZedAgent;
@@ -22,7 +22,7 @@ fn zed_config_dir(home: &Path) -> PathBuf {
     { home.join(".config/zed") }
 }
 
-impl Agent for ZedAgent {
+impl AgentIntegration for ZedAgent {
     fn name(&self) -> &'static str {
         "Zed"
     }

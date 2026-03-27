@@ -177,16 +177,16 @@ enum Commands {
     /// Configure agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "install", visible_alias = "claude-install")]
     Install {
-        /// Agent to configure (default: claude)
-        #[arg(long, default_value = "claude")]
-        agent: String,
+        /// Agent to configure (auto-detects if omitted)
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {
-        /// Agent to remove (default: claude)
-        #[arg(long, default_value = "claude")]
-        agent: String,
+        /// Agent to remove (removes all if omitted)
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
@@ -576,7 +576,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Install { agent } => {
-            let ag = tokensave::agents::get_agent(&agent)?;
             let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
                 message: "could not determine home directory".to_string(),
             })?;
@@ -585,25 +584,84 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                           cargo install tokensave\n  \
                           brew install aovestdipaperino/tap/tokensave".to_string(),
             })?;
-            let ctx = tokensave::agents::InstallContext {
-                home,
-                tokensave_bin: tokensave_bin.clone(),
-                tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
-            };
-            ag.install(&ctx)?;
+            let mut user_cfg = tokensave::user_config::UserConfig::load();
+            tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            if let Some(id) = agent {
+                let ag = tokensave::agents::get_agent(&id)?;
+                let ctx = tokensave::agents::InstallContext {
+                    home: home.clone(),
+                    tokensave_bin: tokensave_bin.clone(),
+                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                };
+                ag.install(&ctx)?;
+                if !user_cfg.installed_agents.contains(&id) {
+                    user_cfg.installed_agents.push(id);
+                }
+                user_cfg.save();
+            } else {
+                let (to_install, to_uninstall) =
+                    tokensave::agents::pick_agents_interactive(&home, &user_cfg.installed_agents)?;
+
+                for id in &to_uninstall {
+                    let ag = tokensave::agents::get_agent(id)?;
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    };
+                    ag.uninstall(&ctx)?;
+                    user_cfg.installed_agents.retain(|a| a != id);
+                }
+                for id in &to_install {
+                    let ag = tokensave::agents::get_agent(id)?;
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    };
+                    ag.install(&ctx)?;
+                    if !user_cfg.installed_agents.contains(id) {
+                        user_cfg.installed_agents.push(id.clone());
+                    }
+                }
+                user_cfg.save();
+            }
+
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
         }
         Commands::Uninstall { agent } => {
-            let ag = tokensave::agents::get_agent(&agent)?;
             let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
                 message: "could not determine home directory".to_string(),
             })?;
-            let ctx = tokensave::agents::InstallContext {
-                home,
-                tokensave_bin: String::new(),
-                tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
-            };
-            ag.uninstall(&ctx)?;
+            let mut user_cfg = tokensave::user_config::UserConfig::load();
+            tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            if let Some(id) = agent {
+                let ag = tokensave::agents::get_agent(&id)?;
+                let ctx = tokensave::agents::InstallContext {
+                    home,
+                    tokensave_bin: String::new(),
+                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                };
+                ag.uninstall(&ctx)?;
+                user_cfg.installed_agents.retain(|a| a != &id);
+                user_cfg.save();
+            } else {
+                for id in user_cfg.installed_agents.clone() {
+                    if let Ok(ag) = tokensave::agents::get_agent(&id) {
+                        let ctx = tokensave::agents::InstallContext {
+                            home: home.clone(),
+                            tokensave_bin: String::new(),
+                            tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        };
+                        ag.uninstall(&ctx).ok();
+                    }
+                }
+                user_cfg.installed_agents.clear();
+                user_cfg.save();
+                eprintln!("All agent integrations removed.");
+            }
         }
         Commands::HookPreToolUse => {
             hook_pre_tool_use();

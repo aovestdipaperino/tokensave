@@ -13,12 +13,12 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, Agent, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
 
 /// OpenCode agent.
 pub struct OpenCodeAgent;
 
-impl Agent for OpenCodeAgent {
+impl AgentIntegration for OpenCodeAgent {
     fn name(&self) -> &'static str {
         "OpenCode"
     }

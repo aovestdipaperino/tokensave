@@ -35,7 +35,7 @@ pub fn run_doctor(agent_filter: Option<&str>) {
             home: home.clone(),
             project_path: project_path.clone(),
         };
-        let agents_to_check: Vec<Box<dyn agents::Agent>> = match agent_filter {
+        let agents_to_check: Vec<Box<dyn agents::AgentIntegration>> = match agent_filter {
             Some(id) => match agents::get_agent(id) {
                 Ok(ag) => vec![ag],
                 Err(e) => {
