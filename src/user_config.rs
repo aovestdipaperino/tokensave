@@ -46,6 +46,10 @@ pub struct UserConfig {
     #[serde(default)]
     pub last_version_warning_at: i64,
 
+    /// Agent integrations that have been installed (e.g. ["claude", "gemini"]).
+    #[serde(default)]
+    pub installed_agents: Vec<String>,
+
     /// Cached country flags from the worldwide counter.
     #[serde(default)]
     pub cached_country_flags: Vec<String>,
@@ -71,6 +75,7 @@ impl Default for UserConfig {
             cached_latest_version: String::new(),
             last_version_check_at: 0,
             last_version_warning_at: 0,
+            installed_agents: Vec::new(),
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
         }
