@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.2] - 2026-03-27
+
+### Added
+- **5 new agent integrations** — Copilot (VS Code), Cursor, Zed, Cline, and Roo Code now supported via `tokensave install --agent <id>`; each registers the MCP server in the agent's native config format (VS Code `settings.json`, `~/.cursor/mcp.json`, Zed `settings.json`, Cline/Roo Code `cline_mcp_settings.json`)
+- **Auto-detect agents** — running `tokensave install` without `--agent` detects which agents are installed by checking their config directories; if one is found it installs directly, if multiple are found an interactive checkbox selector is shown
+- **Installed-agent tracking** — `installed_agents` list in `~/.tokensave/config.toml` tracks which integrations are active; on upgrade from older versions the list is backfilled by scanning existing configs
+- **Uninstall-all** — `tokensave uninstall` without `--agent` silently removes all tracked integrations
+- **JSONC parser** — VS Code and Zed settings files (JSON with comments and trailing commas) are now parsed correctly
+
+### Changed
+- **Renamed `Agent` trait to `AgentIntegration`** and all struct names from `XxxAgent` to `XxxIntegration` for consistency; functions renamed accordingly (`get_integration`, `all_integrations`, etc.)
+
 ## [2.3.1] - 2026-03-27
 
 ### Changed
