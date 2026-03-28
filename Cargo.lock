@@ -3893,7 +3893,6 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "tokensave"
 version = "2.6.0"
 dependencies = [
- "cc",
  "clap",
  "daemon-kit",
  "dialoguer",
@@ -3918,15 +3917,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-batch",
- "tree-sitter-gwbasic",
- "tree-sitter-language",
- "tree-sitter-msbasic2",
- "tree-sitter-objc",
- "tree-sitter-pascal",
- "tree-sitter-powershell",
- "tree-sitter-qbasic",
- "tree-sitter-vb-dotnet",
  "ureq",
  "walkdir",
 ]
@@ -3938,10 +3928,18 @@ dependencies = [
  "cc",
  "tokensave-medium-treesitters",
  "tree-sitter",
+ "tree-sitter-batch",
  "tree-sitter-fortran",
+ "tree-sitter-gwbasic",
  "tree-sitter-language",
+ "tree-sitter-msbasic2",
  "tree-sitter-nix",
+ "tree-sitter-objc",
+ "tree-sitter-pascal",
  "tree-sitter-perl",
+ "tree-sitter-powershell",
+ "tree-sitter-qbasic",
+ "tree-sitter-vb-dotnet",
  "tree-sitter-zig",
 ]
 

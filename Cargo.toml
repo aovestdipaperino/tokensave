@@ -20,28 +20,26 @@ lite = []
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
 full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
 
-# Medium-tier languages (non-bundled only need individual crates)
+# Language features (all grammars provided by tokensave-large-treesitters)
 lang-dart = []
-lang-pascal = ["dep:tree-sitter-pascal"]
+lang-pascal = []
 lang-php = []
 lang-ruby = []
 lang-bash = []
 lang-protobuf = []
-lang-powershell = ["dep:tree-sitter-powershell"]
+lang-powershell = []
 lang-nix = []
-lang-vbnet = ["dep:tree-sitter-vb-dotnet"]
-
-# Full-tier languages
+lang-vbnet = []
 lang-lua = []
 lang-zig = []
-lang-objc = ["dep:tree-sitter-objc"]
+lang-objc = []
 lang-perl = []
-lang-batch = ["dep:tree-sitter-batch"]
+lang-batch = []
 lang-fortran = []
 lang-cobol = []
-lang-msbasic2 = ["dep:tree-sitter-msbasic2"]
-lang-gwbasic = ["dep:tree-sitter-gwbasic"]
-lang-qbasic = ["dep:tree-sitter-qbasic"]
+lang-msbasic2 = []
+lang-gwbasic = []
+lang-qbasic = []
 
 [lib]
 name = "tokensave"
@@ -75,20 +73,9 @@ dirs = "6"
 daemon-kit = "0.1.2"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
-tree-sitter-language = "0.1"
-# Non-bundled language grammars (not covered by tokensave-large-treesitters)
-tree-sitter-pascal = { version = "0.10", optional = true }
-tree-sitter-powershell = { version = "0.26", optional = true }
-tree-sitter-vb-dotnet = { version = "0.1", optional = true }
-tree-sitter-objc = { version = "3.0", optional = true }
-tree-sitter-batch = { version = "0.3", optional = true }
-tree-sitter-msbasic2 = { version = "0.2", optional = true }
-tree-sitter-gwbasic = { version = "0.2", optional = true }
-tree-sitter-qbasic = { version = "0.2", optional = true }
 
 [build-dependencies]
 logo-art = "0.2"
-cc = "1"
 
 [dev-dependencies]
 tempfile = "3"
