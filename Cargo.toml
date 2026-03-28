@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "2.5.0-beta"
+version = "2.6.0"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
@@ -11,7 +11,7 @@ keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claud
 categories = ["development-tools", "command-line-utilities"]
 
 [features]
-default = ["full", "ts-both"]
+default = ["full"]
 
 # Lite tier (11 languages) — always compiled, no feature flag needed:
 # Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
@@ -20,32 +20,24 @@ lite = []
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
 full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
 
-# Tree-sitter grammar source selection:
-#   ts-ffi  — individual tree-sitter-* crates (classic FFI bindings)
-#   ts-rust — bundled tokensave-*-treesitters crates (for covered languages)
-#   ts-both — both sources compiled; extractions are compared for discrepancies
-ts-ffi = []
-ts-rust = ["dep:tokensave-large-treesitters"]
-ts-both = ["ts-ffi", "ts-rust"]
-
-# Medium-tier languages
-lang-dart = ["dep:tree-sitter-dart-orchard"]
+# Medium-tier languages (non-bundled only need individual crates)
+lang-dart = []
 lang-pascal = ["dep:tree-sitter-pascal"]
-lang-php = ["dep:tree-sitter-php"]
-lang-ruby = ["dep:tree-sitter-ruby"]
-lang-bash = ["dep:tree-sitter-bash"]
-lang-protobuf = ["dep:tree-sitter-language"]
+lang-php = []
+lang-ruby = []
+lang-bash = []
+lang-protobuf = []
 lang-powershell = ["dep:tree-sitter-powershell"]
-lang-nix = ["dep:tree-sitter-nix"]
+lang-nix = []
 lang-vbnet = ["dep:tree-sitter-vb-dotnet"]
 
 # Full-tier languages
-lang-lua = ["dep:tree-sitter-lua"]
-lang-zig = ["dep:tree-sitter-zig"]
+lang-lua = []
+lang-zig = []
 lang-objc = ["dep:tree-sitter-objc"]
-lang-perl = ["dep:tree-sitter-perl"]
+lang-perl = []
 lang-batch = ["dep:tree-sitter-batch"]
-lang-fortran = ["dep:tree-sitter-fortran"]
+lang-fortran = []
 lang-cobol = []
 lang-msbasic2 = ["dep:tree-sitter-msbasic2"]
 lang-gwbasic = ["dep:tree-sitter-gwbasic"]
@@ -61,16 +53,7 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tree-sitter-rust = "0.24"
-tree-sitter-go = "0.25"
-tree-sitter-java = "0.23"
-tree-sitter-scala = "0.25"
-tree-sitter-typescript = "0.23"
-tree-sitter-javascript = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-c = "0.24"
-tree-sitter-c-sharp = "0.23"
-tree-sitter-cpp = "0.23"
+tokensave-large-treesitters = { version = "0.1", path = "../tree-sitter/localonly/tokensave-large-treesitters" }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
@@ -92,28 +75,16 @@ dirs = "6"
 daemon-kit = "0.1.2"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
-tree-sitter-dart-orchard = { version = "0.3", optional = true }
-tree-sitter-kotlin-sg = "0.4.0"
+tree-sitter-language = "0.1"
+# Non-bundled language grammars (not covered by tokensave-large-treesitters)
 tree-sitter-pascal = { version = "0.10", optional = true }
-tree-sitter-php = { version = "0.24.2", optional = true }
-tree-sitter-ruby = { version = "0.23.1", optional = true }
-tree-sitter-swift = "0.7"
-tree-sitter-bash = { version = "0.25", optional = true }
-tree-sitter-lua = { version = "0.5", optional = true }
-tree-sitter-zig = { version = "1.1", optional = true }
-tree-sitter-language = { version = "0.1", optional = true }
-tree-sitter-nix = { version = "0.3", optional = true }
-tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-powershell = { version = "0.26", optional = true }
-tree-sitter-batch = { version = "0.3", optional = true }
-tree-sitter-perl = { version = "1.1", optional = true }
+tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-objc = { version = "3.0", optional = true }
-tree-sitter-fortran = { version = "0.5", optional = true }
+tree-sitter-batch = { version = "0.3", optional = true }
 tree-sitter-msbasic2 = { version = "0.2", optional = true }
 tree-sitter-gwbasic = { version = "0.2", optional = true }
 tree-sitter-qbasic = { version = "0.2", optional = true }
-tokensave-large-treesitters = { version = "0.1", optional = true, path = "../tree-sitter/localonly/tokensave-large-treesitters" }
-quantum-pulse = { version = "0.1", features = ["full"] }
 
 [build-dependencies]
 logo-art = "0.2"

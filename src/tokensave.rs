@@ -185,35 +185,6 @@ impl TokenSave {
                 Some(e) => e,
                 None => continue,
             };
-            #[cfg(feature = "ts-both")]
-            let result = {
-                use crate::extraction::ts_provider::{
-                    compare_extractions, profile_extraction, with_ffi_override,
-                };
-                // Alternate which source runs first to neutralise cache warming.
-                let file_hash = file_path.len();
-                let (primary, ffi_result) = if file_hash % 2 == 0 {
-                    let p = profile_extraction("extract:bundled", || {
-                        extractor.extract(file_path, &source)
-                    });
-                    let f = profile_extraction("extract:ffi", || {
-                        with_ffi_override(|| extractor.extract(file_path, &source))
-                    });
-                    (p, f)
-                } else {
-                    let f = profile_extraction("extract:ffi", || {
-                        with_ffi_override(|| extractor.extract(file_path, &source))
-                    });
-                    let p = profile_extraction("extract:bundled", || {
-                        extractor.extract(file_path, &source)
-                    });
-                    (p, f)
-                };
-                compare_extractions(file_path, extractor.language_name(), &primary, &ffi_result);
-                primary
-            };
-
-            #[cfg(not(feature = "ts-both"))]
             let result = extractor.extract(file_path, &source);
 
             // Store nodes and edges
@@ -251,8 +222,7 @@ impl TokenSave {
             }
         }
 
-        #[cfg(feature = "ts-both")]
-        crate::extraction::ts_provider::print_perf_summary();
+
 
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
@@ -330,35 +300,6 @@ impl TokenSave {
                 Some(e) => e,
                 None => continue,
             };
-            #[cfg(feature = "ts-both")]
-            let result = {
-                use crate::extraction::ts_provider::{
-                    compare_extractions, profile_extraction, with_ffi_override,
-                };
-                // Alternate which source runs first to neutralise cache warming.
-                let file_hash = file_path.len();
-                let (primary, ffi_result) = if file_hash % 2 == 0 {
-                    let p = profile_extraction("extract:bundled", || {
-                        extractor.extract(file_path, &source)
-                    });
-                    let f = profile_extraction("extract:ffi", || {
-                        with_ffi_override(|| extractor.extract(file_path, &source))
-                    });
-                    (p, f)
-                } else {
-                    let f = profile_extraction("extract:ffi", || {
-                        with_ffi_override(|| extractor.extract(file_path, &source))
-                    });
-                    let p = profile_extraction("extract:bundled", || {
-                        extractor.extract(file_path, &source)
-                    });
-                    (p, f)
-                };
-                compare_extractions(file_path, extractor.language_name(), &primary, &ffi_result);
-                primary
-            };
-
-            #[cfg(not(feature = "ts-both"))]
             let result = extractor.extract(file_path, &source);
 
             self.db.insert_nodes(&result.nodes).await?;
@@ -394,8 +335,7 @@ impl TokenSave {
             }
         }
 
-        #[cfg(feature = "ts-both")]
-        crate::extraction::ts_provider::print_perf_summary();
+
 
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())

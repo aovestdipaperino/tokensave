@@ -5,5 +5,3 @@
 
 #[cfg(feature = "lang-cobol")]
 pub mod cobol;
-#[cfg(feature = "lang-protobuf")]
-pub mod protobuf;

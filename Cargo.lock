@@ -553,15 +553,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1956,20 +1947,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hdrhistogram"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
-dependencies = [
- "base64 0.21.7",
- "byteorder",
- "crossbeam-channel",
- "flate2",
- "nom",
- "num-traits",
-]
-
-[[package]]
 name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3257,27 +3234,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 
 [[package]]
-name = "quantum-pulse"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f373d27efe7b1a25db7df1557ad580db19a62056d7dcb0a8242876b64c42c48c"
-dependencies = [
- "hdrhistogram",
- "quantum-pulse-macros",
-]
-
-[[package]]
-name = "quantum-pulse-macros"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978774f05ef3a9c23ab0a5df553c69d9eb292fdf0bdfff4bfdcfc6a1b9b3381"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3935,7 +3891,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokensave"
-version = "2.5.0-beta"
+version = "2.6.0"
 dependencies = [
  "cc",
  "clap",
@@ -3951,7 +3907,6 @@ dependencies = [
  "ndarray",
  "notify",
  "ort",
- "quantum-pulse",
  "serde",
  "serde_json",
  "sha2",
@@ -3963,36 +3918,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-bash",
  "tree-sitter-batch",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cpp",
- "tree-sitter-dart-orchard",
- "tree-sitter-fortran",
- "tree-sitter-go",
  "tree-sitter-gwbasic",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-kotlin-sg",
  "tree-sitter-language",
- "tree-sitter-lua",
  "tree-sitter-msbasic2",
- "tree-sitter-nix",
  "tree-sitter-objc",
  "tree-sitter-pascal",
- "tree-sitter-perl",
- "tree-sitter-php",
  "tree-sitter-powershell",
- "tree-sitter-python",
  "tree-sitter-qbasic",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-scala",
- "tree-sitter-swift",
- "tree-sitter-typescript",
  "tree-sitter-vb-dotnet",
- "tree-sitter-zig",
  "ureq",
  "walkdir",
 ]
