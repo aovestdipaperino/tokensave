@@ -137,11 +137,18 @@ fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
 /// Print the top title row: version (left) + country flags (right).
 fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let version = env!("CARGO_PKG_VERSION");
-    let title = format!("TokenSave v{version}");
+    let daemon_running = crate::daemon::running_daemon_pid().is_some();
+    let title = if daemon_running {
+        format!("😈 TokenSave v{version}")
+    } else {
+        format!("TokenSave v{version}")
+    };
+    // The emoji is 2 columns wide but len() counts bytes — adjust for padding.
+    let title_display_width = if daemon_running { title.len() - 2 } else { title.len() };
     let available = inner_width.saturating_sub(2);
 
     if country_flags.is_empty() {
-        let pad = available.saturating_sub(title.len());
+        let pad = available.saturating_sub(title_display_width);
         println!("│ {}{} │", title, " ".repeat(pad));
         return;
     }
