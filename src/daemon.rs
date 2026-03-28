@@ -188,7 +188,37 @@ fn create_watcher(project_root: &Path, tx: mpsc::Sender<PathBuf>) -> Option<Reco
 }
 
 /// Run an incremental sync on a single project. Best-effort.
+///
+/// Catches panics (e.g. from extractor bugs on malformed files) so one
+/// bad project doesn't kill the entire daemon.
 async fn sync_project(project_root: &Path) {
+    let root = project_root.to_path_buf();
+    let result = tokio::task::spawn(async move {
+        sync_project_inner(&root).await;
+    })
+    .await;
+
+    if let Err(e) = result {
+        let msg = if e.is_panic() {
+            let panic = e.into_panic();
+            if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else {
+                "unknown panic".to_string()
+            }
+        } else {
+            format!("task error: {e}")
+        };
+        daemon_log(&format!(
+            "sync panicked for {}: {msg}",
+            project_root.display()
+        ));
+    }
+}
+
+async fn sync_project_inner(project_root: &Path) {
     let start = std::time::Instant::now();
     let Ok(cg) = crate::tokensave::TokenSave::open(project_root).await else {
         daemon_log(&format!("failed to open {}", project_root.display()));
@@ -219,25 +249,17 @@ async fn sync_project(project_root: &Path) {
     }
 }
 
-/// Append a timestamped line to the daemon log file.
+/// Log a timestamped daemon message to stderr.
+///
+/// When running under launchd/systemd, stderr is redirected to the daemon
+/// log file automatically. Writing directly to the file as well would
+/// duplicate every line.
 fn daemon_log(msg: &str) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let line = format!("[{secs}] {msg}\n");
-    eprint!("{line}");
-    if let Some(home) = dirs::home_dir() {
-        let log_path = home.join(".tokensave").join("daemon.log");
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
+    eprintln!("[{secs}] {msg}");
 }
 
 /// Start the daemon. Forks to background on Unix unless `foreground` is true.
