@@ -3923,7 +3923,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-large-treesitters"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba7a581dd2f7d41369e4a4b77814786f866ac9832751fe40061a567aa3cd1616"
 dependencies = [
  "cc",
  "tokensave-medium-treesitters",
@@ -3945,7 +3947,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-lite-treesitters"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b645134fbb55b21381bde082fcdd09f300123506239333fd81ac1c7c82b72314"
 dependencies = [
  "tree-sitter",
  "tree-sitter-c",
@@ -3960,7 +3964,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-medium-treesitters"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce5b721b1cfbe70cfc5c77ed9c909a989bed4a748f400b92f3a71a72128fa60"
 dependencies = [
  "tokensave-lite-treesitters",
  "tree-sitter",
