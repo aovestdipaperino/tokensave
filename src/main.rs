@@ -647,6 +647,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
+            tokensave::daemon::offer_daemon_autostart();
         }
         Commands::Uninstall { agent } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {

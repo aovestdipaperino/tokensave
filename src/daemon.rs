@@ -304,6 +304,49 @@ pub fn disable_autostart() -> Result<()> {
     Ok(())
 }
 
+/// Offer to install the daemon autostart service during `tokensave install`.
+///
+/// Skips silently when:
+/// - stdin is not a terminal (non-interactive)
+/// - the autostart service is already installed
+/// - the daemon is already running
+pub fn offer_daemon_autostart() {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+
+    if is_autostart_enabled() {
+        eprintln!("  Daemon autostart service already installed, skipping");
+        return;
+    }
+
+    if running_daemon_pid().is_some() {
+        eprintln!("  Daemon already running (no autostart service), skipping");
+        return;
+    }
+
+    eprintln!();
+    eprint!(
+        "Install the \x1b[1mtokensave daemon\x1b[0m as a background service (auto-syncs on file changes)? [y/N] "
+    );
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return;
+    }
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+        eprintln!("  Skipped daemon service");
+        eprintln!("  tip: you can install it later with \x1b[1mtokensave daemon --enable-autostart\x1b[0m");
+        return;
+    }
+
+    match enable_autostart() {
+        Ok(()) => {}
+        Err(e) => eprintln!("  \x1b[31m✘\x1b[0m Failed to install daemon service: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
