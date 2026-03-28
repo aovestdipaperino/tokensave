@@ -24,12 +24,16 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     }
 }
 
+/// Returns the `~/.tokensave` directory used for PID/log files.
+fn daemon_pid_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tokensave")
+}
+
 /// Build the daemon-kit Daemon instance with tokensave paths.
 pub fn build_daemon() -> std::result::Result<Daemon, TokenSaveError> {
-    let home = dirs::home_dir().ok_or_else(|| TokenSaveError::Config {
-        message: "cannot determine home directory".to_string(),
-    })?;
-    let ts_dir = home.join(".tokensave");
+    let ts_dir = daemon_pid_dir();
     let bin = crate::agents::which_tokensave().unwrap_or_else(|| "tokensave".to_string());
 
     let config = DaemonConfig::new("tokensave-daemon")
@@ -244,20 +248,36 @@ pub async fn run(foreground: bool) -> Result<()> {
     let debounce = parse_duration(&config.daemon_debounce)
         .unwrap_or(Duration::from_secs(15));
 
-    daemon
-        .start(foreground, move || {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
-            })?;
-            rt.block_on(async {
-                run_loop(debounce).await.map_err(|e| {
-                    daemon_kit::DaemonError::Daemonize(e.to_string())
+    if foreground {
+        // Already inside a tokio runtime — call run_loop directly.
+        // daemon.start(foreground=true) would invoke a FnOnce closure
+        // that creates a nested runtime, which panics.
+        let pid_file = daemon_kit::PidFile::new(
+            daemon_pid_dir().join("tokensave-daemon.pid"),
+        );
+        pid_file.write().ok();
+        let result = run_loop(debounce).await.map_err(|e| TokenSaveError::Config {
+            message: format!("daemon error: {e}"),
+        });
+        pid_file.remove();
+        result
+    } else {
+        // Fork to background — the child needs its own tokio runtime.
+        daemon
+            .start(false, move || {
+                let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                    daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
+                })?;
+                rt.block_on(async {
+                    run_loop(debounce).await.map_err(|e| {
+                        daemon_kit::DaemonError::Daemonize(e.to_string())
+                    })
                 })
             })
-        })
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("daemon error: {e}"),
-        })
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("daemon error: {e}"),
+            })
+    }
 }
 
 /// Stop the running daemon.

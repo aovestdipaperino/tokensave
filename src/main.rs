@@ -18,7 +18,7 @@ fn current_unix_timestamp() -> i64 {
 }
 
 /// A self-animating spinner that ticks on a background thread.
-///
+/// Let's check the daemon syncing.
 /// Call `set_message` to update what is displayed; the background thread
 /// redraws at ~80 ms intervals. Call `done` to stop and print a final line.
 struct Spinner {
