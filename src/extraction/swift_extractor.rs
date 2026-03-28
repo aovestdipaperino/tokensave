@@ -128,9 +128,9 @@ impl SwiftExtractor {
     /// Parse source code into a tree-sitter AST.
     fn parse_source(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        let language = tree_sitter_swift::LANGUAGE;
+        let language = crate::extraction::ts_provider::language("swift");
         parser
-            .set_language(&language.into())
+            .set_language(&language)
             .map_err(|e| format!("failed to load Swift grammar: {e}"))?;
         parser
             .parse(source, None)

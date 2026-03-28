@@ -12,6 +12,7 @@ mod csharp_extractor;
 mod swift_extractor;
 
 pub mod complexity;
+pub mod ts_provider;
 
 /// Tree-sitter based source code extraction module.
 ///
