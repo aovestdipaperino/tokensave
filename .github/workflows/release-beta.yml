@@ -1,11 +1,10 @@
-name: Release
+name: Release (Beta)
 
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
-# Skip beta/prerelease tags — handled by release-beta.yml
+# Only runs for prerelease tags — stable releases handled by release.yml
 
 permissions:
   contents: write
@@ -16,7 +15,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    if: github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: true
@@ -64,44 +63,42 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../tokensave-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
+          tar czf ../../../tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
           cd ../../..
 
       - name: Package binary (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.zip
 
       - name: Upload binary archive
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+        run: gh release upload ${{ github.ref_name }} tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
 
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
       - name: Package Homebrew bottle
-        if: matrix.bottle_tag && github.event_name == 'release'
+        if: matrix.bottle_tag
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
-          mkdir -p tokensave/${VERSION}/bin
-          cp target/${{ matrix.target }}/release/tokensave tokensave/${VERSION}/bin/tokensave
-          chmod +x tokensave/${VERSION}/bin/tokensave
-          tar czf "tokensave--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
+          mkdir -p tokensave-beta/${VERSION}/bin
+          cp target/${{ matrix.target }}/release/tokensave tokensave-beta/${VERSION}/bin/tokensave
+          chmod +x tokensave-beta/${VERSION}/bin/tokensave
+          tar czf "tokensave-beta--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave-beta/
 
       - name: Upload bottle artifact
-        if: matrix.bottle_tag && github.event_name == 'release'
+        if: matrix.bottle_tag
         uses: actions/upload-artifact@v4
         with:
-          name: bottle-${{ matrix.bottle_tag }}
-          path: "tokensave--*.bottle.tar.gz"
+          name: bottle-beta-${{ matrix.bottle_tag }}
+          path: "tokensave-beta--*.bottle.tar.gz"
 
   update-homebrew:
-    name: Update Homebrew tap
-    if: github.event_name == 'release'
+    name: Update Homebrew tap (beta)
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -123,7 +120,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for f in bottles/tokensave--*.bottle.tar.gz; do
+          for f in bottles/tokensave-beta--*.bottle.tar.gz; do
             gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
           done
 
@@ -139,8 +136,8 @@ jobs:
           SOURCE_SHA=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
-          for f in bottles/tokensave--*.bottle.tar.gz; do
-            tag=$(basename "$f" | sed "s/tokensave--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
+          for f in bottles/tokensave-beta--*.bottle.tar.gz; do
+            tag=$(basename "$f" | sed "s/tokensave-beta--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
             sha=$(sha256sum "$f" | awk '{print $1}')
             echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
           done
@@ -156,9 +153,9 @@ jobs:
 
           git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/aovestdipaperino/homebrew-tap.git" tap
 
-          cat > tap/Formula/tokensave.rb << EOF
-          class Tokensave < Formula
-            desc "Code intelligence tool that builds semantic knowledge graphs from source code"
+          cat > tap/Formula/tokensave-beta.rb << EOF
+          class TokensaveBeta < Formula
+            desc "Code intelligence tool (beta channel)"
             homepage "https://github.com/aovestdipaperino/tokensave"
             url "https://github.com/aovestdipaperino/tokensave/archive/refs/tags/v${VERSION}.tar.gz"
             sha256 "${SOURCE_SHA}"
@@ -171,6 +168,8 @@ jobs:
             end
 
             depends_on "rust" => :build
+
+            conflicts_with "tokensave", because: "both install a `tokensave` binary"
 
             def install
               system "cargo", "install", *std_cargo_args
@@ -185,13 +184,12 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/tokensave.rb
-          git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
+          git add Formula/tokensave-beta.rb
+          git diff --cached --quiet || git commit -m "tokensave-beta ${VERSION}"
           git push
 
   update-scoop:
-    name: Update Scoop bucket
-    if: github.event_name == 'release'
+    name: Update Scoop bucket (beta)
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -206,9 +204,9 @@ jobs:
 
           gh release download "${GITHUB_REF_NAME}" \
             --repo "${{ github.repository }}" \
-            --pattern "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" \
+            --pattern "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" \
             --dir .
-          SHA256=$(sha256sum "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
+          SHA256=$(sha256sum "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
           echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Update Scoop manifest
@@ -219,26 +217,27 @@ jobs:
           TAG="${{ steps.release.outputs.tag }}"
           SHA256="${{ steps.release.outputs.sha256_win64 }}"
 
-          cat > tokensave.json << EOF
+          cat > tokensave-beta.json << EOF
           {
             "version": "${VERSION}",
-            "description": "Code intelligence tool that builds semantic knowledge graphs from source code",
+            "description": "Code intelligence tool (beta channel)",
             "homepage": "https://github.com/aovestdipaperino/tokensave",
             "license": "MIT",
             "architecture": {
               "64bit": {
-                "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-${TAG}-x86_64-windows.zip",
+                "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-beta-${TAG}-x86_64-windows.zip",
                 "hash": "${SHA256}"
               }
             },
             "bin": "tokensave.exe",
             "checkver": {
-              "github": "https://github.com/aovestdipaperino/tokensave"
+              "github": "https://github.com/aovestdipaperino/tokensave",
+              "regex": "v([\\d.]+-beta[\\d.]*)"
             },
             "autoupdate": {
               "architecture": {
                 "64bit": {
-                  "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-v\$version-x86_64-windows.zip"
+                  "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-beta-v\$version-x86_64-windows.zip"
                 }
               }
             }
@@ -248,10 +247,9 @@ jobs:
           git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" scoop-repo
           cd scoop-repo
           mkdir -p bucket
-          cp ../tokensave.json bucket/tokensave.json
-          git rm -f --ignore-unmatch tokensave.json
+          cp ../tokensave-beta.json bucket/tokensave-beta.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bucket/tokensave.json
-          git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
+          git add bucket/tokensave-beta.json
+          git diff --cached --quiet || git commit -m "tokensave-beta ${VERSION}"
           git push

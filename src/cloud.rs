@@ -9,9 +9,13 @@ use std::time::Duration;
 /// The Cloudflare Worker endpoint URL.
 const WORKER_URL: &str = "https://tokensave-counter.enzinol.workers.dev";
 
-/// GitHub API endpoint for the latest release.
+/// GitHub API endpoint for the latest stable release.
 const GITHUB_RELEASES_URL: &str =
     "https://api.github.com/repos/aovestdipaperino/tokensave/releases/latest";
+
+/// GitHub API endpoint for listing releases (used to find latest beta).
+const GITHUB_RELEASES_LIST_URL: &str =
+    "https://api.github.com/repos/aovestdipaperino/tokensave/releases?per_page=10";
 
 /// Timeout for flush (upload) requests.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -93,11 +97,24 @@ pub fn fetch_country_flags() -> Vec<String> {
 #[derive(serde::Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 /// Fetches the latest release version from GitHub.
-/// Returns the version string (without leading 'v') or None on failure.
+/// For beta builds, fetches the latest prerelease; for stable builds,
+/// fetches the latest stable release. This ensures each channel only
+/// sees updates from its own channel.
 pub fn fetch_latest_version() -> Option<String> {
+    if is_beta() {
+        fetch_latest_beta_version()
+    } else {
+        fetch_latest_stable_version()
+    }
+}
+
+/// Fetches the latest stable release version from GitHub.
+fn fetch_latest_stable_version() -> Option<String> {
     let agent = agent_with_timeout(FETCH_TIMEOUT);
     let release: GitHubRelease = agent
         .get(GITHUB_RELEASES_URL)
@@ -110,17 +127,61 @@ pub fn fetch_latest_version() -> Option<String> {
     Some(release.tag_name.trim_start_matches('v').to_string())
 }
 
+/// Fetches the latest prerelease version from GitHub.
+fn fetch_latest_beta_version() -> Option<String> {
+    let agent = agent_with_timeout(FETCH_TIMEOUT);
+    let releases: Vec<GitHubRelease> = agent
+        .get(GITHUB_RELEASES_LIST_URL)
+        .header("User-Agent", "tokensave")
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    // Find the first prerelease in the list (sorted newest first by GitHub)
+    releases
+        .into_iter()
+        .find(|r| r.prerelease)
+        .map(|r| r.tag_name.trim_start_matches('v').to_string())
+}
+
+/// Returns true if the current build is a beta/prerelease version.
+pub fn is_beta() -> bool {
+    env!("CARGO_PKG_VERSION").contains('-')
+}
+
 /// Returns true if `latest` is strictly newer than `current` using semver comparison.
+/// Handles pre-release suffixes (e.g. "2.5.0-beta.1") by stripping them for the
+/// base version comparison, then comparing pre-release tags lexicographically.
 pub fn is_newer_version(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Option<(u64, u64, u64)> {
-        let mut parts = v.split('.');
+    /// Parses a version string into (major, minor, patch, pre-release).
+    fn parse(v: &str) -> Option<(u64, u64, u64, Option<&str>)> {
+        let (base, pre) = match v.split_once('-') {
+            Some((b, p)) => (b, Some(p)),
+            None => (v, None),
+        };
+        let mut parts = base.split('.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next()?.parse().ok()?;
         let patch = parts.next()?.parse().ok()?;
-        Some((major, minor, patch))
-    };
+        Some((major, minor, patch, pre))
+    }
+
     match (parse(current), parse(latest)) {
-        (Some(c), Some(l)) => l > c,
+        (Some((cm, cn, cp, cpre)), Some((lm, ln, lp, lpre))) => {
+            let c_base = (cm, cn, cp);
+            let l_base = (lm, ln, lp);
+            if l_base != c_base {
+                return l_base > c_base;
+            }
+            // Same base version: a release (no pre) is newer than a prerelease
+            match (cpre, lpre) {
+                (Some(_), None) => true,   // current=beta, latest=release → newer
+                (None, Some(_)) => false,  // current=release, latest=beta → not newer
+                (None, None) => false,     // identical
+                (Some(a), Some(b)) => b > a, // both pre: compare lexicographically
+            }
+        }
         _ => false,
     }
 }
@@ -151,11 +212,21 @@ pub fn detect_install_method() -> InstallMethod {
 }
 
 /// Returns the upgrade command string for the detected install method.
+/// Beta builds point to the beta package names.
 pub fn upgrade_command(method: &InstallMethod) -> &'static str {
-    match method {
-        InstallMethod::Cargo => "cargo install tokensave",
-        InstallMethod::Brew => "brew upgrade tokensave",
-        InstallMethod::Scoop => "scoop update tokensave",
-        InstallMethod::Unknown => "cargo install tokensave",
+    if is_beta() {
+        match method {
+            InstallMethod::Cargo => "cargo install tokensave --version <beta-version>",
+            InstallMethod::Brew => "brew upgrade tokensave-beta",
+            InstallMethod::Scoop => "scoop update tokensave-beta",
+            InstallMethod::Unknown => "cargo install tokensave --version <beta-version>",
+        }
+    } else {
+        match method {
+            InstallMethod::Cargo => "cargo install tokensave",
+            InstallMethod::Brew => "brew upgrade tokensave",
+            InstallMethod::Scoop => "scoop update tokensave",
+            InstallMethod::Unknown => "cargo install tokensave",
+        }
     }
 }

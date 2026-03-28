@@ -13,3 +13,26 @@ fn increment_request_body_format() {
     let body = serde_json::json!({ "amount": amount });
     assert_eq!(body["amount"], 4823);
 }
+
+#[test]
+fn is_newer_version_stable_comparisons() {
+    assert!(tokensave::cloud::is_newer_version("2.3.0", "2.4.0"));
+    assert!(tokensave::cloud::is_newer_version("2.4.0", "3.0.0"));
+    assert!(!tokensave::cloud::is_newer_version("2.4.0", "2.4.0"));
+    assert!(!tokensave::cloud::is_newer_version("2.4.0", "2.3.0"));
+}
+
+#[test]
+fn is_newer_version_beta_comparisons() {
+    // beta < release of same base version
+    assert!(tokensave::cloud::is_newer_version("2.5.0-beta.1", "2.5.0"));
+    // release is not newer than a beta of same base
+    assert!(!tokensave::cloud::is_newer_version("2.5.0", "2.5.0-beta.1"));
+    // beta.2 > beta.1
+    assert!(tokensave::cloud::is_newer_version("2.5.0-beta.1", "2.5.0-beta.2"));
+    assert!(!tokensave::cloud::is_newer_version("2.5.0-beta.2", "2.5.0-beta.1"));
+    // different base version dominates
+    assert!(tokensave::cloud::is_newer_version("2.5.0-beta.1", "2.6.0-beta.1"));
+    assert!(tokensave::cloud::is_newer_version("2.5.0-beta.1", "2.6.0"));
+    assert!(!tokensave::cloud::is_newer_version("2.6.0", "2.5.0-beta.1"));
+}
