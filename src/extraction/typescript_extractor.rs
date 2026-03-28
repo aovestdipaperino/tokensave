@@ -130,33 +130,16 @@ impl TypeScriptExtractor {
     /// Parse source code into a tree-sitter AST, selecting grammar by file extension.
     fn parse_source(source: &str, extension: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        match extension {
-            "ts" => {
-                let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
-                parser
-                    .set_language(&language.into())
-                    .map_err(|e| format!("failed to load TypeScript grammar: {e}"))?;
-            }
-            "tsx" => {
-                let language = tree_sitter_typescript::LANGUAGE_TSX;
-                parser
-                    .set_language(&language.into())
-                    .map_err(|e| format!("failed to load TSX grammar: {e}"))?;
-            }
-            "js" | "jsx" => {
-                let language = tree_sitter_javascript::LANGUAGE;
-                parser
-                    .set_language(&language.into())
-                    .map_err(|e| format!("failed to load JavaScript grammar: {e}"))?;
-            }
-            _ => {
-                // Default to TypeScript.
-                let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
-                parser
-                    .set_language(&language.into())
-                    .map_err(|e| format!("failed to load TypeScript grammar: {e}"))?;
-            }
-        }
+        let (key, label) = match extension {
+            "ts" => ("typescript", "TypeScript"),
+            "tsx" => ("tsx", "TSX"),
+            "js" | "jsx" => ("javascript", "JavaScript"),
+            _ => ("typescript", "TypeScript"),
+        };
+        let language = crate::extraction::ts_provider::language(key);
+        parser
+            .set_language(&language)
+            .map_err(|e| format!("failed to load {label} grammar: {e}"))?;
         parser
             .parse(source, None)
             .ok_or_else(|| "tree-sitter parse returned None".to_string())

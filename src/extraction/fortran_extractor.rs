@@ -122,9 +122,9 @@ impl FortranExtractor {
     /// Parse source code into a tree-sitter AST.
     fn parse_source(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        let language = tree_sitter_fortran::LANGUAGE;
+        let language = crate::extraction::ts_provider::language("fortran");
         parser
-            .set_language(&language.into())
+            .set_language(&language)
             .map_err(|e| format!("failed to load Fortran grammar: {e}"))?;
         parser
             .parse(source, None)

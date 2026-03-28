@@ -16,6 +16,28 @@ pub fn format_token_count(tokens: u64) -> String {
     }
 }
 
+/// Formats a UNIX timestamp as a human-readable relative time (e.g. "2m ago", "3d ago").
+/// Returns "never" when the timestamp is 0.
+pub fn format_relative_time(timestamp: u64) -> String {
+    if timestamp == 0 {
+        return "never".to_string();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let delta = now.saturating_sub(timestamp);
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86400)
+    }
+}
+
 /// Formats a byte count into a human-readable string (e.g. "798.0 MB").
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
@@ -83,6 +105,7 @@ pub fn print_status_table(
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
     print_version_flags_row(country_flags, inner_width);
     print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
+    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
     let stats_rows = build_stats_rows(stats, num_cols);
@@ -185,6 +208,22 @@ fn print_tokens_row(
         "│ {}\x1b[32m{}\x1b[0m │",
         " ".repeat(pad),
         tokens_text
+    );
+}
+
+/// Print the third title row: last sync and full sync timestamps, right-aligned in dim.
+fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, inner_width: usize) {
+    let sync_text = format!(
+        "Last sync {}  Full sync {}",
+        format_relative_time(last_sync_at),
+        format_relative_time(last_full_sync_at),
+    );
+    let available = inner_width.saturating_sub(2);
+    let pad = available.saturating_sub(sync_text.len());
+    println!(
+        "│ {}\x1b[2m{}\x1b[0m │",
+        " ".repeat(pad),
+        sync_text,
     );
 }
 

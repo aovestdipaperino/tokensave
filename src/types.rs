@@ -451,6 +451,10 @@ pub struct GraphStats {
     pub total_source_bytes: u64,
     /// Number of indexed files per language (e.g. "Rust" -> 42).
     pub files_by_language: HashMap<String, u64>,
+    /// Timestamp of the most recent incremental sync (0 if never synced).
+    pub last_sync_at: u64,
+    /// Timestamp of the most recent full (re)index (0 if never indexed).
+    pub last_full_sync_at: u64,
 }
 
 /// Options for building an LLM context from the graph.

@@ -11,7 +11,7 @@ keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claud
 categories = ["development-tools", "command-line-utilities"]
 
 [features]
-default = ["full"]
+default = ["full", "ts-both"]
 
 # Lite tier (11 languages) — always compiled, no feature flag needed:
 # Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
@@ -19,6 +19,14 @@ lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
 full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
+
+# Tree-sitter grammar source selection:
+#   ts-ffi  — individual tree-sitter-* crates (classic FFI bindings)
+#   ts-rust — bundled tokensave-*-treesitters crates (for covered languages)
+#   ts-both — both sources compiled; extractions are compared for discrepancies
+ts-ffi = []
+ts-rust = ["dep:tokensave-large-treesitters"]
+ts-both = ["ts-ffi", "ts-rust"]
 
 # Medium-tier languages
 lang-dart = ["dep:tree-sitter-dart-orchard"]
@@ -104,6 +112,8 @@ tree-sitter-fortran = { version = "0.5", optional = true }
 tree-sitter-msbasic2 = { version = "0.2", optional = true }
 tree-sitter-gwbasic = { version = "0.2", optional = true }
 tree-sitter-qbasic = { version = "0.2", optional = true }
+tokensave-large-treesitters = { version = "0.1", optional = true, path = "../tree-sitter/localonly/tokensave-large-treesitters" }
+quantum-pulse = { version = "0.1", features = ["full"] }
 
 [build-dependencies]
 logo-art = "0.2"

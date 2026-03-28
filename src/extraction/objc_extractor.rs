@@ -129,9 +129,9 @@ impl ObjcExtractor {
     /// Parse source code into a tree-sitter AST.
     fn parse_source(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        let language = tree_sitter_objc::LANGUAGE;
+        let language = crate::extraction::ts_provider::language("objc");
         parser
-            .set_language(&language.into())
+            .set_language(&language)
             .map_err(|e| format!("failed to load Objective-C grammar: {e}"))?;
         parser
             .parse(source, None)

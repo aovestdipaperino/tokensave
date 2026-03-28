@@ -128,9 +128,9 @@ impl PythonExtractor {
     /// Parse source code into a tree-sitter AST.
     fn parse_source(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        let language = tree_sitter_python::LANGUAGE;
+        let language = crate::extraction::ts_provider::language("python");
         parser
-            .set_language(&language.into())
+            .set_language(&language)
             .map_err(|e| format!("failed to load Python grammar: {e}"))?;
         parser
             .parse(source, None)

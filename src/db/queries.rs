@@ -1520,6 +1520,17 @@ impl Database {
         )
         .await?;
 
+        let last_sync_at = self
+            .get_metadata("last_sync_at")
+            .await?
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let last_full_sync_at = self
+            .get_metadata("last_full_sync_at")
+            .await?
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+
         Ok(GraphStats {
             node_count,
             edge_count,
@@ -1530,6 +1541,8 @@ impl Database {
             last_updated,
             total_source_bytes,
             files_by_language,
+            last_sync_at,
+            last_full_sync_at,
         })
     }
 
