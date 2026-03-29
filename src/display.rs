@@ -160,7 +160,7 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let mut display_width = 0;
     let flag_width = 2; // emoji flags are 2 columns wide
     // Reserve space for title + at least 2 spaces gap
-    let max_flags_width = available.saturating_sub(title.len() + 2);
+    let max_flags_width = available.saturating_sub(title_display_width + 2);
     for (i, flag) in capped.iter().enumerate() {
         let needed = if i == 0 { flag_width } else { 1 + flag_width };
         let more_coming = has_overflow || i + 1 < capped.len();
@@ -182,7 +182,7 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
         }
     }
 
-    let pad = available.saturating_sub(title.len() + display_width);
+    let pad = available.saturating_sub(title_display_width + display_width);
     println!("│ {}{}{} │", title, " ".repeat(pad), flags_str);
 }
 
