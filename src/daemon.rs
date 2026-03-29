@@ -24,12 +24,16 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     }
 }
 
+/// Returns the `~/.tokensave` directory used for PID/log files.
+fn daemon_pid_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".tokensave")
+}
+
 /// Build the daemon-kit Daemon instance with tokensave paths.
 pub fn build_daemon() -> std::result::Result<Daemon, TokenSaveError> {
-    let home = dirs::home_dir().ok_or_else(|| TokenSaveError::Config {
-        message: "cannot determine home directory".to_string(),
-    })?;
-    let ts_dir = home.join(".tokensave");
+    let ts_dir = daemon_pid_dir();
     let bin = crate::agents::which_tokensave().unwrap_or_else(|| "tokensave".to_string());
 
     let config = DaemonConfig::new("tokensave-daemon")
@@ -184,7 +188,37 @@ fn create_watcher(project_root: &Path, tx: mpsc::Sender<PathBuf>) -> Option<Reco
 }
 
 /// Run an incremental sync on a single project. Best-effort.
+///
+/// Catches panics (e.g. from extractor bugs on malformed files) so one
+/// bad project doesn't kill the entire daemon.
 async fn sync_project(project_root: &Path) {
+    let root = project_root.to_path_buf();
+    let result = tokio::task::spawn(async move {
+        sync_project_inner(&root).await;
+    })
+    .await;
+
+    if let Err(e) = result {
+        let msg = if e.is_panic() {
+            let panic = e.into_panic();
+            if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else {
+                "unknown panic".to_string()
+            }
+        } else {
+            format!("task error: {e}")
+        };
+        daemon_log(&format!(
+            "sync panicked for {}: {msg}",
+            project_root.display()
+        ));
+    }
+}
+
+async fn sync_project_inner(project_root: &Path) {
     let start = std::time::Instant::now();
     let Ok(cg) = crate::tokensave::TokenSave::open(project_root).await else {
         daemon_log(&format!("failed to open {}", project_root.display()));
@@ -215,25 +249,17 @@ async fn sync_project(project_root: &Path) {
     }
 }
 
-/// Append a timestamped line to the daemon log file.
+/// Log a timestamped daemon message to stderr.
+///
+/// When running under launchd/systemd, stderr is redirected to the daemon
+/// log file automatically. Writing directly to the file as well would
+/// duplicate every line.
 fn daemon_log(msg: &str) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let line = format!("[{secs}] {msg}\n");
-    eprint!("{line}");
-    if let Some(home) = dirs::home_dir() {
-        let log_path = home.join(".tokensave").join("daemon.log");
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-        {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
+    eprintln!("[{secs}] {msg}");
 }
 
 /// Start the daemon. Forks to background on Unix unless `foreground` is true.
@@ -244,20 +270,36 @@ pub async fn run(foreground: bool) -> Result<()> {
     let debounce = parse_duration(&config.daemon_debounce)
         .unwrap_or(Duration::from_secs(15));
 
-    daemon
-        .start(foreground, move || {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
-            })?;
-            rt.block_on(async {
-                run_loop(debounce).await.map_err(|e| {
-                    daemon_kit::DaemonError::Daemonize(e.to_string())
+    if foreground {
+        // Already inside a tokio runtime — call run_loop directly.
+        // daemon.start(foreground=true) would invoke a FnOnce closure
+        // that creates a nested runtime, which panics.
+        let pid_file = daemon_kit::PidFile::new(
+            daemon_pid_dir().join("tokensave-daemon.pid"),
+        );
+        pid_file.write().ok();
+        let result = run_loop(debounce).await.map_err(|e| TokenSaveError::Config {
+            message: format!("daemon error: {e}"),
+        });
+        pid_file.remove();
+        result
+    } else {
+        // Fork to background — the child needs its own tokio runtime.
+        daemon
+            .start(false, move || {
+                let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                    daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
+                })?;
+                rt.block_on(async {
+                    run_loop(debounce).await.map_err(|e| {
+                        daemon_kit::DaemonError::Daemonize(e.to_string())
+                    })
                 })
             })
-        })
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("daemon error: {e}"),
-        })
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("daemon error: {e}"),
+            })
+    }
 }
 
 /// Stop the running daemon.
@@ -302,6 +344,49 @@ pub fn disable_autostart() -> Result<()> {
     })?;
     eprintln!("\x1b[32m✔\x1b[0m Autostart service removed");
     Ok(())
+}
+
+/// Offer to install the daemon autostart service during `tokensave install`.
+///
+/// Skips silently when:
+/// - stdin is not a terminal (non-interactive)
+/// - the autostart service is already installed
+/// - the daemon is already running
+pub fn offer_daemon_autostart() {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+
+    if is_autostart_enabled() {
+        eprintln!("  Daemon autostart service already installed, skipping");
+        return;
+    }
+
+    if running_daemon_pid().is_some() {
+        eprintln!("  Daemon already running (no autostart service), skipping");
+        return;
+    }
+
+    eprintln!();
+    eprint!(
+        "Install the \x1b[1mtokensave daemon\x1b[0m as a background service (auto-syncs on file changes)? [y/N] "
+    );
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return;
+    }
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+        eprintln!("  Skipped daemon service");
+        eprintln!("  tip: you can install it later with \x1b[1mtokensave daemon --enable-autostart\x1b[0m");
+        return;
+    }
+
+    match enable_autostart() {
+        Ok(()) => {}
+        Err(e) => eprintln!("  \x1b[31m✘\x1b[0m Failed to install daemon service: {e}"),
+    }
 }
 
 #[cfg(test)]

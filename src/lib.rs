@@ -31,7 +31,6 @@ pub mod mcp;
 pub mod resolution;
 pub mod sync;
 pub mod tokensave;
-pub mod tree_sitter;
 pub mod types;
 pub mod user_config;
 pub mod vectors;

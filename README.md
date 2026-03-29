@@ -76,36 +76,47 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
-## What's New in v2.0.0
+## What's New in v3.0.0
 
-### 30 Language Support (up from 15)
+### Bundled Tree-Sitter Grammars
 
-tokensave now understands **30 programming languages** — more than doubling coverage from v1.x. New extractors added for: Swift, Bash, Lua, Zig, Protobuf, Nix, VB.NET, PowerShell, Batch/CMD, Perl, Objective-C, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, and QuickBASIC 4.5.
+All 31 language grammars now ship as a single bundled dependency (`tokensave-large-treesitters`), eliminating 20+ individual `tree-sitter-*` crate dependencies. This means faster builds, simpler dependency management, and guaranteed grammar version consistency across all languages. The vendored C grammars (Protobuf, COBOL) have also moved into the bundle, removing `cc` from build dependencies.
 
-Every language gets the same deep extraction: functions, classes, methods, fields, imports, call graphs, inheritance chains, docstrings, complexity metrics, and cross-file dependency tracking.
+### Background Daemon with Install Prompt
+
+`tokensave install` now offers to set up the background daemon as an autostart service after configuring your agent. The daemon watches all tracked projects for file changes and runs incremental syncs automatically, so your code intelligence is always fresh without manual `tokensave sync` calls.
+
+```
+Install the tokensave daemon as a background service (auto-syncs on file changes)? [y/N]
+```
+
+You can also manage it manually: `tokensave daemon --enable-autostart` / `--disable-autostart`.
+
+### Sync Timestamps in Status
+
+The status table now shows when your index was last updated:
+
+```
+│                          Last sync 2m ago  Full sync 3d ago │
+```
+
+### 31 Languages
+
+tokensave supports **31 programming languages** with deep extraction: functions, classes, methods, fields, imports, call graphs, inheritance chains, docstrings, complexity metrics, and cross-file dependency tracking.
 
 ### Feature Flag Tiers
 
-Not every project needs 31 languages. v2.0.0 introduces **three compilation tiers** to control binary size:
+Three compilation tiers control which extractors are compiled:
 
 ```
-Full (default)  ── 31 languages, largest binary
-Medium          ── 20 languages, smaller binary
-Lite            ── 11 languages, smallest binary
+Full (default)  ── 31 languages
+Medium          ── 20 languages
+Lite            ── 11 languages
 ```
 
-```bash
-cargo install tokensave                          # full (default)
-cargo install tokensave --features medium        # medium
-cargo install tokensave --no-default-features    # lite
-```
+All grammars are always present via the bundled crate; the `lang-*` feature flags control which extractors are included.
 
-Individual `lang-*` feature flags let you cherry-pick exactly the languages you need:
-```bash
-cargo install tokensave --no-default-features --features lang-nix,lang-bash
-```
-
-See [Supported Languages](#supported-languages) for the full tier breakdown and feature flag names.
+See [Supported Languages](#supported-languages) for the full tier breakdown.
 
 ### Deep Nix Support
 
@@ -146,15 +157,15 @@ Agent prompt rules now include two new instructions:
 
 2. **Improvement feedback** — when the agent discovers a gap where an extractor, schema, or tool could be improved, it proposes to the user to open an issue at [github.com/aovestdipaperino/tokensave](https://github.com/aovestdipaperino/tokensave), reminding them to strip sensitive data from the description.
 
-### Upgrading from v1.x
+### Upgrading from v1.x / v2.x
 
 ```bash
 cargo install tokensave          # or brew upgrade tokensave
-tokensave install                # re-run to get updated prompt rules
-tokensave sync --force           # re-index to pick up new languages
+tokensave install                # re-run for updated prompt rules + daemon offer
+tokensave sync --force           # re-index to rebuild the graph
 ```
 
-The `--force` re-index is recommended to rebuild the graph with the new extractors. Subsequent `sync` calls are incremental as before.
+The `--force` re-index is recommended after a major version upgrade. Subsequent `sync` calls are incremental as before.
 
 ---
 
@@ -221,7 +232,7 @@ What each agent gets:
 | Hook (blocks Explore agents) | PreToolUse hook | N/A | N/A |
 | Prompt rules | `~/.claude/CLAUDE.md` | `OPENCODE.md` | `~/.codex/AGENTS.md` |
 
-All changes are idempotent — safe to run again after upgrading. The old `tokensave claude-install` command still works as an alias.
+All changes are idempotent — safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook and the background daemon service. The old `tokensave claude-install` command still works as an alias.
 
 ### 3. Index your project
 
@@ -322,13 +333,17 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 tokensave sync [path]            # Sync (creates index if missing, incremental by default)
 tokensave sync --force [path]    # Force a full re-index
 tokensave status [path]          # Show statistics
-tokensave status --show-flags    # Show statistics with country flags
+tokensave status [path] --json   # Show statistics (JSON output)
 tokensave query <search> [path]  # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
-tokensave install [--agent NAME] # Configure agent integration (default: claude)
+tokensave install [--agent NAME] # Configure agent integration + daemon offer
 tokensave uninstall [--agent NAME] # Remove agent integration (default: claude)
 tokensave serve                  # Start MCP server
+tokensave daemon                 # Start background file watcher
+tokensave daemon --enable-autostart  # Install as launchd/systemd service
+tokensave daemon --disable-autostart # Remove autostart service
+tokensave daemon --status        # Show daemon status
 tokensave disable-upload-counter # Opt out of worldwide counter uploads
 tokensave enable-upload-counter  # Re-enable worldwide counter uploads
 tokensave doctor [--agent NAME]  # Check installation health (default: all agents)
@@ -798,7 +813,7 @@ The result: Claude gets the same code understanding with far fewer tokens. A typ
 
 ### 1. Extraction
 
-tokensave uses language-specific Tree-sitter grammars (native Rust bindings) to extract:
+tokensave uses language-specific Tree-sitter grammars (bundled via `tokensave-large-treesitters`) to extract:
 - Function and class definitions
 - Variable and type declarations
 - Import and export statements

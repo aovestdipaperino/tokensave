@@ -18,7 +18,6 @@ fn current_unix_timestamp() -> i64 {
 }
 
 /// A self-animating spinner that ticks on a background thread.
-///
 /// Call `set_message` to update what is displayed; the background thread
 /// redraws at ~80 ms intervals. Call `done` to stop and print a final line.
 struct Spinner {
@@ -647,6 +646,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
+            tokensave::daemon::offer_daemon_autostart();
         }
         Commands::Uninstall { agent } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
@@ -1031,3 +1031,5 @@ async fn find_affected_tests(
     result.sort();
     Ok(result)
 }
+// direct test 1774739850
+// daemon-test-1774740132

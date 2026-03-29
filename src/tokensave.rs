@@ -222,6 +222,12 @@ impl TokenSave {
             }
         }
 
+
+
+        let now_str = current_timestamp().to_string();
+        self.db.set_metadata("last_full_sync_at", &now_str).await?;
+        self.db.set_metadata("last_sync_at", &now_str).await?;
+
         let result = IndexResult {
             file_count: files.len(),
             node_count: total_nodes,
@@ -295,6 +301,7 @@ impl TokenSave {
                 None => continue,
             };
             let result = extractor.extract(file_path, &source);
+
             self.db.insert_nodes(&result.nodes).await?;
             self.db.insert_edges(&result.edges).await?;
             if !result.unresolved_refs.is_empty() {
@@ -327,6 +334,12 @@ impl TokenSave {
                 }
             }
         }
+
+
+
+        self.db
+            .set_metadata("last_sync_at", &current_timestamp().to_string())
+            .await?;
 
         Ok(SyncResult {
             files_added: new.len(),
