@@ -90,14 +90,14 @@ jobs:
           mkdir -p tokensave/${VERSION}/bin
           cp target/${{ matrix.target }}/release/tokensave tokensave/${VERSION}/bin/tokensave
           chmod +x tokensave/${VERSION}/bin/tokensave
-          tar czf "tokensave--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
+          tar czf "tokensave-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
       - name: Upload bottle artifact
         if: matrix.bottle_tag && github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: bottle-${{ matrix.bottle_tag }}
-          path: "tokensave--*.bottle.tar.gz"
+          path: "tokensave-*.bottle.tar.gz"
 
   update-homebrew:
     name: Update Homebrew tap
@@ -123,7 +123,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for f in bottles/tokensave--*.bottle.tar.gz; do
+          for f in bottles/tokensave-*.bottle.tar.gz; do
             gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
           done
 
@@ -139,8 +139,8 @@ jobs:
           SOURCE_SHA=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
-          for f in bottles/tokensave--*.bottle.tar.gz; do
-            tag=$(basename "$f" | sed "s/tokensave--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
+          for f in bottles/tokensave-*.bottle.tar.gz; do
+            tag=$(basename "$f" | sed "s/tokensave-${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
             sha=$(sha256sum "$f" | awk '{print $1}')
             echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
           done
