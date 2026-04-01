@@ -13,7 +13,10 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{load_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{
+    backup_config_file, load_json_file, load_json_file_strict, safe_write_json_file,
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+};
 
 /// OpenCode agent.
 pub struct OpenCodeIntegration;
@@ -109,19 +112,28 @@ fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 /// Register MCP server in opencode.json.
+///
+/// Safety: creates a `.bak` backup before writing and restores it on any
+/// error. Uses strict JSON parsing so an existing file with invalid syntax
+/// is never silently replaced with an empty object.
 fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
-    let mut config = load_json_file(config_path);
+    let backup = backup_config_file(config_path)?;
+    let mut config = match load_json_file_strict(config_path) {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(ref b) = backup {
+                eprintln!("  Backup preserved at: {}", b.display());
+            }
+            return Err(e);
+        }
+    };
+
     config["mcp"]["tokensave"] = json!({
         "type": "local",
         "command": [tokensave_bin, "serve"]
     });
-    let pretty = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::write(config_path, format!("{pretty}\n")).map_err(|e| TokenSaveError::Config {
-        message: format!("failed to write {}: {e}", config_path.display()),
-    })?;
+
+    safe_write_json_file(config_path, &config, backup.as_deref())?;
     eprintln!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         config_path.display()

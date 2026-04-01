@@ -13,8 +13,9 @@ use serde_json::json;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    load_json_file, write_json_file, EXPECTED_TOOL_PERMS,
+    backup_config_file, load_json_file_strict, safe_write_json_file,
+    write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    EXPECTED_TOOL_PERMS,
 };
 
 /// Claude Code agent.
@@ -38,7 +39,7 @@ impl AgentIntegration for ClaudeIntegration {
         install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
 
         std::fs::create_dir_all(&claude_dir).ok();
-        let mut settings = load_json_file(&settings_path);
+        let mut settings = load_json_file_strict(&settings_path)?;
         install_migrate_old_mcp(&mut settings, &settings_path);
         install_hook(&mut settings, &ctx.tokensave_bin);
         install_permissions(&mut settings, ctx.tool_permissions);
@@ -98,15 +99,23 @@ impl AgentIntegration for ClaudeIntegration {
 
 /// Register MCP server in ~/.claude.json.
 fn install_mcp_server(claude_json_path: &Path, tokensave_bin: &str) -> Result<()> {
-    let mut claude_json = load_json_file(claude_json_path);
+    let backup = backup_config_file(claude_json_path)?;
+    let mut claude_json = match load_json_file_strict(claude_json_path) {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(ref b) = backup {
+                eprintln!("  Backup preserved at: {}", b.display());
+            }
+            return Err(e);
+        }
+    };
+
     claude_json["mcpServers"]["tokensave"] = json!({
         "command": tokensave_bin,
         "args": ["serve"]
     });
-    let pretty = serde_json::to_string_pretty(&claude_json).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(claude_json_path, format!("{pretty}\n")).map_err(|e| TokenSaveError::Config {
-        message: format!("failed to write ~/.claude.json: {e}"),
-    })?;
+
+    safe_write_json_file(claude_json_path, &claude_json, backup.as_deref())?;
     eprintln!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         claude_json_path.display()

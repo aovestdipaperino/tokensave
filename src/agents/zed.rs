@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use crate::errors::{Result, TokenSaveError};
+use crate::errors::Result;
 
-use super::{load_jsonc_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{
+    backup_config_file, load_jsonc_file, load_jsonc_file_strict, safe_write_json_file,
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+};
 
 /// Zed agent.
 pub struct ZedIntegration;
@@ -39,7 +42,16 @@ impl AgentIntegration for ZedIntegration {
             std::fs::create_dir_all(parent).ok();
         }
 
-        let mut settings = load_jsonc_file(&settings_path);
+        let backup = backup_config_file(&settings_path)?;
+        let mut settings = match load_jsonc_file_strict(&settings_path) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(ref b) = backup {
+                    eprintln!("  Backup preserved at: {}", b.display());
+                }
+                return Err(e);
+            }
+        };
         settings["context_servers"]["tokensave"] = json!({
             "command": {
                 "path": ctx.tokensave_bin,
@@ -47,10 +59,7 @@ impl AgentIntegration for ZedIntegration {
             }
         });
 
-        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(&settings_path, format!("{pretty}\n")).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to write {}: {e}", settings_path.display()),
-        })?;
+        safe_write_json_file(&settings_path, &settings, backup.as_deref())?;
         eprintln!(
             "\x1b[32m✔\x1b[0m Added tokensave context server to {}",
             settings_path.display()
