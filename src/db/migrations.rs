@@ -15,7 +15,7 @@ use crate::errors::{TokenSaveError, Result};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 4;
+const LATEST_VERSION: u32 = 5;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -123,6 +123,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         2 => migrate_v2(conn).await,
         3 => migrate_v3(conn).await,
         4 => migrate_v4(conn).await,
+        5 => migrate_v5(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -326,6 +327,51 @@ async fn migrate_v4(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v4: failed to add safety metric columns: {e}"),
         operation: "migrate_v4".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V5: deduplicate edges and add UNIQUE index
+// ---------------------------------------------------------------------------
+
+/// Removes duplicate edges accumulated by repeated reference resolution
+/// during incremental syncs, then adds a UNIQUE index to prevent future
+/// duplicates. See: https://github.com/…/issues/5
+async fn migrate_v5(conn: &Connection) -> Result<()> {
+    // Rebuild the edges table keeping only distinct rows. We use a temp
+    // table + swap because DELETE with a self-join subquery can be very
+    // slow on large tables (the reporter had 13.9 M edges).
+    conn.execute_batch(
+        "CREATE TABLE edges_dedup (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            line INTEGER,
+            FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO edges_dedup (source, target, kind, line)
+        SELECT DISTINCT source, target, kind, line FROM edges;
+
+        DROP TABLE edges;
+        ALTER TABLE edges_dedup RENAME TO edges;
+
+        CREATE INDEX idx_edges_source ON edges(source);
+        CREATE INDEX idx_edges_target ON edges(target);
+        CREATE INDEX idx_edges_kind ON edges(kind);
+        CREATE INDEX idx_edges_source_kind ON edges(source, kind);
+        CREATE INDEX idx_edges_target_kind ON edges(target, kind);
+        CREATE UNIQUE INDEX idx_edges_unique
+            ON edges(source, target, kind, COALESCE(line, -1));",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v5: failed to deduplicate edges: {e}"),
+        operation: "migrate_v5".to_string(),
     })?;
 
     Ok(())

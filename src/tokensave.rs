@@ -39,6 +39,7 @@ pub struct IndexResult {
 }
 
 /// Result of an incremental sync operation.
+#[derive(Debug)]
 pub struct SyncResult {
     /// Number of newly added files.
     pub files_added: usize,
@@ -129,6 +130,93 @@ impl TokenSave {
 }
 
 // ---------------------------------------------------------------------------
+// Sync lock — prevents concurrent sync/index operations
+// ---------------------------------------------------------------------------
+
+/// RAII guard that holds the sync lockfile open. Removing the lockfile on drop
+/// is best-effort; if it fails (e.g. permissions), the stale-PID check on the
+/// next attempt will reclaim it.
+struct SyncLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for SyncLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Try to acquire the sync lock for `project_root`.
+///
+/// Creates `.tokensave/sync.lock` containing the current PID. If the file
+/// already exists and the PID inside is still alive, returns a `SyncLock`
+/// error. Stale lockfiles (dead PID or unreadable content) are reclaimed
+/// automatically.
+fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
+    let lock_path = get_tokensave_dir(project_root).join("sync.lock");
+    let pid = std::process::id();
+
+    // Fast path: try atomic create.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut f) => {
+            use std::io::Write;
+            let _ = write!(f, "{pid}");
+            return Ok(SyncLockGuard { path: lock_path });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Fall through to stale-check below.
+        }
+        Err(e) => {
+            return Err(TokenSaveError::SyncLock {
+                message: format!("could not create lockfile: {e}"),
+            });
+        }
+    }
+
+    // Lockfile exists — check if the owning process is still alive.
+    let contents = std::fs::read_to_string(&lock_path).unwrap_or_default();
+    if let Ok(existing_pid) = contents.trim().parse::<u32>() {
+        if is_pid_alive(existing_pid) {
+            return Err(TokenSaveError::SyncLock {
+                message: format!(
+                    "another sync is already in progress (PID {existing_pid}). \
+                     If this is stale, remove {}",
+                    lock_path.display()
+                ),
+            });
+        }
+    }
+
+    // Stale lock — reclaim it.
+    let _ = std::fs::remove_file(&lock_path);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|e| TokenSaveError::SyncLock {
+            message: format!("could not reclaim lockfile: {e}"),
+        })?;
+    use std::io::Write;
+    let _ = write!(f, "{pid}");
+    Ok(SyncLockGuard { path: lock_path })
+}
+
+/// Returns `true` if a process with the given PID is currently running.
+fn is_pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
 
@@ -159,6 +247,7 @@ impl TokenSave {
     {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(self.project_root.is_dir(), "project root is not a directory");
+        let _lock = try_acquire_sync_lock(&self.project_root)?;
         let start = Instant::now();
 
         // 1. Clear existing data
@@ -256,6 +345,7 @@ impl TokenSave {
     {
         debug_assert!(self.project_root.exists(), "sync: project root does not exist");
         debug_assert!(self.project_root.is_dir(), "sync: project root is not a directory");
+        let _lock = try_acquire_sync_lock(&self.project_root)?;
         let start = Instant::now();
 
         on_progress("scanning files", "");
@@ -662,6 +752,11 @@ impl TokenSave {
     /// Checkpoints the WAL and closes the database connection.
     pub async fn checkpoint(&self) -> Result<()> {
         self.db.checkpoint().await
+    }
+
+    /// Runs VACUUM and ANALYZE to reclaim disk space and update planner stats.
+    pub async fn optimize(&self) -> Result<()> {
+        self.db.optimize().await
     }
 
     /// Returns a reference to the current configuration.

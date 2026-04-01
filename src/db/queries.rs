@@ -390,7 +390,7 @@ impl Database {
     pub async fn insert_edge(&self, edge: &Edge) -> Result<()> {
         self.conn()
             .execute(
-                "INSERT INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR IGNORE INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     edge.source.as_str(),
                     edge.target.as_str(),
@@ -419,7 +419,7 @@ impl Database {
 
         for edge in edges {
             tx.execute(
-                "INSERT INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR IGNORE INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
                 params![
                     edge.source.as_str(),
                     edge.target.as_str(),

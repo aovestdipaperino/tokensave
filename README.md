@@ -76,7 +76,26 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
-## What's New in v3.0.0
+## What's New in v3.1.0
+
+### Edge Deduplication Fix
+
+Incremental syncs could accumulate duplicate edges over time, causing the database to grow far beyond the size of the source code. v3.1.0 adds a unique index on edges and deduplicates existing databases automatically on upgrade. If your `.tokensave/tokensave.db` had grown unexpectedly large, it will shrink to normal size on first run.
+
+### Concurrent Sync Prevention
+
+The CLI and background daemon can no longer run sync at the same time. A PID-based lockfile prevents conflicts, with stale lock detection for crashed processes.
+
+### Doctor Database Compaction
+
+`tokensave doctor` now reports database size and runs `VACUUM` to reclaim disk space — especially useful after upgrading from versions with duplicate edges.
+
+### Index Design Documentation
+
+New `docs/INDEX-DESIGN.md` documents the full schema, extraction pipeline, reference resolution, incremental sync algorithm, and how `diff_context` queries work.
+
+<details>
+<summary>What was new in v3.0.0</summary>
 
 ### Bundled Tree-Sitter Grammars
 
@@ -86,12 +105,6 @@ All 31 language grammars now ship as a single bundled dependency (`tokensave-lar
 
 `tokensave install` now offers to set up the background daemon as an autostart service after configuring your agent. The daemon watches all tracked projects for file changes and runs incremental syncs automatically, so your code intelligence is always fresh without manual `tokensave sync` calls.
 
-```
-Install the tokensave daemon as a background service (auto-syncs on file changes)? [y/N]
-```
-
-You can also manage it manually: `tokensave daemon --enable-autostart` / `--disable-autostart`.
-
 ### Sync Timestamps in Status
 
 The status table now shows when your index was last updated:
@@ -99,6 +112,8 @@ The status table now shows when your index was last updated:
 ```
 │                          Last sync 2m ago  Full sync 3d ago │
 ```
+
+</details>
 
 ### 31 Languages
 

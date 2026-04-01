@@ -23,6 +23,9 @@ pub enum TokenSaveError {
     #[error("config error: {message}")]
     Config { message: String },
 
+    #[error("sync lock: {message}")]
+    SyncLock { message: String },
+
     #[error("vector error: {message}")]
     Vector { message: String },
 

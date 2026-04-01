@@ -730,7 +730,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Doctor { agent } => {
-            tokensave::doctor::run_doctor(agent.as_deref());
+            tokensave::doctor::run_doctor(agent.as_deref()).await;
         }
         Commands::Daemon { foreground, stop, status, enable_autostart, disable_autostart } => {
             if stop {

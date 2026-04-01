@@ -570,3 +570,91 @@ pub fn run_engine() -> u32 {
         "sync should resolve cross-file call edges when a new file is added"
     );
 }
+
+#[tokio::test]
+async fn test_sync_does_not_duplicate_edges() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // Three files: a callee, a caller that will be modified, and
+    // an unchanged caller whose edges must not be duplicated.
+    fs::write(
+        project.join("src/callee.rs"),
+        "pub fn target_fn() -> u32 { 42 }\n",
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("src/caller_a.rs"),
+        "pub fn caller_a() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("src/caller_b.rs"),
+        "pub fn caller_b() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let stats_before = cg.get_stats().await.unwrap();
+    let edges_before = stats_before.edge_count;
+
+    // Modify caller_a only — caller_b is unchanged.
+    fs::write(
+        project.join("src/caller_a.rs"),
+        "pub fn caller_a() -> u32 { target_fn() + 1 }\n",
+    )
+    .unwrap();
+
+    cg.sync().await.unwrap();
+
+    let stats_after = cg.get_stats().await.unwrap();
+    assert_eq!(
+        edges_before, stats_after.edge_count,
+        "sync must not create duplicate edges (before={edges_before}, after={})",
+        stats_after.edge_count
+    );
+
+    // Run a second sync with no changes — edge count must still be stable.
+    // Force a content-hash change by touching caller_a again with same content
+    // so there are no stale files and to_index is empty.
+    cg.sync().await.unwrap();
+
+    let stats_final = cg.get_stats().await.unwrap();
+    assert_eq!(
+        edges_before, stats_final.edge_count,
+        "repeated sync must not grow edges (before={edges_before}, final={})",
+        stats_final.edge_count
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_sync_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+
+    // Simulate an in-progress sync by placing a lockfile with our own PID.
+    let lock_path = project.join(".tokensave/sync.lock");
+    fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
+
+    let err = cg.sync().await.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("another sync is already in progress"),
+        "expected sync lock error, got: {msg}"
+    );
+
+    // After removing the lockfile, sync should succeed.
+    fs::remove_file(&lock_path).unwrap();
+    cg.sync().await.unwrap();
+}

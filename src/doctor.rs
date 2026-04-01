@@ -3,14 +3,14 @@
 //! Checks the binary, project index, global DB, user config, agent
 //! integrations, and network connectivity.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::format_token_count;
 use crate::tokensave::TokenSave;
 
 /// Runs a comprehensive health check of the tokensave installation.
-pub fn run_doctor(agent_filter: Option<&str>) {
+pub async fn run_doctor(agent_filter: Option<&str>) {
     debug_assert!(!env!("CARGO_PKG_VERSION").is_empty(), "CARGO_PKG_VERSION must not be empty");
     let mut dc = DoctorCounters::new();
 
@@ -22,6 +22,7 @@ pub fn run_doctor(agent_filter: Option<&str>) {
     let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if TokenSave::is_initialized(&project_path) {
         dc.pass(&format!("Index found: {}/.tokensave/", project_path.display()));
+        check_database(&mut dc, &project_path).await;
     } else {
         dc.warn(&format!("No index at {}/.tokensave/ — run `tokensave sync`", project_path.display()));
     }
@@ -55,6 +56,60 @@ pub fn run_doctor(agent_filter: Option<&str>) {
     check_daemon(&mut dc);
     check_network(&mut dc);
     print_summary(&dc);
+}
+
+/// Check database health: report size and run VACUUM to reclaim space.
+async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
+    let db_path = crate::config::get_tokensave_dir(project_path).join("tokensave.db");
+    let size_before = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+
+    let ts = match TokenSave::open(project_path).await {
+        Ok(ts) => ts,
+        Err(e) => {
+            dc.fail(&format!("Could not open database: {e}"));
+            return;
+        }
+    };
+
+    dc.pass(&format!("DB size: {}", format_bytes(size_before)));
+
+    eprintln!("    Compacting database (VACUUM)…");
+    match ts.optimize().await {
+        Ok(()) => {
+            let size_after = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(size_before);
+            if size_before > size_after {
+                let reclaimed = size_before - size_after;
+                dc.pass(&format!(
+                    "Compacted: {} → {} (reclaimed {})",
+                    format_bytes(size_before),
+                    format_bytes(size_after),
+                    format_bytes(reclaimed),
+                ));
+            } else {
+                dc.pass("Database already compact");
+            }
+        }
+        Err(e) => {
+            dc.warn(&format!("VACUUM failed: {e}"));
+        }
+    }
+}
+
+/// Format a byte count as a human-readable string.
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Check binary location and version.
