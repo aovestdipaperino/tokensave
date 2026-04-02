@@ -109,6 +109,9 @@ enum Commands {
         /// Output as JSON
         #[arg(short, long)]
         json: bool,
+        /// Show only the header (version, tokens, sync times)
+        #[arg(short, long)]
+        short: bool,
     },
     /// Search for symbols
     Query {
@@ -340,7 +343,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json } => {
+        Commands::Status { path, json, short } => {
             let project_path = resolve_path(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
@@ -419,8 +422,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         fresh
                     }
                 };
-                print!("{}", include_str!("resources/logo.ansi"));
-                tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                if !short {
+                    print!("{}", include_str!("resources/logo.ansi"));
+                }
+                if short {
+                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                } else {
+                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                }
 
                 // Version check (5 min cache, always show for status)
                 check_for_update(&mut config, false, true);

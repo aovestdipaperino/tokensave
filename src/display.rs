@@ -81,6 +81,27 @@ fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_co
     line
 }
 
+/// Prints only the header section of the status table (version, tokens, sync times).
+pub fn print_status_header(
+    stats: &GraphStats,
+    tokens_saved: u64,
+    global_tokens_saved: Option<u64>,
+    worldwide: Option<u64>,
+    country_flags: &[String],
+) {
+    let num_cols = 3;
+    let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
+    sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
+    let cell_width = compute_cell_width(&sorted_kinds);
+    let inner_width = cell_width * num_cols + (num_cols - 1);
+
+    println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
+    print_version_flags_row(country_flags, inner_width);
+    print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
+    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
+    println!("{}", table_separator('╰', '─', '╯', cell_width, num_cols));
+}
+
 /// Prints the status output as a compact bordered table.
 pub fn print_status_table(
     stats: &GraphStats,
