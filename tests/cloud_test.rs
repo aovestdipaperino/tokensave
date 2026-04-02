@@ -36,3 +36,27 @@ fn is_newer_version_beta_comparisons() {
     assert!(tokensave::cloud::is_newer_version("2.5.0-beta.1", "2.6.0"));
     assert!(!tokensave::cloud::is_newer_version("2.6.0", "2.5.0-beta.1"));
 }
+
+#[test]
+fn is_newer_minor_version_ignores_patch_bumps() {
+    // Patch-only bump → not a minor update
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.0", "3.2.1"));
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.1", "3.2.2"));
+    // Minor bump → yes
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.1", "3.3.0"));
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.0", "3.3.0"));
+    // Major bump → yes
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.1", "4.0.0"));
+    // Same version → no
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.0", "3.2.0"));
+    // Older version → no
+    assert!(!tokensave::cloud::is_newer_minor_version("3.3.0", "3.2.1"));
+}
+
+#[test]
+fn is_newer_minor_version_beta() {
+    // Beta to release of same minor → patch-level, no warning
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.0-beta.1", "3.2.0"));
+    // Beta to next minor → yes
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.0-beta.1", "3.3.0"));
+}

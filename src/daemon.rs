@@ -327,7 +327,16 @@ pub fn status() -> i32 {
 }
 
 /// Install autostart service (launchd/systemd/Windows Service).
+///
+/// On Windows, installing a service requires administrator privileges.
+/// If the current process is not elevated, this spawns an elevated child
+/// process via UAC to perform only the service installation step.
 pub fn enable_autostart() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    if !win_elevated::is_elevated() {
+        return win_elevated::run_elevated_autostart();
+    }
+
     let daemon = build_daemon()?;
     daemon.install_service().map_err(|e| TokenSaveError::Config {
         message: format!("{e}"),
@@ -336,8 +345,125 @@ pub fn enable_autostart() -> Result<()> {
     Ok(())
 }
 
+/// Windows-only helpers for UAC elevation.
+#[cfg(target_os = "windows")]
+mod win_elevated {
+    use crate::errors::{Result, TokenSaveError};
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    /// Check whether the current process is running with administrator privileges.
+    pub fn is_elevated() -> bool {
+        use std::mem;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token: HANDLE = 0;
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return false;
+            }
+
+            let mut elevation: TOKEN_ELEVATION = mem::zeroed();
+            let mut size: u32 = 0;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                &mut elevation as *mut _ as *mut _,
+                mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut size,
+            );
+            CloseHandle(token);
+
+            ok != 0 && elevation.TokenIsElevated != 0
+        }
+    }
+
+    /// Spawn an elevated child process via UAC, wait for it to exit, and
+    /// check its exit code.
+    fn run_elevated(args: &str, success_msg: &str) -> Result<()> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, WaitForSingleObject, INFINITE,
+        };
+        use windows_sys::Win32::UI::Shell::{
+            ShellExecuteExW, SHELLEXECUTEINFOW, SEE_MASK_NOCLOSEPROCESS,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let exe = std::env::current_exe().map_err(|e| TokenSaveError::Config {
+            message: format!("cannot determine executable path: {e}"),
+        })?;
+
+        let verb: Vec<u16> = OsStr::new("runas").encode_wide().chain(Some(0)).collect();
+        let file: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+        let params: Vec<u16> = OsStr::new(args).encode_wide().chain(Some(0)).collect();
+
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = params.as_ptr();
+        info.nShow = SW_SHOWNORMAL;
+
+        let ok = unsafe { ShellExecuteExW(&mut info) };
+        if ok == 0 || info.hProcess == 0 {
+            return Err(TokenSaveError::Config {
+                message: "UAC elevation was cancelled or failed".to_string(),
+            });
+        }
+
+        // Wait for the elevated child to finish and check its exit code.
+        unsafe {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            let mut exit_code: u32 = 1;
+            GetExitCodeProcess(info.hProcess, &mut exit_code);
+            CloseHandle(info.hProcess);
+
+            if exit_code != 0 {
+                return Err(TokenSaveError::Config {
+                    message: format!(
+                        "elevated process exited with code {exit_code}"
+                    ),
+                });
+            }
+        }
+
+        eprintln!("{success_msg}");
+        Ok(())
+    }
+
+    /// Spawn an elevated child to install the autostart service.
+    pub fn run_elevated_autostart() -> Result<()> {
+        run_elevated(
+            "daemon --enable-autostart",
+            "\x1b[32m✔\x1b[0m Autostart service installed (via elevated process)",
+        )
+    }
+
+    /// Spawn an elevated child to remove the autostart service.
+    pub fn run_elevated_disable_autostart() -> Result<()> {
+        run_elevated(
+            "daemon --disable-autostart",
+            "\x1b[32m✔\x1b[0m Autostart service removed (via elevated process)",
+        )
+    }
+}
+
 /// Remove autostart service.
+///
+/// On Windows, this may require elevation to access the SCM.
 pub fn disable_autostart() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    if !win_elevated::is_elevated() {
+        return win_elevated::run_elevated_disable_autostart();
+    }
+
     let daemon = build_daemon()?;
     daemon.uninstall_service().map_err(|e| TokenSaveError::Config {
         message: format!("{e}"),

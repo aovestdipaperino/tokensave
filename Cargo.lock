@@ -3891,7 +3891,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokensave"
-version = "3.0.1"
+version = "3.1.1"
 dependencies = [
  "clap",
  "daemon-kit",
@@ -3919,6 +3919,7 @@ dependencies = [
  "tree-sitter",
  "ureq",
  "walkdir",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

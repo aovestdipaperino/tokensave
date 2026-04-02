@@ -186,6 +186,26 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
     }
 }
 
+/// Returns true if `latest` is a newer version than `current` AND the
+/// difference is at least a minor version bump (patch-only bumps return false).
+///
+/// Used by the CLI version warning to avoid nagging on patch releases.
+pub fn is_newer_minor_version(current: &str, latest: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64)> {
+        let base = v.split_once('-').map_or(v, |(b, _)| b);
+        let mut parts = base.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        Some((major, minor))
+    }
+
+    is_newer_version(current, latest)
+        && match (parse(current), parse(latest)) {
+            (Some(c), Some(l)) => l > c,
+            _ => true,
+        }
+}
+
 /// How tokensave was installed, detected from the binary path.
 pub enum InstallMethod {
     Cargo,

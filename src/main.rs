@@ -898,8 +898,15 @@ fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache:
         return;
     };
 
-    if tokensave::cloud::is_newer_version(current_version, &latest)
-        && (skip_suppression || now - config.last_version_warning_at >= 900)
+    // The status page (skip_suppression=true) warns on any newer version;
+    // the CLI only warns on minor+ bumps to avoid nagging on patch releases.
+    let dominated = if skip_suppression {
+        tokensave::cloud::is_newer_version(current_version, &latest)
+    } else {
+        tokensave::cloud::is_newer_minor_version(current_version, &latest)
+    };
+
+    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900)
     {
         let method = tokensave::cloud::detect_install_method();
         let cmd = tokensave::cloud::upgrade_command(&method);

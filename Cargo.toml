@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
@@ -73,6 +73,9 @@ dirs = "6"
 daemon-kit = "0.1.3"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO"] }
 
 [build-dependencies]
 logo-art = "0.2"
