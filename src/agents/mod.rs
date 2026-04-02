@@ -54,11 +54,15 @@ pub trait AgentIntegration {
 
     /// Returns true if this agent appears to be installed on the system
     /// (its config directory exists).
-    fn is_detected(&self, _home: &Path) -> bool { false }
+    fn is_detected(&self, _home: &Path) -> bool {
+        false
+    }
 
     /// Returns true if tokensave MCP server is already registered in this
     /// agent's config. Used for migration backfill.
-    fn has_tokensave(&self, _home: &Path) -> bool { false }
+    fn has_tokensave(&self, _home: &Path) -> bool {
+        false
+    }
 }
 
 /// Context passed to [`AgentIntegration::install`] and [`AgentIntegration::uninstall`].
@@ -116,7 +120,9 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
 
 /// Returns the CLI identifiers of all registered agents (for help text).
 pub fn available_integrations() -> Vec<&'static str> {
-    vec!["claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code"]
+    vec![
+        "claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code",
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +137,10 @@ pub struct DoctorCounters {
 
 impl DoctorCounters {
     pub fn new() -> Self {
-        Self { issues: 0, warnings: 0 }
+        Self {
+            issues: 0,
+            warnings: 0,
+        }
     }
     pub fn pass(&self, msg: &str) {
         eprintln!("  \x1b[32m✔\x1b[0m {msg}");
@@ -401,7 +410,9 @@ pub fn which_tokensave() -> Option<String> {
     };
     path_var.split(separator).find_map(|dir| {
         let candidate = PathBuf::from(dir).join(bin_name);
-        candidate.exists().then(|| candidate.to_string_lossy().to_string())
+        candidate
+            .exists()
+            .then(|| candidate.to_string_lossy().to_string())
     })
 }
 
@@ -495,7 +506,9 @@ fn remove_trailing_commas(input: &str) -> String {
         if bytes[i] == b',' {
             // Peek ahead past whitespace.
             let mut j = i + 1;
-            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n' || bytes[j] == b'\r') {
+            while j < len
+                && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n' || bytes[j] == b'\r')
+            {
                 j += 1;
             }
             if j < len && (bytes[j] == b'}' || bytes[j] == b']') {
@@ -556,9 +569,13 @@ pub fn load_jsonc_file_strict(path: &Path) -> Result<serde_json::Value> {
 /// Returns the VS Code user data directory, platform-specific.
 pub fn vscode_data_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
-    { home.join("Library/Application Support/Code") }
+    {
+        home.join("Library/Application Support/Code")
+    }
     #[cfg(target_os = "linux")]
-    { home.join(".config/Code") }
+    {
+        home.join(".config/Code")
+    }
     #[cfg(target_os = "windows")]
     {
         std::env::var("APPDATA")
@@ -566,7 +583,14 @@ pub fn vscode_data_dir(home: &Path) -> PathBuf {
             .unwrap_or_else(|_| home.join("AppData/Roaming/Code"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { home.join(".config/Code") }
+    {
+        home.join(".config/Code")
+    }
+}
+
+/// Returns the GitHub Copilot CLI config directory.
+pub fn copilot_cli_dir(home: &Path) -> PathBuf {
+    home.join(".copilot")
 }
 
 /// Backfill `installed_agents` for users upgrading from older versions.
@@ -595,9 +619,10 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
 ///   pre-checked if already in `installed`.
 ///
 /// Returns `(to_install, to_uninstall)`.
-pub fn pick_integrations_interactive(home: &Path, installed: &[String])
-    -> Result<(Vec<String>, Vec<String>)>
-{
+pub fn pick_integrations_interactive(
+    home: &Path,
+    installed: &[String],
+) -> Result<(Vec<String>, Vec<String>)> {
     let detected: Vec<Box<dyn AgentIntegration>> = all_integrations()
         .into_iter()
         .filter(|ag| ag.is_detected(home))
@@ -616,23 +641,21 @@ pub fn pick_integrations_interactive(home: &Path, installed: &[String])
     }
 
     // Build item labels and pre-check state.
-    let items: Vec<String> = detected
-        .iter()
-        .map(|ag| ag.name().to_string())
-        .collect();
+    let items: Vec<String> = detected.iter().map(|ag| ag.name().to_string()).collect();
     let defaults: Vec<bool> = detected
         .iter()
         .map(|ag| installed.contains(&ag.id().to_string()))
         .collect();
 
-    let selections = dialoguer::MultiSelect::with_theme(&dialoguer::theme::ColorfulTheme::default())
-        .with_prompt("Select agents to configure with tokensave MCP")
-        .items(&items)
-        .defaults(&defaults)
-        .interact()
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("interactive selection failed: {e}"),
-        })?;
+    let selections =
+        dialoguer::MultiSelect::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt("Select agents to configure with tokensave MCP")
+            .items(&items)
+            .defaults(&defaults)
+            .interact()
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("interactive selection failed: {e}"),
+            })?;
 
     let selected_ids: Vec<String> = selections
         .iter()
@@ -648,8 +671,7 @@ pub fn pick_integrations_interactive(home: &Path, installed: &[String])
     let to_uninstall: Vec<String> = detected
         .iter()
         .filter(|ag| {
-            installed.contains(&ag.id().to_string())
-                && !selected_ids.contains(&ag.id().to_string())
+            installed.contains(&ag.id().to_string()) && !selected_ids.contains(&ag.id().to_string())
         })
         .map(|ag| ag.id().to_string())
         .collect();
@@ -671,8 +693,7 @@ pub fn load_toml_file(path: &Path) -> toml::Value {
 
 /// Write a TOML value to a file.
 pub fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
-    let contents =
-        toml::to_string_pretty(value).unwrap_or_else(|_| String::new());
+    let contents = toml::to_string_pretty(value).unwrap_or_else(|_| String::new());
     std::fs::write(path, contents).map_err(|e| TokenSaveError::Config {
         message: format!("failed to write {}: {e}", path.display()),
     })?;
@@ -745,7 +766,10 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str) {
 
     // Create the hooks directory if needed.
     if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
-        eprintln!("  \x1b[31m✘\x1b[0m Failed to create {}: {e}", hooks_dir.display());
+        eprintln!(
+            "  \x1b[31m✘\x1b[0m Failed to create {}: {e}",
+            hooks_dir.display()
+        );
         return;
     }
 
@@ -775,7 +799,10 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str) {
             return;
         };
         if write!(f, "\n{snippet}").is_err() {
-            eprintln!("  \x1b[31m✘\x1b[0m Failed to write to {}", hook_path.display());
+            eprintln!(
+                "  \x1b[31m✘\x1b[0m Failed to write to {}",
+                hook_path.display()
+            );
             return;
         }
     } else {
@@ -875,7 +902,10 @@ fn parse_gitconfig_value(path: &Path, section: &str, key: &str) -> Option<String
 /// Appends `core.hooksPath` to the global gitconfig file, creating it if
 /// necessary. Appends to an existing `[core]` section if one exists,
 /// otherwise adds a new one at the end of the file.
-fn set_global_hooks_path(gitconfig_path: &Path, hooks_dir: &Path) -> std::result::Result<(), String> {
+fn set_global_hooks_path(
+    gitconfig_path: &Path,
+    hooks_dir: &Path,
+) -> std::result::Result<(), String> {
     let hooks_str = hooks_dir.to_string_lossy().replace('\\', "/");
     let contents = if gitconfig_path.exists() {
         std::fs::read_to_string(gitconfig_path)
@@ -1109,14 +1139,19 @@ mod git_hook_tests {
                 in_section = section_name.eq_ignore_ascii_case(&section_lower);
                 continue;
             }
-            if !in_section { continue; }
+            if !in_section {
+                continue;
+            }
             if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
                 continue;
             }
             if let Some((k, v)) = trimmed.split_once('=') {
                 if k.trim().to_ascii_lowercase() == key_lower {
                     let v = v.trim();
-                    let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+                    let v = v
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(v);
                     return Some(v.to_string());
                 }
             }
@@ -1294,7 +1329,9 @@ mod safe_config_tests {
         let original = r#"{"existing": "data", "nested": {"key": 1}}"#;
         fs::write(&path, original).unwrap();
 
-        let backup = backup_config_file(&path).unwrap().expect("should create backup");
+        let backup = backup_config_file(&path)
+            .unwrap()
+            .expect("should create backup");
         assert!(backup.exists());
         assert_eq!(fs::read_to_string(&backup).unwrap(), original);
         // Original is untouched
@@ -1350,7 +1387,10 @@ mod safe_config_tests {
         let err = load_json_file_strict(&path).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("cannot parse"), "error: {msg}");
-        assert!(msg.contains("bad.json"), "error should mention filename: {msg}");
+        assert!(
+            msg.contains("bad.json"),
+            "error should mention filename: {msg}"
+        );
     }
 
     #[test]
@@ -1470,7 +1510,8 @@ mod safe_config_tests {
         let path = dir.path().join("opencode.json");
         // Simulate a file that serde_json can't parse (e.g. has trailing commas
         // that the non-strict loader would silently drop).
-        let corrupted = r#"{"mcp": {"other_server": {"url": "http://example.com"},}, "theme": "dark",}"#;
+        let corrupted =
+            r#"{"mcp": {"other_server": {"url": "http://example.com"},}, "theme": "dark",}"#;
         fs::write(&path, corrupted).unwrap();
 
         // The strict loader must refuse to parse this.
@@ -1483,7 +1524,11 @@ mod safe_config_tests {
         // Contrast: the old non-strict loader silently returns {} — this
         // is the exact behavior that destroyed configs.
         let old_style = load_json_file(&path);
-        assert_eq!(old_style, serde_json::json!({}), "non-strict loader returns empty");
+        assert_eq!(
+            old_style,
+            serde_json::json!({}),
+            "non-strict loader returns empty"
+        );
     }
 
     #[test]
@@ -1517,14 +1562,15 @@ mod safe_config_tests {
         assert!(result["mcp"]["tokensave"].is_object());
         // Existing keys survived
         assert_eq!(result["theme"], "dark");
-        assert_eq!(result["mcp"]["existing_server"]["url"], "http://localhost:8080");
+        assert_eq!(
+            result["mcp"]["existing_server"]["url"],
+            "http://localhost:8080"
+        );
         assert_eq!(result["other_setting"], serde_json::json!([1, 2, 3]));
 
         // Backup exists with original content
-        let bak_content: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(backup.unwrap()).unwrap(),
-        )
-        .unwrap();
+        let bak_content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(backup.unwrap()).unwrap()).unwrap();
         assert!(bak_content.get("tokensave").is_none());
         assert_eq!(bak_content["theme"], "dark");
     }
@@ -1570,8 +1616,8 @@ mod safe_config_tests {
         safe_write_json_file(&path, &value, None).unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
-        let reparsed: serde_json::Value = serde_json::from_str(&raw)
-            .expect("written file must be valid JSON");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("written file must be valid JSON");
         assert_eq!(reparsed, value);
     }
 }
