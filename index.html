@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TokenSave — Supercharge Claude Code with Semantic Code Intelligence</title>
+  <meta name="description" content="Fewer tokens. Fewer tool calls. 100% local. TokenSave gives Claude a pre-indexed semantic knowledge graph so it queries instantly instead of scanning files.">
+  <meta property="og:title" content="TokenSave — Semantic Code Intelligence">
+  <meta property="og:description" content="Fewer tokens. Fewer tool calls. 100% local.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg-card: #161b22;
+      --bg-code: #1c2128;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --text-dimmer: #6e7681;
+      --green: #3fb950;
+      --green-dim: #238636;
+      --green-glow: rgba(63, 185, 80, 0.15);
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --orange: #d29922;
+      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--bg);
+    }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Scanline overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.03) 2px,
+        rgba(0, 0, 0, 0.03) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    a {
+      color: var(--green);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    a:hover { color: #56d364; }
+
+    /* ── Hero ─────────────────────────────────────── */
+
+    .hero {
+      text-align: center;
+      padding: 80px 0 60px;
+      position: relative;
+    }
+
+    .hero-logo {
+      width: 220px;
+      height: auto;
+      margin-bottom: 24px;
+      image-rendering: pixelated;
+      filter: drop-shadow(0 0 20px var(--green-glow));
+    }
+
+    .hero h1 {
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      font-weight: 400;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-props {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 40px;
+      flex-wrap: wrap;
+    }
+
+    .hero-prop {
+      color: var(--green);
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .hero-prop::before {
+      content: '▸ ';
+      opacity: 0.6;
+    }
+
+    /* ── Live Counter ────────────────────────────── */
+
+    .counter-section {
+      margin-bottom: 48px;
+    }
+
+    .counter-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-card);
+      padding: 32px 24px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .counter-box::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--green), transparent);
+    }
+
+    .counter-label {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin-bottom: 8px;
+    }
+
+    .counter-value {
+      font-size: 3rem;
+      font-weight: 700;
+      color: var(--green);
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 30px var(--green-glow);
+      min-height: 4.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .counter-value .loading {
+      font-size: 1rem;
+      color: var(--text-dimmer);
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .counter-approx {
+      font-size: 0.7rem;
+      color: var(--text-dimmer);
+      margin-top: 4px;
+    }
+
+    .flags-row {
+      margin-top: 20px;
+      font-size: 1.4rem;
+      line-height: 2;
+      letter-spacing: 0.15em;
+      min-height: 2.8rem;
+    }
+
+    .flags-label {
+      display: block;
+      font-size: 0.65rem;
+      color: var(--text-dimmer);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin-bottom: 4px;
+    }
+
+    /* ── Install ─────────────────────────────────── */
+
+    .install-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .install-cmd {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 20px;
+      font-size: 0.9rem;
+      color: var(--green);
+      cursor: pointer;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      position: relative;
+    }
+
+    .install-cmd:hover {
+      border-color: var(--green-dim);
+      box-shadow: 0 0 12px var(--green-glow);
+    }
+
+    .install-cmd .prompt { color: var(--text-dimmer); }
+    .install-cmd .copied {
+      position: absolute;
+      top: -28px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.7rem;
+      color: var(--green);
+      background: var(--bg-card);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+    }
+    .install-cmd .copied.show { opacity: 1; }
+
+    .install-alt {
+      font-size: 0.75rem;
+      color: var(--text-dimmer);
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    .install-alt code {
+      color: var(--text-dim);
+      background: var(--bg-code);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    /* ── How It Works ────────────────────────────── */
+
+    .section {
+      margin-bottom: 64px;
+    }
+
+    .section-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--green);
+      margin-bottom: 24px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .terminal-bar {
+      background: var(--bg-card);
+      padding: 8px 16px;
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+    .terminal-dot.red { background: #f85149; }
+    .terminal-dot.yellow { background: var(--orange); }
+    .terminal-dot.green { background: var(--green); }
+
+    .terminal pre {
+      padding: 20px;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      color: var(--text-dim);
+    }
+
+    .terminal .hl-green { color: var(--green); }
+    .terminal .hl-blue { color: var(--blue); }
+    .terminal .hl-purple { color: var(--purple); }
+    .terminal .hl-dim { color: var(--text-dimmer); }
+    .terminal .hl-orange { color: var(--orange); }
+    .terminal .hl-text { color: var(--text); }
+
+    /* ── Features Grid ───────────────────────────── */
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--green-dim);
+      box-shadow: 0 0 16px var(--green-glow);
+    }
+
+    .feature-icon {
+      font-size: 1.5rem;
+      margin-bottom: 12px;
+    }
+
+    .feature-card h3 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+
+    /* ── Modes Table ─────────────────────────────── */
+
+    .modes-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+    }
+
+    .modes-table th {
+      text-align: left;
+      padding: 10px 16px;
+      color: var(--text-dim);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .modes-table td {
+      padding: 10px 16px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modes-table tr:last-child td { border-bottom: none; }
+
+    .modes-table .mode-name {
+      color: var(--green);
+      font-weight: 600;
+    }
+
+    .modes-table .check { color: var(--green); }
+    .modes-table .dash { color: var(--text-dimmer); }
+
+    /* ── Install Section ─────────────────────────── */
+
+    .install-section {
+      margin-bottom: 64px;
+    }
+
+    .install-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 0;
+    }
+
+    .install-tab {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      padding: 8px 20px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: var(--text-dimmer);
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s;
+      border-radius: 6px 6px 0 0;
+      margin-right: -1px;
+    }
+
+    .install-tab.active {
+      color: var(--green);
+      background: var(--bg-code);
+      border-bottom-color: var(--bg-code);
+    }
+
+    .install-tab:hover:not(.active) {
+      color: var(--text-dim);
+    }
+
+    .install-block {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 0 6px 6px 6px;
+      padding: 20px;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    .install-block.active { display: block; }
+
+    .install-block .line {
+      margin-bottom: 4px;
+    }
+
+    .install-block .comment { color: var(--text-dimmer); }
+    .install-block .cmd { color: var(--green); }
+
+    /* ── Footer ──────────────────────────────────── */
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0;
+      text-align: center;
+      font-size: 0.7rem;
+      color: var(--text-dimmer);
+    }
+
+    footer .badges {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    footer .badge {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 0.65rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Responsive ──────────────────────────────── */
+
+    @media (max-width: 768px) {
+      .hero { padding: 48px 0 40px; }
+      .hero-logo { width: 160px; }
+      .hero h1 { font-size: 0.95rem; }
+      .hero-props { gap: 12px; }
+      .hero-prop { font-size: 0.75rem; }
+
+      .counter-value { font-size: 2rem; }
+
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .modes-table { font-size: 0.7rem; }
+      .modes-table th, .modes-table td { padding: 8px 10px; }
+
+      .install-tabs { flex-wrap: wrap; }
+
+      .terminal pre { font-size: 0.65rem; }
+    }
+
+    @media (max-width: 480px) {
+      .hero-props { flex-direction: column; gap: 8px; }
+      .install-bar { flex-direction: column; }
+      .counter-value { font-size: 1.6rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <img src="src/resources/logo.png" alt="TokenSave" class="hero-logo">
+      <h1>Supercharge Claude Code with Semantic Code Intelligence</h1>
+      <div class="hero-props">
+        <span class="hero-prop">Fewer tokens</span>
+        <span class="hero-prop">Fewer tool calls</span>
+        <span class="hero-prop">100% local</span>
+      </div>
+      <div class="install-bar">
+        <div class="install-cmd" onclick="copyInstall(this, 'cargo install tokensave')">
+          <span class="copied">Copied!</span>
+          <span class="prompt">$ </span>cargo install tokensave
+        </div>
+      </div>
+      <div class="install-alt">
+        also via <code>brew install tokensave</code> or <code>scoop install tokensave</code>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live Counter -->
+  <section class="counter-section">
+    <div class="container">
+      <div class="counter-box">
+        <div class="counter-label">Tokens saved worldwide</div>
+        <div class="counter-value" id="counter">
+          <span class="loading">fetching_</span>
+        </div>
+        <div class="counter-approx">~ approximate, aggregated across all tokensave users</div>
+        <div class="flags-row">
+          <span class="flags-label">Users around the world</span>
+          <span id="flags"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="section">
+    <div class="container">
+      <div class="section-title">// How it works</div>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+        </div>
+        <pre>
+<span class="hl-dim">  Without tokensave                   With tokensave</span>
+<span class="hl-dim">  ──────────────────                  ──────────────</span>
+
+  <span class="hl-text">Claude Code</span>                          <span class="hl-text">Claude Code</span>
+      │                                    │
+      ▼                                    ▼
+  <span class="hl-orange">┌──────────┐  ┌──────────┐</span>       <span class="hl-green">┌────────────────────────┐</span>
+  <span class="hl-orange">│  Explore │  │  Explore │</span>       <span class="hl-green">│ tokensave MCP Server   │</span>
+  <span class="hl-orange">│  Agent   │  │  Agent   │</span>       <span class="hl-green">│                        │</span>
+  <span class="hl-orange">│          │  │          │</span>       <span class="hl-green">│ search ─┐              │</span>
+  <span class="hl-orange">│  grep... │  │  glob... │</span>       <span class="hl-green">│ callers ┼▶ libSQL DB   │</span>
+  <span class="hl-orange">│  read... │  │  read... │</span>       <span class="hl-green">│ context ┘  • instant   │</span>
+  <span class="hl-orange">│          │  │          │</span>       <span class="hl-green">│            • FTS5      │</span>
+  <span class="hl-orange">│          │  │          │</span>       <span class="hl-green">│            • vectors   │</span>
+  <span class="hl-orange">└────┬─────┘  └────┬─────┘</span>       <span class="hl-green">└────────────────────────┘</span>
+       ▼             ▼
+  <span class="hl-orange">many API calls, high tokens</span>       <span class="hl-green">instant results, fewer tokens</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section">
+    <div class="container">
+      <div class="section-title">// Features</div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🧠</div>
+          <h3>Smart Context</h3>
+          <p>One tool call returns everything Claude needs — entry points, related symbols, and code snippets.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <h3>Semantic Search</h3>
+          <p>Find code by meaning. Search "authentication" and find login, validateToken, AuthService.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">💥</div>
+          <h3>Impact Analysis</h3>
+          <p>Know what breaks before you change it. Trace callers, callees, and the full impact radius.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🌐</div>
+          <h3>31 Languages</h3>
+          <p>Rust, Go, Java, Python, TypeScript, C, C++, Swift, Kotlin, C#, and 21 more — same API.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔒</div>
+          <h3>100% Local</h3>
+          <p>No data leaves your machine. No API keys. No external services. Everything runs on local libSQL.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">😈</div>
+          <h3>Daemon Mode</h3>
+          <p>Background daemon watches for file changes and syncs automatically. Branch-aware tracking optional.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Operating Modes -->
+  <section class="section">
+    <div class="container">
+      <div class="section-title">// Operating modes</div>
+      <div class="terminal">
+        <table class="modes-table">
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th>Daemon</th>
+              <th>Branch tracking</th>
+              <th>Best for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mode-name">Manual</td>
+              <td class="dash">off</td>
+              <td class="dash">—</td>
+              <td>Full control — run sync when you want</td>
+            </tr>
+            <tr>
+              <td class="mode-name">Auto-sync</td>
+              <td class="check">on</td>
+              <td class="dash">off</td>
+              <td>Fire-and-forget — syncs on file changes</td>
+            </tr>
+            <tr>
+              <td class="mode-name">Branch-aware</td>
+              <td class="check">on</td>
+              <td class="check">on</td>
+              <td>Multi-branch — each branch gets its own index</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="install-section">
+    <div class="container">
+      <div class="section-title">// Install</div>
+      <div class="install-tabs">
+        <button class="install-tab active" onclick="switchTab('cargo')">cargo</button>
+        <button class="install-tab" onclick="switchTab('brew')">brew</button>
+        <button class="install-tab" onclick="switchTab('scoop')">scoop</button>
+      </div>
+      <div class="install-block active" id="tab-cargo">
+        <div class="line"><span class="comment"># Install tokensave</span></div>
+        <div class="line"><span class="cmd">cargo install tokensave</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Index your project</span></div>
+        <div class="line"><span class="cmd">cd your-project && tokensave sync</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Register with your AI agent</span></div>
+        <div class="line"><span class="cmd">tokensave install</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># (Optional) Start the background daemon</span></div>
+        <div class="line"><span class="cmd">tokensave daemon --enable-autostart</span></div>
+      </div>
+      <div class="install-block" id="tab-brew">
+        <div class="line"><span class="comment"># Install via Homebrew</span></div>
+        <div class="line"><span class="cmd">brew install tokensave</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Index your project</span></div>
+        <div class="line"><span class="cmd">cd your-project && tokensave sync</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Register with your AI agent</span></div>
+        <div class="line"><span class="cmd">tokensave install</span></div>
+      </div>
+      <div class="install-block" id="tab-scoop">
+        <div class="line"><span class="comment"># Install via Scoop (Windows)</span></div>
+        <div class="line"><span class="cmd">scoop install tokensave</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Index your project</span></div>
+        <div class="line"><span class="cmd">cd your-project && tokensave sync</span></div>
+        <div class="line">&nbsp;</div>
+        <div class="line"><span class="comment"># Register with your AI agent</span></div>
+        <div class="line"><span class="cmd">tokensave install</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Supported Agents -->
+  <section class="section">
+    <div class="container">
+      <div class="section-title">// Supported agents</div>
+      <div class="features-grid" style="grid-template-columns: repeat(4, 1fr);">
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Claude Code</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Cursor</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Copilot</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Zed</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Cline</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Roo Code</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Codex</h3>
+        </div>
+        <div class="feature-card" style="text-align:center; padding: 16px;">
+          <h3>Gemini CLI</h3>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="badges">
+        <span class="badge">MIT License</span>
+        <span class="badge">Rust</span>
+        <span class="badge">macOS · Linux · Windows</span>
+      </div>
+      <a href="https://github.com/aovestdipaperino/tokensave">github.com/aovestdipaperino/tokensave</a>
+      &nbsp;·&nbsp;
+      <a href="https://crates.io/crates/tokensave">crates.io/crates/tokensave</a>
+    </div>
+  </footer>
+
+  <script>
+    const WORKER_URL = 'https://tokensave-counter.enzinol.workers.dev';
+
+    // Animate counter from 0 to target
+    function animateCounter(target) {
+      const el = document.getElementById('counter');
+      const duration = 1500;
+      const start = performance.now();
+
+      function step(now) {
+        const elapsed = now - start;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease out cubic
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = Math.floor(eased * target);
+        el.textContent = '~' + formatTokenCount(current);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else {
+          el.textContent = '~' + formatTokenCount(target);
+        }
+      }
+
+      requestAnimationFrame(step);
+    }
+
+    function formatTokenCount(n) {
+      if (n >= 1_000_000_000) {
+        return (n / 1_000_000_000).toFixed(1) + 'B';
+      } else if (n >= 1_000_000) {
+        return (n / 1_000_000).toFixed(1) + 'M';
+      } else if (n >= 1_000) {
+        return (n / 1_000).toFixed(1) + 'k';
+      }
+      return n.toString();
+    }
+
+    // Fetch worldwide total
+    async function fetchCounter() {
+      try {
+        const resp = await fetch(WORKER_URL + '/total');
+        const data = await resp.json();
+        if (data.total != null) {
+          animateCounter(data.total);
+        } else {
+          document.getElementById('counter').textContent = '—';
+        }
+      } catch {
+        document.getElementById('counter').textContent = '—';
+      }
+    }
+
+    // Fetch country flags
+    async function fetchFlags() {
+      try {
+        const resp = await fetch(WORKER_URL + '/countries');
+        const data = await resp.json();
+        if (data.flags && data.flags.length > 0) {
+          document.getElementById('flags').textContent = data.flags.join(' ');
+        } else {
+          document.getElementById('flags').textContent = '🌍';
+        }
+      } catch {
+        document.getElementById('flags').textContent = '🌍';
+      }
+    }
+
+    // Copy install command
+    function copyInstall(el, text) {
+      navigator.clipboard.writeText(text).then(() => {
+        const badge = el.querySelector('.copied');
+        badge.classList.add('show');
+        setTimeout(() => badge.classList.remove('show'), 1500);
+      });
+    }
+
+    // Tab switcher
+    function switchTab(name) {
+      document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.install-block').forEach(b => b.classList.remove('active'));
+      document.querySelector(`#tab-${name}`).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    // Init
+    fetchCounter();
+    fetchFlags();
+  </script>
+
+</body>
+</html>
