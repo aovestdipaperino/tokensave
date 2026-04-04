@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.2] - 2026-04-05
+
+### Fixed
+- **MCP tools no longer warn on patch-only updates** — the `tokensave_status` MCP tool now uses `is_newer_minor_version` instead of `is_newer_version`, so patch-level releases (e.g. 3.2.0 → 3.2.1) no longer trigger update warnings in MCP tool output. The CLI status command continues to show all available updates.
+- **Separate beta/stable update channels** — `is_newer_version` now returns `false` for cross-channel comparisons (beta vs stable). Previously a beta user could be told to upgrade to a stable release, or vice versa. Each channel now only sees updates from its own channel.
+
 ## [3.1.1] - 2026-04-02
 
 ### Fixed

@@ -169,17 +169,20 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 
     match (parse(current), parse(latest)) {
         (Some((cm, cn, cp, cpre)), Some((lm, ln, lp, lpre))) => {
+            // Beta and stable are separate channels — never suggest cross-channel updates.
+            if cpre.is_some() != lpre.is_some() {
+                return false;
+            }
             let c_base = (cm, cn, cp);
             let l_base = (lm, ln, lp);
             if l_base != c_base {
                 return l_base > c_base;
             }
-            // Same base version: a release (no pre) is newer than a prerelease
+            // Same base version, same channel
             match (cpre, lpre) {
-                (Some(_), None) => true,   // current=beta, latest=release → newer
-                (None, Some(_)) => false,  // current=release, latest=beta → not newer
-                (None, None) => false,     // identical
-                (Some(a), Some(b)) => b > a, // both pre: compare lexicographically
+                (None, None) => false,
+                (Some(a), Some(b)) => b > a,
+                _ => false,
             }
         }
         _ => false,

@@ -183,7 +183,7 @@ impl McpServer {
             if let Some(checked_at) = cache.checked_at {
                 if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
                     let latest = cache.latest.as_deref()?;
-                    return if crate::cloud::is_newer_version(current, latest) {
+                    return if crate::cloud::is_newer_minor_version(current, latest) {
                         let method = crate::cloud::detect_install_method();
                         let cmd = crate::cloud::upgrade_command(&method);
                         Some(format!(
@@ -210,7 +210,7 @@ impl McpServer {
         }
 
         let latest = latest?;
-        if crate::cloud::is_newer_version(current, &latest) {
+        if crate::cloud::is_newer_minor_version(current, &latest) {
             let method = crate::cloud::detect_install_method();
             let cmd = crate::cloud::upgrade_command(&method);
             Some(format!(
