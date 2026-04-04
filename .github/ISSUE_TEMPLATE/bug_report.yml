@@ -17,12 +17,27 @@ body:
       required: true
 
   - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
     id: install-method
     attributes:
       label: Installation method
       options:
         - cargo install
+        - Homebrew (brew)
+        - Scoop
         - Built from source
+        - GitHub release binary
         - Other
     validations:
       required: true
@@ -84,9 +99,8 @@ body:
       label: Environment
       description: OS, architecture, Rust version, project size.
       value: |
-        - OS:
-        - Arch:
-        - Rust:
+        - Arch (e.g. x86_64, aarch64):
+        - Rust version:
         - Project size (files):
     validations:
       required: true
