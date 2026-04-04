@@ -252,19 +252,14 @@ impl TokenSave {
         let start = Instant::now();
 
         // 1. Clear existing data and enter bulk-load mode
-        let t = Instant::now();
         self.db.clear().await?;
         self.db.begin_bulk_load().await?;
-        eprintln!("[prof] clear+begin_bulk: {:?}", t.elapsed());
 
         // 2. Scan for source files
-        let t = Instant::now();
         let files = self.scan_files()?;
         let total = files.len();
-        eprintln!("[prof] scan_files({}): {:?}", total, t.elapsed());
 
         // 3. Parallel extraction: read + parse + hash on all cores
-        let t = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
 
@@ -280,16 +275,14 @@ impl TokenSave {
                 Some((file_path.clone(), result, hash, size))
             })
             .collect();
-        eprintln!("[prof] parallel_extract: {:?}", t.elapsed());
 
         // 4. Collect all data
-        let t = Instant::now();
         let mut all_nodes = Vec::new();
         let mut all_edges = Vec::new();
         let mut all_unresolved = Vec::new();
         let mut file_records = Vec::new();
         let mut total_nodes = 0;
-        let mut total_edges;
+        let total_edges;
 
         for (idx, (file_path, result, hash, size)) in extractions.iter().enumerate() {
             on_file(idx + 1, total, file_path);
@@ -307,21 +300,14 @@ impl TokenSave {
             });
         }
 
-        eprintln!("[prof] collect: {:?}", t.elapsed());
-
         // 5. Resolve references in-memory (parallel) before DB insert
-        let t = Instant::now();
         if !all_unresolved.is_empty() {
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
             all_edges.extend(resolver.create_edges(&resolution.resolved));
         }
 
-        eprintln!("[prof] resolve_refs: {:?}", t.elapsed());
-
-        // 6. Sort everything by primary/index key order so SQLite B-tree
-        let t = Instant::now();
-        //    construction during CREATE INDEX is sequential, not random.
+        // 6. Sort by PK order + dedup edges
         all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         all_edges.sort_unstable_by(|a, b| {
             (&a.source, &a.target, a.kind.as_str(), &a.line)
@@ -332,23 +318,14 @@ impl TokenSave {
         });
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         total_edges = all_edges.len();
-        eprintln!("[prof] sort+dedup: {:?}", t.elapsed());
 
-        // 7. Bulk-insert to DB
-        let t = Instant::now();
+        // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         self.db.insert_nodes(&all_nodes).await?;
-        eprintln!("[prof] insert_nodes({}): {:?}", all_nodes.len(), t.elapsed());
-        let t = Instant::now();
         self.db.insert_edges(&all_edges).await?;
-        eprintln!("[prof] insert_edges({}): {:?}", all_edges.len(), t.elapsed());
-        let t = Instant::now();
         self.db.upsert_files(&file_records).await?;
-        eprintln!("[prof] upsert_files({}): {:?}", file_records.len(), t.elapsed());
 
         // 8. Restore indexes and normal durability
-        let t = Instant::now();
         self.db.end_bulk_load().await?;
-        eprintln!("[prof] end_bulk_load: {:?}", t.elapsed());
 
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
