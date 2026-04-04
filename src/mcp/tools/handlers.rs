@@ -15,6 +15,18 @@ use crate::types::{BuildContextOptions, NodeKind, Visibility};
 
 use super::{ToolResult, MAX_RESPONSE_CHARS};
 
+/// Extracts the `node_id` parameter from tool arguments, accepting `id` as a
+/// fallback alias. LLMs occasionally shorten `node_id` to `id`; this avoids a
+/// confusing error when that happens.
+fn require_node_id(args: &Value) -> Result<&str> {
+    args.get("node_id")
+        .or_else(|| args.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: node_id".to_string(),
+        })
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
@@ -176,12 +188,7 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_callers` tool calls.
 async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: node_id".to_string(),
-        })?;
+    let node_id = require_node_id(&args)?;
 
     let max_depth = args
         .get("max_depth")
@@ -218,12 +225,7 @@ async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_callees` tool calls.
 async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: node_id".to_string(),
-        })?;
+    let node_id = require_node_id(&args)?;
 
     let max_depth = args
         .get("max_depth")
@@ -260,12 +262,7 @@ async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_impact` tool calls.
 async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: node_id".to_string(),
-        })?;
+    let node_id = require_node_id(&args)?;
 
     let max_depth = args
         .get("max_depth")
@@ -308,12 +305,7 @@ async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_node` tool calls.
 async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: node_id".to_string(),
-        })?;
+    let node_id = require_node_id(&args)?;
 
     let node = cg.get_node(node_id).await?;
 
@@ -927,12 +919,7 @@ async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_rename_preview` tool calls.
 async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = args
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: node_id".to_string(),
-        })?;
+    let node_id = require_node_id(&args)?;
 
     // Get the node itself
     let node = cg.get_node(node_id).await?;
@@ -2274,5 +2261,29 @@ mod tests {
         let json = serde_json::to_string(&tools).unwrap();
         assert!(json.contains("tokensave_search"));
         assert!(json.contains("tokensave_status"));
+    }
+
+    #[test]
+    fn test_require_node_id_canonical() {
+        let args = json!({"node_id": "fn:abc123"});
+        assert_eq!(require_node_id(&args).unwrap(), "fn:abc123");
+    }
+
+    #[test]
+    fn test_require_node_id_alias() {
+        let args = json!({"id": "trait:def456"});
+        assert_eq!(require_node_id(&args).unwrap(), "trait:def456");
+    }
+
+    #[test]
+    fn test_require_node_id_prefers_canonical() {
+        let args = json!({"node_id": "fn:canonical", "id": "fn:alias"});
+        assert_eq!(require_node_id(&args).unwrap(), "fn:canonical");
+    }
+
+    #[test]
+    fn test_require_node_id_missing() {
+        let args = json!({"query": "something"});
+        assert!(require_node_id(&args).is_err());
     }
 }
