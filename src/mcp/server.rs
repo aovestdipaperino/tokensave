@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
@@ -226,13 +225,9 @@ impl McpServer {
     /// Runs the server, reading JSON-RPC requests from stdin and writing
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&self, transport: &mut impl super::transport::McpTransport) -> Result<()> {
         debug_assert!(self.stats.total_requests.load(Ordering::Relaxed) == 0,
             "server run() called on an already-used server");
-        let stdin = tokio::io::stdin();
-        let mut stdout = tokio::io::stdout();
-        let reader = BufReader::new(stdin);
-        let mut lines = reader.lines();
 
         loop {
             let line: String = {
@@ -243,7 +238,7 @@ impl McpServer {
                     )
                     .expect("failed to register SIGTERM handler");
                     tokio::select! {
-                        result = lines.next_line() => {
+                        result = transport.read_line() => {
                             match result {
                                 Ok(Some(line)) => line,
                                 _ => break,
@@ -256,7 +251,7 @@ impl McpServer {
                 #[cfg(not(unix))]
                 {
                     tokio::select! {
-                        result = lines.next_line() => {
+                        result = transport.read_line() => {
                             match result {
                                 Ok(Some(line)) => line,
                                 _ => break,
@@ -293,8 +288,8 @@ impl McpServer {
                     .unwrap_or_default();
                 for notification in notifications {
                     if let Ok(s) = serde_json::to_string(&notification) {
-                        let _ = stdout.write_all(format!("{}\n", s).as_bytes()).await;
-                        let _ = stdout.flush().await;
+                        let _ = transport.write_line(&format!("{}\n", s)).await;
+                        let _ = transport.flush().await;
                     }
                 }
             }
@@ -309,11 +304,11 @@ impl McpServer {
                     }
                 };
                 let output = format!("{}\n", json_line);
-                if let Err(e) = stdout.write_all(output.as_bytes()).await {
+                if let Err(e) = transport.write_line(&output).await {
                     eprintln!("failed to write response: {}", e);
                     break;
                 }
-                if let Err(e) = stdout.flush().await {
+                if let Err(e) = transport.flush().await {
                     eprintln!("failed to flush stdout: {}", e);
                     break;
                 }
@@ -376,7 +371,7 @@ impl McpServer {
     /// Dispatches a parsed JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for notifications (requests without an `id`).
-    async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    pub(crate) async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         debug_assert!(!request.method.is_empty(), "handle_request called with empty method");
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();

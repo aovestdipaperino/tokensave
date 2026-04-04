@@ -705,7 +705,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let project_path = resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let server = tokensave::mcp::McpServer::new(cg).await;
-            server.run().await?;
+            let mut transport = tokensave::mcp::StdioTransport::new();
+            server.run(&mut transport).await?;
         }
         Commands::DisableUploadCounter => {
             let mut config = tokensave::user_config::UserConfig::load();

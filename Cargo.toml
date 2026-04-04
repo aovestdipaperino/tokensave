@@ -40,6 +40,7 @@ lang-cobol = []
 lang-msbasic2 = []
 lang-gwbasic = []
 lang-qbasic = []
+test-transport = []
 
 [lib]
 name = "tokensave"
