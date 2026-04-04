@@ -162,9 +162,11 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let title = if daemon_running {
         format!("😈 TokenSave v{version}")
     } else {
-        format!("TokenSave v{version}")
+        format!("   TokenSave v{version}")
     };
-    // The emoji is 2 columns wide but len() counts bytes — adjust for padding.
+    // "😈 " is 3 display columns (2-wide emoji + space) but 6 bytes;
+    // "   " is 3 display columns and 3 bytes.
+    // Display width = byte len minus the overhead of the emoji bytes.
     let title_display_width = if daemon_running { title.len() - 2 } else { title.len() };
     let available = inner_width.saturating_sub(2);
 
