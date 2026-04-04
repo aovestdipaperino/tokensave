@@ -43,9 +43,9 @@ impl Database {
         })?;
 
         Self::apply_pragmas(&conn).await?;
-        let migrated = migrations::migrate(&conn).await?;
+        migrations::create_schema(&conn).await?;
 
-        Ok((Self { conn, _db: db }, migrated))
+        Ok((Self { conn, _db: db }, false))
     }
 
     /// Opens an existing database at `db_path`, applies performance pragmas,

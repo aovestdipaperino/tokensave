@@ -55,6 +55,125 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
     Ok(())
 }
 
+/// Creates the complete latest schema from scratch for a brand-new database.
+/// This avoids running v0→v1→…→v5 migrations sequentially.
+pub async fn create_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            docstring TEXT,
+            signature TEXT,
+            visibility TEXT NOT NULL DEFAULT 'private',
+            is_async INTEGER NOT NULL DEFAULT 0,
+            branches INTEGER NOT NULL DEFAULT 0,
+            loops INTEGER NOT NULL DEFAULT 0,
+            returns INTEGER NOT NULL DEFAULT 0,
+            max_nesting INTEGER NOT NULL DEFAULT 0,
+            unsafe_blocks INTEGER NOT NULL DEFAULT 0,
+            unchecked_calls INTEGER NOT NULL DEFAULT 0,
+            assertions INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            line INTEGER,
+            FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS files (
+            path TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            modified_at INTEGER NOT NULL,
+            indexed_at INTEGER NOT NULL,
+            node_count INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS unresolved_refs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_node_id TEXT NOT NULL,
+            reference_name TEXT NOT NULL,
+            reference_kind TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            col INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS vectors (
+            node_id TEXT PRIMARY KEY,
+            embedding BLOB NOT NULL,
+            model TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+            name, qualified_name, docstring, signature,
+            content='nodes', content_rowid='rowid'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
+            INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+            VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+            VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+            VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+            INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+            VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+        END;
+
+        CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+        CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+        CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
+        CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
+        CREATE INDEX IF NOT EXISTS idx_nodes_file_path_start_line ON nodes(file_path, start_line);
+
+        CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
+        CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
+        CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique
+            ON edges(source, target, kind, COALESCE(line, -1));
+
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("failed to create schema: {e}"),
+        operation: "create_schema".to_string(),
+    })?;
+
+    set_version(conn, LATEST_VERSION).await?;
+    Ok(())
+}
+
 /// Runs all pending migrations up to `LATEST_VERSION`.
 ///
 /// Acquires an EXCLUSIVE transaction to prevent concurrent writers from
