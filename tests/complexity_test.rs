@@ -4,7 +4,7 @@ use tokensave::extraction::complexity::{count_complexity, RUST_COMPLEXITY};
 fn rust_fn_complexity(source: &str) -> tokensave::extraction::complexity::ComplexityMetrics {
     let mut parser = tree_sitter::Parser::new();
     parser
-        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .set_language(&tokensave::extraction::ts_provider::language("rust"))
         .expect("failed to load Rust grammar");
     let tree = parser.parse(source, None).expect("parse failed");
     let root = tree.root_node();
