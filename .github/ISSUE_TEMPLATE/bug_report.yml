@@ -7,14 +7,38 @@ body:
       value: |
         Thanks for taking the time to report a bug. Please fill in as much detail as you can.
 
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I run `tokensave sync` on my project, it fails with..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      value: |
+        1.
+        2.
+        3.
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error output
+      description: Paste any error messages, stack traces, or relevant logs.
+      render: shell
+
   - type: input
     id: version
     attributes:
       label: tokensave version
-      description: Run `tokensave --version` or check `Cargo.toml`
+      description: Run `tokensave --version`
       placeholder: "3.2.0"
-    validations:
-      required: true
 
   - type: dropdown
     id: os
@@ -25,8 +49,6 @@ body:
         - Linux
         - Windows
         - Other
-    validations:
-      required: true
 
   - type: dropdown
     id: install-method
@@ -39,8 +61,6 @@ body:
         - Built from source
         - GitHub release binary
         - Other
-    validations:
-      required: true
 
   - type: dropdown
     id: component
@@ -54,59 +74,9 @@ body:
         - Daemon / file watcher
         - Agent integration (Claude, Cursor, etc.)
         - Other
-    validations:
-      required: true
-
-  - type: textarea
-    id: description
-    attributes:
-      label: What happened?
-      description: A clear description of the bug.
-      placeholder: "When I run `tokensave sync` on my project, it fails with..."
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-      description: What did you expect to happen?
-    validations:
-      required: true
-
-  - type: textarea
-    id: reproduce
-    attributes:
-      label: Steps to reproduce
-      description: Minimal steps to trigger the bug.
-      value: |
-        1.
-        2.
-        3.
-    validations:
-      required: true
-
-  - type: textarea
-    id: error-output
-    attributes:
-      label: Error output
-      description: Paste any error messages, stack traces, or relevant logs.
-      render: shell
-
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment
-      description: OS, architecture, Rust version, project size.
-      value: |
-        - Arch (e.g. x86_64, aarch64):
-        - Rust version:
-        - Project size (files):
-    validations:
-      required: true
 
   - type: textarea
     id: context
     attributes:
       label: Additional context
-      description: Anything else that might help (config, .tokensave/config.toml, project structure).
+      description: Anything else that might help (config, project structure, etc.).
