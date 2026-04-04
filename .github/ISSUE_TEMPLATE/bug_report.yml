@@ -7,6 +7,41 @@ body:
       value: |
         Thanks for taking the time to report a bug. Please fill in as much detail as you can.
 
+  - type: input
+    id: version
+    attributes:
+      label: tokensave version
+      description: Run `tokensave --version`
+      placeholder: "3.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - cargo install
+        - Homebrew (brew)
+        - Scoop
+        - Built from source
+        - GitHub release binary
+        - Other
+    validations:
+      required: true
+
   - type: textarea
     id: description
     attributes:
@@ -32,35 +67,6 @@ body:
       label: Error output
       description: Paste any error messages, stack traces, or relevant logs.
       render: shell
-
-  - type: input
-    id: version
-    attributes:
-      label: tokensave version
-      description: Run `tokensave --version`
-      placeholder: "3.2.0"
-
-  - type: dropdown
-    id: os
-    attributes:
-      label: Operating system
-      options:
-        - macOS
-        - Linux
-        - Windows
-        - Other
-
-  - type: dropdown
-    id: install-method
-    attributes:
-      label: Installation method
-      options:
-        - cargo install
-        - Homebrew (brew)
-        - Scoop
-        - Built from source
-        - GitHub release binary
-        - Other
 
   - type: dropdown
     id: component
