@@ -205,11 +205,9 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
              CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
              CREATE INDEX IF NOT EXISTS idx_nodes_file_path_start_line ON nodes(file_path, start_line);
-             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
-             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
-             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
              CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
              CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
+             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
              CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(source, target, kind, COALESCE(line, -1));
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);

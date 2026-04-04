@@ -18,6 +18,10 @@ pub struct ReferenceResolver<'a> {
     name_cache: HashMap<String, Vec<Node>>,
     /// Nodes grouped by their qualified name.
     qualified_name_cache: HashMap<String, Vec<Node>>,
+    /// Suffix index: maps every `::suffix` of a qualified name to the full
+    /// qualified name(s). Enables O(1) suffix lookups instead of scanning
+    /// the entire qualified_name_cache.
+    suffix_cache: HashMap<String, Vec<String>>,
 }
 
 impl<'a> ReferenceResolver<'a> {
@@ -37,22 +41,44 @@ impl<'a> ReferenceResolver<'a> {
     pub fn from_nodes(db: &'a Database, all_nodes: &[Node]) -> Self {
         let mut name_cache: HashMap<String, Vec<Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<String, Vec<Node>> = HashMap::new();
+        let mut suffix_cache: HashMap<String, Vec<String>> = HashMap::new();
 
         for node in all_nodes {
             name_cache
                 .entry(node.name.clone())
                 .or_default()
                 .push(node.clone());
+            let qn = &node.qualified_name;
             qualified_name_cache
-                .entry(node.qualified_name.clone())
+                .entry(qn.clone())
                 .or_default()
                 .push(node.clone());
+            // Build suffix index: for "a::b::c", index "b::c" and "c"
+            // (but not the full name — that's in qualified_name_cache already)
+            let mut pos = 0;
+            while let Some(idx) = qn[pos..].find("::") {
+                let suffix = &qn[pos + idx + 2..];
+                if !suffix.is_empty() {
+                    suffix_cache
+                        .entry(suffix.to_string())
+                        .or_default()
+                        .push(qn.clone());
+                }
+                pos += idx + 2;
+            }
+        }
+
+        // Deduplicate suffix entries
+        for entries in suffix_cache.values_mut() {
+            entries.sort_unstable();
+            entries.dedup();
         }
 
         Self {
             db,
             name_cache,
             qualified_name_cache,
+            suffix_cache,
         }
     }
 
@@ -138,18 +164,19 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
-        // Suffix match: check if any qualified name ends with the reference
-        // name (e.g. reference "types::Node" matches
-        // "crate::types::Node").
-        for (qname, candidates) in &self.qualified_name_cache {
-            if qname.ends_with(&uref.reference_name) {
-                if let Some(node) = candidates.first() {
-                    return Some(ResolvedRef {
-                        original: uref.clone(),
-                        target_node_id: node.id.clone(),
-                        confidence: 0.95,
-                        resolved_by: "qualified-match".to_string(),
-                    });
+        // Suffix match via pre-built suffix index — O(1) lookup instead of
+        // scanning the entire qualified_name_cache.
+        if let Some(full_names) = self.suffix_cache.get(&uref.reference_name) {
+            for full_name in full_names {
+                if let Some(candidates) = self.qualified_name_cache.get(full_name) {
+                    if let Some(node) = candidates.first() {
+                        return Some(ResolvedRef {
+                            original: uref.clone(),
+                            target_node_id: node.id.clone(),
+                            confidence: 0.95,
+                            resolved_by: "qualified-match".to_string(),
+                        });
+                    }
                 }
             }
         }
