@@ -431,6 +431,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
                 }
 
+                // Warn if .tokensave is not in .gitignore
+                if !is_in_gitignore(&project_path) {
+                    eprintln!(
+                        "\n\x1b[33mWarning: .tokensave is not in .gitignore — \
+                         run `echo .tokensave >> .gitignore` to exclude it from git.\x1b[0m"
+                    );
+                }
+
                 // Version check (5 min cache, always show for status)
                 check_for_update(&mut config, false, true);
             }
@@ -787,6 +795,33 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
     Ok(())
 }
 
+/// Returns `true` if `.tokensave` is already listed in the project's `.gitignore`.
+fn is_in_gitignore(project_path: &Path) -> bool {
+    let gitignore = project_path.join(".gitignore");
+    match std::fs::read_to_string(&gitignore) {
+        Ok(content) => content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
+        }),
+        Err(_) => false,
+    }
+}
+
+/// Appends `.tokensave` to the project's `.gitignore`, creating the file if
+/// needed. Ensures the entry starts on its own line (adds a trailing newline
+/// to existing content if missing).
+fn add_to_gitignore(project_path: &Path) {
+    let gitignore = project_path.join(".gitignore");
+    let mut content = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(".tokensave\n");
+    if let Err(e) = std::fs::write(&gitignore, content) {
+        eprintln!("warning: failed to update .gitignore: {e}");
+    }
+}
+
 /// Initializes a new project (if needed) and runs a full index.
 async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensave::errors::Result<TokenSave> {
     debug_assert!(project_path.is_dir(), "init_and_index: project_path is not a directory");
@@ -796,6 +831,19 @@ async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensa
     } else {
         let cg = TokenSave::init(project_path).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
+        // Offer to add .tokensave to .gitignore if not already there
+        if !is_in_gitignore(project_path) {
+            eprint!("Add .tokensave to .gitignore? [Y/n] ");
+            io::stderr().flush().ok();
+            let mut answer = String::new();
+            if io::stdin().lock().read_line(&mut answer).is_ok() {
+                let answer = answer.trim();
+                if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+                    add_to_gitignore(project_path);
+                    eprintln!("Added .tokensave to .gitignore");
+                }
+            }
+        }
         cg
     };
     cg.add_skip_folders(skip_folders);
