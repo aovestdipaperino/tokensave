@@ -146,7 +146,8 @@ impl Database {
     /// Applies performance-oriented SQLite pragmas.
     async fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
+            "PRAGMA page_size = 8192;
+             PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 120000;
              PRAGMA synchronous = NORMAL;
@@ -158,6 +159,82 @@ impl Database {
         .map_err(|e| TokenSaveError::Database {
             message: format!("failed to apply pragmas: {e}"),
             operation: "apply_pragmas".to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Drops secondary indexes, disables fsync/FK, and clears FTS for fast
+    /// bulk loading. Callers should insert data sorted by PK so the primary
+    /// B-tree gets sequential appends. Call `end_bulk_load` afterwards to
+    /// rebuild indexes in one optimized pass.
+    pub async fn begin_bulk_load(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "PRAGMA synchronous = OFF;
+             PRAGMA foreign_keys = OFF;
+             DROP INDEX IF EXISTS idx_nodes_kind;
+             DROP INDEX IF EXISTS idx_nodes_name;
+             DROP INDEX IF EXISTS idx_nodes_qualified_name;
+             DROP INDEX IF EXISTS idx_nodes_file_path;
+             DROP INDEX IF EXISTS idx_nodes_file_path_start_line;
+             DROP INDEX IF EXISTS idx_edges_source;
+             DROP INDEX IF EXISTS idx_edges_target;
+             DROP INDEX IF EXISTS idx_edges_kind;
+             DROP INDEX IF EXISTS idx_edges_source_kind;
+             DROP INDEX IF EXISTS idx_edges_target_kind;
+             DROP INDEX IF EXISTS idx_edges_unique;
+             DROP INDEX IF EXISTS idx_unresolved_refs_from_node_id;
+             DROP INDEX IF EXISTS idx_unresolved_refs_reference_name;
+             DROP INDEX IF EXISTS idx_unresolved_refs_file_path;
+             DROP TRIGGER IF EXISTS nodes_fts_insert;
+             DROP TRIGGER IF EXISTS nodes_fts_delete;
+             DROP TRIGGER IF EXISTS nodes_fts_update;
+             DELETE FROM nodes_fts;",
+        ).await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to begin bulk load: {e}"),
+            operation: "begin_bulk_load".to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Recreates secondary indexes (benefiting from sorted row order),
+    /// restores FTS triggers and content, and re-enables normal durability.
+    pub async fn end_bulk_load(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+             CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+             CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
+             CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
+             CREATE INDEX IF NOT EXISTS idx_nodes_file_path_start_line ON nodes(file_path, start_line);
+             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
+             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+             CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+             CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
+             CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(source, target, kind, COALESCE(line, -1));
+             CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
+             CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+             CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
+             CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+             END;
+             CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+             END;
+             CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+             END;
+             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+                 SELECT rowid, name, qualified_name, docstring, signature FROM nodes;
+             PRAGMA foreign_keys = ON;
+             PRAGMA synchronous = NORMAL;",
+        ).await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to end bulk load: {e}"),
+            operation: "end_bulk_load".to_string(),
         })?;
         Ok(())
     }

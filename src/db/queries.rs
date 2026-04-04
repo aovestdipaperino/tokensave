@@ -145,61 +145,186 @@ impl Database {
         Ok(())
     }
 
-    /// Inserts or replaces a batch of nodes inside a single transaction.
-    pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
-        let tx = self
-            .conn()
-            .transaction()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin transaction: {e}"),
-                operation: "insert_nodes".to_string(),
-            })?;
+    /// Inserts all nodes, edges, and file records in a single execute_batch call.
+    /// This minimizes transaction overhead by combining everything into one SQL string.
+    pub async fn insert_all(
+        &self,
+        nodes: &[Node],
+        edges: &[Edge],
+        files: &[FileRecord],
+    ) -> Result<()> {
+        let mut sql = String::with_capacity(
+            nodes.len() * 400 + edges.len() * 120 + files.len() * 120
+        );
+        sql.push_str("BEGIN;\n");
 
-        for node in nodes {
-            tx.execute(
-                "INSERT OR REPLACE INTO nodes
-                (id, kind, name, qualified_name, file_path,
-                 start_line, end_line, start_column, end_column,
-                 docstring, signature, visibility, is_async,
-                 branches, loops, returns, max_nesting,
-                 unsafe_blocks, unchecked_calls, assertions, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
-                params![
-                    node.id.as_str(),
-                    node.kind.as_str(),
-                    node.name.as_str(),
-                    node.qualified_name.as_str(),
-                    node.file_path.as_str(),
-                    node.start_line as i64,
-                    node.end_line as i64,
-                    node.start_column as i64,
-                    node.end_column as i64,
-                    opt_str(&node.docstring),
-                    opt_str(&node.signature),
-                    node.visibility.as_str(),
-                    node.is_async as i64,
-                    node.branches as i64,
-                    node.loops as i64,
-                    node.returns as i64,
-                    node.max_nesting as i64,
-                    node.unsafe_blocks as i64,
-                    node.unchecked_calls as i64,
-                    node.assertions as i64,
-                    node.updated_at as i64,
-                ],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert node: {e}"),
-                operation: "insert_nodes".to_string(),
-            })?;
+        // Nodes
+        for chunk in nodes.chunks(200) {
+            sql.push_str(
+                "INSERT OR REPLACE INTO nodes \
+                 (id,kind,name,qualified_name,file_path,\
+                 start_line,end_line,start_column,end_column,\
+                 docstring,signature,visibility,is_async,\
+                 branches,loops,returns,max_nesting,\
+                 unsafe_blocks,unchecked_calls,assertions,updated_at) VALUES "
+            );
+            for (i, node) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &node.id); sql.push(',');
+                push_quoted(&mut sql, node.kind.as_str()); sql.push(',');
+                push_quoted(&mut sql, &node.name); sql.push(',');
+                push_quoted(&mut sql, &node.qualified_name); sql.push(',');
+                push_quoted(&mut sql, &node.file_path); sql.push(',');
+                push_int(&mut sql, node.start_line as i64); sql.push(',');
+                push_int(&mut sql, node.end_line as i64); sql.push(',');
+                push_int(&mut sql, node.start_column as i64); sql.push(',');
+                push_int(&mut sql, node.end_column as i64); sql.push(',');
+                push_opt_quoted(&mut sql, &node.docstring); sql.push(',');
+                push_opt_quoted(&mut sql, &node.signature); sql.push(',');
+                push_quoted(&mut sql, node.visibility.as_str()); sql.push(',');
+                push_int(&mut sql, node.is_async as i64); sql.push(',');
+                push_int(&mut sql, node.branches as i64); sql.push(',');
+                push_int(&mut sql, node.loops as i64); sql.push(',');
+                push_int(&mut sql, node.returns as i64); sql.push(',');
+                push_int(&mut sql, node.max_nesting as i64); sql.push(',');
+                push_int(&mut sql, node.unsafe_blocks as i64); sql.push(',');
+                push_int(&mut sql, node.unchecked_calls as i64); sql.push(',');
+                push_int(&mut sql, node.assertions as i64); sql.push(',');
+                push_int(&mut sql, node.updated_at as i64);
+                sql.push(')');
+            }
+            sql.push_str(";\n");
         }
 
-        tx.commit().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit transaction: {e}"),
-            operation: "insert_nodes".to_string(),
-        })
+        // Edges
+        for chunk in edges.chunks(500) {
+            sql.push_str("INSERT OR IGNORE INTO edges (source,target,kind,line) VALUES ");
+            for (i, edge) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &edge.source); sql.push(',');
+                push_quoted(&mut sql, &edge.target); sql.push(',');
+                push_quoted(&mut sql, edge.kind.as_str()); sql.push(',');
+                match edge.line {
+                    Some(l) => push_int(&mut sql, l as i64),
+                    None => sql.push_str("NULL"),
+                }
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        // Files
+        for chunk in files.chunks(500) {
+            sql.push_str(
+                "INSERT OR REPLACE INTO files \
+                 (path,content_hash,size,modified_at,indexed_at,node_count) VALUES "
+            );
+            for (i, file) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &file.path); sql.push(',');
+                push_quoted(&mut sql, &file.content_hash); sql.push(',');
+                push_int(&mut sql, file.size as i64); sql.push(',');
+                push_int(&mut sql, file.modified_at); sql.push(',');
+                push_int(&mut sql, file.indexed_at); sql.push(',');
+                push_int(&mut sql, file.node_count as i64);
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        sql.push_str("COMMIT;\n");
+
+        self.conn()
+            .execute_batch(&sql)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to bulk insert: {e}"),
+                operation: "insert_all".to_string(),
+            })?;
+        Ok(())
+    }
+
+    /// Inserts or replaces a batch of nodes using raw SQL via execute_batch
+    /// for maximum throughput.
+    pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+
+        let mut sql = String::with_capacity(nodes.len() * 400);
+        sql.push_str("BEGIN;\n");
+
+        for chunk in nodes.chunks(200) {
+            sql.push_str(
+                "INSERT OR REPLACE INTO nodes \
+                 (id,kind,name,qualified_name,file_path,\
+                 start_line,end_line,start_column,end_column,\
+                 docstring,signature,visibility,is_async,\
+                 branches,loops,returns,max_nesting,\
+                 unsafe_blocks,unchecked_calls,assertions,updated_at) VALUES "
+            );
+            for (i, node) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &node.id);
+                sql.push(',');
+                push_quoted(&mut sql, node.kind.as_str());
+                sql.push(',');
+                push_quoted(&mut sql, &node.name);
+                sql.push(',');
+                push_quoted(&mut sql, &node.qualified_name);
+                sql.push(',');
+                push_quoted(&mut sql, &node.file_path);
+                sql.push(',');
+                push_int(&mut sql, node.start_line as i64);
+                sql.push(',');
+                push_int(&mut sql, node.end_line as i64);
+                sql.push(',');
+                push_int(&mut sql, node.start_column as i64);
+                sql.push(',');
+                push_int(&mut sql, node.end_column as i64);
+                sql.push(',');
+                push_opt_quoted(&mut sql, &node.docstring);
+                sql.push(',');
+                push_opt_quoted(&mut sql, &node.signature);
+                sql.push(',');
+                push_quoted(&mut sql, node.visibility.as_str());
+                sql.push(',');
+                push_int(&mut sql, node.is_async as i64);
+                sql.push(',');
+                push_int(&mut sql, node.branches as i64);
+                sql.push(',');
+                push_int(&mut sql, node.loops as i64);
+                sql.push(',');
+                push_int(&mut sql, node.returns as i64);
+                sql.push(',');
+                push_int(&mut sql, node.max_nesting as i64);
+                sql.push(',');
+                push_int(&mut sql, node.unsafe_blocks as i64);
+                sql.push(',');
+                push_int(&mut sql, node.unchecked_calls as i64);
+                sql.push(',');
+                push_int(&mut sql, node.assertions as i64);
+                sql.push(',');
+                push_int(&mut sql, node.updated_at as i64);
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        sql.push_str("COMMIT;\n");
+
+        self.conn()
+            .execute_batch(&sql)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to insert nodes: {e}"),
+                operation: "insert_nodes".to_string(),
+            })?;
+        Ok(())
     }
 
     /// Retrieves a node by its unique ID, returning `None` if not found.
@@ -408,36 +533,43 @@ impl Database {
 
     /// Inserts a batch of edges inside a single transaction.
     pub async fn insert_edges(&self, edges: &[Edge]) -> Result<()> {
-        let tx = self
-            .conn()
-            .transaction()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin transaction: {e}"),
-                operation: "insert_edges".to_string(),
-            })?;
-
-        for edge in edges {
-            tx.execute(
-                "INSERT OR IGNORE INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    edge.source.as_str(),
-                    edge.target.as_str(),
-                    edge.kind.as_str(),
-                    edge.line.map(|l| l as i64)
-                ],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert edge: {e}"),
-                operation: "insert_edges".to_string(),
-            })?;
+        if edges.is_empty() {
+            return Ok(());
         }
 
-        tx.commit().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit transaction: {e}"),
-            operation: "insert_edges".to_string(),
-        })
+        let mut sql = String::with_capacity(edges.len() * 120);
+        sql.push_str("BEGIN;\n");
+
+        for chunk in edges.chunks(500) {
+            sql.push_str("INSERT OR IGNORE INTO edges (source,target,kind,line) VALUES ");
+            for (i, edge) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &edge.source);
+                sql.push(',');
+                push_quoted(&mut sql, &edge.target);
+                sql.push(',');
+                push_quoted(&mut sql, edge.kind.as_str());
+                sql.push(',');
+                match edge.line {
+                    Some(l) => push_int(&mut sql, l as i64),
+                    None => sql.push_str("NULL"),
+                }
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        sql.push_str("COMMIT;\n");
+
+        self.conn()
+            .execute_batch(&sql)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to insert edges: {e}"),
+                operation: "insert_edges".to_string(),
+            })?;
+        Ok(())
     }
 
     /// Returns outgoing edges from a source node, optionally filtered by edge kinds.
@@ -1159,6 +1291,51 @@ impl Database {
 
 impl Database {
     /// Inserts or replaces a file record.
+    /// Batch upserts multiple file records using raw SQL for throughput.
+    pub async fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        let mut sql = String::with_capacity(files.len() * 120);
+        sql.push_str("BEGIN;\n");
+
+        for chunk in files.chunks(500) {
+            sql.push_str(
+                "INSERT OR REPLACE INTO files \
+                 (path,content_hash,size,modified_at,indexed_at,node_count) VALUES "
+            );
+            for (i, file) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &file.path);
+                sql.push(',');
+                push_quoted(&mut sql, &file.content_hash);
+                sql.push(',');
+                push_int(&mut sql, file.size as i64);
+                sql.push(',');
+                push_int(&mut sql, file.modified_at);
+                sql.push(',');
+                push_int(&mut sql, file.indexed_at);
+                sql.push(',');
+                push_int(&mut sql, file.node_count as i64);
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        sql.push_str("COMMIT;\n");
+
+        self.conn()
+            .execute_batch(&sql)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to upsert files: {e}"),
+                operation: "upsert_files".to_string(),
+            })?;
+        Ok(())
+    }
+
     pub async fn upsert_file(&self, file: &FileRecord) -> Result<()> {
         self.conn()
             .execute(
@@ -1274,40 +1451,47 @@ impl Database {
 
     /// Inserts a batch of unresolved references inside a single transaction.
     pub async fn insert_unresolved_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
-        let tx = self
-            .conn()
-            .transaction()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin transaction: {e}"),
-                operation: "insert_unresolved_refs".to_string(),
-            })?;
-
-        for uref in refs {
-            tx.execute(
-                "INSERT INTO unresolved_refs
-                    (from_node_id, reference_name, reference_kind, line, col, file_path)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    uref.from_node_id.as_str(),
-                    uref.reference_name.as_str(),
-                    uref.reference_kind.as_str(),
-                    uref.line as i64,
-                    uref.column as i64,
-                    uref.file_path.as_str(),
-                ],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert unresolved ref: {e}"),
-                operation: "insert_unresolved_refs".to_string(),
-            })?;
+        if refs.is_empty() {
+            return Ok(());
         }
 
-        tx.commit().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit transaction: {e}"),
-            operation: "insert_unresolved_refs".to_string(),
-        })
+        let mut sql = String::with_capacity(refs.len() * 150);
+        sql.push_str("BEGIN;\n");
+
+        for chunk in refs.chunks(500) {
+            sql.push_str(
+                "INSERT INTO unresolved_refs \
+                 (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES "
+            );
+            for (i, uref) in chunk.iter().enumerate() {
+                if i > 0 { sql.push(','); }
+                sql.push('(');
+                push_quoted(&mut sql, &uref.from_node_id);
+                sql.push(',');
+                push_quoted(&mut sql, &uref.reference_name);
+                sql.push(',');
+                push_quoted(&mut sql, uref.reference_kind.as_str());
+                sql.push(',');
+                push_int(&mut sql, uref.line as i64);
+                sql.push(',');
+                push_int(&mut sql, uref.column as i64);
+                sql.push(',');
+                push_quoted(&mut sql, &uref.file_path);
+                sql.push(')');
+            }
+            sql.push_str(";\n");
+        }
+
+        sql.push_str("COMMIT;\n");
+
+        self.conn()
+            .execute_batch(&sql)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to insert unresolved refs: {e}"),
+                operation: "insert_unresolved_refs".to_string(),
+            })?;
+        Ok(())
     }
 
     /// Returns all unresolved references.
@@ -1745,6 +1929,33 @@ fn opt_str(opt: &Option<String>) -> libsql::Value {
         Some(s) => libsql::Value::Text(s.clone()),
         None => libsql::Value::Null,
     }
+}
+
+/// Appends a SQL-safe single-quoted string to `buf`, escaping `'` as `''`.
+fn push_quoted(buf: &mut String, s: &str) {
+    buf.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            buf.push_str("''");
+        } else {
+            buf.push(ch);
+        }
+    }
+    buf.push('\'');
+}
+
+/// Appends a SQL-safe quoted string or NULL for Option<String>.
+fn push_opt_quoted(buf: &mut String, opt: &Option<String>) {
+    match opt {
+        Some(s) => push_quoted(buf, s),
+        None => buf.push_str("NULL"),
+    }
+}
+
+/// Appends an integer literal to the buffer.
+fn push_int(buf: &mut String, val: i64) {
+    use std::fmt::Write;
+    let _ = write!(buf, "{val}");
 }
 
 /// Collects all rows from a `Rows` iterator into a `Vec<T>` using the given

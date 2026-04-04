@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::config::{get_tokensave_dir, is_excluded, load_config, save_config, TokenSaveConfig};
@@ -250,68 +251,104 @@ impl TokenSave {
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         let start = Instant::now();
 
-        // 1. Clear existing data
+        // 1. Clear existing data and enter bulk-load mode
+        let t = Instant::now();
         self.db.clear().await?;
+        self.db.begin_bulk_load().await?;
+        eprintln!("[prof] clear+begin_bulk: {:?}", t.elapsed());
 
-        // 2. Scan for Rust files using walkdir
+        // 2. Scan for source files
+        let t = Instant::now();
         let files = self.scan_files()?;
         let total = files.len();
+        eprintln!("[prof] scan_files({}): {:?}", total, t.elapsed());
 
-        // 3. For each file: read, extract with RustExtractor, store nodes/edges/unresolved_refs
+        // 3. Parallel extraction: read + parse + hash on all cores
+        let t = Instant::now();
+        let project_root = &self.project_root;
+        let registry = &self.registry;
+
+        let extractions: Vec<_> = files
+            .par_iter()
+            .filter_map(|file_path| {
+                let abs_path = project_root.join(file_path);
+                let source = std::fs::read_to_string(&abs_path).ok()?;
+                let extractor = registry.extractor_for_file(file_path)?;
+                let result = extractor.extract(file_path, &source);
+                let hash = sync::content_hash(&source);
+                let size = source.len() as u64;
+                Some((file_path.clone(), result, hash, size))
+            })
+            .collect();
+        eprintln!("[prof] parallel_extract: {:?}", t.elapsed());
+
+        // 4. Collect all data
+        let t = Instant::now();
+        let mut all_nodes = Vec::new();
+        let mut all_edges = Vec::new();
+        let mut all_unresolved = Vec::new();
+        let mut file_records = Vec::new();
         let mut total_nodes = 0;
-        let mut total_edges = 0;
+        let mut total_edges;
 
-        for (idx, file_path) in files.iter().enumerate() {
+        for (idx, (file_path, result, hash, size)) in extractions.iter().enumerate() {
             on_file(idx + 1, total, file_path);
-
-            let abs_path = self.project_root.join(file_path);
-            let source = match std::fs::read_to_string(&abs_path) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            let extractor = match self.registry.extractor_for_file(file_path) {
-                Some(e) => e,
-                None => continue,
-            };
-            let result = extractor.extract(file_path, &source);
-
-            // Store nodes and edges
-            self.db.insert_nodes(&result.nodes).await?;
-            self.db.insert_edges(&result.edges).await?;
-
-            if !result.unresolved_refs.is_empty() {
-                self.db.insert_unresolved_refs(&result.unresolved_refs).await?;
-            }
-
-            // Store file record
-            let file_record = FileRecord {
+            total_nodes += result.nodes.len();
+            all_nodes.extend_from_slice(&result.nodes);
+            all_edges.extend_from_slice(&result.edges);
+            all_unresolved.extend_from_slice(&result.unresolved_refs);
+            file_records.push(FileRecord {
                 path: file_path.clone(),
-                content_hash: sync::content_hash(&source),
-                size: source.len() as u64,
+                content_hash: hash.clone(),
+                size: *size,
                 modified_at: current_timestamp(),
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
-            };
-            self.db.upsert_file(&file_record).await?;
-
-            total_nodes += result.nodes.len();
-            total_edges += result.edges.len();
+            });
         }
 
-        // 4. Resolve references
-        let unresolved = self.db.get_unresolved_refs().await?;
-        if !unresolved.is_empty() {
-            let resolver = ReferenceResolver::new(&self.db).await;
-            let resolution = resolver.resolve_all(&unresolved);
-            let edges = resolver.create_edges(&resolution.resolved);
-            if !edges.is_empty() {
-                self.db.insert_edges(&edges).await?;
-                total_edges += edges.len();
-            }
+        eprintln!("[prof] collect: {:?}", t.elapsed());
+
+        // 5. Resolve references in-memory (parallel) before DB insert
+        let t = Instant::now();
+        if !all_unresolved.is_empty() {
+            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolution = resolver.resolve_all(&all_unresolved);
+            all_edges.extend(resolver.create_edges(&resolution.resolved));
         }
 
+        eprintln!("[prof] resolve_refs: {:?}", t.elapsed());
 
+        // 6. Sort everything by primary/index key order so SQLite B-tree
+        let t = Instant::now();
+        //    construction during CREATE INDEX is sequential, not random.
+        all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+        all_edges.sort_unstable_by(|a, b| {
+            (&a.source, &a.target, a.kind.as_str(), &a.line)
+                .cmp(&(&b.source, &b.target, b.kind.as_str(), &b.line))
+        });
+        all_edges.dedup_by(|a, b| {
+            a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
+        });
+        file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        total_edges = all_edges.len();
+        eprintln!("[prof] sort+dedup: {:?}", t.elapsed());
+
+        // 7. Bulk-insert to DB
+        let t = Instant::now();
+        self.db.insert_nodes(&all_nodes).await?;
+        eprintln!("[prof] insert_nodes({}): {:?}", all_nodes.len(), t.elapsed());
+        let t = Instant::now();
+        self.db.insert_edges(&all_edges).await?;
+        eprintln!("[prof] insert_edges({}): {:?}", all_edges.len(), t.elapsed());
+        let t = Instant::now();
+        self.db.upsert_files(&file_records).await?;
+        eprintln!("[prof] upsert_files({}): {:?}", file_records.len(), t.elapsed());
+
+        // 8. Restore indexes and normal durability
+        let t = Instant::now();
+        self.db.end_bulk_load().await?;
+        eprintln!("[prof] end_bulk_load: {:?}", t.elapsed());
 
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
@@ -351,15 +388,17 @@ impl TokenSave {
         on_progress("scanning files", "");
         let current_files = self.scan_files()?;
 
-        // Compute current hashes
+        // Compute current hashes in parallel
         on_progress("hashing files", "");
-        let mut current_hashes = Vec::new();
-        for path in &current_files {
-            let abs_path = self.project_root.join(path);
-            if let Ok(source) = std::fs::read_to_string(&abs_path) {
-                current_hashes.push((path.clone(), sync::content_hash(&source)));
-            }
-        }
+        let project_root = &self.project_root;
+        let current_hashes: Vec<_> = current_files
+            .par_iter()
+            .filter_map(|path| {
+                let abs_path = project_root.join(path);
+                let source = std::fs::read_to_string(&abs_path).ok()?;
+                Some((path.clone(), sync::content_hash(&source)))
+            })
+            .collect();
 
         on_progress("detecting changes", "");
         let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
@@ -372,26 +411,27 @@ impl TokenSave {
             self.db.delete_file(path).await?;
         }
 
-        // Re-index stale and new files
+        // Re-index stale and new files — extract in parallel, insert sequentially
         let to_index: Vec<String> = stale.iter().chain(new.iter()).cloned().collect();
-        for file_path in &to_index {
+        let registry = &self.registry;
+
+        let sync_extractions: Vec<_> = to_index
+            .par_iter()
+            .filter_map(|file_path| {
+                let abs_path = project_root.join(file_path);
+                let source = std::fs::read_to_string(&abs_path).ok()?;
+                let extractor = registry.extractor_for_file(file_path)?;
+                let result = extractor.extract(file_path, &source);
+                let hash = sync::content_hash(&source);
+                let size = source.len() as u64;
+                Some((file_path.clone(), result, hash, size))
+            })
+            .collect();
+
+        for (file_path, result, hash, size) in &sync_extractions {
             on_progress("syncing", file_path);
 
-            // Delete old data for this file
             self.db.delete_nodes_by_file(file_path).await?;
-
-            let abs_path = self.project_root.join(file_path);
-            let source = match std::fs::read_to_string(&abs_path) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            let extractor = match self.registry.extractor_for_file(file_path) {
-                Some(e) => e,
-                None => continue,
-            };
-            let result = extractor.extract(file_path, &source);
-
             self.db.insert_nodes(&result.nodes).await?;
             self.db.insert_edges(&result.edges).await?;
             if !result.unresolved_refs.is_empty() {
@@ -400,8 +440,8 @@ impl TokenSave {
 
             let file_record = FileRecord {
                 path: file_path.clone(),
-                content_hash: sync::content_hash(&source),
-                size: source.len() as u64,
+                content_hash: hash.clone(),
+                size: *size,
                 modified_at: current_timestamp(),
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,

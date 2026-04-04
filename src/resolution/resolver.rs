@@ -1,6 +1,8 @@
 // Rust guideline compliant 2025-10-17
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::db::Database;
 use crate::types::*;
 
@@ -28,7 +30,11 @@ impl<'a> ReferenceResolver<'a> {
     /// simply be empty.
     pub async fn new(db: &'a Database) -> Self {
         let all_nodes = db.get_all_nodes().await.unwrap_or_default();
+        Self::from_nodes(db, &all_nodes)
+    }
 
+    /// Creates a resolver from pre-loaded nodes, skipping the database roundtrip.
+    pub fn from_nodes(db: &'a Database, all_nodes: &[Node]) -> Self {
         let mut name_cache: HashMap<String, Vec<Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<String, Vec<Node>> = HashMap::new();
 
@@ -40,7 +46,7 @@ impl<'a> ReferenceResolver<'a> {
             qualified_name_cache
                 .entry(node.qualified_name.clone())
                 .or_default()
-                .push(node);
+                .push(node.clone());
         }
 
         Self {
@@ -72,15 +78,20 @@ impl<'a> ReferenceResolver<'a> {
         self.try_exact_name_match(uref)
     }
 
-    /// Resolves a batch of unresolved references, returning a summary of the
-    /// results.
+    /// Resolves a batch of unresolved references in parallel, returning a
+    /// summary of the results.
     pub fn resolve_all(&self, refs: &[UnresolvedRef]) -> ResolutionResult {
         let total = refs.len();
+
+        let results: Vec<_> = refs
+            .par_iter()
+            .map(|uref| (uref, self.resolve_one(uref)))
+            .collect();
+
         let mut resolved = Vec::new();
         let mut unresolved = Vec::new();
-
-        for uref in refs {
-            match self.resolve_one(uref) {
+        for (uref, res) in results {
+            match res {
                 Some(r) => resolved.push(r),
                 None => unresolved.push(uref.clone()),
             }
