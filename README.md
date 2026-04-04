@@ -76,6 +76,26 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
+## What's New in v3.2.1
+
+### 13-26x Faster Indexing
+
+Full index performance has been dramatically improved through rayon parallel extraction, prepared-statement DB writes, suffix-indexed reference resolution, and bulk-load mode with deferred index creation. A 1,782-file codebase now indexes in 1.2s (down from 14.8s). A 28K-file monorepo indexes in 22s (down from 565s).
+
+### .gitignore Integration
+
+When creating a new index, tokensave now asks to add `.tokensave` to `.gitignore`. The `status` command warns if `.tokensave` is not gitignored.
+
+### Direct Schema Creation
+
+New databases get the final schema in one shot instead of running v0-v5 migrations sequentially.
+
+### Daemon Indicator Alignment
+
+The status display now reserves consistent space for the daemon indicator (😈) so flags and text stay aligned whether the daemon is running or not.
+
+---
+
 ## What's New in v3.1.0
 
 ### Edge Deduplication Fix
@@ -976,7 +996,7 @@ Full-index benchmark on a 1,782-file mixed Rust/Java/Scala codebase (57K nodes, 
 | Tool | Time | Speedup |
 |---|---|---|
 | CodeGraph (TypeScript, v0.6.8) | 31.2s | 1x |
-| **tokensave (Rust, v3.1.1)** | **1.2s** | **26x** |
+| **tokensave (Rust, v3.2.1)** | **1.2s** | **26x** |
 
 Key optimizations: rayon parallel extraction, prepared-statement DB writes, suffix-indexed reference resolution, and bulk-load mode with deferred index creation.
 
