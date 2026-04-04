@@ -969,6 +969,17 @@ Large projects take longer on the first full index.
 
 This project is a Rust port of the original [CodeGraph](https://github.com/colbymchenry/codegraph) TypeScript implementation by [@colbymchenry](https://github.com/colbymchenry). The port maintains the same architecture and MCP tool interface while leveraging Rust for performance and native tree-sitter bindings.
 
+### Performance
+
+Full-index benchmark on a 1,782-file mixed Rust/Java/Scala codebase (57K nodes, 103K edges):
+
+| Tool | Time | Speedup |
+|---|---|---|
+| CodeGraph (TypeScript, v0.6.8) | 31.2s | 1x |
+| **tokensave (Rust, v3.1.1)** | **1.2s** | **26x** |
+
+Key optimizations: rayon parallel extraction, prepared-statement DB writes, suffix-indexed reference resolution, and bulk-load mode with deferred index creation.
+
 ---
 
 ## Building
