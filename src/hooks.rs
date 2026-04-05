@@ -11,7 +11,14 @@
 /// Claude to use tokensave MCP tools instead.
 pub fn hook_pre_tool_use() {
     let tool_input = std::env::var("TOOL_INPUT").unwrap_or_default();
+    println!("{}", evaluate_hook_decision(&tool_input));
+}
 
+/// Pure decision logic for the PreToolUse hook.
+///
+/// Takes the raw `TOOL_INPUT` JSON string and returns the JSON decision
+/// string to print to stdout.
+pub fn evaluate_hook_decision(tool_input: &str) -> String {
     let block_msg = serde_json::json!({
         "decision": "block",
         "reason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, \
@@ -23,12 +30,11 @@ pub fn hook_pre_tool_use() {
     });
 
     let parsed: serde_json::Value =
-        serde_json::from_str(&tool_input).unwrap_or_else(|_| serde_json::json!({}));
+        serde_json::from_str(tool_input).unwrap_or_else(|_| serde_json::json!({}));
 
     // Block Explore agents outright
     if parsed.get("subagent_type").and_then(|v| v.as_str()) == Some("Explore") {
-        println!("{}", block_msg);
-        return;
+        return block_msg.to_string();
     }
 
     // Check if the prompt is exploration/research work that tokensave can handle
@@ -41,10 +47,9 @@ pub fn hook_pre_tool_use() {
             "symbol relat", "symbol lookup", "who calls", "callers of", "callees of",
         ];
         if exploration_patterns.iter().any(|pat| lower.contains(pat)) {
-            println!("{}", block_msg);
-            return;
+            return block_msg.to_string();
         }
     }
 
-    println!(r#"{{"decision": "allow"}}"#);
+    r#"{"decision": "allow"}"#.to_string()
 }

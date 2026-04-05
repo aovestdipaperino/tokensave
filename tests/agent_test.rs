@@ -1173,3 +1173,303 @@ fn test_tool_perms_match_tool_names() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 11. restore_config_backup
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_restore_config_backup_restores_content() {
+    let dir = TempDir::new().unwrap();
+    let original_path = dir.path().join("config.json");
+    let backup_path = dir.path().join("config.json.bak");
+
+    // Create original and backup
+    std::fs::write(&original_path, r#"{"version": 1}"#).unwrap();
+    std::fs::write(&backup_path, r#"{"version": 1}"#).unwrap();
+
+    // Corrupt the original
+    std::fs::write(&original_path, "CORRUPTED").unwrap();
+
+    // Restore from backup
+    restore_config_backup(&original_path, &backup_path);
+
+    let restored = std::fs::read_to_string(&original_path).unwrap();
+    assert_eq!(
+        restored,
+        r#"{"version": 1}"#,
+        "restored content should match the backup"
+    );
+}
+
+#[test]
+fn test_restore_config_backup_to_missing_original() {
+    let dir = TempDir::new().unwrap();
+    let original_path = dir.path().join("config.json");
+    let backup_path = dir.path().join("config.json.bak");
+
+    // Only create backup, not original
+    std::fs::write(&backup_path, r#"{"saved": true}"#).unwrap();
+
+    restore_config_backup(&original_path, &backup_path);
+
+    assert!(original_path.exists(), "original should be created from backup");
+    let content = std::fs::read_to_string(&original_path).unwrap();
+    assert_eq!(content, r#"{"saved": true}"#);
+}
+
+#[test]
+fn test_restore_config_backup_missing_backup_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+    let original_path = dir.path().join("config.json");
+    let backup_path = dir.path().join("config.json.bak");
+
+    std::fs::write(&original_path, "original").unwrap();
+
+    // Restore with a nonexistent backup — should not panic
+    restore_config_backup(&original_path, &backup_path);
+
+    // Original should remain untouched since backup failed
+    let content = std::fs::read_to_string(&original_path).unwrap();
+    assert_eq!(content, "original");
+}
+
+// ---------------------------------------------------------------------------
+// 12. which_tokensave
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_which_tokensave_returns_some_or_none() {
+    // which_tokensave checks current_exe and PATH — we just verify it
+    // doesn't panic and returns a sensible result.
+    let result = which_tokensave();
+    // In a test environment, the current exe is the test runner, not tokensave,
+    // so it may return None (unless tokensave is on PATH). Either way, no panic.
+    if let Some(ref path) = result {
+        assert!(!path.is_empty(), "path should not be empty if Some");
+    }
+    // Test passes regardless of Some or None — just ensures no panic.
+}
+
+// ---------------------------------------------------------------------------
+// 13. home_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_home_dir_returns_some() {
+    let result = home_dir();
+    assert!(
+        result.is_some(),
+        "home_dir should return Some on most systems"
+    );
+    let home = result.unwrap();
+    assert!(home.is_absolute(), "home dir should be an absolute path");
+}
+
+// ---------------------------------------------------------------------------
+// 14. migrate_installed_agents
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_migrate_installed_agents_skips_when_already_populated() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut config = tokensave::user_config::UserConfig::default();
+    config.installed_agents = vec!["claude".to_string()];
+
+    // Should return immediately since installed_agents is non-empty
+    migrate_installed_agents(home, &mut config);
+
+    // The existing list should be unchanged
+    assert_eq!(config.installed_agents, vec!["claude".to_string()]);
+}
+
+#[test]
+fn test_migrate_installed_agents_detects_installed_agents() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Install copilot so it can be detected
+    let ctx = make_install_ctx(home);
+    CopilotIntegration.install(&ctx).unwrap();
+
+    let mut config = tokensave::user_config::UserConfig::default();
+    assert!(config.installed_agents.is_empty());
+
+    // migrate will scan and detect copilot is installed
+    // Note: save() will try to write to ~/.tokensave/config.toml which may fail
+    // in CI, but the function still populates installed_agents in memory.
+    migrate_installed_agents(home, &mut config);
+
+    assert!(
+        config.installed_agents.contains(&"copilot".to_string()),
+        "copilot should be detected, got: {:?}",
+        config.installed_agents
+    );
+}
+
+#[test]
+fn test_migrate_installed_agents_empty_home_no_change() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut config = tokensave::user_config::UserConfig::default();
+
+    migrate_installed_agents(home, &mut config);
+
+    // No agents installed in empty home, list should remain empty
+    assert!(
+        config.installed_agents.is_empty(),
+        "installed_agents should remain empty when no agents detected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 15. pick_integrations_interactive (no-agent-detected error path)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pick_integrations_interactive_no_agents_detected() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Empty home — no agents detected
+    let result = pick_integrations_interactive(home, &[]);
+    assert!(
+        result.is_err(),
+        "pick_integrations_interactive should error when no agents detected"
+    );
+
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("No supported agents detected"),
+        "error should mention no agents detected, got: {err_msg}"
+    );
+}
+
+#[test]
+fn test_pick_integrations_interactive_single_uninstalled_agent() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Create only the .copilot dir so exactly one agent is detected
+    std::fs::create_dir_all(home.join(".copilot")).unwrap();
+
+    // Single detected agent that is NOT installed => fast path returns it directly
+    let result = pick_integrations_interactive(home, &[]);
+    assert!(result.is_ok(), "should succeed with single uninstalled agent");
+    let (to_install, to_uninstall) = result.unwrap();
+    assert_eq!(to_install, vec!["copilot".to_string()]);
+    assert!(to_uninstall.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 16. vscode_data_dir / copilot_cli_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_vscode_data_dir_is_under_home() {
+    let home = Path::new("/fake/home");
+    let dir = tokensave::agents::vscode_data_dir(home);
+    assert!(
+        dir.starts_with("/fake/home"),
+        "vscode_data_dir should be under home: {}",
+        dir.display()
+    );
+}
+
+#[test]
+fn test_copilot_cli_dir_is_under_home() {
+    let home = Path::new("/fake/home");
+    let dir = tokensave::agents::copilot_cli_dir(home);
+    assert_eq!(
+        dir,
+        Path::new("/fake/home/.copilot"),
+        "copilot_cli_dir should be home/.copilot"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 17. parse_jsonc edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_jsonc_empty_string() {
+    let val = parse_jsonc("");
+    assert!(val.is_object());
+    assert!(val.as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_parse_jsonc_only_comments() {
+    let input = "// just a comment\n/* block */\n";
+    let val = parse_jsonc(input);
+    assert!(val.is_object());
+    assert!(val.as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_parse_jsonc_nested_comments() {
+    let input = r#"{
+        "a": "hello // not a comment",
+        /* this is a real comment */
+        "b": true
+    }"#;
+    let val = parse_jsonc(input);
+    assert_eq!(val["a"].as_str().unwrap(), "hello // not a comment");
+    assert_eq!(val["b"], true);
+}
+
+#[test]
+fn test_parse_jsonc_trailing_comma_in_object() {
+    let input = r#"{"a": 1, "b": 2,}"#;
+    let val = parse_jsonc(input);
+    assert_eq!(val["a"], 1);
+    assert_eq!(val["b"], 2);
+}
+
+#[test]
+fn test_parse_jsonc_trailing_comma_in_array() {
+    let input = r#"{"arr": [1, 2, 3,]}"#;
+    let val = parse_jsonc(input);
+    let arr = val["arr"].as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// 18. backup + safe_write round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_backup_and_safe_write_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("roundtrip.json");
+
+    // Create initial file
+    let initial = serde_json::json!({"name": "tokensave", "version": 1});
+    safe_write_json_file(&path, &initial, None).unwrap();
+
+    // Create backup
+    let backup = backup_config_file(&path).unwrap();
+    assert!(backup.is_some());
+    let backup_path = backup.unwrap();
+
+    // Overwrite with new content
+    let updated = serde_json::json!({"name": "tokensave", "version": 2});
+    safe_write_json_file(&path, &updated, Some(&backup_path)).unwrap();
+
+    // Verify new content
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(content["version"], 2);
+
+    // Verify backup still has old content
+    let backup_content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+    assert_eq!(backup_content["version"], 1);
+
+    // Restore from backup
+    restore_config_backup(&path, &backup_path);
+    let restored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(restored["version"], 1);
+}

@@ -1304,3 +1304,366 @@ async fn test_insert_unresolved_refs_empty() {
         .await
         .expect("insert_unresolved_refs with empty slice should succeed");
 }
+
+// -------------------------------------------------------------------------
+// search_nodes — FTS ranking order
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_search_nodes_ranking_order() {
+    let (db, _dir) = setup_db().await;
+
+    // Node whose name exactly contains the query term should rank higher
+    let mut exact_match = sample_node("sr-1", "process_data", "src/lib.rs");
+    exact_match.qualified_name = "crate::process_data".to_string();
+    exact_match.signature = Some("fn process_data()".to_string());
+
+    // Node with partial match in qualified_name only
+    let mut partial_match = sample_node("sr-2", "helper", "src/lib.rs");
+    partial_match.qualified_name = "crate::data_module::helper".to_string();
+    partial_match.signature = Some("fn helper()".to_string());
+
+    // Node with no match at all
+    let mut no_match = sample_node("sr-3", "unrelated", "src/lib.rs");
+    no_match.qualified_name = "crate::unrelated".to_string();
+    no_match.docstring = None;
+
+    db.insert_nodes(&[exact_match, partial_match, no_match])
+        .await
+        .expect("insert_nodes failed");
+
+    let results = db
+        .search_nodes("process_data", 10)
+        .await
+        .expect("search_nodes failed");
+
+    // The exact name match should appear first (highest score)
+    assert!(!results.is_empty());
+    assert_eq!(results[0].node.id, "sr-1");
+    // Score should be positive
+    assert!(results[0].score > 0.0, "score should be positive");
+}
+
+// -------------------------------------------------------------------------
+// insert_all — verify all data via get_all_*
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_insert_all_comprehensive() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("ia-1", "alpha", "src/a.rs"),
+        sample_node("ia-2", "beta", "src/a.rs"),
+        sample_node("ia-3", "gamma", "src/b.rs"),
+        sample_node("ia-4", "delta", "src/c.rs"),
+    ];
+
+    let edges = vec![
+        sample_edge("ia-1", "ia-2", EdgeKind::Calls),
+        sample_edge("ia-2", "ia-3", EdgeKind::Uses),
+        sample_edge("ia-3", "ia-4", EdgeKind::Contains),
+    ];
+
+    let files = vec![
+        sample_file("src/a.rs"),
+        sample_file("src/b.rs"),
+        sample_file("src/c.rs"),
+    ];
+
+    db.insert_all(&nodes, &edges, &files)
+        .await
+        .expect("insert_all failed");
+
+    // Verify nodes
+    let all_nodes = db.get_all_nodes().await.expect("get_all_nodes failed");
+    assert_eq!(all_nodes.len(), 4);
+    let node_ids: Vec<&str> = all_nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(node_ids.contains(&"ia-1"));
+    assert!(node_ids.contains(&"ia-4"));
+
+    // Verify edges
+    let all_edges = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all_edges.len(), 3);
+    let edge_pairs: Vec<(&str, &str)> = all_edges
+        .iter()
+        .map(|e| (e.source.as_str(), e.target.as_str()))
+        .collect();
+    assert!(edge_pairs.contains(&("ia-1", "ia-2")));
+    assert!(edge_pairs.contains(&("ia-3", "ia-4")));
+
+    // Verify files
+    let all_files = db.get_all_files().await.expect("get_all_files failed");
+    assert_eq!(all_files.len(), 3);
+    let file_paths: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+    assert!(file_paths.contains(&"src/a.rs"));
+    assert!(file_paths.contains(&"src/c.rs"));
+
+    // Verify individual node retrieval
+    let node = db
+        .get_node_by_id("ia-2")
+        .await
+        .expect("get_node_by_id failed")
+        .expect("node should exist");
+    assert_eq!(node.name, "beta");
+}
+
+// -------------------------------------------------------------------------
+// get_nodes_by_kind — multiple kinds in same file
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_nodes_by_kind_same_file_multiple_kinds() {
+    let (db, _dir) = setup_db().await;
+
+    let mut func = sample_node("kmf-1", "func_a", "src/mixed.rs");
+    func.kind = NodeKind::Function;
+
+    let mut strct = sample_node("kmf-2", "StructA", "src/mixed.rs");
+    strct.kind = NodeKind::Struct;
+
+    let mut method = sample_node("kmf-3", "method_a", "src/mixed.rs");
+    method.kind = NodeKind::Method;
+
+    let mut trait_node = sample_node("kmf-4", "TraitA", "src/mixed.rs");
+    trait_node.kind = NodeKind::Trait;
+
+    let mut enum_node = sample_node("kmf-5", "EnumA", "src/mixed.rs");
+    enum_node.kind = NodeKind::Enum;
+
+    db.insert_nodes(&[func, strct, method, trait_node, enum_node])
+        .await
+        .expect("insert_nodes failed");
+
+    // Verify each kind is returned correctly
+    let functions = db.get_nodes_by_kind(NodeKind::Function).await.unwrap();
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions[0].name, "func_a");
+
+    let structs = db.get_nodes_by_kind(NodeKind::Struct).await.unwrap();
+    assert_eq!(structs.len(), 1);
+    assert_eq!(structs[0].name, "StructA");
+
+    let traits = db.get_nodes_by_kind(NodeKind::Trait).await.unwrap();
+    assert_eq!(traits.len(), 1);
+    assert_eq!(traits[0].name, "TraitA");
+
+    let enums = db.get_nodes_by_kind(NodeKind::Enum).await.unwrap();
+    assert_eq!(enums.len(), 1);
+    assert_eq!(enums[0].name, "EnumA");
+
+    // All in same file
+    let all = db.get_nodes_by_file("src/mixed.rs").await.unwrap();
+    assert_eq!(all.len(), 5);
+}
+
+// -------------------------------------------------------------------------
+// get_complexity_ranked — verify ranking by branches/max_nesting
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_complexity_ranked_by_branches_and_nesting() {
+    let (db, _dir) = setup_db().await;
+
+    // High complexity: many branches + deep nesting + large body
+    let mut complex = sample_node("cxb-1", "complex_fn", "src/lib.rs");
+    complex.kind = NodeKind::Function;
+    complex.start_line = 1;
+    complex.end_line = 100;
+    complex.branches = 15;
+    complex.max_nesting = 5;
+    complex.loops = 3;
+
+    // Medium complexity
+    let mut medium = sample_node("cxb-2", "medium_fn", "src/lib.rs");
+    medium.kind = NodeKind::Function;
+    medium.start_line = 200;
+    medium.end_line = 230;
+    medium.branches = 5;
+    medium.max_nesting = 2;
+    medium.loops = 1;
+
+    // Simple: no branching
+    let mut simple = sample_node("cxb-3", "simple_fn", "src/lib.rs");
+    simple.kind = NodeKind::Function;
+    simple.start_line = 300;
+    simple.end_line = 305;
+    simple.branches = 0;
+    simple.max_nesting = 0;
+
+    db.insert_nodes(&[complex, medium, simple])
+        .await
+        .expect("insert_nodes failed");
+
+    let ranked = db
+        .get_complexity_ranked(None, 10)
+        .await
+        .expect("get_complexity_ranked failed");
+
+    assert_eq!(ranked.len(), 3);
+    // Highest score first (100 lines > 31 lines > 6 lines, plus fan_out/fan_in = 0)
+    assert_eq!(ranked[0].0.id, "cxb-1");
+    assert_eq!(ranked[0].1, 100); // lines
+    assert_eq!(ranked[1].0.id, "cxb-2");
+    assert_eq!(ranked[2].0.id, "cxb-3");
+}
+
+// -------------------------------------------------------------------------
+// get_god_classes — varying method/field counts
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_god_classes_multiple_classes() {
+    let (db, _dir) = setup_db().await;
+
+    // Big class with many members
+    let mut big_class = sample_node("gcm-big", "BigClass", "src/lib.rs");
+    big_class.kind = NodeKind::Class;
+
+    let mut m1 = sample_node("gcm-m1", "m1", "src/lib.rs");
+    m1.kind = NodeKind::Method;
+    let mut m2 = sample_node("gcm-m2", "m2", "src/lib.rs");
+    m2.kind = NodeKind::Method;
+    let mut m3 = sample_node("gcm-m3", "m3", "src/lib.rs");
+    m3.kind = NodeKind::Method;
+    let mut f1 = sample_node("gcm-f1", "field1", "src/lib.rs");
+    f1.kind = NodeKind::Field;
+    let mut f2 = sample_node("gcm-f2", "field2", "src/lib.rs");
+    f2.kind = NodeKind::Field;
+
+    // Small class with one member
+    let mut small_class = sample_node("gcm-small", "SmallClass", "src/lib.rs");
+    small_class.kind = NodeKind::Struct;
+
+    let mut sm1 = sample_node("gcm-sm1", "sm_method", "src/lib.rs");
+    sm1.kind = NodeKind::Method;
+
+    db.insert_nodes(&[big_class, m1, m2, m3, f1, f2, small_class, sm1])
+        .await
+        .expect("insert_nodes failed");
+
+    let edges = vec![
+        Edge { source: "gcm-big".into(), target: "gcm-m1".into(), kind: EdgeKind::Contains, line: None },
+        Edge { source: "gcm-big".into(), target: "gcm-m2".into(), kind: EdgeKind::Contains, line: None },
+        Edge { source: "gcm-big".into(), target: "gcm-m3".into(), kind: EdgeKind::Contains, line: None },
+        Edge { source: "gcm-big".into(), target: "gcm-f1".into(), kind: EdgeKind::Contains, line: None },
+        Edge { source: "gcm-big".into(), target: "gcm-f2".into(), kind: EdgeKind::Contains, line: None },
+        Edge { source: "gcm-small".into(), target: "gcm-sm1".into(), kind: EdgeKind::Contains, line: None },
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let god = db.get_god_classes(10).await.expect("get_god_classes failed");
+
+    // BigClass should be first (5 total), SmallClass second (1 total)
+    assert_eq!(god.len(), 2);
+    assert_eq!(god[0].0.id, "gcm-big");
+    assert_eq!(god[0].0.name, "BigClass");
+    assert_eq!(god[0].1, 3); // methods
+    assert_eq!(god[0].2, 2); // fields
+    assert_eq!(god[0].3, 5); // total
+
+    assert_eq!(god[1].0.id, "gcm-small");
+    assert_eq!(god[1].1, 1); // methods
+    assert_eq!(god[1].2, 0); // fields
+    assert_eq!(god[1].3, 1); // total
+}
+
+// -------------------------------------------------------------------------
+// Edge insertion with line: None and line: Some(n)
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_edge_line_none_and_some() {
+    let (db, _dir) = setup_db().await;
+
+    let n1 = sample_node("eln-1", "f1", "src/lib.rs");
+    let n2 = sample_node("eln-2", "f2", "src/lib.rs");
+    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+
+    // Insert edge with line = None
+    let edge_no_line = Edge {
+        source: "eln-1".to_string(),
+        target: "eln-2".to_string(),
+        kind: EdgeKind::Calls,
+        line: None,
+    };
+    db.insert_edge(&edge_no_line).await.expect("insert_edge failed");
+
+    // Insert edge with line = Some(42)
+    let edge_with_line = Edge {
+        source: "eln-1".to_string(),
+        target: "eln-2".to_string(),
+        kind: EdgeKind::Calls,
+        line: Some(42),
+    };
+    db.insert_edge(&edge_with_line).await.expect("insert_edge failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    // Both should exist (unique constraint includes line)
+    assert_eq!(all.len(), 2);
+
+    let lines: Vec<Option<u32>> = all.iter().map(|e| e.line).collect();
+    assert!(lines.contains(&None));
+    assert!(lines.contains(&Some(42)));
+}
+
+#[tokio::test]
+async fn test_edge_unique_constraint_dedup() {
+    let (db, _dir) = setup_db().await;
+
+    let n1 = sample_node("euc-1", "f1", "src/lib.rs");
+    let n2 = sample_node("euc-2", "f2", "src/lib.rs");
+    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+
+    // Insert the exact same edge twice — should be deduplicated by INSERT OR IGNORE
+    let edge = Edge {
+        source: "euc-1".to_string(),
+        target: "euc-2".to_string(),
+        kind: EdgeKind::Calls,
+        line: Some(10),
+    };
+    db.insert_edge(&edge).await.expect("insert_edge failed");
+    db.insert_edge(&edge).await.expect("second insert should not fail");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1, "duplicate edge should be ignored");
+}
+
+// -------------------------------------------------------------------------
+// get_internal_edges — larger set
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_internal_edges_larger_set() {
+    let (db, _dir) = setup_db().await;
+
+    // Create 10 nodes
+    let nodes: Vec<Node> = (0..10)
+        .map(|i| sample_node(&format!("iel-{i}"), &format!("fn_{i}"), "src/lib.rs"))
+        .collect();
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    // Create a chain of calls: 0->1->2->...->9, plus some edges to nodes outside subset
+    let mut edges = Vec::new();
+    for i in 0..9 {
+        edges.push(sample_edge(
+            &format!("iel-{i}"),
+            &format!("iel-{}", i + 1),
+            EdgeKind::Calls,
+        ));
+    }
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    // Subset: nodes 0-4 (5 nodes) — should have 4 internal edges (0->1, 1->2, 2->3, 3->4)
+    let subset: Vec<String> = (0..5).map(|i| format!("iel-{i}")).collect();
+    let internal = db
+        .get_internal_edges(&subset)
+        .await
+        .expect("get_internal_edges failed");
+
+    assert_eq!(internal.len(), 4);
+
+    // Edge 4->5 should NOT be in internal because 5 is not in subset
+    let has_external = internal.iter().any(|e| e.target == "iel-5");
+    assert!(!has_external, "edge to node outside subset should be excluded");
+}

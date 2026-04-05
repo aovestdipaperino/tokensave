@@ -1005,3 +1005,263 @@ async fn test_port_order_missing_source_dir() {
     let result = handle_tool_call(&cg, "tokensave_port_order", json!({}), None).await;
     assert!(result.is_err(), "port_order without source_dir should error");
 }
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_changelog with a real git repo
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_changelog_with_real_git() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // Initialize git repo and make a first commit
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(project)
+        .output()
+        .expect("git init failed");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+
+    fs::write(project.join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+
+    // Make a second commit with changes
+    fs::write(
+        project.join("src/lib.rs"),
+        "pub fn original() {}\npub fn added() {}\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "add function"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_changelog",
+        json!({"from_ref": "HEAD~1", "to_ref": "HEAD"}),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    // Should not report "git diff failed" since it's a real git repo
+    assert!(
+        !text.contains("git diff failed"),
+        "changelog in git repo should not fail, got: {}",
+        text,
+    );
+    assert!(
+        text.contains("changed_file_count") || text.contains("lib.rs"),
+        "changelog should mention changed files, got: {}",
+        text,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_distribution with path prefix filter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_distribution_with_path_filter() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_distribution",
+        json!({"path": "src/"}),
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(text.contains("per_file"), "default mode should be per_file");
+    // Should only contain src/ files, not tests/
+    assert!(
+        !text.contains("tests/test_utils"),
+        "path filter should exclude files outside 'src/'",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_files — grouped format
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_files_grouped_format() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"format": "grouped"}),
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(!text.is_empty());
+    // Grouped format shows directory headers like "src/ (N files)"
+    assert!(
+        text.contains("indexed files"),
+        "grouped format should have 'indexed files' header"
+    );
+    assert!(
+        text.contains("files)"),
+        "grouped format should show file counts per directory"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_dead_code with custom kinds parameter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dead_code_custom_kinds() {
+    let (cg, _dir) = setup_project().await;
+    // Ask only for struct dead code
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dead_code",
+        json!({"kinds": ["struct"]}),
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(text.contains("dead_code_count"), "should have dead_code_count key");
+    // Parse and verify any returned items are structs
+    let parsed: Value = serde_json::from_str(text).unwrap_or(json!({}));
+    if let Some(items) = parsed["dead_code"].as_array() {
+        for item in items {
+            assert_eq!(
+                item["kind"].as_str().unwrap_or(""),
+                "struct",
+                "dead code items should be structs when kinds=['struct']"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_affected with custom filter glob
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_affected_with_custom_filter() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_affected",
+        json!({"files": ["src/utils.rs"], "filter": "**/*test*"}),
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(text.contains("affected_tests"), "should have affected_tests key");
+    assert!(text.contains("count"), "should have count key");
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_complexity — verify response structure
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_complexity_response_fields() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_complexity", json!({}), None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert!(parsed.get("ranking").is_some(), "should have ranking key");
+    assert!(parsed.get("formula").is_some(), "should have formula key");
+    // Check ranking items have expected fields
+    if let Some(items) = parsed["ranking"].as_array() {
+        if let Some(first) = items.first() {
+            assert!(
+                first.get("cyclomatic_complexity").is_some(),
+                "ranking item should have cyclomatic_complexity"
+            );
+            assert!(
+                first.get("branches").is_some(),
+                "ranking item should have branches"
+            );
+            assert!(
+                first.get("max_nesting").is_some(),
+                "ranking item should have max_nesting"
+            );
+            assert!(
+                first.get("fan_out").is_some(),
+                "ranking item should have fan_out"
+            );
+            assert!(
+                first.get("score").is_some(),
+                "ranking item should have score"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extra: tokensave_doc_coverage — verify response structure
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_doc_coverage_response_structure() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_doc_coverage", json!({}), None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("total_undocumented").is_some(),
+        "should have total_undocumented"
+    );
+    assert!(
+        parsed.get("file_count").is_some(),
+        "should have file_count"
+    );
+    assert!(
+        parsed.get("files").is_some(),
+        "should have files array"
+    );
+    // If there are files, check their structure
+    if let Some(files) = parsed["files"].as_array() {
+        if let Some(first) = files.first() {
+            assert!(first.get("file").is_some(), "file entry should have 'file'");
+            assert!(first.get("count").is_some(), "file entry should have 'count'");
+            assert!(first.get("symbols").is_some(), "file entry should have 'symbols'");
+        }
+    }
+}

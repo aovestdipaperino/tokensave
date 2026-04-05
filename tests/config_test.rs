@@ -64,3 +64,90 @@ fn test_legacy_config_with_include_field_still_loads() {
     assert_eq!(loaded.version, 1);
     assert!(loaded.exclude.contains(&"target/**".to_string()));
 }
+
+// ── is_in_gitignore ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_is_in_gitignore_present() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), ".tokensave\n").unwrap();
+    assert!(is_in_gitignore(dir.path()));
+}
+
+#[test]
+fn test_is_in_gitignore_with_slash() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), ".tokensave/\n").unwrap();
+    assert!(is_in_gitignore(dir.path()));
+}
+
+#[test]
+fn test_is_in_gitignore_with_leading_slash() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "/.tokensave\n").unwrap();
+    assert!(is_in_gitignore(dir.path()));
+}
+
+#[test]
+fn test_is_in_gitignore_absent() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target/\n*.o\n").unwrap();
+    assert!(!is_in_gitignore(dir.path()));
+}
+
+#[test]
+fn test_is_in_gitignore_no_file() {
+    let dir = TempDir::new().unwrap();
+    assert!(!is_in_gitignore(dir.path()));
+}
+
+#[test]
+fn test_is_in_gitignore_among_other_entries() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target/\n.tokensave\n*.o\n").unwrap();
+    assert!(is_in_gitignore(dir.path()));
+}
+
+// ── add_to_gitignore ────────────────────────────────────────────────────────
+
+#[test]
+fn test_add_to_gitignore_creates_file() {
+    let dir = TempDir::new().unwrap();
+    add_to_gitignore(dir.path());
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains(".tokensave"));
+    assert!(content.ends_with('\n'));
+}
+
+#[test]
+fn test_add_to_gitignore_appends() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+    add_to_gitignore(dir.path());
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains("target/"));
+    assert!(content.contains(".tokensave"));
+}
+
+#[test]
+fn test_add_to_gitignore_adds_newline_if_missing() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "target/").unwrap();
+    add_to_gitignore(dir.path());
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains("target/\n.tokensave\n"));
+}
+
+// ── resolve_path ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_resolve_path_with_value() {
+    let result = resolve_path(Some("/tmp/myproject".to_string()));
+    assert_eq!(result, std::path::PathBuf::from("/tmp/myproject"));
+}
+
+#[test]
+fn test_resolve_path_none_uses_cwd() {
+    let result = resolve_path(None);
+    assert!(!result.as_os_str().is_empty());
+}
