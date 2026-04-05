@@ -61,3 +61,98 @@ fn is_newer_minor_version_beta() {
     assert!(tokensave::cloud::is_newer_minor_version("3.2.0-beta.1", "3.3.0-beta.1"));
     assert!(!tokensave::cloud::is_newer_minor_version("3.2.0-beta.1", "3.2.0-beta.2"));
 }
+
+#[test]
+fn is_newer_version_same_version() {
+    assert!(!tokensave::cloud::is_newer_version("3.2.1", "3.2.1"));
+}
+
+#[test]
+fn is_newer_version_all_components() {
+    // Latest is newer in each component
+    assert!(tokensave::cloud::is_newer_version("3.2.1", "3.3.0"));
+    assert!(tokensave::cloud::is_newer_version("3.2.1", "4.0.0"));
+    assert!(tokensave::cloud::is_newer_version("3.2.1", "3.2.2"));
+    // Latest is older
+    assert!(!tokensave::cloud::is_newer_version("3.3.0", "3.2.1"));
+}
+
+#[test]
+fn is_newer_version_cross_channel_blocked() {
+    // Beta vs stable (cross-channel = false)
+    assert!(!tokensave::cloud::is_newer_version("3.2.1", "3.3.0-beta.1"));
+    assert!(!tokensave::cloud::is_newer_version("3.2.1-beta.1", "3.3.0"));
+}
+
+#[test]
+fn is_newer_version_beta_ordering() {
+    assert!(tokensave::cloud::is_newer_version("3.2.1-beta.1", "3.2.1-beta.2"));
+    assert!(!tokensave::cloud::is_newer_version("3.2.1-beta.2", "3.2.1-beta.1"));
+}
+
+#[test]
+fn is_newer_version_invalid_versions() {
+    assert!(!tokensave::cloud::is_newer_version("invalid", "3.2.1"));
+    assert!(!tokensave::cloud::is_newer_version("3.2.1", "invalid"));
+}
+
+#[test]
+fn is_newer_minor_version_patch_only() {
+    // Patch-only bump returns false
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.1", "3.2.2"));
+}
+
+#[test]
+fn is_newer_minor_version_minor_bump() {
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.1", "3.3.0"));
+}
+
+#[test]
+fn is_newer_minor_version_major_bump() {
+    assert!(tokensave::cloud::is_newer_minor_version("3.2.1", "4.0.0"));
+}
+
+#[test]
+fn is_newer_minor_version_same() {
+    assert!(!tokensave::cloud::is_newer_minor_version("3.2.1", "3.2.1"));
+}
+
+#[test]
+fn is_beta_returns_bool() {
+    // Just verify it returns a bool and doesn't panic
+    let _ = tokensave::cloud::is_beta();
+}
+
+#[test]
+fn upgrade_command_cargo() {
+    use tokensave::cloud::{upgrade_command, InstallMethod};
+    let cmd = upgrade_command(&InstallMethod::Cargo);
+    assert!(cmd.contains("cargo install"));
+}
+
+#[test]
+fn upgrade_command_brew() {
+    use tokensave::cloud::{upgrade_command, InstallMethod};
+    let cmd = upgrade_command(&InstallMethod::Brew);
+    assert!(cmd.contains("brew"));
+}
+
+#[test]
+fn upgrade_command_scoop() {
+    use tokensave::cloud::{upgrade_command, InstallMethod};
+    let cmd = upgrade_command(&InstallMethod::Scoop);
+    assert!(cmd.contains("scoop"));
+}
+
+#[test]
+fn upgrade_command_unknown() {
+    use tokensave::cloud::{upgrade_command, InstallMethod};
+    let cmd = upgrade_command(&InstallMethod::Unknown);
+    assert!(cmd.contains("cargo install"));
+}
+
+#[test]
+fn detect_install_method_no_panic() {
+    // Just verify it returns without panic
+    let _ = tokensave::cloud::detect_install_method();
+}

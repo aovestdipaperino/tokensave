@@ -27,6 +27,7 @@ pub mod errors;
 pub mod extraction;
 pub mod global_db;
 pub mod graph;
+pub mod hooks;
 pub mod mcp;
 pub mod resolution;
 pub mod sync;

@@ -149,6 +149,44 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
     Ok(())
 }
 
+/// Returns `true` if `.tokensave` is already listed in the project's `.gitignore`.
+pub fn is_in_gitignore(project_path: &Path) -> bool {
+    let gitignore = project_path.join(".gitignore");
+    match fs::read_to_string(&gitignore) {
+        Ok(content) => content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
+        }),
+        Err(_) => false,
+    }
+}
+
+/// Appends `.tokensave` to the project's `.gitignore`, creating the file if
+/// needed. Ensures the entry starts on its own line (adds a trailing newline
+/// to existing content if missing).
+pub fn add_to_gitignore(project_path: &Path) {
+    let gitignore = project_path.join(".gitignore");
+    let mut content = fs::read_to_string(&gitignore).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(".tokensave\n");
+    if let Err(e) = fs::write(&gitignore, content) {
+        eprintln!("warning: failed to update .gitignore: {e}");
+    }
+}
+
+/// Resolves a CLI path argument to an absolute `PathBuf`.
+///
+/// If `path` is `Some`, uses that value; otherwise falls back to the current
+/// working directory.
+pub fn resolve_path(path: Option<String>) -> PathBuf {
+    match path {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    }
+}
+
 /// Returns `true` if the file matches any of the configured exclude patterns.
 pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     let match_opts = glob::MatchOptions {

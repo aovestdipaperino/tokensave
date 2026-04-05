@@ -2,7 +2,7 @@
 // Updated 2026-03-23: compact bordered table for status output
 use clap::{Parser, Subcommand};
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process;
 
 use tokensave::tokensave::TokenSave;
@@ -280,7 +280,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
     match command {
         Commands::Sync { path, force, skip_folders } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
                 eprintln!(
@@ -344,7 +344,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Status { path, json, short } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
             } else {
@@ -432,7 +432,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
 
                 // Warn if .tokensave is not in .gitignore
-                if !is_in_gitignore(&project_path) {
+                if !tokensave::config::is_in_gitignore(&project_path) {
                     eprintln!(
                         "\n\x1b[33mWarning: .tokensave is not in .gitignore — \
                          run `echo .tokensave >> .gitignore` to exclude it from git.\x1b[0m"
@@ -448,7 +448,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             path,
             limit,
         } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let results = cg.search(&search, limit).await?;
             if results.is_empty() {
@@ -474,7 +474,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             max_nodes,
             format,
         } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let output_format = if format == "json" {
                 OutputFormat::Json
@@ -502,7 +502,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             pattern,
             json,
         } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let mut files = cg.get_all_files().await?;
             files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -560,7 +560,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             json,
             quiet,
         } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
 
             // Collect changed files from args and/or stdin
@@ -699,10 +699,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::HookPreToolUse => {
-            hook_pre_tool_use();
+            tokensave::hooks::hook_pre_tool_use();
         }
         Commands::Serve { path } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
             let server = tokensave::mcp::McpServer::new(cg).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
@@ -721,7 +721,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             eprintln!("Worldwide counter upload enabled.");
         }
         Commands::Gitignore { path, action } => {
-            let project_path = resolve_path(path);
+            let project_path = tokensave::config::resolve_path(path);
             let mut config = tokensave::config::load_config(&project_path)?;
             match action.as_deref() {
                 Some("on") => {
@@ -770,7 +770,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
 /// When invoked with no subcommand, offer to create the index if none exists.
 async fn handle_no_command() -> tokensave::errors::Result<()> {
-    let project_path = resolve_path(None);
+    let project_path = tokensave::config::resolve_path(None);
     if TokenSave::is_initialized(&project_path) {
         // Already initialized — show help via clap
         let _ = <Cli as clap::CommandFactory>::command().print_help();
@@ -796,32 +796,6 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
     Ok(())
 }
 
-/// Returns `true` if `.tokensave` is already listed in the project's `.gitignore`.
-fn is_in_gitignore(project_path: &Path) -> bool {
-    let gitignore = project_path.join(".gitignore");
-    match std::fs::read_to_string(&gitignore) {
-        Ok(content) => content.lines().any(|line| {
-            let trimmed = line.trim();
-            trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
-        }),
-        Err(_) => false,
-    }
-}
-
-/// Appends `.tokensave` to the project's `.gitignore`, creating the file if
-/// needed. Ensures the entry starts on its own line (adds a trailing newline
-/// to existing content if missing).
-fn add_to_gitignore(project_path: &Path) {
-    let gitignore = project_path.join(".gitignore");
-    let mut content = std::fs::read_to_string(&gitignore).unwrap_or_default();
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(".tokensave\n");
-    if let Err(e) = std::fs::write(&gitignore, content) {
-        eprintln!("warning: failed to update .gitignore: {e}");
-    }
-}
 
 /// Initializes a new project (if needed) and runs a full index.
 async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensave::errors::Result<TokenSave> {
@@ -833,14 +807,14 @@ async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensa
         let cg = TokenSave::init(project_path).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
         // Offer to add .tokensave to .gitignore if not already there
-        if !is_in_gitignore(project_path) {
+        if !tokensave::config::is_in_gitignore(project_path) {
             eprint!("Add .tokensave to .gitignore? [Y/n] ");
             io::stderr().flush().ok();
             let mut answer = String::new();
             if io::stdin().lock().read_line(&mut answer).is_ok() {
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    add_to_gitignore(project_path);
+                    tokensave::config::add_to_gitignore(project_path);
                     eprintln!("Added .tokensave to .gitignore");
                 }
             }
@@ -985,58 +959,6 @@ fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache:
 // - src/tokensave.rs (is_test_file)
 
 
-/// PreToolUse hook handler for Claude Code's Agent tool matcher.
-///
-/// Reads the `TOOL_INPUT` environment variable (JSON), inspects the
-/// `subagent_type` and `prompt` fields, and prints a JSON decision to
-/// stdout. Blocks Explore agents and exploration-style prompts, directing
-/// Claude to use tokensave MCP tools instead.
-fn hook_pre_tool_use() {
-    let tool_input = std::env::var("TOOL_INPUT").unwrap_or_default();
-
-    let block_msg = serde_json::json!({
-        "decision": "block",
-        "reason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, \
-                   tokensave_callees, tokensave_callers, tokensave_impact, tokensave_files, \
-                   tokensave_affected) instead of agents for code research. Tokensave is \
-                   faster and more precise for symbol relationships, call paths, and code \
-                   structure. Only use agents for code exploration if you have already tried \
-                   tokensave and it cannot answer the question."
-    });
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&tool_input).unwrap_or_else(|_| serde_json::json!({}));
-
-    // Block Explore agents outright
-    if parsed.get("subagent_type").and_then(|v| v.as_str()) == Some("Explore") {
-        println!("{}", block_msg);
-        return;
-    }
-
-    // Check if the prompt is exploration/research work that tokensave can handle
-    if let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) {
-        let lower = prompt.to_ascii_lowercase();
-        let exploration_patterns = [
-            "explore", "codebase structure", "codebase architecture", "codebase overview",
-            "source files contents", "read every", "full contents", "entire codebase",
-            "architecture and structure", "call graph", "call path", "call chain",
-            "symbol relat", "symbol lookup", "who calls", "callers of", "callees of",
-        ];
-        if exploration_patterns.iter().any(|pat| lower.contains(pat)) {
-            println!("{}", block_msg);
-            return;
-        }
-    }
-
-    println!(r#"{{"decision": "allow"}}"#);
-}
-
-fn resolve_path(path: Option<String>) -> PathBuf {
-    match path {
-        Some(p) => PathBuf::from(p),
-        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-    }
-}
 
 
 /// BFS through file dependents to find test files affected by changes.
