@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 29 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
+Manual test queries for verifying all 34 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
 
 ### Staleness warnings
 
@@ -39,6 +39,20 @@ Expected: Returns matching symbols with IDs, file paths, line numbers, and signa
 > Build context for the task: "understand how the MCP server handles incoming tool calls"
 
 Expected: Returns entry points, related symbols, relationships, and code snippets relevant to MCP tool handling.
+
+Test with code snippets:
+```
+tokensave_context(task="how does the search tool work", include_code=true, max_code_blocks=3)
+```
+Expected: Same as above but with source code snippets embedded for the most relevant symbols.
+
+Test plan mode:
+```
+tokensave_context(task="add a new MCP tool for dependency visualization", mode="plan", include_code=true)
+```
+Expected: Standard context plus additional sections:
+- **Extension Points**: public traits/interfaces with implementor counts
+- **Test Coverage**: test files covering the related modules
 
 ---
 
@@ -335,3 +349,111 @@ Custom kinds:
 tokensave_port_order(source_dir="src/legacy/", kinds=["function", "class"], limit=50)
 ```
 Expected: Only includes functions and classes in the topological sort.
+
+---
+
+## tokensave_commit_context
+
+> Summarize my uncommitted changes for a commit message.
+
+Test all changes:
+```
+tokensave_commit_context()
+```
+Expected: Returns changed files with semantic roles (source/test/config/docs), symbols in each file, a suggested commit category (feature/fix/refactor/test/chore), and the 5 most recent commit subjects for style matching.
+
+Test staged only:
+```
+tokensave_commit_context(staged_only=true)
+```
+Expected: Same as above but only includes staged changes (git index vs HEAD).
+
+If no changes: returns "No changes detected."
+If not a git repo: returns a git error message.
+
+---
+
+## tokensave_pr_context
+
+> Summarize changes for a pull request from the current branch against main.
+
+Test with defaults:
+```
+tokensave_pr_context()
+```
+Expected: Returns semantic diff between `main` and `HEAD`:
+- Commit log (hash + subject for each commit)
+- Symbols added (new symbols with no external callers)
+- Symbols modified (existing symbols with external callers)
+- Test files changed directly
+- Affected tests (transitively impacted via dependency graph)
+- Impacted modules (directories containing dependents of modified symbols)
+
+Test with custom refs:
+```
+tokensave_pr_context(base_ref="develop", head_ref="feature-branch")
+```
+Expected: Same structure but comparing the specified refs.
+
+---
+
+## tokensave_simplify_scan
+
+> Analyze changed files for quality issues.
+
+Test:
+```
+tokensave_simplify_scan(files=["src/mcp/tools/handlers.rs", "src/mcp/tools/definitions.rs"])
+```
+Expected: Returns four categories of findings:
+- **duplications**: symbols with >0.8 name similarity to symbols in other files
+- **dead_introductions**: private functions/methods with no incoming edges (unreferenced)
+- **complexity_warnings**: functions exceeding composite score threshold (lines + fan_out*3 > 100)
+- **coupling_warnings**: files with fan_in > 15 (many dependents)
+
+Each finding includes the symbol name, file, line number, and reason.
+
+---
+
+## tokensave_test_map
+
+> Which tests cover the functions in `src/tokensave.rs`?
+
+Test by file:
+```
+tokensave_test_map(file="src/tokensave.rs")
+```
+Expected: Returns:
+- **coverage**: list of source functions/methods paired with their test callers (test name, file, line)
+- **uncovered**: source functions/methods with no test callers found (up to depth 3)
+- **test_files**: deduplicated list of all test files providing coverage
+- **covered_symbols** / **uncovered_symbols**: counts
+
+Test by node ID:
+```
+tokensave_test_map(node_id="fn:search_nodes")
+```
+Expected: Same structure but for a single symbol. If it's not a function/method, no coverage data is returned.
+
+---
+
+## tokensave_type_hierarchy
+
+> Show the full type hierarchy for a trait. Search for the trait first, then use its node ID.
+
+Test:
+```
+tokensave_type_hierarchy(node_id="trait:McpTransport")
+```
+Expected: Returns an indented tree showing the root type and all implementors/extenders recursively:
+```
+McpTransport (trait) -- src/mcp/transport.rs:191
+|- implements StdioTransport (struct) -- src/mcp/transport.rs:203
+|- implements ChannelTransport (struct) -- src/mcp/transport.rs:236
+```
+
+Test with depth limit:
+```
+tokensave_type_hierarchy(node_id="interface:Serializable", max_depth=2)
+```
+Expected: Same tree structure but stops at depth 2 (no grandchildren of grandchildren).

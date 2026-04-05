@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-04-05
+
+### Added
+- **MCP tool annotations** — all 34 tools now include `readOnlyHint: true` and a human-friendly `title` in their MCP annotations. Clients that support annotations can run all tokensave tools concurrently without permission prompts and display cleaner tool names.
+- **`_meta["anthropic/alwaysLoad"]`** on core tools — `tokensave_context`, `tokensave_search`, and `tokensave_status` are marked for immediate loading, bypassing the client's tool-search round-trip on first use.
+- **Server instructions** — the MCP `initialize` response now includes an `instructions` field guiding the model to start with `tokensave_context` and noting all tools are read-only and safe to call in parallel.
+- **MCP resources** — three resources exposed via `resources/list` and `resources/read`:
+  - `tokensave://status` — graph statistics as JSON
+  - `tokensave://files` — indexed file tree grouped by directory
+  - `tokensave://overview` — project summary with language distribution and symbol kinds
+- **`tokensave_commit_context`** — semantic summary of uncommitted changes for commit message drafting. Returns changed symbols grouped by file role (source/test/config/docs), a suggested commit category, and recent commit subjects for style matching.
+- **`tokensave_pr_context`** — semantic diff between two git refs for pull request descriptions. Returns commit log, symbols added/modified, affected tests, and impacted modules.
+- **`tokensave_simplify_scan`** — quality analysis of changed files: detects symbol duplications, dead code introductions, complexity hotspots, and high-coupling files.
+- **`tokensave_test_map`** — source-to-test mapping at the symbol level. Shows which test functions call which source functions and identifies uncovered symbols.
+- **`tokensave_type_hierarchy`** — recursive type hierarchy tree for traits, interfaces, and classes showing all implementors and extenders with file locations.
+- **`tokensave_context` extended** — new `include_code` parameter includes source code snippets for key symbols (wires through to the existing context builder). New `mode: "plan"` parameter appends extension points (public traits/interfaces with implementor counts) and test coverage for related modules.
+
+### Changed
+- Tool count increased from 29 to 34.
+- Trimmed verbose tool descriptions for lower token overhead in deferred tool lists (`tokensave_rank`, `tokensave_coupling`, `tokensave_port_status`, `tokensave_port_order`, `tokensave_affected`, `tokensave_complexity`, `tokensave_doc_coverage`, `tokensave_god_class`, `tokensave_recursion`, `tokensave_inheritance_depth`, `tokensave_distribution`).
+
 ## [3.2.2] - 2026-04-05
 
 ### Fixed
