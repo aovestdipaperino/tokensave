@@ -434,7 +434,7 @@ mod win_elevated {
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
         unsafe {
-            let mut token: HANDLE = 0;
+            let mut token: HANDLE = std::ptr::null_mut();
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
                 return false;
             }
@@ -483,7 +483,7 @@ mod win_elevated {
         info.nShow = SW_SHOWNORMAL;
 
         let ok = unsafe { ShellExecuteExW(&mut info) };
-        if ok == 0 || info.hProcess == 0 {
+        if ok == 0 || info.hProcess.is_null() {
             return Err(TokenSaveError::Config {
                 message: "UAC elevation was cancelled or failed".to_string(),
             });

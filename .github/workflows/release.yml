@@ -19,7 +19,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - name: aarch64-macos
@@ -101,7 +101,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -191,7 +191,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
