@@ -26,6 +26,12 @@ pub struct ToolDefinition {
     /// JSON Schema describing the tool's input parameters.
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    /// MCP tool annotations (readOnlyHint, title, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+    /// MCP tool metadata (e.g. anthropic/alwaysLoad).
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
 
 /// The result of a tool call, including the JSON response and the file

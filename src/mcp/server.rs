@@ -388,6 +388,8 @@ impl McpServer {
             }
             "tools/list" => Some(self.handle_tools_list(id)),
             "tools/call" => Some(self.handle_tools_call(id, &request.params).await),
+            "resources/list" => Some(self.handle_resources_list(id)),
+            "resources/read" => Some(self.handle_resources_read(id, &request.params).await),
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
             _ => Some(JsonRpcResponse::error(
                 id,
@@ -414,12 +416,19 @@ impl McpServer {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
                     "tools": {},
+                    "resources": {},
                     "logging": {}
                 },
                 "serverInfo": {
                     "name": "tokensave",
                     "version": env!("CARGO_PKG_VERSION")
-                }
+                },
+                "instructions": "tokensave is a code-graph MCP server. \
+                    Start with tokensave_context for any code exploration task \
+                    — it returns relevant symbols, relationships, and code \
+                    snippets for a natural-language query. Use tokensave_search \
+                    to find specific symbols by name. All tools are read-only \
+                    and safe to call in parallel."
             }),
         )
     }
@@ -428,6 +437,176 @@ impl McpServer {
     fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
         let tools = get_tool_definitions();
         JsonRpcResponse::success(id, json!({ "tools": tools }))
+    }
+
+    /// Handles the `resources/list` method, returning available resources.
+    fn handle_resources_list(&self, id: Value) -> JsonRpcResponse {
+        JsonRpcResponse::success(id, json!({
+            "resources": [
+                {
+                    "uri": "tokensave://status",
+                    "name": "Graph Status",
+                    "description": "Code graph statistics: node/edge/file counts, languages, DB size, and index freshness.",
+                    "mimeType": "application/json"
+                },
+                {
+                    "uri": "tokensave://files",
+                    "name": "File List",
+                    "description": "All indexed project files grouped by directory with symbol counts.",
+                    "mimeType": "text/plain"
+                },
+                {
+                    "uri": "tokensave://overview",
+                    "name": "Project Overview",
+                    "description": "High-level project summary: language distribution, largest modules, and top entry points.",
+                    "mimeType": "text/plain"
+                }
+            ]
+        }))
+    }
+
+    /// Handles the `resources/read` method, returning resource contents.
+    async fn handle_resources_read(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
+        let uri = params
+            .as_ref()
+            .and_then(|p| p.get("uri"))
+            .and_then(|v| v.as_str());
+
+        let uri = match uri {
+            Some(u) => u,
+            None => {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InvalidParams,
+                    "missing 'uri' in resources/read params".to_string(),
+                );
+            }
+        };
+
+        match uri {
+            "tokensave://status" => self.read_resource_status(id).await,
+            "tokensave://files" => self.read_resource_files(id).await,
+            "tokensave://overview" => self.read_resource_overview(id).await,
+            _ => JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                format!("unknown resource URI: {}", uri),
+            ),
+        }
+    }
+
+    /// Returns graph statistics as a JSON resource.
+    async fn read_resource_status(&self, id: Value) -> JsonRpcResponse {
+        match self.cg.get_stats().await {
+            Ok(stats) => {
+                let text = serde_json::to_string_pretty(&stats).unwrap_or_default();
+                JsonRpcResponse::success(id, json!({
+                    "contents": [{
+                        "uri": "tokensave://status",
+                        "mimeType": "application/json",
+                        "text": text
+                    }]
+                }))
+            }
+            Err(e) => JsonRpcResponse::error(
+                id,
+                ErrorCode::InternalError,
+                format!("failed to read graph stats: {}", e),
+            ),
+        }
+    }
+
+    /// Returns the file list as a text resource (grouped by directory).
+    async fn read_resource_files(&self, id: Value) -> JsonRpcResponse {
+        match self.cg.get_all_files().await {
+            Ok(mut files) => {
+                files.sort_by(|a, b| a.path.cmp(&b.path));
+                let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+                    std::collections::BTreeMap::new();
+                for f in &files {
+                    let dir = f.path.rfind('/')
+                        .map(|i| &f.path[..i])
+                        .unwrap_or(".")
+                        .to_string();
+                    let name = f.path.rfind('/')
+                        .map(|i| &f.path[i + 1..])
+                        .unwrap_or(&f.path);
+                    groups.entry(dir).or_default()
+                        .push(format!("{} ({} symbols)", name, f.node_count));
+                }
+                let mut lines = Vec::new();
+                lines.push(format!("{} indexed files", files.len()));
+                for (dir, entries) in &groups {
+                    lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
+                    for entry in entries {
+                        lines.push(format!("  {}", entry));
+                    }
+                }
+                let text = lines.join("\n");
+                JsonRpcResponse::success(id, json!({
+                    "contents": [{
+                        "uri": "tokensave://files",
+                        "mimeType": "text/plain",
+                        "text": text
+                    }]
+                }))
+            }
+            Err(e) => JsonRpcResponse::error(
+                id,
+                ErrorCode::InternalError,
+                format!("failed to read file list: {}", e),
+            ),
+        }
+    }
+
+    /// Returns a high-level project overview as a text resource.
+    async fn read_resource_overview(&self, id: Value) -> JsonRpcResponse {
+        let stats = match self.cg.get_stats().await {
+            Ok(s) => s,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InternalError,
+                    format!("failed to read graph stats: {}", e),
+                );
+            }
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!("Project: {}", self.cg.project_root().display()));
+        lines.push(format!(
+            "Graph: {} nodes, {} edges, {} files",
+            stats.node_count, stats.edge_count, stats.file_count
+        ));
+
+        // Language distribution
+        if !stats.files_by_language.is_empty() {
+            lines.push("\nLanguages:".to_string());
+            let mut langs: Vec<_> = stats.files_by_language.iter().collect();
+            langs.sort_by(|a, b| b.1.cmp(a.1));
+            for (lang, count) in &langs {
+                lines.push(format!("  {} ({} files)", lang, count));
+            }
+        }
+
+        // Node kind distribution (top 10)
+        if !stats.nodes_by_kind.is_empty() {
+            lines.push("\nSymbol kinds:".to_string());
+            let mut kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
+            kinds.sort_by(|a, b| b.1.cmp(a.1));
+            for (kind, count) in kinds.iter().take(10) {
+                lines.push(format!("  {} ({})", kind, count));
+            }
+        }
+
+        let text = lines.join("\n");
+        JsonRpcResponse::success(id, json!({
+            "contents": [{
+                "uri": "tokensave://overview",
+                "mimeType": "text/plain",
+                "text": text
+            }]
+        }))
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.

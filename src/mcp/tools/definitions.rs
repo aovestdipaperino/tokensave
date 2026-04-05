@@ -1,11 +1,42 @@
 //! MCP tool definitions (JSON Schema descriptors).
 //!
 //! Each `def_*` function returns a `ToolDefinition` with the tool name,
-//! description, and JSON Schema for its input parameters.
+//! description, JSON Schema for its input parameters, MCP annotations
+//! (readOnlyHint, title), and optional `_meta` (anthropic/alwaysLoad).
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::ToolDefinition;
+
+/// Read-only annotations shared by every tool.
+fn read_only(title: &str) -> Value {
+    json!({
+        "readOnlyHint": true,
+        "title": title
+    })
+}
+
+/// Build a `ToolDefinition` with `readOnlyHint` annotation and no `_meta`.
+fn def(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+        annotations: Some(read_only(title)),
+        meta: None,
+    }
+}
+
+/// Build a `ToolDefinition` with `readOnlyHint` AND `anthropic/alwaysLoad`.
+fn def_always_load(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+        annotations: Some(read_only(title)),
+        meta: Some(json!({ "anthropic/alwaysLoad": true })),
+    }
+}
 
 /// Returns the list of all tool definitions exposed by this MCP server.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
@@ -46,12 +77,14 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     definitions
 }
 
+// ── alwaysLoad tools (loaded into the model prompt immediately) ─────────
 
 fn def_search() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_search".to_string(),
-        description: "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.".to_string(),
-        input_schema: json!({
+    def_always_load(
+        "tokensave_search",
+        "Search Symbols",
+        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.",
+        json!({
             "type": "object",
             "properties": {
                 "query": {
@@ -65,14 +98,15 @@ fn def_search() -> ToolDefinition {
             },
             "required": ["query"]
         }),
-    }
+    )
 }
 
 fn def_context() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_context".to_string(),
-        description: "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and code snippets.".to_string(),
-        input_schema: json!({
+    def_always_load(
+        "tokensave_context",
+        "Task Context",
+        "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and code snippets.",
+        json!({
             "type": "object",
             "properties": {
                 "task": {
@@ -86,14 +120,29 @@ fn def_context() -> ToolDefinition {
             },
             "required": ["task"]
         }),
-    }
+    )
 }
 
+fn def_status() -> ToolDefinition {
+    def_always_load(
+        "tokensave_status",
+        "Graph Status",
+        "Return aggregate statistics about the code graph (node/edge/file counts, DB size, etc.).",
+        json!({
+            "type": "object",
+            "properties": {}
+        }),
+    )
+}
+
+// ── Deferred tools (discovered via ToolSearch on demand) ────────────────
+
 fn def_callers() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_callers".to_string(),
-        description: "Find all callers of a given node (function, method, etc.) up to a specified depth.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_callers",
+        "Callers",
+        "Find all callers of a given node (function, method, etc.) up to a specified depth.",
+        json!({
             "type": "object",
             "properties": {
                 "node_id": {
@@ -107,14 +156,15 @@ fn def_callers() -> ToolDefinition {
             },
             "required": ["node_id"]
         }),
-    }
+    )
 }
 
 fn def_callees() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_callees".to_string(),
-        description: "Find all callees of a given node (function, method, etc.) up to a specified depth.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_callees",
+        "Callees",
+        "Find all callees of a given node (function, method, etc.) up to a specified depth.",
+        json!({
             "type": "object",
             "properties": {
                 "node_id": {
@@ -128,14 +178,15 @@ fn def_callees() -> ToolDefinition {
             },
             "required": ["node_id"]
         }),
-    }
+    )
 }
 
 fn def_impact() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_impact".to_string(),
-        description: "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_impact",
+        "Impact Radius",
+        "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.",
+        json!({
             "type": "object",
             "properties": {
                 "node_id": {
@@ -149,14 +200,15 @@ fn def_impact() -> ToolDefinition {
             },
             "required": ["node_id"]
         }),
-    }
+    )
 }
 
 fn def_node() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_node".to_string(),
-        description: "Retrieve detailed information about a single node by its ID.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_node",
+        "Node Details",
+        "Retrieve detailed information about a single node by its ID.",
+        json!({
             "type": "object",
             "properties": {
                 "node_id": {
@@ -166,25 +218,15 @@ fn def_node() -> ToolDefinition {
             },
             "required": ["node_id"]
         }),
-    }
-}
-
-fn def_status() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_status".to_string(),
-        description: "Return aggregate statistics about the code graph (node/edge/file counts, DB size, etc.).".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {}
-        }),
-    }
+    )
 }
 
 fn def_files() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_files".to_string(),
-        description: "List indexed project files. Use to explore file structure without reading file contents.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_files",
+        "File List",
+        "List indexed project files. Use to explore file structure without reading file contents.",
+        json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -202,14 +244,15 @@ fn def_files() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_affected() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_affected".to_string(),
-        description: "Find test files affected by changed source files. BFS through file dependency graph to discover impacted tests.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_affected",
+        "Affected Tests",
+        "Find test files affected by changed source files via dependency graph traversal.",
+        json!({
             "type": "object",
             "properties": {
                 "files": {
@@ -228,14 +271,15 @@ fn def_affected() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    }
+    )
 }
 
 fn def_dead_code() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_dead_code".to_string(),
-        description: "Find symbols with no incoming edges (potentially unreachable code). Excludes main, test functions, and public items.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_dead_code",
+        "Dead Code",
+        "Find symbols with no incoming edges (potentially unreachable code). Excludes main, test functions, and public items.",
+        json!({
             "type": "object",
             "properties": {
                 "kinds": {
@@ -245,14 +289,15 @@ fn def_dead_code() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_diff_context() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_diff_context".to_string(),
-        description: "Given changed file paths, return semantic context: which symbols were modified, what depends on them, and affected tests.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_diff_context",
+        "Diff Context",
+        "Given changed file paths, return semantic context: which symbols were modified, what depends on them, and affected tests.",
+        json!({
             "type": "object",
             "properties": {
                 "files": {
@@ -267,14 +312,15 @@ fn def_diff_context() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    }
+    )
 }
 
 fn def_module_api() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_module_api".to_string(),
-        description: "Show the public API surface of a file or directory: all pub symbols sorted by file and line.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_module_api",
+        "Module API",
+        "Show the public API surface of a file or directory: all pub symbols sorted by file and line.",
+        json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -284,14 +330,15 @@ fn def_module_api() -> ToolDefinition {
             },
             "required": ["path"]
         }),
-    }
+    )
 }
 
 fn def_circular() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_circular".to_string(),
-        description: "Detect circular dependencies between files in the code graph.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_circular",
+        "Circular Deps",
+        "Detect circular dependencies between files in the code graph.",
+        json!({
             "type": "object",
             "properties": {
                 "max_depth": {
@@ -300,14 +347,15 @@ fn def_circular() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_hotspots() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_hotspots".to_string(),
-        description: "Find symbols with the highest connectivity (most incoming + outgoing edges).".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_hotspots",
+        "Hotspots",
+        "Find symbols with the highest connectivity (most incoming + outgoing edges).",
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -316,14 +364,15 @@ fn def_hotspots() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_similar() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_similar".to_string(),
-        description: "Find symbols with similar names using full-text search and substring matching.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_similar",
+        "Similar Symbols",
+        "Find symbols with similar names using full-text search and substring matching.",
+        json!({
             "type": "object",
             "properties": {
                 "symbol": {
@@ -337,14 +386,15 @@ fn def_similar() -> ToolDefinition {
             },
             "required": ["symbol"]
         }),
-    }
+    )
 }
 
 fn def_rename_preview() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_rename_preview".to_string(),
-        description: "Show all references to a symbol — all edges where the node appears as source or target.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_rename_preview",
+        "References",
+        "Show all references to a symbol -- all edges where the node appears as source or target.",
+        json!({
             "type": "object",
             "properties": {
                 "node_id": {
@@ -354,25 +404,27 @@ fn def_rename_preview() -> ToolDefinition {
             },
             "required": ["node_id"]
         }),
-    }
+    )
 }
 
 fn def_unused_imports() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_unused_imports".to_string(),
-        description: "Find import/use nodes that are never referenced by any other node.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_unused_imports",
+        "Unused Imports",
+        "Find import/use nodes that are never referenced by any other node.",
+        json!({
             "type": "object",
             "properties": {}
         }),
-    }
+    )
 }
 
 fn def_rank() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_rank".to_string(),
-        description: "Rank nodes by relationship count. Answer questions like 'most implemented interface', 'most extended class', 'most called function', 'class that implements the most interfaces', or 'function that calls the most others'.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_rank",
+        "Rank",
+        "Rank nodes by edge count for a given relationship type (calls, implements, extends, etc.).",
+        json!({
             "type": "object",
             "properties": {
                 "edge_kind": {
@@ -396,14 +448,15 @@ fn def_rank() -> ToolDefinition {
             },
             "required": ["edge_kind"]
         }),
-    }
+    )
 }
 
 fn def_largest() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_largest".to_string(),
-        description: "Rank nodes by size (line count). Find the largest classes, longest methods, biggest enums, etc.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_largest",
+        "Largest Symbols",
+        "Rank nodes by size (line count). Find the largest classes, longest methods, biggest enums, etc.",
+        json!({
             "type": "object",
             "properties": {
                 "node_kind": {
@@ -416,14 +469,15 @@ fn def_largest() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_coupling() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_coupling".to_string(),
-        description: "Rank files by coupling: how many other files they depend on (fan_out) or are depended on by (fan_in). Identifies highly-coupled modules.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_coupling",
+        "Coupling",
+        "Rank files by coupling: fan_in (most depended on) or fan_out (most dependencies).",
+        json!({
             "type": "object",
             "properties": {
                 "direction": {
@@ -437,14 +491,15 @@ fn def_coupling() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_inheritance_depth() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_inheritance_depth".to_string(),
-        description: "Find the deepest class/interface inheritance hierarchies by walking extends chains. Identifies over-deep type hierarchies.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_inheritance_depth",
+        "Inheritance Depth",
+        "Find the deepest class/interface inheritance hierarchies by walking extends chains.",
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -453,14 +508,15 @@ fn def_inheritance_depth() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_distribution() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_distribution".to_string(),
-        description: "Show node kind distribution (classes, methods, fields, etc.) per file or directory. Useful for understanding code structure and composition.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_distribution",
+        "Distribution",
+        "Show node kind distribution (classes, methods, fields, etc.) per file or directory.",
+        json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -473,14 +529,15 @@ fn def_distribution() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_recursion() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_recursion".to_string(),
-        description: "Detect recursive and mutually-recursive call cycles in the call graph. Identifies violations of the 'no recursion' rule (NASA Power of 10 Rule 1).".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_recursion",
+        "Recursion",
+        "Detect recursive and mutually-recursive call cycles in the call graph.",
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -489,14 +546,15 @@ fn def_recursion() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_complexity() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_complexity".to_string(),
-        description: "Rank functions/methods by composite complexity: line count + call fan-out (×3) + call fan-in. Identifies the most complex symbols that may need decomposition.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_complexity",
+        "Complexity",
+        "Rank functions/methods by composite complexity score (lines + fan-out + fan-in).",
+        json!({
             "type": "object",
             "properties": {
                 "node_kind": {
@@ -509,14 +567,15 @@ fn def_complexity() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_doc_coverage() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_doc_coverage".to_string(),
-        description: "Find public symbols missing documentation (docstrings). Identifies gaps in API documentation for functions, methods, classes, interfaces, traits, structs, and enums.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_doc_coverage",
+        "Doc Coverage",
+        "Find public symbols missing documentation (docstrings).",
+        json!({
             "type": "object",
             "properties": {
                 "path": {
@@ -529,14 +588,15 @@ fn def_doc_coverage() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_god_class() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_god_class".to_string(),
-        description: "Find classes with the most members (methods + fields). Identifies 'god classes' with excessive responsibility that may need decomposition.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_god_class",
+        "God Classes",
+        "Find classes with the most members (methods + fields).",
+        json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -545,14 +605,15 @@ fn def_god_class() -> ToolDefinition {
                 }
             }
         }),
-    }
+    )
 }
 
 fn def_changelog() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_changelog".to_string(),
-        description: "Generate a semantic diff/changelog between two git refs, categorizing symbols as added, removed, or modified.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_changelog",
+        "Changelog",
+        "Generate a semantic diff/changelog between two git refs, categorizing symbols as added, removed, or modified.",
+        json!({
             "type": "object",
             "properties": {
                 "from_ref": {
@@ -566,14 +627,15 @@ fn def_changelog() -> ToolDefinition {
             },
             "required": ["from_ref", "to_ref"]
         }),
-    }
+    )
 }
 
 fn def_port_status() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_port_status".to_string(),
-        description: "Compare symbols between a source directory and a target directory to track porting progress. Matches by name (case-insensitive) and compatible kind (e.g. class↔struct, interface↔trait).".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_port_status",
+        "Port Status",
+        "Compare symbols between source and target directories to track porting progress.",
+        json!({
             "type": "object",
             "properties": {
                 "source_dir": {
@@ -592,14 +654,15 @@ fn def_port_status() -> ToolDefinition {
             },
             "required": ["source_dir", "target_dir"]
         }),
-    }
+    )
 }
 
 fn def_port_order() -> ToolDefinition {
-    ToolDefinition {
-        name: "tokensave_port_order".to_string(),
-        description: "Return symbols from a source directory in topological dependency order — port leaves first (symbols with no internal dependencies), then symbols that depend only on already-listed symbols.".to_string(),
-        input_schema: json!({
+    def(
+        "tokensave_port_order",
+        "Port Order",
+        "Topological sort of symbols in a directory -- port leaves first, dependents after.",
+        json!({
             "type": "object",
             "properties": {
                 "source_dir": {
@@ -618,5 +681,5 @@ fn def_port_order() -> ToolDefinition {
             },
             "required": ["source_dir"]
         }),
-    }
+    )
 }

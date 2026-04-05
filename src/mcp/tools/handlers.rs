@@ -2242,6 +2242,33 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_definitions_have_annotations() {
+        let tools = get_tool_definitions();
+        for tool in &tools {
+            let ann = tool.annotations.as_ref()
+                .unwrap_or_else(|| panic!("{} missing annotations", tool.name));
+            assert_eq!(ann["readOnlyHint"], true, "{} missing readOnlyHint", tool.name);
+            assert!(ann["title"].is_string(), "{} missing title annotation", tool.name);
+        }
+    }
+
+    #[test]
+    fn test_always_load_tools() {
+        let tools = get_tool_definitions();
+        let always_load: Vec<&str> = tools.iter()
+            .filter(|t| t.meta.as_ref()
+                .and_then(|m| m.get("anthropic/alwaysLoad"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false))
+            .map(|t| t.name.as_str())
+            .collect();
+        assert!(always_load.contains(&"tokensave_context"), "tokensave_context must be alwaysLoad");
+        assert!(always_load.contains(&"tokensave_search"), "tokensave_search must be alwaysLoad");
+        assert!(always_load.contains(&"tokensave_status"), "tokensave_status must be alwaysLoad");
+        assert_eq!(always_load.len(), 3, "exactly 3 tools should be alwaysLoad, got {:?}", always_load);
+    }
+
+    #[test]
     fn test_truncate_short_response() {
         let short = "hello world";
         assert_eq!(truncate_response(short), short);

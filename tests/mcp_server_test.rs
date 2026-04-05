@@ -579,3 +579,213 @@ async fn test_error_tracking() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 17. test_initialize_has_resources_capability
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_initialize_has_resources_capability() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(1), "initialize", json!({})),
+    ])
+    .await;
+
+    let resp = parse_response(&responses[0]);
+    assert!(
+        resp["result"]["capabilities"]["resources"].is_object(),
+        "initialize should advertise resources capability"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 18. test_initialize_has_instructions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_initialize_has_instructions() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(1), "initialize", json!({})),
+    ])
+    .await;
+
+    let resp = parse_response(&responses[0]);
+    let instructions = resp["result"]["instructions"].as_str()
+        .expect("initialize should have instructions string");
+    assert!(
+        instructions.contains("tokensave_context"),
+        "instructions should mention tokensave_context"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 19. test_resources_list
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_list() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(400), "resources/list", json!({})),
+    ])
+    .await;
+
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 400);
+    assert!(resp["error"].is_null(), "resources/list should not error");
+    let resources = resp["result"]["resources"].as_array()
+        .expect("should have resources array");
+    assert_eq!(resources.len(), 3, "should expose 3 resources");
+
+    let uris: Vec<&str> = resources.iter()
+        .filter_map(|r| r["uri"].as_str())
+        .collect();
+    assert!(uris.contains(&"tokensave://status"), "should have status resource");
+    assert!(uris.contains(&"tokensave://files"), "should have files resource");
+    assert!(uris.contains(&"tokensave://overview"), "should have overview resource");
+
+    // All resources should have name, description, and mimeType.
+    for resource in resources {
+        assert!(resource["name"].is_string(), "resource should have name");
+        assert!(resource["description"].is_string(), "resource should have description");
+        assert!(resource["mimeType"].is_string(), "resource should have mimeType");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 20. test_resources_read_status
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_read_status() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(410), "resources/read", json!({
+            "uri": "tokensave://status"
+        })),
+    ])
+    .await;
+
+    let resp_str = responses.iter()
+        .find(|r| parse_response(r)["id"] == 410)
+        .expect("should have response for id=410");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "resources/read status should not error");
+
+    let contents = resp["result"]["contents"].as_array()
+        .expect("should have contents array");
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["uri"], "tokensave://status");
+    assert_eq!(contents[0]["mimeType"], "application/json");
+
+    let text = contents[0]["text"].as_str().unwrap();
+    assert!(text.contains("node_count"), "status resource should contain node_count");
+    assert!(text.contains("file_count"), "status resource should contain file_count");
+}
+
+// ---------------------------------------------------------------------------
+// 21. test_resources_read_files
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_read_files() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(420), "resources/read", json!({
+            "uri": "tokensave://files"
+        })),
+    ])
+    .await;
+
+    let resp_str = responses.iter()
+        .find(|r| parse_response(r)["id"] == 420)
+        .expect("should have response for id=420");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "resources/read files should not error");
+
+    let contents = resp["result"]["contents"].as_array()
+        .expect("should have contents array");
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["uri"], "tokensave://files");
+    assert_eq!(contents[0]["mimeType"], "text/plain");
+
+    let text = contents[0]["text"].as_str().unwrap();
+    assert!(text.contains("indexed files"), "files resource should contain file count summary");
+    assert!(text.contains("main.rs"), "files resource should list main.rs");
+}
+
+// ---------------------------------------------------------------------------
+// 22. test_resources_read_overview
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_read_overview() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(430), "resources/read", json!({
+            "uri": "tokensave://overview"
+        })),
+    ])
+    .await;
+
+    let resp_str = responses.iter()
+        .find(|r| parse_response(r)["id"] == 430)
+        .expect("should have response for id=430");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "resources/read overview should not error");
+
+    let contents = resp["result"]["contents"].as_array()
+        .expect("should have contents array");
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["uri"], "tokensave://overview");
+    assert_eq!(contents[0]["mimeType"], "text/plain");
+
+    let text = contents[0]["text"].as_str().unwrap();
+    assert!(text.contains("Project:"), "overview should start with Project:");
+    assert!(text.contains("Graph:"), "overview should contain Graph summary");
+    assert!(text.contains("nodes"), "overview should mention nodes");
+}
+
+// ---------------------------------------------------------------------------
+// 23. test_resources_read_unknown_uri
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_read_unknown_uri() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(440), "resources/read", json!({
+            "uri": "tokensave://nonexistent"
+        })),
+    ])
+    .await;
+
+    let resp_str = responses.iter()
+        .find(|r| parse_response(r)["id"] == 440)
+        .expect("should have response for id=440");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_object(), "unknown URI should produce error");
+    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+}
+
+// ---------------------------------------------------------------------------
+// 24. test_resources_read_missing_uri
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_resources_read_missing_uri() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(server, vec![
+        jsonrpc_request(json!(450), "resources/read", json!({})),
+    ])
+    .await;
+
+    let resp_str = responses.iter()
+        .find(|r| parse_response(r)["id"] == 450)
+        .expect("should have response for id=450");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_object(), "missing URI should produce error");
+    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+}
