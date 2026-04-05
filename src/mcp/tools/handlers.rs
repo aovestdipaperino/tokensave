@@ -2064,6 +2064,13 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         in_degree.entry(id.as_str()).or_insert(0);
     }
 
+    // reverse_dep_graph[B] = list of nodes that depend on B.
+    // When B is sorted, we decrement in_degree for each of its reverse deps.
+    let mut reverse_dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    for id in &node_ids {
+        reverse_dep_graph.entry(id.as_str()).or_default();
+    }
+
     for edge in &edges {
         if !dep_edge_kinds.contains(edge.kind.as_str()) {
             continue;
@@ -2076,6 +2083,11 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             .entry(edge.source.as_str())
             .or_default()
             .push(edge.target.as_str());
+        // reverse: target is depended on by source
+        reverse_dep_graph
+            .entry(edge.target.as_str())
+            .or_default()
+            .push(edge.source.as_str());
         *in_degree.entry(edge.source.as_str()).or_insert(0) += 1;
     }
 
@@ -2108,21 +2120,19 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             }
         }
 
-        // For each node in this level, reduce in-degree of its reverse deps
-        // (nodes that depend on it). We need to find who depends on each sorted node.
-        // Build reverse: for each (A depends on B), when B is sorted, decrement in_degree[A].
+        // For each sorted node, decrement in-degree of nodes that depend on it.
         for &sorted_id in &current_level {
-            for (&node_id, deps) in &dep_graph {
-                if sorted_set.contains(node_id) {
-                    continue;
-                }
-                if deps.contains(&sorted_id) {
-                    let deg = in_degree.entry(node_id).or_insert(0);
+            if let Some(dependents) = reverse_dep_graph.get(sorted_id) {
+                for &dep_id in dependents {
+                    if sorted_set.contains(dep_id) {
+                        continue;
+                    }
+                    let deg = in_degree.entry(dep_id).or_insert(0);
                     if *deg > 0 {
                         *deg -= 1;
                     }
                     if *deg == 0 {
-                        queue.push_back(node_id);
+                        queue.push_back(dep_id);
                     }
                 }
             }

@@ -9,12 +9,9 @@ use tokensave::tokensave::TokenSave;
 use tokensave::context::{format_context_as_json, format_context_as_markdown};
 use tokensave::types::*;
 
-/// Returns the current UNIX timestamp in seconds.
+/// Alias for the shared timestamp utility.
 fn current_unix_timestamp() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    tokensave::tokensave::current_timestamp()
 }
 
 /// A self-animating spinner that ticks on a background thread.

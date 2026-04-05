@@ -53,7 +53,7 @@ pub struct SyncResult {
 }
 
 /// Returns the current UNIX timestamp in seconds.
-fn current_timestamp() -> i64 {
+pub fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

@@ -76,62 +76,42 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
-## What's New in v3.2.1
+## What's New in v3.3
 
-### 13-26x Faster Indexing
+### 34 MCP Tools
 
-Full index performance has been dramatically improved through rayon parallel extraction, prepared-statement DB writes, suffix-indexed reference resolution, and bulk-load mode with deferred index creation. A 1,782-file codebase now indexes in 1.2s (down from 14.8s). A 28K-file monorepo indexes in 22s (down from 565s).
+Five new tools round out the analysis suite:
 
-### .gitignore Integration
+- **`tokensave_commit_context`** — semantic summary of uncommitted changes for drafting commit messages
+- **`tokensave_pr_context`** — semantic diff between git refs for pull request descriptions
+- **`tokensave_simplify_scan`** — quality analysis of changed files (duplications, dead code, complexity, coupling)
+- **`tokensave_test_map`** — source-to-test mapping at the symbol level, with uncovered symbol detection
+- **`tokensave_type_hierarchy`** — recursive type hierarchy tree for traits, interfaces, and classes
 
-When creating a new index, tokensave now asks to add `.tokensave` to `.gitignore`. The `status` command warns if `.tokensave` is not gitignored.
+All 34 tools now include MCP annotations (`readOnlyHint`, `title`) and the three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
-### Direct Schema Creation
+### Upgrade-Aware Daemon
 
-New databases get the final schema in one shot instead of running v0-v5 migrations sequentially.
+The background daemon now detects when its binary has been replaced (via `brew upgrade`, `cargo install`, `scoop update`, or any package manager) and automatically restarts with the new version. On Windows, the service is configured with SCM failure recovery actions for automatic restart.
 
-### Daemon Indicator Alignment
+### MCP Resources
 
-The status display now reserves consistent space for the daemon indicator (😈) so flags and text stay aligned whether the daemon is running or not.
-
----
-
-## What's New in v3.1.0
-
-### Edge Deduplication Fix
-
-Incremental syncs could accumulate duplicate edges over time, causing the database to grow far beyond the size of the source code. v3.1.0 adds a unique index on edges and deduplicates existing databases automatically on upgrade. If your `.tokensave/tokensave.db` had grown unexpectedly large, it will shrink to normal size on first run.
-
-### Concurrent Sync Prevention
-
-The CLI and background daemon can no longer run sync at the same time. A PID-based lockfile prevents conflicts, with stale lock detection for crashed processes.
-
-### Doctor Database Compaction
-
-`tokensave doctor` now reports database size and runs `VACUUM` to reclaim disk space — especially useful after upgrading from versions with duplicate edges.
-
-### Index Design Documentation
-
-New `docs/INDEX-DESIGN.md` documents the full schema, extraction pipeline, reference resolution, incremental sync algorithm, and how `diff_context` queries work.
+Three resources are exposed via `resources/list` and `resources/read`: `tokensave://status`, `tokensave://files`, and `tokensave://overview`.
 
 <details>
-<summary>What was new in v3.0.0</summary>
+<summary>Previous releases</summary>
 
-### Bundled Tree-Sitter Grammars
+#### v3.2 — 13-26x Faster Indexing
 
-All 31 language grammars now ship as a single bundled dependency (`tokensave-large-treesitters`), eliminating 20+ individual `tree-sitter-*` crate dependencies. This means faster builds, simpler dependency management, and guaranteed grammar version consistency across all languages. The vendored C grammars (Protobuf, COBOL) have also moved into the bundle, removing `cc` from build dependencies.
+Full index performance improved through rayon parallel extraction, prepared-statement DB writes, suffix-indexed reference resolution, and bulk-load mode. A 1,782-file codebase now indexes in 1.2s (down from 14.8s). A 28K-file monorepo indexes in 22s (down from 565s). New databases get the final schema in one shot instead of running migrations sequentially.
 
-### Background Daemon with Install Prompt
+#### v3.1 — Edge Deduplication
 
-`tokensave install` now offers to set up the background daemon as an autostart service after configuring your agent. The daemon watches all tracked projects for file changes and runs incremental syncs automatically, so your code intelligence is always fresh without manual `tokensave sync` calls.
+Incremental syncs could accumulate duplicate edges over time. v3.1 adds a unique index on edges and deduplicates existing databases on upgrade. Also adds concurrent sync prevention via PID-based lockfile, and `tokensave doctor` now runs VACUUM.
 
-### Sync Timestamps in Status
+#### v3.0 — Bundled Grammars & Daemon
 
-The status table now shows when your index was last updated:
-
-```
-│                          Last sync 2m ago  Full sync 3d ago │
-```
+All 31 language grammars ship as a single bundled dependency. `tokensave install` offers to set up the background daemon as an autostart service (launchd/systemd/Windows Service).
 
 </details>
 
@@ -192,15 +172,13 @@ Agent prompt rules now include two new instructions:
 
 2. **Improvement feedback** — when the agent discovers a gap where an extractor, schema, or tool could be improved, it proposes to the user to open an issue at [github.com/aovestdipaperino/tokensave](https://github.com/aovestdipaperino/tokensave), reminding them to strip sensitive data from the description.
 
-### Upgrading from v1.x / v2.x
+### Upgrading
 
 ```bash
-cargo install tokensave          # or brew upgrade tokensave
+cargo install tokensave          # or: brew upgrade tokensave / scoop update tokensave
 tokensave install                # re-run for updated prompt rules + daemon offer
-tokensave sync --force           # re-index to rebuild the graph
+tokensave sync --force           # re-index to rebuild the graph (recommended after major upgrades)
 ```
-
-The `--force` re-index is recommended after a major version upgrade. Subsequent `sync` calls are incremental as before.
 
 ---
 
@@ -242,8 +220,8 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 
 ```bash
 # Example: Linux x86_64
-curl -LO https://github.com/aovestdipaperino/tokensave/releases/latest/download/tokensave-v1.4.0-x86_64-linux.tar.gz
-tar xzf tokensave-v1.4.0-x86_64-linux.tar.gz
+curl -LO https://github.com/aovestdipaperino/tokensave/releases/latest/download/tokensave-v3.3.2-x86_64-linux.tar.gz
+tar xzf tokensave-v3.3.2-x86_64-linux.tar.gz
 sudo mv tokensave /usr/local/bin/
 ```
 
@@ -305,6 +283,7 @@ This creates a `.tokensave/` directory with the knowledge graph database. Subseq
       "mcp__tokensave__tokensave_callers",
       "mcp__tokensave__tokensave_changelog",
       "mcp__tokensave__tokensave_circular",
+      "mcp__tokensave__tokensave_commit_context",
       "mcp__tokensave__tokensave_complexity",
       "mcp__tokensave__tokensave_context",
       "mcp__tokensave__tokensave_coupling",
@@ -320,12 +299,18 @@ This creates a `.tokensave/` directory with the knowledge graph database. Subseq
       "mcp__tokensave__tokensave_largest",
       "mcp__tokensave__tokensave_module_api",
       "mcp__tokensave__tokensave_node",
+      "mcp__tokensave__tokensave_port_order",
+      "mcp__tokensave__tokensave_port_status",
+      "mcp__tokensave__tokensave_pr_context",
       "mcp__tokensave__tokensave_rank",
       "mcp__tokensave__tokensave_recursion",
       "mcp__tokensave__tokensave_rename_preview",
       "mcp__tokensave__tokensave_search",
       "mcp__tokensave__tokensave_similar",
+      "mcp__tokensave__tokensave_simplify_scan",
       "mcp__tokensave__tokensave_status",
+      "mcp__tokensave__tokensave_test_map",
+      "mcp__tokensave__tokensave_type_hierarchy",
       "mcp__tokensave__tokensave_unused_imports"
     ]
   }
@@ -435,7 +420,7 @@ The hook checks for both the `tokensave` binary and a `.tokensave/` directory be
 
 ## Network Calls & Privacy
 
-tokensave's core functionality (indexing, search, graph queries, MCP server) is **100% local** — your code never leaves your machine. However, starting with v1.4.0, tokensave makes two optional network calls:
+tokensave's core functionality (indexing, search, graph queries, MCP server) is **100% local** — your code never leaves your machine. However, tokensave makes two optional network calls:
 
 ### 1. Worldwide token counter
 
@@ -468,7 +453,7 @@ last_upload_at = 1711375200 # last successful upload timestamp
 last_worldwide_total = 1000000
 last_worldwide_fetch_at = 1711375200
 last_flush_attempt_at = 1711375200
-cached_latest_version = "1.4.0"
+cached_latest_version = "3.3.2"
 last_version_check_at = 1711375200
 ```
 
@@ -477,7 +462,7 @@ last_version_check_at = 1711375200
 tokensave checks for new releases on GitHub so it can show you an upgrade notice:
 
 ```
-Update available: v1.3.0 → v1.4.0
+Update available: v3.3.1 → v3.3.2
   Run: cargo install tokensave
 ```
 
