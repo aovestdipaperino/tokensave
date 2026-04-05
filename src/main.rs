@@ -775,7 +775,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else if disable_autostart {
                 tokensave::daemon::disable_autostart()?;
             } else {
-                tokensave::daemon::run(foreground).await?;
+                let upgraded = tokensave::daemon::run(foreground).await?;
+                if upgraded {
+                    // Exit with non-zero code so the service manager (launchd
+                    // KeepAlive / systemd Restart=on-failure / Windows SCM
+                    // failure actions) restarts with the new binary.
+                    std::process::exit(1);
+                }
             }
         }
     }

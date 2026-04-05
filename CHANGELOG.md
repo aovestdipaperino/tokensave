@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-04-05
+
+### Fixed
+- **Windows `is_installed()` always returned `false`** — the daemon autostart check via `daemon-kit` used a file-path probe that returns `None` on Windows, so `is_service_installed()` never detected an existing service. This caused `tokensave install` to re-offer autostart every time. Now dispatches to the Windows SCM query that was already implemented but never wired up. (daemon-kit 0.1.4)
+- **Windows `--enable-autostart` failed on reinstall** — running `tokensave daemon --enable-autostart` twice would error with "service already exists". The installer now stops and removes the old service before re-creating, making the operation idempotent. (daemon-kit 0.1.4)
+
+### Added
+- **Upgrade-aware daemon restart** — the background daemon now snapshots its own binary's mtime and size at startup and checks every 60 seconds. When an upgrade is detected (via `brew upgrade`, `cargo install`, `scoop update`, or any package manager), the daemon flushes pending syncs, logs the event, and exits. The service manager (launchd `KeepAlive`, systemd `Restart=on-failure`, Windows SCM failure actions) automatically relaunches with the new binary. Previously the old version ran until the next reboot or manual restart.
+- **Windows SCM failure recovery** — the Windows service is now configured with `ServiceFailureActions` (restart after 5s, then 10s) so the SCM relaunches the daemon after upgrade-triggered exits.
+- **Daemon version logging** — the daemon startup log now includes the version (`v3.3.1 started, watching N projects`) so log readers can confirm which version is running after an upgrade restart.
+
+### Changed
+- Bumped `daemon-kit` dependency from 0.1.3 to 0.1.4.
+
 ## [3.3.0] - 2026-04-05
 
 ### Changed

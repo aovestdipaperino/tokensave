@@ -5,4 +5,5 @@
 .mcp.json
 .claude/settings.local.json
 docs/superpowers
+/local-only
 .worktrees

@@ -12,6 +12,36 @@ use tokio::time::{self, Instant};
 
 use crate::errors::{Result, TokenSaveError};
 
+/// Snapshot of the on-disk binary for upgrade detection.
+struct BinarySnapshot {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+    size: u64,
+}
+
+impl BinarySnapshot {
+    /// Take a snapshot of the current binary's metadata.
+    fn capture() -> Option<Self> {
+        let path = std::env::current_exe().ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        Some(Self {
+            path,
+            modified: meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+            size: meta.len(),
+        })
+    }
+
+    /// Returns true if the on-disk binary has changed since this snapshot.
+    fn has_changed(&self) -> bool {
+        let Ok(meta) = std::fs::metadata(&self.path) else {
+            // File disappeared (mid-upgrade race) — treat as changed.
+            return true;
+        };
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        modified != self.modified || meta.len() != self.size
+    }
+}
+
 /// Parse a human-readable duration string like "15s" or "1m" into a Duration.
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
@@ -63,11 +93,18 @@ const IGNORED_DIRS: &[&str] = &[
 ];
 
 /// The core daemon event loop. Watches projects, debounces changes, syncs.
-async fn run_loop(debounce: Duration) -> Result<()> {
+///
+/// Returns `true` if the loop exited because the on-disk binary was updated
+/// (upgrade detected), signalling the caller to exit with a non-zero code so
+/// the service manager restarts with the new version.
+async fn run_loop(debounce: Duration) -> Result<bool> {
     let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
 
     let mut watchers: HashMap<PathBuf, RecommendedWatcher> = HashMap::new();
     let mut dirty: HashMap<PathBuf, Instant> = HashMap::new();
+
+    // Snapshot the current binary for upgrade detection.
+    let binary_snapshot = BinarySnapshot::capture();
 
     // Initial project discovery
     let project_paths = discover_projects().await;
@@ -77,7 +114,11 @@ async fn run_loop(debounce: Duration) -> Result<()> {
         }
     }
 
-    daemon_log(&format!("started, watching {} projects", watchers.len()));
+    daemon_log(&format!(
+        "v{} started, watching {} projects",
+        env!("CARGO_PKG_VERSION"),
+        watchers.len(),
+    ));
 
     let mut discovery_interval = time::interval(Duration::from_secs(60));
     discovery_interval.tick().await; // consume first immediate tick
@@ -88,6 +129,8 @@ async fn run_loop(debounce: Duration) -> Result<()> {
         tokio::signal::ctrl_c().await.ok();
         shutdown_tx.send(()).await.ok();
     });
+
+    let mut upgraded = false;
 
     loop {
         // Find the next debounce deadline
@@ -118,6 +161,21 @@ async fn run_loop(debounce: Duration) -> Result<()> {
                 }
             }
             _ = discovery_interval.tick() => {
+                // Check for binary upgrade.
+                if let Some(ref snapshot) = binary_snapshot {
+                    if snapshot.has_changed() {
+                        daemon_log("binary updated on disk, restarting to pick up new version");
+                        // Flush pending syncs before exiting.
+                        let pending: Vec<PathBuf> = dirty.keys().cloned().collect();
+                        for path in pending {
+                            dirty.remove(&path);
+                            sync_project(&path).await;
+                        }
+                        upgraded = true;
+                        break;
+                    }
+                }
+
                 let current = discover_projects().await;
                 let current_set: HashSet<PathBuf> = current.into_iter().collect();
                 let watched_set: HashSet<PathBuf> = watchers.keys().cloned().collect();
@@ -137,7 +195,7 @@ async fn run_loop(debounce: Duration) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(upgraded)
 }
 
 /// Query the global DB for all tracked project paths.
@@ -263,7 +321,11 @@ fn daemon_log(msg: &str) {
 }
 
 /// Start the daemon. Forks to background on Unix unless `foreground` is true.
-pub async fn run(foreground: bool) -> Result<()> {
+///
+/// Returns `true` if the daemon exited due to an upgrade (binary changed on
+/// disk). The caller should exit with a non-zero code so the service manager
+/// restarts with the new version.
+pub async fn run(foreground: bool) -> Result<bool> {
     let daemon = build_daemon()?;
 
     let config = crate::user_config::UserConfig::load();
@@ -285,20 +347,29 @@ pub async fn run(foreground: bool) -> Result<()> {
         result
     } else {
         // Fork to background — the child needs its own tokio runtime.
+        // The daemon-kit closure returns Result<()>, so the child handles
+        // the upgrade exit code internally via std::process::exit.
         daemon
             .start(false, move || {
                 let rt = tokio::runtime::Runtime::new().map_err(|e| {
                     daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
                 })?;
                 rt.block_on(async {
-                    run_loop(debounce).await.map_err(|e| {
-                        daemon_kit::DaemonError::Daemonize(e.to_string())
-                    })
+                    match run_loop(debounce).await {
+                        Ok(true) => {
+                            // Upgrade detected — exit non-zero for service manager restart.
+                            std::process::exit(1);
+                        }
+                        Ok(false) => Ok(()),
+                        Err(e) => Err(daemon_kit::DaemonError::Daemonize(e.to_string())),
+                    }
                 })
             })
             .map_err(|e| TokenSaveError::Config {
                 message: format!("daemon error: {e}"),
-            })
+            })?;
+        // Parent returns immediately after fork.
+        Ok(false)
     }
 }
 
@@ -542,5 +613,52 @@ mod tests {
         assert_eq!(parse_duration("abc"), None);
         assert_eq!(parse_duration(""), None);
         assert_eq!(parse_duration("1h"), None);
+    }
+
+    #[test]
+    fn binary_snapshot_captures_current_exe() {
+        let snapshot = BinarySnapshot::capture();
+        assert!(snapshot.is_some(), "should capture current test binary");
+        let snapshot = snapshot.unwrap();
+        assert!(snapshot.path.exists());
+        assert!(snapshot.size > 0);
+    }
+
+    #[test]
+    fn binary_snapshot_unchanged() {
+        let snapshot = BinarySnapshot::capture().unwrap();
+        assert!(!snapshot.has_changed(), "binary should not have changed immediately");
+    }
+
+    #[test]
+    fn binary_snapshot_detects_missing_file() {
+        let snapshot = BinarySnapshot {
+            path: PathBuf::from("/nonexistent/binary/path"),
+            modified: std::time::UNIX_EPOCH,
+            size: 100,
+        };
+        assert!(snapshot.has_changed(), "missing file should count as changed");
+    }
+
+    #[test]
+    fn binary_snapshot_detects_size_change() {
+        let snapshot = BinarySnapshot::capture().unwrap();
+        let tampered = BinarySnapshot {
+            path: snapshot.path,
+            modified: snapshot.modified,
+            size: snapshot.size + 1, // fake a size difference
+        };
+        assert!(tampered.has_changed(), "different size should count as changed");
+    }
+
+    #[test]
+    fn binary_snapshot_detects_mtime_change() {
+        let snapshot = BinarySnapshot::capture().unwrap();
+        let tampered = BinarySnapshot {
+            path: snapshot.path,
+            modified: std::time::UNIX_EPOCH, // fake a different mtime
+            size: snapshot.size,
+        };
+        assert!(tampered.has_changed(), "different mtime should count as changed");
     }
 }
