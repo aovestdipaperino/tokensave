@@ -347,26 +347,31 @@ impl TokenSave {
     /// Performs an incremental sync: detects changed, new, and removed files
     /// and re-indexes only those that need updating.
     pub async fn sync(&self) -> Result<SyncResult> {
-        self.sync_with_progress(|_, _| {}).await
+        self.sync_with_progress(|_, _, _| {}).await
     }
 
     /// Like `sync()`, but calls `on_progress` with a description and the
     /// current step for each phase of work. Use this to drive a progress
     /// spinner in the CLI.
+    ///
+    /// The callback receives `(current_file_index, total_files, message)` where
+    /// `current_file_index` and `total_files` are zero during non-file phases
+    /// (scanning, hashing, detecting, resolving) and populated during the
+    /// per-file syncing phase.
     pub async fn sync_with_progress<F>(&self, on_progress: F) -> Result<SyncResult>
     where
-        F: Fn(&str, &str),
+        F: Fn(usize, usize, &str),
     {
         debug_assert!(self.project_root.exists(), "sync: project root does not exist");
         debug_assert!(self.project_root.is_dir(), "sync: project root is not a directory");
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         let start = Instant::now();
 
-        on_progress("scanning files", "");
+        on_progress(0, 0, "scanning files");
         let current_files = self.scan_files()?;
 
         // Compute current hashes in parallel
-        on_progress("hashing files", "");
+        on_progress(0, 0, "hashing files");
         let project_root = &self.project_root;
         let current_hashes: Vec<_> = current_files
             .par_iter()
@@ -377,14 +382,14 @@ impl TokenSave {
             })
             .collect();
 
-        on_progress("detecting changes", "");
+        on_progress(0, 0, "detecting changes");
         let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
         let new = sync::find_new_files(&self.db, &current_files).await?;
         let removed = sync::find_removed_files(&self.db, &current_files).await?;
 
         // Remove deleted files
         for path in &removed {
-            on_progress("removing", path);
+            on_progress(0, 0, &format!("removing {path}"));
             self.db.delete_file(path).await?;
         }
 
@@ -405,8 +410,9 @@ impl TokenSave {
             })
             .collect();
 
-        for (file_path, result, hash, size) in &sync_extractions {
-            on_progress("syncing", file_path);
+        let total = sync_extractions.len();
+        for (idx, (file_path, result, hash, size)) in sync_extractions.iter().enumerate() {
+            on_progress(idx + 1, total, file_path);
 
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
@@ -430,7 +436,7 @@ impl TokenSave {
         // This must run after all files are indexed so cross-file references
         // can find their targets.
         if !to_index.is_empty() {
-            on_progress("resolving references", "");
+            on_progress(0, 0, "resolving references");
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolver = ReferenceResolver::new(&self.db).await;
@@ -441,8 +447,6 @@ impl TokenSave {
                 }
             }
         }
-
-
 
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())

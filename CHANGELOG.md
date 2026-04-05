@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.3.0] - 2026-04-05
 
+### Changed
+- **Sync progress now matches full-index display** — `tokensave sync` now shows `[current/total] syncing file (ETA: Ns)` with the braille spinner and path truncation, matching the progress display used during initial indexing. Previously sync only showed phase names without file counters or ETA.
+
 ### Added
 - **MCP tool annotations** — all 34 tools now include `readOnlyHint: true` and a human-friendly `title` in their MCP annotations. Clients that support annotations can run all tokensave tools concurrently without permission prompts and display cleaner tool names.
 - **`_meta["anthropic/alwaysLoad"]`** on core tools — `tokensave_context`, `tokensave_search`, and `tokensave_status` are marked for immediate loading, bypassing the client's tool-search round-trip on first use.

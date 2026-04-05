@@ -301,14 +301,28 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
+                let sync_start = std::time::Instant::now();
                 let result = cg
-                    .sync_with_progress(|phase, detail| {
-                        let msg = if detail.is_empty() {
-                            phase.to_string()
+                    .sync_with_progress(|current, total, detail| {
+                        if current == 0 {
+                            // Phase message (scanning, hashing, detecting, resolving)
+                            spinner.set_message(detail);
                         } else {
-                            format!("{phase} {detail}")
-                        };
-                        spinner.set_message(&msg);
+                            // Per-file progress with ETA
+                            let elapsed = sync_start.elapsed().as_secs_f64();
+                            let eta = if current > 1 {
+                                let per_file = elapsed / (current - 1) as f64;
+                                let remaining = per_file * (total - current) as f64;
+                                if remaining >= 1.0 {
+                                    format!(" (ETA: {remaining:.0}s)")
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
+                            spinner.set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                        }
                     })
                     .await?;
                 spinner.done(&format!(
