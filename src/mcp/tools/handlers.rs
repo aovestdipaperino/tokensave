@@ -70,6 +70,11 @@ pub async fn handle_tool_call(
         "tokensave_changelog" => handle_changelog(cg, args).await,
         "tokensave_port_status" => handle_port_status(cg, args).await,
         "tokensave_port_order" => handle_port_order(cg, args).await,
+        "tokensave_commit_context" => handle_commit_context(cg, args).await,
+        "tokensave_pr_context" => handle_pr_context(cg, args).await,
+        "tokensave_simplify_scan" => handle_simplify_scan(cg, args).await,
+        "tokensave_test_map" => handle_test_map(cg, args).await,
+        "tokensave_type_hierarchy" => handle_type_hierarchy(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
@@ -162,8 +167,26 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(20);
 
+    let include_code = args
+        .get("include_code")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let max_code_blocks = args
+        .get("max_code_blocks")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(20) as usize)
+        .unwrap_or(5);
+
+    let mode = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("explore");
+
     let options = BuildContextOptions {
         max_nodes,
+        include_code,
+        max_code_blocks,
         ..Default::default()
     };
 
@@ -176,7 +199,70 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             .map(|n| n.file_path.as_str())
             .chain(context.related_files.iter().map(|s| s.as_str())),
     );
-    let output = format_context_as_markdown(&context);
+    let mut output = format_context_as_markdown(&context);
+
+    // Plan mode: append extension points, test coverage, and dependency info
+    if mode == "plan" {
+        output.push_str("\n### Extension Points\n");
+        let mut found_extension = false;
+        for node in &context.subgraph.nodes {
+            if matches!(node.kind, NodeKind::Trait | NodeKind::Interface)
+                && node.visibility == Visibility::Pub
+            {
+                let implementors = cg.get_callers(&node.id, 1).await.unwrap_or_default();
+                let impl_count = implementors
+                    .iter()
+                    .filter(|(_, e)| matches!(e.kind, crate::types::EdgeKind::Implements))
+                    .count();
+                output.push_str(&format!(
+                    "- **{}** ({}) - {}:{} ({} implementors)\n",
+                    node.name,
+                    node.kind.as_str(),
+                    node.file_path,
+                    node.start_line,
+                    impl_count,
+                ));
+                found_extension = true;
+            }
+        }
+        if !found_extension {
+            output.push_str("_No public traits/interfaces found in context._\n");
+        }
+
+        // Test coverage for related files
+        let file_paths: Vec<String> = context
+            .subgraph
+            .nodes
+            .iter()
+            .map(|n| n.file_path.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !file_paths.is_empty() {
+            output.push_str("\n### Test Coverage\n");
+            let mut test_files: HashSet<String> = HashSet::new();
+            for file in &file_paths {
+                let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+                for node in &nodes {
+                    let callers = cg.get_callers(&node.id, 2).await.unwrap_or_default();
+                    for (caller, _) in &callers {
+                        if crate::tokensave::is_test_file(&caller.file_path) {
+                            test_files.insert(caller.file_path.clone());
+                        }
+                    }
+                }
+            }
+            if test_files.is_empty() {
+                output.push_str("_No test files found covering these modules._\n");
+            } else {
+                let mut sorted: Vec<_> = test_files.into_iter().collect();
+                sorted.sort();
+                for tf in &sorted {
+                    output.push_str(&format!("- {}\n", tf));
+                }
+            }
+        }
+    }
 
     Ok(ToolResult {
         value: json!({
@@ -2188,6 +2274,649 @@ fn git_diff_files(
     Ok(changed)
 }
 
+/// Returns file paths changed in the working tree (unstaged + staged, or staged-only).
+fn git_changed_files(
+    project_root: &std::path::Path,
+    staged_only: bool,
+) -> std::result::Result<Vec<String>, String> {
+    let repo =
+        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let head_tree = repo
+        .head()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+        .peel_to_commit_in_place()
+        .map_err(|e| format!("cannot peel HEAD to commit: {e}"))?
+        .tree()
+        .map_err(|e| format!("cannot read HEAD tree: {e}"))?;
+
+    // Compare HEAD tree against the index (staged changes)
+    let index = repo
+        .index()
+        .map_err(|e| format!("cannot read index: {e}"))?;
+
+    let mut changed = HashSet::new();
+
+    // Walk the index to find files that differ from HEAD
+    for entry in index.entries() {
+        let path = entry.path(&index);
+        let path_str = String::from_utf8_lossy(path.as_ref()).to_string();
+        if path_str.is_empty() {
+            continue;
+        }
+
+        // Check if file exists in HEAD tree
+        let head_entry = head_tree
+            .lookup_entry_by_path(std::path::Path::new(&path_str))
+            .ok()
+            .flatten();
+
+        match head_entry {
+            Some(he) => {
+                // File exists in both - check if content differs
+                if he.object_id() != entry.id {
+                    changed.insert(path_str);
+                }
+            }
+            None => {
+                // New file (in index but not in HEAD)
+                changed.insert(path_str);
+            }
+        }
+    }
+
+    // If not staged_only, also check working-tree modifications via mtime
+    if !staged_only {
+        for entry in index.entries() {
+            let path = entry.path(&index);
+            let path_str = String::from_utf8_lossy(path.as_ref()).to_string();
+            if path_str.is_empty() {
+                continue;
+            }
+            let full_path = project_root.join(&path_str);
+            if let Ok(meta) = std::fs::metadata(&full_path) {
+                use std::time::UNIX_EPOCH;
+                let mtime = meta
+                    .modified()
+                    .unwrap_or(UNIX_EPOCH)
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+                // gix index entry stores mtime; if disk mtime is newer, file is modified
+                if mtime > entry.stat.mtime.secs {
+                    changed.insert(path_str);
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = changed.into_iter().collect();
+    result.sort();
+    Ok(result)
+}
+
+/// Returns the last N commit subjects from HEAD.
+fn git_recent_commits(
+    project_root: &std::path::Path,
+    count: usize,
+) -> std::result::Result<Vec<String>, String> {
+    let repo =
+        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let mut commits = Vec::new();
+    let head = repo
+        .head()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+        .into_peeled_id()
+        .map_err(|e| format!("cannot peel HEAD: {e}"))?;
+
+    let mut current_id = head.detach();
+
+    for _ in 0..count {
+        let commit = repo
+            .find_object(current_id)
+            .map_err(|e| format!("cannot find object: {e}"))?
+            .try_into_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+
+        let message = commit
+            .message_raw()
+            .map_err(|e| format!("cannot read commit message: {e}"))?;
+        let subject = String::from_utf8_lossy(message.as_ref())
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        commits.push(subject);
+
+        let parent_id = commit.parent_ids().next().map(|id| id.detach());
+        match parent_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+
+    Ok(commits)
+}
+
+/// Returns commit subjects between two refs.
+fn git_commit_log(
+    project_root: &std::path::Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> std::result::Result<Vec<Value>, String> {
+    let repo =
+        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let base_id = repo
+        .rev_parse_single(base_ref)
+        .map_err(|e| format!("cannot resolve '{base_ref}': {e}"))?
+        .detach();
+
+    let head_id = repo
+        .rev_parse_single(head_ref)
+        .map_err(|e| format!("cannot resolve '{head_ref}': {e}"))?
+        .detach();
+
+    let mut commits = Vec::new();
+    let mut current_id = head_id;
+
+    // Walk back from head until we hit base (max 100 commits)
+    for _ in 0..100 {
+        if current_id == base_id {
+            break;
+        }
+        let commit = repo
+            .find_object(current_id)
+            .map_err(|e| format!("cannot find object: {e}"))?
+            .try_into_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+
+        let message = commit
+            .message_raw()
+            .map_err(|e| format!("cannot read message: {e}"))?;
+        let subject = String::from_utf8_lossy(message.as_ref())
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let short_id = format!("{:.7}", commit.id);
+        commits.push(json!({"hash": short_id, "subject": subject}));
+
+        let parent_id = commit.parent_ids().next().map(|id| id.detach());
+        match parent_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+
+    Ok(commits)
+}
+
+/// Classify a file path into a semantic role.
+fn classify_file_role(path: &str) -> &'static str {
+    if crate::tokensave::is_test_file(path) {
+        return "test";
+    }
+    let lower = path.to_lowercase();
+    // Config files
+    if lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".json")
+        || lower.ends_with(".lock")
+        || lower.ends_with(".ini")
+        || lower.ends_with(".cfg")
+        || lower.contains("config")
+    {
+        return "config";
+    }
+    // Documentation
+    if lower.ends_with(".md")
+        || lower.ends_with(".rst")
+        || lower.ends_with(".txt")
+        || lower.starts_with("docs/")
+        || lower.starts_with("doc/")
+    {
+        return "docs";
+    }
+    "source"
+}
+
+/// Handles `tokensave_commit_context` tool calls.
+async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let staged_only = args
+        .get("staged_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let changed_files = match git_changed_files(cg.project_root(), staged_only) {
+        Ok(files) => files,
+        Err(e) => {
+            return Ok(ToolResult {
+                value: json!({"content": [{"type": "text", "text": format!("git error: {}", e)}]}),
+                touched_files: vec![],
+            });
+        }
+    };
+
+    if changed_files.is_empty() {
+        return Ok(ToolResult {
+            value: json!({"content": [{"type": "text", "text": "No changes detected."}]}),
+            touched_files: vec![],
+        });
+    }
+
+    let mut file_roles: Vec<Value> = Vec::new();
+    let mut symbols_by_role: HashMap<&str, Vec<Value>> = HashMap::new();
+
+    for file in &changed_files {
+        let role = classify_file_role(file);
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+        file_roles.push(json!({"file": file, "role": role, "symbols": nodes.len()}));
+
+        for node in &nodes {
+            symbols_by_role.entry(role).or_default().push(json!({
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+            }));
+        }
+    }
+
+    let has_tests = file_roles.iter().any(|f| f["role"] == "test");
+    let has_source = file_roles.iter().any(|f| f["role"] == "source");
+    let category = match (has_source, has_tests) {
+        (true, true) => "feature/fix (source + tests)",
+        (true, false) => "feature/fix/refactor",
+        (false, true) => "test",
+        (false, false) => "chore/docs/config",
+    };
+
+    let recent_commits = git_recent_commits(cg.project_root(), 5).unwrap_or_default();
+
+    let total_symbols: usize = symbols_by_role.values().map(|v| v.len()).sum();
+    let output = json!({
+        "changed_files": file_roles,
+        "symbols_by_role": symbols_by_role,
+        "suggested_category": category,
+        "recent_commits": recent_commits,
+        "summary": format!("{} file(s) changed, {} symbol(s) affected", changed_files.len(), total_symbols),
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: changed_files,
+    })
+}
+
+/// Handles `tokensave_pr_context` tool calls.
+async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let base = args.get("base_ref").and_then(|v| v.as_str()).unwrap_or("main");
+    let head = args.get("head_ref").and_then(|v| v.as_str()).unwrap_or("HEAD");
+
+    let changed_files = match git_diff_files(cg.project_root(), base, head) {
+        Ok(files) => files,
+        Err(e) => {
+            return Ok(ToolResult {
+                value: json!({"content": [{"type": "text", "text": format!("git error: {}", e)}]}),
+                touched_files: vec![],
+            });
+        }
+    };
+
+    let commits = git_commit_log(cg.project_root(), base, head).unwrap_or_default();
+
+    let mut symbols_added: Vec<Value> = Vec::new();
+    let mut symbols_modified: Vec<Value> = Vec::new();
+    let mut test_files_changed: Vec<String> = Vec::new();
+    let mut impacted_modules: HashSet<String> = HashSet::new();
+
+    for file in &changed_files {
+        if crate::tokensave::is_test_file(file) {
+            test_files_changed.push(file.clone());
+        }
+
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+        for node in &nodes {
+            let sym = json!({
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+            });
+
+            // Check if this symbol has callers outside changed files — if so, it's
+            // a modification to an existing API. Otherwise it's likely new.
+            let callers = cg.get_callers(&node.id, 1).await.unwrap_or_default();
+            let has_external_callers = callers
+                .iter()
+                .any(|(c, _)| !changed_files.contains(&c.file_path));
+
+            if has_external_callers {
+                symbols_modified.push(sym);
+                // Track impacted modules
+                for (caller, _) in &callers {
+                    if !changed_files.contains(&caller.file_path) {
+                        let dir = caller
+                            .file_path
+                            .rfind('/')
+                            .map(|i| &caller.file_path[..i])
+                            .unwrap_or(&caller.file_path);
+                        impacted_modules.insert(dir.to_string());
+                    }
+                }
+            } else {
+                symbols_added.push(sym);
+            }
+        }
+    }
+
+    // Find transitively affected test files
+    let mut affected_tests: HashSet<String> = HashSet::new();
+    for file in &changed_files {
+        if crate::tokensave::is_test_file(file) {
+            continue;
+        }
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+        for node in &nodes {
+            let impact = cg.get_impact_radius(&node.id, 2).await.unwrap_or_default();
+            for impacted in &impact.nodes {
+                if crate::tokensave::is_test_file(&impacted.file_path) {
+                    affected_tests.insert(impacted.file_path.clone());
+                }
+            }
+        }
+    }
+
+    let mut impacted_sorted: Vec<String> = impacted_modules.into_iter().collect();
+    impacted_sorted.sort();
+    let mut affected_sorted: Vec<String> = affected_tests.into_iter().collect();
+    affected_sorted.sort();
+
+    let output = json!({
+        "base": base,
+        "head": head,
+        "commits": commits,
+        "files_changed": changed_files.len(),
+        "symbols_added": symbols_added.len(),
+        "symbols_modified": symbols_modified.len(),
+        "added": symbols_added,
+        "modified": symbols_modified,
+        "test_files_changed": test_files_changed,
+        "affected_tests": affected_sorted,
+        "impacted_modules": impacted_sorted,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: changed_files,
+    })
+}
+
+/// Handles `tokensave_simplify_scan` tool calls.
+async fn handle_simplify_scan(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let mut duplications: Vec<Value> = Vec::new();
+    let mut dead_introductions: Vec<Value> = Vec::new();
+    let mut complexity_warnings: Vec<Value> = Vec::new();
+    let mut coupling_warnings: Vec<Value> = Vec::new();
+
+    for file in &files {
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+
+        for node in &nodes {
+            // 1. Duplication: find similar symbols elsewhere
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                let similar = cg.search(&node.name, 5).await.unwrap_or_default();
+                let dupes: Vec<Value> = similar
+                    .iter()
+                    .filter(|s| s.node.id != node.id && s.score > 0.8 && s.node.file_path != node.file_path)
+                    .map(|d| json!({
+                        "name": d.node.name,
+                        "file": d.node.file_path,
+                        "line": d.node.start_line,
+                        "score": d.score,
+                    }))
+                    .collect();
+                if !dupes.is_empty() {
+                    duplications.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "similar_to": dupes,
+                    }));
+                }
+            }
+
+            // 2. Dead code: function/method with no incoming edges
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method)
+                && node.visibility != Visibility::Pub
+                && node.name != "main"
+                && !node.name.starts_with("test_")
+            {
+                let incoming = cg.get_incoming_edges(&node.id).await.unwrap_or_default();
+                if incoming.is_empty() {
+                    dead_introductions.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "reason": "no incoming edges (unreferenced)",
+                    }));
+                }
+            }
+
+            // 3. Complexity: check if function exceeds threshold
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                let lines = node.end_line.saturating_sub(node.start_line) as usize;
+                let fan_out = cg
+                    .get_outgoing_edges(&node.id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::types::EdgeKind::Calls))
+                    .count();
+                let score = lines + fan_out * 3;
+                if score > 100 {
+                    complexity_warnings.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "lines": lines,
+                        "fan_out": fan_out,
+                        "score": score,
+                    }));
+                }
+            }
+        }
+
+        // 4. Coupling: check file fan_in
+        let file_deps = cg.get_file_dependents(file).await.unwrap_or_default();
+        if file_deps.len() > 15 {
+            coupling_warnings.push(json!({
+                "file": file,
+                "fan_in": file_deps.len(),
+                "warning": "high fan-in — changes here affect many dependents",
+            }));
+        }
+    }
+
+    let output = json!({
+        "duplications": duplications,
+        "dead_introductions": dead_introductions,
+        "complexity_warnings": complexity_warnings,
+        "coupling_warnings": coupling_warnings,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: files,
+    })
+}
+
+/// Handles `tokensave_test_map` tool calls.
+async fn handle_test_map(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let source_nodes = if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
+        cg.get_nodes_by_file(file).await?
+    } else if let Some(node_id) = args
+        .get("node_id")
+        .or(args.get("id"))
+        .and_then(|v| v.as_str())
+    {
+        cg.get_node(node_id).await?.into_iter().collect()
+    } else {
+        return Err(TokenSaveError::Config {
+            message: "provide either 'file' or 'node_id'".to_string(),
+        });
+    };
+
+    let mut coverage_map: Vec<Value> = Vec::new();
+    let mut uncovered: Vec<Value> = Vec::new();
+    let mut all_test_files: HashSet<String> = HashSet::new();
+
+    for node in &source_nodes {
+        if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            continue;
+        }
+
+        let callers = cg.get_callers(&node.id, 3).await.unwrap_or_default();
+        let test_callers: Vec<Value> = callers
+            .iter()
+            .filter(|(n, _)| crate::tokensave::is_test_file(&n.file_path))
+            .map(|(n, _)| {
+                all_test_files.insert(n.file_path.clone());
+                json!({
+                    "test_name": n.name,
+                    "test_file": n.file_path,
+                    "test_line": n.start_line,
+                })
+            })
+            .collect();
+
+        if test_callers.is_empty() {
+            uncovered.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "file": node.file_path,
+                "line": node.start_line,
+            }));
+        } else {
+            coverage_map.push(json!({
+                "source_name": node.name,
+                "source_id": node.id,
+                "source_file": node.file_path,
+                "source_line": node.start_line,
+                "tests": test_callers,
+            }));
+        }
+    }
+
+    let mut test_file_list: Vec<String> = all_test_files.into_iter().collect();
+    test_file_list.sort();
+
+    let output = json!({
+        "covered_symbols": coverage_map.len(),
+        "uncovered_symbols": uncovered.len(),
+        "test_files": test_file_list,
+        "coverage": coverage_map,
+        "uncovered": uncovered,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let touched_files = unique_file_paths(source_nodes.iter().map(|n| n.file_path.as_str()));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_type_hierarchy` tool calls.
+async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_id = require_node_id(&args)?;
+    let max_depth = args
+        .get("max_depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(10) as usize)
+        .unwrap_or(5);
+
+    let root = cg
+        .get_node(node_id)
+        .await?
+        .ok_or_else(|| TokenSaveError::Config {
+            message: format!("node not found: {}", node_id),
+        })?;
+
+    let mut output = format!(
+        "{} ({}) -- {}:{}\n",
+        root.name,
+        root.kind.as_str(),
+        root.file_path,
+        root.start_line
+    );
+    let mut all_files: Vec<String> = vec![root.file_path.clone()];
+
+    // Recursively build the hierarchy
+    build_type_tree(cg, &root.id, max_depth, 0, &mut output, &mut all_files).await;
+
+    let touched_files = unique_file_paths(all_files.iter().map(|s| s.as_str()));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
+        touched_files,
+    })
+}
+
+/// Recursively appends type hierarchy lines to the output string.
+fn build_type_tree<'a>(
+    cg: &'a TokenSave,
+    node_id: &'a str,
+    max_depth: usize,
+    depth: usize,
+    output: &'a mut String,
+    all_files: &'a mut Vec<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        if depth >= max_depth {
+            return;
+        }
+
+        let incoming = cg.get_incoming_edges(node_id).await.unwrap_or_default();
+        let pad = "  ".repeat(depth);
+
+        for edge in &incoming {
+            if !matches!(
+                edge.kind,
+                crate::types::EdgeKind::Implements | crate::types::EdgeKind::Extends
+            ) {
+                continue;
+            }
+            if let Ok(Some(child)) = cg.get_node(&edge.source).await {
+                output.push_str(&format!(
+                    "{}|- {} {} ({}) -- {}:{}\n",
+                    pad,
+                    edge.kind.as_str(),
+                    child.name,
+                    child.kind.as_str(),
+                    child.file_path,
+                    child.start_line,
+                ));
+                all_files.push(child.file_path.clone());
+                build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2196,7 +2925,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 34);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -2228,6 +2957,11 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_god_class"));
         assert!(tool_names.contains(&"tokensave_port_status"));
         assert!(tool_names.contains(&"tokensave_port_order"));
+        assert!(tool_names.contains(&"tokensave_commit_context"));
+        assert!(tool_names.contains(&"tokensave_pr_context"));
+        assert!(tool_names.contains(&"tokensave_simplify_scan"));
+        assert!(tool_names.contains(&"tokensave_test_map"));
+        assert!(tool_names.contains(&"tokensave_type_hierarchy"));
     }
 
     #[test]

@@ -70,6 +70,11 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_changelog(),
         def_port_status(),
         def_port_order(),
+        def_commit_context(),
+        def_pr_context(),
+        def_simplify_scan(),
+        def_test_map(),
+        def_type_hierarchy(),
     ];
     debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
     debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
@@ -105,7 +110,7 @@ fn def_context() -> ToolDefinition {
     def_always_load(
         "tokensave_context",
         "Task Context",
-        "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and code snippets.",
+        "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and optionally code snippets.",
         json!({
             "type": "object",
             "properties": {
@@ -116,6 +121,19 @@ fn def_context() -> ToolDefinition {
                 "max_nodes": {
                     "type": "number",
                     "description": "Maximum number of symbols to include (default: 20)"
+                },
+                "include_code": {
+                    "type": "boolean",
+                    "description": "If true, include source code snippets for key symbols (default: false)"
+                },
+                "max_code_blocks": {
+                    "type": "number",
+                    "description": "Maximum number of code snippets when include_code is true (default: 5)"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["explore", "plan"],
+                    "description": "Context mode: 'explore' (default) for general exploration, 'plan' for implementation planning (adds extension points, dependency order, test coverage)"
                 }
             },
             "required": ["task"]
@@ -680,6 +698,106 @@ fn def_port_order() -> ToolDefinition {
                 }
             },
             "required": ["source_dir"]
+        }),
+    )
+}
+
+fn def_commit_context() -> ToolDefinition {
+    def(
+        "tokensave_commit_context",
+        "Commit Context",
+        "Semantic summary of uncommitted changes for drafting a commit message. Returns changed symbols, file roles, and recent commit style.",
+        json!({
+            "type": "object",
+            "properties": {
+                "staged_only": {
+                    "type": "boolean",
+                    "description": "If true, only analyze staged changes (default: false = all uncommitted changes)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_pr_context() -> ToolDefinition {
+    def(
+        "tokensave_pr_context",
+        "PR Context",
+        "Semantic summary of changes between two git refs for drafting a pull request description.",
+        json!({
+            "type": "object",
+            "properties": {
+                "base_ref": {
+                    "type": "string",
+                    "description": "Base branch or ref to compare against (default: 'main')"
+                },
+                "head_ref": {
+                    "type": "string",
+                    "description": "Head branch or ref (default: 'HEAD')"
+                }
+            }
+        }),
+    )
+}
+
+fn def_simplify_scan() -> ToolDefinition {
+    def(
+        "tokensave_simplify_scan",
+        "Simplify Scan",
+        "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
+        json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Changed file paths to analyze"
+                }
+            },
+            "required": ["files"]
+        }),
+    )
+}
+
+fn def_test_map() -> ToolDefinition {
+    def(
+        "tokensave_test_map",
+        "Test Map",
+        "Map source symbols to their test functions. Shows which tests cover which source code.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Source file path to find test coverage for"
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Specific node ID to find test coverage for (alternative to file)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_type_hierarchy() -> ToolDefinition {
+    def(
+        "tokensave_type_hierarchy",
+        "Type Hierarchy",
+        "Show the full type hierarchy for a trait/interface/class: all implementors and extenders, recursively.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "The type node ID to build the hierarchy for"
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum inheritance depth to traverse (default: 5)"
+                }
+            },
+            "required": ["node_id"]
         }),
     )
 }
