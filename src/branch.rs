@@ -1,0 +1,172 @@
+//! Git branch resolution utilities for multi-branch indexing.
+
+use std::path::Path;
+
+use crate::branch_meta::BranchMeta;
+
+/// Reads `.git/HEAD` and resolves the current branch name.
+///
+/// Returns `None` for detached HEAD or if `.git/HEAD` cannot be read.
+pub fn current_branch(project_root: &Path) -> Option<String> {
+    let head_path = project_root.join(".git/HEAD");
+    let content = std::fs::read_to_string(head_path).ok()?;
+    let trimmed = content.trim();
+    let branch = trimmed.strip_prefix("ref: refs/heads/")?;
+    Some(branch.to_string())
+}
+
+/// Auto-detects the default branch (main or master).
+///
+/// Strategy:
+/// 1. Try `git symbolic-ref refs/remotes/origin/HEAD`
+/// 2. Fall back to checking if `main` or `master` exists locally
+pub fn detect_default_branch(project_root: &Path) -> Option<String> {
+    let repo = gix::open(project_root).ok()?;
+
+    // Try symbolic-ref first
+    if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Some(name) = reference.name().as_bstr().to_string().strip_prefix("refs/remotes/origin/") {
+            return Some(name.to_string());
+        }
+    }
+
+    // Fall back to heuristics
+    for candidate in &["main", "master"] {
+        let refname = format!("refs/heads/{candidate}");
+        if repo.find_reference(&refname).is_ok() {
+            return Some((*candidate).to_string());
+        }
+    }
+
+    None
+}
+
+/// Sanitizes a branch name for use as a filename.
+///
+/// Replaces `/` with `_`, strips characters unsafe for filenames,
+/// and collapses `..` sequences to prevent path traversal.
+pub fn sanitize_branch_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | ' ' | '.' => '_',
+            c => c,
+        })
+        .collect();
+    // Collapse runs of underscores
+    let mut result = String::with_capacity(sanitized.len());
+    let mut prev_underscore = false;
+    for c in sanitized.chars() {
+        if c == '_' {
+            if !prev_underscore {
+                result.push(c);
+            }
+            prev_underscore = true;
+        } else {
+            result.push(c);
+            prev_underscore = false;
+        }
+    }
+    // Strip leading/trailing underscores
+    result.trim_matches('_').to_string()
+}
+
+/// Resolves the DB path for a given branch.
+///
+/// If the branch is tracked in metadata, returns its `db_file` path.
+/// Returns `None` if untracked or if the path would escape `tokensave_dir`.
+pub fn resolve_branch_db_path(
+    tokensave_dir: &Path,
+    branch: &str,
+    meta: &BranchMeta,
+) -> Option<std::path::PathBuf> {
+    let entry = meta.branches.get(branch)?;
+    let resolved = tokensave_dir.join(&entry.db_file);
+    // Prevent path traversal: resolved path must stay within tokensave_dir
+    if let (Ok(canonical_dir), Ok(canonical_path)) =
+        (tokensave_dir.canonicalize(), resolved.canonicalize())
+    {
+        if !canonical_path.starts_with(&canonical_dir) {
+            return None;
+        }
+    }
+    Some(resolved)
+}
+
+/// Finds the nearest tracked ancestor branch using `git merge-base`.
+///
+/// For each tracked branch in the metadata, computes the merge-base with
+/// the given branch and picks the one with the most recent common ancestor.
+pub fn find_nearest_tracked_ancestor(
+    project_root: &Path,
+    branch: &str,
+    meta: &BranchMeta,
+) -> Option<String> {
+    let repo = gix::open(project_root).ok()?;
+
+    let branch_ref = format!("refs/heads/{branch}");
+    let branch_commit = repo
+        .find_reference(&branch_ref)
+        .ok()?
+        .peel_to_commit()
+        .ok()?;
+
+    let mut best: Option<(String, gix::date::Time)> = None;
+
+    for tracked_name in meta.branches.keys() {
+        if tracked_name == branch {
+            continue;
+        }
+        let tracked_ref = format!("refs/heads/{tracked_name}");
+        let Some(tracked_commit) = repo
+            .find_reference(&tracked_ref)
+            .ok()
+            .and_then(|mut r| r.peel_to_commit().ok())
+        else {
+            continue;
+        };
+
+        // Find merge-base between branch and tracked branch
+        let Ok(base_id) = repo.merge_base(branch_commit.id, tracked_commit.id) else {
+            continue;
+        };
+
+        let Ok(base_commit) = repo.find_commit(base_id) else {
+            continue;
+        };
+        let time = base_commit.time().ok().unwrap_or_else(|| gix::date::Time::new(0, 0));
+        if best.as_ref().is_none_or(|(_, best_time)| time.seconds > best_time.seconds) {
+            best = Some((tracked_name.clone(), time));
+        }
+    }
+
+    best.map(|(name, _)| name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_simple() {
+        assert_eq!(sanitize_branch_name("main"), "main");
+    }
+
+    #[test]
+    fn sanitize_slashes() {
+        assert_eq!(sanitize_branch_name("feature/foo/bar"), "feature_foo_bar");
+    }
+
+    #[test]
+    fn sanitize_special_chars() {
+        assert_eq!(sanitize_branch_name("fix: bug <1>"), "fix_bug_1");
+    }
+
+    #[test]
+    fn sanitize_dots_prevented() {
+        // ".." becomes all underscores, collapsed and trimmed to empty
+        assert_eq!(sanitize_branch_name(".."), "");
+        // dots and slashes become underscores, collapsed
+        assert_eq!(sanitize_branch_name("foo/../bar"), "foo_bar");
+    }
+}

@@ -75,6 +75,9 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_simplify_scan(),
         def_test_map(),
         def_type_hierarchy(),
+        def_branch_search(),
+        def_branch_diff(),
+        def_branch_list(),
     ];
     debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
     debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
@@ -798,6 +801,73 @@ fn def_type_hierarchy() -> ToolDefinition {
                 }
             },
             "required": ["node_id"]
+        }),
+    )
+}
+
+fn def_branch_search() -> ToolDefinition {
+    def(
+        "tokensave_branch_search",
+        "Cross-Branch Search",
+        "Search for symbols in another branch's code graph. Opens the target branch's DB and runs a search query against it.",
+        json!({
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name to search in (must be tracked via `tokensave branch add`)"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query string to match against symbol names"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 10)"
+                }
+            },
+            "required": ["branch", "query"]
+        }),
+    )
+}
+
+fn def_branch_diff() -> ToolDefinition {
+    def(
+        "tokensave_branch_diff",
+        "Branch Diff",
+        "Compare the code graphs of two branches. Shows symbols added, removed, and changed (signature differs) between base and head.",
+        json!({
+            "type": "object",
+            "properties": {
+                "base": {
+                    "type": "string",
+                    "description": "Base branch name (e.g. 'main'). Defaults to the project's default branch."
+                },
+                "head": {
+                    "type": "string",
+                    "description": "Head branch name (e.g. 'feature/foo'). Defaults to the current branch."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Optional file path filter — only show diffs for symbols in this file"
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Optional kind filter — only show diffs for this symbol kind (e.g. 'function', 'struct')"
+                }
+            }
+        }),
+    )
+}
+
+fn def_branch_list() -> ToolDefinition {
+    def(
+        "tokensave_branch_list",
+        "List Tracked Branches",
+        "List all tracked branches with their DB sizes, parent branch, and last sync time. Returns an empty list if multi-branch is not active.",
+        json!({
+            "type": "object",
+            "properties": {}
         }),
     )
 }

@@ -244,6 +244,43 @@ enum Commands {
         #[arg(long, default_value = "0")]
         port: u16,
     },
+    /// Manage multi-branch indexing
+    Branch {
+        #[command(subcommand)]
+        action: BranchAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum BranchAction {
+    /// List tracked branches and their DB sizes
+    List {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Track a new branch (copies nearest ancestor DB + incremental sync)
+    Add {
+        /// Branch name to track (default: current branch)
+        name: Option<String>,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Remove a tracked branch and delete its DB
+    Remove {
+        /// Branch name to remove
+        name: String,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Remove DBs for branches that no longer exist in git
+    Gc {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -445,10 +482,22 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 if !short {
                     print!("{}", include_str!("resources/logo.ansi"));
                 }
+                let branch_info = cg.active_branch().map(|b| {
+                    let parent = {
+                        let ts_dir = tokensave::config::get_tokensave_dir(&project_path);
+                        tokensave::branch_meta::load_branch_meta(&ts_dir)
+                            .and_then(|meta| meta.branches.get(b)?.parent.clone())
+                    };
+                    tokensave::display::BranchInfo {
+                        branch: b.to_string(),
+                        parent,
+                        is_fallback: cg.is_fallback(),
+                    }
+                });
                 if short {
-                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
                 } else {
-                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags);
+                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
                 }
 
                 // Warn if .tokensave is not in .gitignore
@@ -795,8 +844,202 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let cg = TokenSave::open(&project_path).await?;
             tokensave::visualizer::run(&cg, port).await?;
         }
+        Commands::Branch { action } => {
+            handle_branch_action(action).await?;
+        }
     }
     Ok(())
+}
+
+async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
+    use tokensave::branch;
+    use tokensave::branch_meta;
+    use tokensave::config::get_tokensave_dir;
+
+    match action {
+        BranchAction::List { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            let Some(meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
+                eprintln!("No branch tracking configured. Run `tokensave branch add` to start.");
+                return Ok(());
+            };
+            let current = branch::current_branch(&project_path);
+            eprintln!("Default branch: {}", meta.default_branch);
+            eprintln!();
+            for (name, entry) in &meta.branches {
+                let db_path = tokensave_dir.join(&entry.db_file);
+                let size = if db_path.exists() {
+                    let bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+                    format_size(bytes)
+                } else {
+                    "missing".to_string()
+                };
+                let marker = if current.as_deref() == Some(name.as_str()) {
+                    " *"
+                } else {
+                    ""
+                };
+                let parent = entry
+                    .parent
+                    .as_deref()
+                    .map(|p| format!(" (from {p})"))
+                    .unwrap_or_default();
+                let synced = branch_meta::format_timestamp(&entry.last_synced_at);
+                eprintln!("  {name}{marker} — {size}{parent}, synced {synced}");
+            }
+        }
+        BranchAction::Add { name, path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+
+            let branch_name = match name {
+                Some(n) => n,
+                None => branch::current_branch(&project_path).ok_or_else(|| {
+                    tokensave::errors::TokenSaveError::Config {
+                        message: "cannot detect current branch (detached HEAD?). Specify a branch name.".to_string(),
+                    }
+                })?,
+            };
+
+            // Load or bootstrap metadata
+            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
+                let default = branch::detect_default_branch(&project_path)
+                    .unwrap_or_else(|| "main".to_string());
+                branch_meta::BranchMeta::new(&default)
+            });
+
+            if meta.is_tracked(&branch_name) {
+                eprintln!("Branch '{branch_name}' is already tracked.");
+                return Ok(());
+            }
+
+            // Find parent DB to copy from
+            let parent = branch::find_nearest_tracked_ancestor(&project_path, &branch_name, &meta)
+                .unwrap_or_else(|| meta.default_branch.clone());
+            let parent_db = branch::resolve_branch_db_path(&tokensave_dir, &parent, &meta)
+                .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                    message: format!("parent branch '{parent}' has no DB"),
+                })?;
+            if !parent_db.exists() {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!("parent DB not found at '{}'", parent_db.display()),
+                });
+            }
+
+            // Copy DB
+            let sanitized = branch::sanitize_branch_name(&branch_name);
+            let branches_dir = branch_meta::ensure_branches_dir(&tokensave_dir)?;
+            let new_db_path = branches_dir.join(format!("{sanitized}.db"));
+            let spinner = Spinner::new();
+            spinner.set_message(&format!("copying DB from '{parent}'"));
+            std::fs::copy(&parent_db, &new_db_path)?;
+
+            // Save metadata BEFORE open() so it resolves the new branch to its DB
+            let db_file = format!("branches/{sanitized}.db");
+            meta.add_branch(&branch_name, &db_file, &parent);
+            branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
+
+            // Run incremental sync (hash-based delta) against the new branch DB
+            spinner.set_message("syncing changes");
+            let cg = TokenSave::open(&project_path).await?;
+            let result = cg.sync().await?;
+
+            // Update sync timestamp after successful sync
+            if let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) {
+                meta.touch_synced(&branch_name);
+                let _ = branch_meta::save_branch_meta(&tokensave_dir, &meta);
+            }
+
+            spinner.done(&format!(
+                "branch '{branch_name}' tracked — {} added, {} modified, {} removed",
+                result.files_added, result.files_modified, result.files_removed
+            ));
+        }
+        BranchAction::Remove { name, path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
+                eprintln!("No branch tracking configured.");
+                return Ok(());
+            };
+            if name == meta.default_branch {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!("cannot remove default branch '{name}'"),
+                });
+            }
+            if let Some(entry) = meta.remove_branch(&name) {
+                let db_path = tokensave_dir.join(&entry.db_file);
+                if db_path.exists() {
+                    std::fs::remove_file(&db_path)?;
+                    // Also remove WAL/SHM sidecar files
+                    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+                    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+                }
+                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
+                eprintln!("\x1b[32m✔\x1b[0m Branch '{name}' removed.");
+            } else {
+                eprintln!("Branch '{name}' is not tracked.");
+            }
+        }
+        BranchAction::Gc { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
+                eprintln!("No branch tracking configured.");
+                return Ok(());
+            };
+
+            // Find branches in metadata that no longer exist in git
+            let stale: Vec<String> = meta
+                .branches
+                .keys()
+                .filter(|name| *name != &meta.default_branch)
+                .filter(|name| {
+                    let ref_path = project_path.join(format!(".git/refs/heads/{name}"));
+                    let packed = project_path.join(".git/packed-refs");
+                    let suffix = format!("refs/heads/{name}");
+                    let in_packed = packed.exists()
+                        && std::fs::read_to_string(&packed)
+                            .map(|c| c.lines().any(|line| line.ends_with(&suffix)))
+                            .unwrap_or(false);
+                    !ref_path.exists() && !in_packed
+                })
+                .cloned()
+                .collect();
+
+            if stale.is_empty() {
+                eprintln!("No stale branches to clean up.");
+            } else {
+                for name in &stale {
+                    if let Some(entry) = meta.remove_branch(name) {
+                        let db_path = tokensave_dir.join(&entry.db_file);
+                        if db_path.exists() {
+                            std::fs::remove_file(&db_path)?;
+                            let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+                            let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+                        }
+                        eprintln!("  removed '{name}'");
+                    }
+                }
+                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
+                eprintln!("\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).", stale.len());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// When invoked with no subcommand, offer to create the index if none exists.

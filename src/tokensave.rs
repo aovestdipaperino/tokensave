@@ -6,6 +6,8 @@ use std::time::Instant;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
+use crate::branch;
+use crate::branch_meta::{self, BranchMeta};
 use crate::config::{get_tokensave_dir, is_excluded, load_config, save_config, TokenSaveConfig};
 use crate::context::ContextBuilder;
 use crate::db::Database;
@@ -25,6 +27,10 @@ pub struct TokenSave {
     config: TokenSaveConfig,
     project_root: PathBuf,
     registry: LanguageRegistry,
+    /// The active git branch (None if detached HEAD or not a git repo).
+    active_branch: Option<String>,
+    /// Set when serving from a fallback (ancestor) DB instead of the exact branch.
+    fallback_warning: Option<String>,
 }
 
 /// Result of a full indexing operation.
@@ -79,20 +85,37 @@ impl TokenSave {
         let db_path = get_tokensave_dir(project_root).join("tokensave.db");
         let (db, _migrated) = Database::initialize(&db_path).await?;
 
+        // Bootstrap branch metadata if we can detect a default branch
+        let active_branch = branch::current_branch(project_root);
+        let default_branch = branch::detect_default_branch(project_root)
+            .or_else(|| active_branch.clone());
+        if let Some(ref default) = default_branch {
+            let meta = BranchMeta::new(default);
+            let _ = branch_meta::save_branch_meta(&get_tokensave_dir(project_root), &meta);
+        }
+
         Ok(Self {
             db,
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            active_branch,
+            fallback_warning: None,
         })
     }
 
     /// Opens an existing TokenSave project at the given root.
     ///
-    /// Loads the configuration from disk and opens the existing database.
+    /// If branch metadata exists, resolves the current git branch and opens
+    /// the corresponding DB. Falls back to the nearest tracked ancestor DB
+    /// with a warning if the current branch is untracked.
     pub async fn open(project_root: &Path) -> Result<Self> {
         let config = load_config(project_root)?;
-        let db_path = get_tokensave_dir(project_root).join("tokensave.db");
+        let tokensave_dir = get_tokensave_dir(project_root);
+        let active_branch = branch::current_branch(project_root);
+
+        let (db_path, fallback_warning) =
+            Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
 
         if !db_path.exists() {
             return Err(TokenSaveError::Config {
@@ -109,6 +132,8 @@ impl TokenSave {
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            active_branch,
+            fallback_warning,
         };
 
         if migrated {
@@ -120,6 +145,109 @@ impl TokenSave {
         }
 
         Ok(ts)
+    }
+
+    /// Resolves which DB file to open for a given branch.
+    ///
+    /// Returns `(db_path, fallback_warning)`. The warning is `Some` when
+    /// falling back to an ancestor branch's DB.
+    fn resolve_db_for_branch(
+        project_root: &Path,
+        tokensave_dir: &Path,
+        branch: Option<&str>,
+    ) -> (PathBuf, Option<String>) {
+        let default_db = tokensave_dir.join("tokensave.db");
+
+        let Some(meta) = branch_meta::load_branch_meta(tokensave_dir) else {
+            // No branch metadata — single-DB mode (backward compat)
+            return (default_db, None);
+        };
+
+        let Some(branch) = branch else {
+            // Detached HEAD — use default branch DB
+            return (default_db, Some("detached HEAD — using default branch index".to_string()));
+        };
+
+        // Exact match: branch is tracked
+        if let Some(path) = branch::resolve_branch_db_path(tokensave_dir, branch, &meta) {
+            if path.exists() {
+                return (path, None);
+            }
+        }
+
+        // Fallback: find nearest tracked ancestor
+        if let Some(ancestor) = branch::find_nearest_tracked_ancestor(project_root, branch, &meta)
+        {
+            if let Some(path) = branch::resolve_branch_db_path(tokensave_dir, &ancestor, &meta) {
+                if path.exists() {
+                    return (
+                        path,
+                        Some(format!(
+                            "branch '{branch}' is not tracked — serving from '{ancestor}'. \
+                             Run `tokensave branch add {branch}` to track it."
+                        )),
+                    );
+                }
+            }
+        }
+
+        // Last resort: default branch DB
+        (
+            default_db,
+            Some(format!(
+                "branch '{branch}' is not tracked — serving from '{}'. \
+                 Run `tokensave branch add {branch}` to track it.",
+                meta.default_branch
+            )),
+        )
+    }
+
+    /// Opens a specific branch's DB for read-only queries.
+    ///
+    /// Returns an error if the branch is not tracked or the DB doesn't exist.
+    pub async fn open_branch(project_root: &Path, branch_name: &str) -> Result<Self> {
+        let config = load_config(project_root)?;
+        let tokensave_dir = get_tokensave_dir(project_root);
+
+        let meta = branch_meta::load_branch_meta(&tokensave_dir).ok_or_else(|| {
+            TokenSaveError::Config {
+                message: "no branch tracking configured — run `tokensave branch add` first"
+                    .to_string(),
+            }
+        })?;
+
+        let db_path =
+            branch::resolve_branch_db_path(&tokensave_dir, branch_name, &meta).ok_or_else(
+                || TokenSaveError::Config {
+                    message: format!("branch '{branch_name}' is not tracked"),
+                },
+            )?;
+
+        if !db_path.exists() {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "DB for branch '{branch_name}' not found at '{}'",
+                    db_path.display()
+                ),
+            });
+        }
+
+        let (db, _) = Database::open(&db_path).await?;
+        Ok(Self {
+            db,
+            config,
+            project_root: project_root.to_path_buf(),
+            registry: LanguageRegistry::new(),
+            active_branch: Some(branch_name.to_string()),
+            fallback_warning: None,
+        })
+    }
+
+    /// Lists tracked branches from metadata. Returns `None` if no branch tracking.
+    pub fn list_tracked_branches(project_root: &Path) -> Option<Vec<String>> {
+        let tokensave_dir = get_tokensave_dir(project_root);
+        let meta = branch_meta::load_branch_meta(&tokensave_dir)?;
+        Some(meta.branches.keys().cloned().collect())
     }
 
     /// Returns `true` if a TokenSave project has been initialized at the given root.
@@ -817,6 +945,21 @@ impl TokenSave {
     /// Returns the project root path.
     pub fn project_root(&self) -> &Path {
         &self.project_root
+    }
+
+    /// Returns the active git branch, if any.
+    pub fn active_branch(&self) -> Option<&str> {
+        self.active_branch.as_deref()
+    }
+
+    /// Returns a fallback warning if serving from an ancestor branch DB.
+    pub fn fallback_warning(&self) -> Option<&str> {
+        self.fallback_warning.as_deref()
+    }
+
+    /// Returns true if serving from a fallback (ancestor) DB.
+    pub fn is_fallback(&self) -> bool {
+        self.fallback_warning.is_some()
     }
 }
 

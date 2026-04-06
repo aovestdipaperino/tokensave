@@ -76,11 +76,31 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ---
 
-## What's New in v3.3
+## What's New in v3.4
 
-### 34 MCP Tools
+### Multi-Branch Indexing
 
-Five new tools round out the analysis suite:
+tokensave can now keep a separate code graph per git branch, so switching branches never gives you stale results and never re-indexes files you already parsed on another branch. Multi-branch is opt-in:
+
+```bash
+tokensave branch add          # track the current branch
+tokensave branch list         # see tracked branches and DB sizes
+tokensave branch gc           # clean up branches deleted from git
+```
+
+Two new MCP tools enable cross-branch queries without switching your checkout:
+
+- **`tokensave_branch_search`** — search symbols in another branch's graph
+- **`tokensave_branch_diff`** — compare symbols between branches (added/removed/changed)
+
+See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full guide.
+
+### 36 MCP Tools
+
+<details>
+<summary>Previous: v3.3 tools</summary>
+
+Five tools added in v3.3:
 
 - **`tokensave_commit_context`** — semantic summary of uncommitted changes for drafting commit messages
 - **`tokensave_pr_context`** — semantic diff between git refs for pull request descriptions
@@ -88,7 +108,9 @@ Five new tools round out the analysis suite:
 - **`tokensave_test_map`** — source-to-test mapping at the symbol level, with uncovered symbol detection
 - **`tokensave_type_hierarchy`** — recursive type hierarchy tree for traits, interfaces, and classes
 
-All 34 tools now include MCP annotations (`readOnlyHint`, `title`) and the three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+</details>
+
+All 36 tools include MCP annotations (`readOnlyHint`, `title`) and the three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Upgrade-Aware Daemon
 
@@ -179,6 +201,40 @@ cargo install tokensave          # or: brew upgrade tokensave / scoop update tok
 tokensave install                # re-run for updated prompt rules + daemon offer
 tokensave sync --force           # re-index to rebuild the graph (recommended after major upgrades)
 ```
+
+---
+
+## tokensave vs CodeGraph
+
+tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/package/@colbymchenry/codegraph) (Node.js/TypeScript). Both build semantic code graphs for AI coding agents, but they diverge significantly in scope and capabilities.
+
+| | **tokensave** | **CodeGraph** |
+|---|---|---|
+| **Runtime** | Native binary (Rust) | Node.js 18+ |
+| **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
+| **Languages** | 31 (3 tiers: lite/medium/full) | 17 |
+| **MCP tools** | 37 | 9 |
+| **Agent integrations** | 9 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed) | 1 (Claude Code) |
+| **Background daemon** | Yes (launchd/systemd/Windows Service) | No (hook-based sync only) |
+| **Multi-branch indexing** | Yes (per-branch DBs, cross-branch diff/search) | No |
+| **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
+| **Porting tools** | Yes (`port_status`, `port_order`) | No |
+| **Graph visualizer** | Yes (interactive browser-based) | Yes |
+| **Semantic embeddings** | Planned | Yes (@xenova/transformers) |
+| **MCP resources** | 4 (status, files, overview, branches) | No |
+| **MCP annotations** | Yes (readOnlyHint, alwaysLoad) | No |
+| **Dead code detection** | Yes | No |
+| **Circular dependency detection** | Yes | No |
+| **Type hierarchy** | Yes | No |
+| **God class / coupling analysis** | Yes | No |
+| **Commit / PR context** | Yes | No |
+| **Test mapping** | Yes | No |
+| **Rename preview** | Yes | No |
+| **DB engine** | libsql (SQLite fork, WAL, async) | better-sqlite3 / wa-sqlite (WASM) |
+| **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
+| **Binary size** | ~25 MB (all grammars bundled) | ~80 MB (node_modules + WASM) |
+
+CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. tokensave extends the concept with deeper analysis, more agents, background sync, and multi-branch support.
 
 ---
 

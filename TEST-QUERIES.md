@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 34 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
+Manual test queries for verifying all 36 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
 
 ### Staleness warnings
 
@@ -8,8 +8,10 @@ All tool responses may be prepended with staleness warnings when the index is ou
 
 - **Per-file**: `WARNING: STALE INDEX — N file(s) modified since last sync: file1.rs, file2.rs. Run tokensave sync to update.`
 - **Index age**: `WARNING: Index last synced Xh Ym ago. Run tokensave sync to update.`
+- **Branch fallback**: `WARNING: branch 'feature-x' is not tracked — serving from 'main'. Run tokensave branch add feature-x to track it.`
 
 To test staleness: edit a file without re-syncing, then call any tool that touches that file.
+To test branch fallback: check out an untracked branch while multi-branch is active, then call any tool.
 
 ---
 
@@ -21,6 +23,11 @@ Expected: Returns node/edge/file counts, DB size, language distribution, tokens 
 - `stale_commits`: number of git commits since last sync (if > 0)
 - `stale_warning`: human-readable message about stale commits
 - `stale_files`: count of files modified on disk since indexing (sampled up to 100)
+
+When multi-branch is active, also includes:
+- `active_branch`: the current git branch name
+- `branch_fallback`: `true` if serving from an ancestor branch DB
+- `branch_warning`: explanation of which branch DB is being used
 
 To test staleness: make a git commit without running `tokensave sync`, then call status.
 
@@ -457,3 +464,67 @@ Test with depth limit:
 tokensave_type_hierarchy(node_id="interface:Serializable", max_depth=2)
 ```
 Expected: Same tree structure but stops at depth 2 (no grandchildren of grandchildren).
+
+---
+
+## tokensave_branch_search
+
+> Search for a symbol in another branch's graph without switching your checkout.
+
+**Prerequisites:** Multi-branch must be active. Run `tokensave branch add main` and `tokensave branch add feature-x` first.
+
+Test:
+```
+tokensave_branch_search(branch="main", query="Database", limit=5)
+```
+Expected: Returns matching symbols from `main`'s graph, each tagged with `"branch": "main"`. Results may differ from the current branch if the symbol was modified or removed.
+
+Test with untracked branch:
+```
+tokensave_branch_search(branch="nonexistent-branch", query="test")
+```
+Expected: Returns an error: `branch 'nonexistent-branch' is not tracked`.
+
+---
+
+## tokensave_branch_diff
+
+> Compare code graphs between two branches to see what symbols were added, removed, or changed.
+
+**Prerequisites:** Both branches must be tracked via `tokensave branch add`.
+
+Test with defaults (current branch vs main):
+```
+tokensave_branch_diff()
+```
+Expected: Returns a JSON object with:
+- `base`: the default branch name (e.g. "main")
+- `head`: the current branch name
+- `summary`: counts of added/removed/changed symbols
+- `added`: symbols in head but not base (with name, kind, file, line, signature)
+- `removed`: symbols in base but not head
+- `changed`: symbols in both but with different signatures (shows both `base_signature` and `head_signature`)
+
+Test with explicit branches:
+```
+tokensave_branch_diff(base="main", head="feature/foo")
+```
+Expected: Same structure comparing the specified branches.
+
+Test with file filter:
+```
+tokensave_branch_diff(base="main", head="feature/foo", file="src/tokensave.rs")
+```
+Expected: Only symbols from `src/tokensave.rs` appear in the diff.
+
+Test with kind filter:
+```
+tokensave_branch_diff(base="main", head="feature/foo", kind="function")
+```
+Expected: Only function symbols appear in the diff.
+
+Test same branch error:
+```
+tokensave_branch_diff(base="main", head="main")
+```
+Expected: Returns an error: `base and head are the same branch: 'main'`.

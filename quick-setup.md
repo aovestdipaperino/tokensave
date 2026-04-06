@@ -66,7 +66,7 @@ Once configured, Claude has access to these tools:
 | `tokensave_god_class` | Find classes with the most members |
 | `tokensave_coupling` | Rank files by fan-in/fan-out coupling |
 
-Plus 11 more — see [README.md](README.md) for the full list of 27 tools.
+Plus 20 more — see [README.md](README.md) for the full list of 36 tools.
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 
@@ -104,3 +104,13 @@ tokensave sync
 ```
 
 The MCP server reads from the database on each request, so it picks up synced changes without restarting.
+
+## Multi-branch (optional)
+
+If you work on multiple branches, tokensave can keep a separate graph per branch so switching never causes stale results:
+
+```bash
+tokensave branch add          # track the current branch
+```
+
+This copies the nearest ancestor's database and syncs only the changed files. See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full guide.

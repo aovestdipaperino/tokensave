@@ -16,6 +16,8 @@
 #![allow(clippy::wildcard_imports)]
 
 pub mod agents;
+pub mod branch;
+pub mod branch_meta;
 pub mod cloud;
 pub mod daemon;
 pub mod config;

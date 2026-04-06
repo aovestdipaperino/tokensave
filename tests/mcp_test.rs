@@ -93,7 +93,7 @@ fn test_all_error_codes() {
 #[test]
 fn test_tool_definitions_count() {
     let tools = get_tool_definitions();
-    assert_eq!(tools.len(), 34);
+    assert_eq!(tools.len(), 37);
 }
 
 #[test]

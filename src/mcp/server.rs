@@ -460,6 +460,12 @@ impl McpServer {
                     "name": "Project Overview",
                     "description": "High-level project summary: language distribution, largest modules, and top entry points.",
                     "mimeType": "text/plain"
+                },
+                {
+                    "uri": "tokensave://branches",
+                    "name": "Tracked Branches",
+                    "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
+                    "mimeType": "application/json"
                 }
             ]
         }))
@@ -487,6 +493,7 @@ impl McpServer {
             "tokensave://status" => self.read_resource_status(id).await,
             "tokensave://files" => self.read_resource_files(id).await,
             "tokensave://overview" => self.read_resource_overview(id).await,
+            "tokensave://branches" => self.read_resource_branches(id),
             _ => JsonRpcResponse::error(
                 id,
                 ErrorCode::InvalidParams,
@@ -609,6 +616,48 @@ impl McpServer {
         }))
     }
 
+    fn read_resource_branches(&self, id: Value) -> JsonRpcResponse {
+        let tokensave_dir = crate::config::get_tokensave_dir(self.cg.project_root());
+        let current = self.cg.active_branch();
+
+        let branches: Vec<Value> = match crate::branch_meta::load_branch_meta(&tokensave_dir) {
+            Some(meta) => meta
+                .branches
+                .iter()
+                .map(|(name, entry)| {
+                    let db_path = tokensave_dir.join(&entry.db_file);
+                    let size_bytes = db_path
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    json!({
+                        "name": name,
+                        "db_file": entry.db_file,
+                        "parent": entry.parent,
+                        "size_bytes": size_bytes,
+                        "last_synced_at": entry.last_synced_at,
+                        "is_current": current == Some(name.as_str()),
+                        "is_default": name == &meta.default_branch,
+                    })
+                })
+                .collect(),
+            None => vec![],
+        };
+
+        let output = json!({
+            "branch_count": branches.len(),
+            "branches": branches,
+        });
+        let text = serde_json::to_string_pretty(&output).unwrap_or_default();
+        JsonRpcResponse::success(id, json!({
+            "contents": [{
+                "uri": "tokensave://branches",
+                "mimeType": "application/json",
+                "text": text
+            }]
+        }))
+    }
+
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
     async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
         debug_assert!(!id.is_null(), "handle_tools_call called with null request id");
@@ -687,6 +736,14 @@ impl McpServer {
                         if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
                             content.insert(0, json!({"type": "text", "text": &warning}));
                         }
+                    }
+                }
+
+                // Warn if serving from a fallback (ancestor) branch DB.
+                if let Some(warning) = self.cg.fallback_warning() {
+                    let warning = format!("WARNING: {warning}");
+                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        content.insert(0, json!({"type": "text", "text": &warning}));
                     }
                 }
 

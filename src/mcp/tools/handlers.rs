@@ -75,6 +75,9 @@ pub async fn handle_tool_call(
         "tokensave_simplify_scan" => handle_simplify_scan(cg, args).await,
         "tokensave_test_map" => handle_test_map(cg, args).await,
         "tokensave_type_hierarchy" => handle_type_hierarchy(cg, args).await,
+        "tokensave_branch_search" => handle_branch_search(cg, args).await,
+        "tokensave_branch_diff" => handle_branch_diff(cg, args).await,
+        "tokensave_branch_list" => handle_branch_list(cg).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {}", tool_name),
         }),
@@ -442,6 +445,25 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<To
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     if let Some(ss) = server_stats {
         output["server"] = ss;
+    }
+
+    // Branch info
+    if let Some(branch) = cg.active_branch() {
+        output["active_branch"] = json!(branch);
+        let ts_dir = crate::config::get_tokensave_dir(cg.project_root());
+        if let Some(meta) = crate::branch_meta::load_branch_meta(&ts_dir) {
+            if let Some(entry) = meta.branches.get(branch) {
+                if let Some(ref parent) = entry.parent {
+                    output["parent_branch"] = json!(parent);
+                }
+            }
+        }
+    }
+    if cg.is_fallback() {
+        output["branch_fallback"] = json!(true);
+        if let Some(warning) = cg.fallback_warning() {
+            output["branch_warning"] = json!(warning);
+        }
     }
 
     // Git commit staleness: count commits since last index
@@ -2927,6 +2949,263 @@ fn build_type_tree<'a>(
     })
 }
 
+// ── Cross-branch tools ─────────────────────────────────────────────────
+
+/// Handles `tokensave_branch_list` tool calls.
+async fn handle_branch_list(cg: &TokenSave) -> Result<ToolResult> {
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let current = cg.active_branch();
+
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir);
+    let branches: Vec<Value> = match meta {
+        Some(ref meta) => meta
+            .branches
+            .iter()
+            .map(|(name, entry)| {
+                let db_path = tokensave_dir.join(&entry.db_file);
+                let size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+                json!({
+                    "name": name,
+                    "parent": entry.parent,
+                    "size_bytes": size_bytes,
+                    "last_synced_at": entry.last_synced_at,
+                    "is_current": current == Some(name.as_str()),
+                    "is_default": Some(name.as_str()) == meta.default_branch.as_str().into(),
+                })
+            })
+            .collect(),
+        None => vec![],
+    };
+
+    let result = json!({
+        "branch_count": branches.len(),
+        "current_branch": current,
+        "branches": branches,
+    });
+
+    let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_branch_search` tool calls.
+async fn handle_branch_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let branch = args
+        .get("branch")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: branch".to_string(),
+        })?;
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: query".to_string(),
+        })?;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(500) as usize)
+        .unwrap_or(10);
+
+    let branch_cg = TokenSave::open_branch(cg.project_root(), branch).await?;
+    let results = branch_cg.search(query, limit).await?;
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.node.id,
+                "name": r.node.name,
+                "kind": r.node.kind.as_str(),
+                "file": r.node.file_path,
+                "line": r.node.start_line,
+                "signature": r.node.signature,
+                "score": r.score,
+                "branch": branch,
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_branch_diff` tool calls.
+///
+/// Compares code graphs between two branches. For each symbol present in
+/// either branch, reports whether it was added, removed, or changed
+/// (signature differs).
+async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let project_root = cg.project_root();
+    let tokensave_dir = crate::config::get_tokensave_dir(project_root);
+
+    // Resolve base and head branches
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: "no branch tracking configured — run `tokensave branch add` first".to_string(),
+        }
+    })?;
+
+    let base_name = args
+        .get("base")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&meta.default_branch);
+    let head_name = args
+        .get("head")
+        .and_then(|v| v.as_str())
+        .or_else(|| cg.active_branch())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "cannot determine head branch — specify it explicitly".to_string(),
+        })?;
+
+    if base_name == head_name {
+        return Err(TokenSaveError::Config {
+            message: format!("base and head are the same branch: '{base_name}'"),
+        });
+    }
+
+    let file_filter = args.get("file").and_then(|v| v.as_str());
+    let kind_filter = args.get("kind").and_then(|v| v.as_str());
+
+    let base_cg = TokenSave::open_branch(project_root, base_name).await?;
+    let head_cg = if cg.active_branch() == Some(head_name) && !cg.is_fallback() {
+        None // use the already-open cg
+    } else {
+        Some(TokenSave::open_branch(project_root, head_name).await?)
+    };
+    let head_ref = head_cg.as_ref().unwrap_or(cg);
+
+    // Collect nodes from both branches
+    let base_files = base_cg.get_all_files().await?;
+    let head_files = head_ref.get_all_files().await?;
+
+    // Build file sets for filtering — only compare files present in either branch
+    let base_file_set: HashSet<&str> = base_files.iter().map(|f| f.path.as_str()).collect();
+    let head_file_set: HashSet<&str> = head_files.iter().map(|f| f.path.as_str()).collect();
+    let all_files: HashSet<&str> = base_file_set.union(&head_file_set).copied().collect();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut touched = Vec::new();
+
+    for file_path in &all_files {
+        if let Some(filter) = file_filter {
+            if !file_path.starts_with(filter) && *file_path != filter {
+                continue;
+            }
+        }
+
+        let base_nodes = base_cg.get_nodes_by_file(file_path).await.unwrap_or_default();
+        let head_nodes = head_ref.get_nodes_by_file(file_path).await.unwrap_or_default();
+
+        // Index by qualified_name for matching
+        let base_map: HashMap<&str, &crate::types::Node> = base_nodes
+            .iter()
+            .map(|n| (n.qualified_name.as_str(), n))
+            .collect();
+        let head_map: HashMap<&str, &crate::types::Node> = head_nodes
+            .iter()
+            .map(|n| (n.qualified_name.as_str(), n))
+            .collect();
+
+        // Added: in head but not in base
+        for (qn, node) in &head_map {
+            if let Some(filter) = kind_filter {
+                if node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if !base_map.contains_key(qn) {
+                added.push(json!({
+                    "name": node.name,
+                    "qualified_name": node.qualified_name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": node.start_line,
+                    "signature": node.signature,
+                }));
+                touched.push(node.file_path.clone());
+            }
+        }
+
+        // Removed: in base but not in head
+        for (qn, node) in &base_map {
+            if let Some(filter) = kind_filter {
+                if node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if !head_map.contains_key(qn) {
+                removed.push(json!({
+                    "name": node.name,
+                    "qualified_name": node.qualified_name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": node.start_line,
+                    "signature": node.signature,
+                }));
+                touched.push(node.file_path.clone());
+            }
+        }
+
+        // Changed: in both but signature differs
+        for (qn, head_node) in &head_map {
+            if let Some(filter) = kind_filter {
+                if head_node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if let Some(base_node) = base_map.get(qn) {
+                if base_node.signature != head_node.signature {
+                    changed.push(json!({
+                        "name": head_node.name,
+                        "qualified_name": head_node.qualified_name,
+                        "kind": head_node.kind.as_str(),
+                        "file": head_node.file_path,
+                        "line": head_node.start_line,
+                        "base_signature": base_node.signature,
+                        "head_signature": head_node.signature,
+                    }));
+                    touched.push(head_node.file_path.clone());
+                }
+            }
+        }
+    }
+
+    let result = json!({
+        "base": base_name,
+        "head": head_name,
+        "summary": {
+            "added": added.len(),
+            "removed": removed.len(),
+            "changed": changed.len(),
+        },
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    });
+
+    let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2935,7 +3214,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 34);
+        assert_eq!(tools.len(), 37);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -2972,6 +3251,9 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_simplify_scan"));
         assert!(tool_names.contains(&"tokensave_test_map"));
         assert!(tool_names.contains(&"tokensave_type_hierarchy"));
+        assert!(tool_names.contains(&"tokensave_branch_search"));
+        assert!(tool_names.contains(&"tokensave_branch_diff"));
+        assert!(tool_names.contains(&"tokensave_branch_list"));
     }
 
     #[test]

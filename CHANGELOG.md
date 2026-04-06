@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1-beta.1] - 2026-04-06
+
+### Added
+- **Multi-branch indexing** — opt-in per-branch databases so switching branches never gives stale results. `tokensave branch add` tracks a branch by copying the nearest ancestor DB and syncing only changed files. `tokensave branch list`, `tokensave branch remove`, and `tokensave branch gc` manage tracked branches.
+- **`tokensave_branch_search`** — search symbols in another branch's code graph without switching your checkout.
+- **`tokensave_branch_diff`** — compare code graphs between two branches: shows symbols added, removed, and changed (signature differs). Supports file and kind filters.
+- **Branch fallback warnings** — when the MCP server serves from an ancestor branch DB (current branch not tracked), every tool response is prepended with a warning suggesting `tokensave branch add`.
+- **Branch info in `tokensave_status`** — status output now includes `active_branch`, `branch_fallback`, and `branch_warning` fields when multi-branch is active.
+
+### Changed
+- Tool count increased from 34 to 36.
+
 ## [3.3.2] - 2026-04-05
 
 ### Fixed

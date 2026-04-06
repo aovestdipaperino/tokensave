@@ -1,8 +1,10 @@
 # Multi-Branch Support
 
-## Status: Design (not implemented)
+## Status: Implemented
 
-Created: 2026-04-02
+Created: 2026-04-02 | Implemented: 2026-04-06
+
+> For usage instructions, see [BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md).
 
 ## The Problem
 
@@ -192,9 +194,14 @@ Each branch DB is a full copy (~37MB in a typical project). Mitigation strategie
 5. **Cross-branch impact tool** — `tokensave_branch_impact` MCP tool, open two DBs, diff graphs.
 6. **Daemon awareness** — the daemon watcher needs to detect branch switches (via HEAD change) and handle DB swapping.
 
-## Open Questions
+## Implementation Decisions
 
-- Should the MCP server detect branch switches mid-session and swap DBs automatically, or only at sync time?
-- Should `tokensave status` show which branch the DB represents?
-- How should `tokensave sync --force` behave — re-index current branch DB only, or all branch DBs?
-- Should there be a config option for max branch DB count or max total disk usage?
+The following questions from the original design were resolved during implementation:
+
+- **MCP server DB selection**: reads `.git/HEAD` at startup, opens the corresponding branch DB. No mid-session switching.
+- **`tokensave status` branch info**: yes, `tokensave_status` now includes `active_branch`, `branch_fallback`, and `branch_warning` fields.
+- **`tokensave sync --force`**: re-indexes the current branch's DB only.
+- **Cleanup strategy**: manual only via `tokensave branch remove` and `tokensave branch gc`. No automatic pruning.
+- **Opt-in model**: multi-branch activates when the user runs `tokensave branch add`. Without it, single-DB mode is unchanged.
+- **Parent DB selection**: uses `git merge-base` to find the nearest tracked ancestor, not always the default branch.
+- **Cross-branch queries**: two MCP tools added: `tokensave_branch_search` (search in another branch's graph) and `tokensave_branch_diff` (compare symbols between branches).

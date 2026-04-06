@@ -397,6 +397,14 @@ async fn sync_project_inner(project_root: &Path) {
                     ms
                 ));
             }
+            // Best-effort update branch metadata sync timestamp
+            if let Some(branch) = cg.active_branch() {
+                let tokensave_dir = crate::config::get_tokensave_dir(project_root);
+                if let Some(mut meta) = crate::branch_meta::load_branch_meta(&tokensave_dir) {
+                    meta.touch_synced(branch);
+                    let _ = crate::branch_meta::save_branch_meta(&tokensave_dir, &meta);
+                }
+            }
             // Best-effort update global DB
             if let Some(gdb) = crate::global_db::GlobalDb::open().await {
                 let tokens = cg.get_tokens_saved().await.unwrap_or(0);
@@ -497,6 +505,7 @@ pub fn status() -> i32 {
                     format_uptime(info.uptime_secs),
                     info.projects_watched,
                 );
+                check_daemon_version_mismatch(&info.version);
             } else {
                 eprintln!("tokensave daemon is running (PID: {pid})");
             }
@@ -507,6 +516,40 @@ pub fn status() -> i32 {
             1
         }
     }
+}
+
+/// Warns if the running daemon version differs from the CLI version and
+/// suggests the appropriate corrective action.
+fn check_daemon_version_mismatch(daemon_version: &str) {
+    let cli_version = env!("CARGO_PKG_VERSION");
+    if daemon_version == cli_version {
+        return;
+    }
+
+    let daemon_is_beta = daemon_version.contains('-');
+    let cli_is_beta = cli_version.contains('-');
+
+    let advice = if daemon_is_beta && !cli_is_beta {
+        // Daemon is beta, CLI is stable — daemon should be restarted to pick up stable
+        "The daemon is running a beta version. Restart it to use the stable release:\n  \
+         tokensave daemon --stop && tokensave daemon --enable-autostart"
+    } else if !daemon_is_beta && cli_is_beta {
+        // Daemon is stable, CLI is beta — daemon should be restarted to pick up beta
+        "The daemon is running a stable version. Restart it to use the beta release:\n  \
+         tokensave daemon --stop && tokensave daemon --enable-autostart"
+    } else if crate::cloud::is_newer_version(daemon_version, cli_version) {
+        // CLI is newer — daemon hasn't picked up the upgrade yet
+        "The daemon hasn't restarted after the upgrade. It should auto-restart within 60s.\n  \
+         To restart now: tokensave daemon --stop && tokensave daemon --enable-autostart"
+    } else {
+        // CLI is older than daemon — unusual, maybe downgrade
+        "The CLI is older than the running daemon. Restart to align versions:\n  \
+         tokensave daemon --stop && tokensave daemon --enable-autostart"
+    };
+
+    eprintln!(
+        "\n\x1b[33mWarning: version mismatch — CLI is v{cli_version}, daemon is v{daemon_version}\x1b[0m\n  {advice}"
+    );
 }
 
 fn format_uptime(secs: u64) -> String {

@@ -48,6 +48,8 @@ src/
   main.rs             CLI entry point, subcommand dispatch
   lib.rs              Crate root, module declarations, lint config
   tokensave.rs        TokenSave facade -- the main public API
+  branch.rs           Git branch resolution (current branch, default detection, merge-base)
+  branch_meta.rs      Branch metadata persistence (branch-meta.json)
   config.rs           Per-project config (exclude patterns, limits)
   errors.rs           Error types (thiserror)
   sync.rs             Content hashing, stale/new/removed file detection
@@ -85,7 +87,7 @@ src/
 
   mcp/                Model Context Protocol server
     server.rs         McpServer: stdio JSON-RPC loop, lifecycle
-    tools.rs          29 tool definitions and dispatch
+    tools.rs          36 tool definitions and dispatch
     transport.rs      JSON-RPC request/response/error types
 
   agents/             Agent integration (install/uninstall/doctor)
@@ -237,7 +239,7 @@ The MCP server (`mcp/server.rs`) runs over stdio using JSON-RPC 2.0. It implemen
 the Model Context Protocol lifecycle:
 
 1. **initialize**: returns server capabilities and tool list
-2. **tools/list**: returns the 29 available tools with JSON Schema input definitions
+2. **tools/list**: returns the 36 available tools with JSON Schema input definitions
 3. **tools/call**: dispatches to `handle_tool_call` which routes by tool name
 
 The server is stateless between calls (each call queries the database independently).
@@ -246,7 +248,7 @@ tool.
 
 ### Tool Categories
 
-The 29 MCP tools fall into several categories:
+The 36 MCP tools fall into several categories:
 
 | Category        | Tools                                                    |
 |-----------------|----------------------------------------------------------|
@@ -256,7 +258,11 @@ The 29 MCP tools fall into several categories:
 | Metrics         | rank, hotspots, largest, distribution, inheritance_depth |
 | Quality         | doc_coverage, unused_imports, recursion                  |
 | Refactoring     | rename_preview, similar, module_api                      |
-| Status          | status, changelog                                        |
+| Git/CI          | changelog, commit_context, pr_context                    |
+| Quality Scan    | simplify_scan, test_map, type_hierarchy                  |
+| Porting         | port_status, port_order                                  |
+| Branching       | branch_search, branch_diff                               |
+| Status          | status                                                   |
 
 Each tool is defined in `mcp/tools.rs` with a JSON Schema for its parameters.
 `handle_tool_call` deserializes the arguments, calls the appropriate `TokenSave`
