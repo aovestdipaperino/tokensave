@@ -248,7 +248,7 @@ async fn test_create_schema_fresh_db() {
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -270,7 +270,7 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 }
 
 /// migrate returns false when already at the latest version.
@@ -286,11 +286,11 @@ async fn test_migrate_already_latest_returns_false() {
         .await
         .expect("migrate should succeed");
 
-    assert!(!migrated, "migrate should return false when already at v5");
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert!(!migrated, "migrate should return false when already at v6");
+    assert_eq!(get_user_version(&conn).await, 6);
 }
 
-/// migrate from v0 (completely empty database) applies all migrations to v5.
+/// migrate from v0 (completely empty database) applies all migrations to v6.
 #[tokio::test]
 async fn test_migrate_from_v0() {
     let (conn, _db, _dir) = create_raw_db().await;
@@ -303,7 +303,7 @@ async fn test_migrate_from_v0() {
         .expect("migrate from v0 should succeed");
 
     assert!(migrated, "migrate should return true when migrations were applied");
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -344,7 +344,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -380,7 +380,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -410,7 +410,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -438,7 +438,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 5);
+    assert_eq!(get_user_version(&conn).await, 6);
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -547,9 +547,9 @@ async fn test_indexes_exist_after_full_migration() {
     assert!(index_exists(&conn, "idx_unresolved_refs_file_path").await);
 }
 
-/// Database::initialize creates a v5 database.
+/// Database::initialize creates a v6 database.
 #[tokio::test]
-async fn test_database_initialize_creates_v5() {
+async fn test_database_initialize_creates_v6() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("init_test.db");
 
@@ -569,7 +569,7 @@ async fn test_database_initialize_creates_v5() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -578,7 +578,7 @@ async fn test_database_open_no_migration_needed() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("open_test.db");
 
-    // Initialize creates a v5 database
+    // Initialize creates a v6 database
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("Database::initialize should succeed");
@@ -595,9 +595,9 @@ async fn test_database_open_no_migration_needed() {
     );
 }
 
-/// Database::open on a v1 database migrates to v5.
+/// Database::open on a v1 database migrates to v6.
 #[tokio::test]
-async fn test_database_open_migrates_v1_to_v5() {
+async fn test_database_open_migrates_v1_to_v6() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("open_v1_test.db");
 
@@ -617,14 +617,14 @@ async fn test_database_open_migrates_v1_to_v5() {
         create_v1_schema(&conn).await;
     }
 
-    // Open via Database::open — should detect v1 and migrate to v5
+    // Open via Database::open — should detect v1 and migrate to v6
     let (db, migrated) = Database::open(&db_path)
         .await
         .expect("Database::open should succeed");
 
     assert!(migrated, "opening a v1 database should trigger migration");
 
-    // Verify the schema is now v5
+    // Verify the schema is now v6
     let mut rows = db
         .conn()
         .query("PRAGMA user_version", ())
@@ -636,7 +636,7 @@ async fn test_database_open_migrates_v1_to_v5() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 /// After create_schema, all v5 columns on nodes exist.

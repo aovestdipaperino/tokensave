@@ -348,6 +348,11 @@ const SYMBOL_STOP_WORDS: &[&str] = &[
     "find", "get", "set", "use", "make", "call",
     "function", "method", "class", "struct", "type", "module", "file",
     "handler", "implement", "create", "about",
+    // Code-specific noise words (ported from codegraph)
+    "interface", "trait", "enum", "variable", "import", "export",
+    "return", "error", "test", "spec", "helper", "util",
+    "config", "service", "model", "view", "controller",
+    "code", "new", "init", "default", "value", "data", "result",
 ];
 
 /// Classify a single cleaned token and push any symbols it yields.
@@ -381,6 +386,15 @@ fn classify_token(
         if !stop_words.contains(clean.to_lowercase().as_str()) && seen.insert(clean.to_string()) {
             symbols.push(clean.to_string());
         }
+        // Also emit individual segments for FTS matching.
+        for part in split_compound(clean) {
+            if part.len() >= 3
+                && !stop_words.contains(part.to_lowercase().as_str())
+                && seen.insert(part.to_string())
+            {
+                symbols.push(part.to_string());
+            }
+        }
         return;
     }
 
@@ -389,7 +403,57 @@ fn classify_token(
         if !stop_words.contains(clean.to_lowercase().as_str()) && seen.insert(clean.to_string()) {
             symbols.push(clean.to_string());
         }
+        // Also emit individual segments for FTS matching.
+        for part in split_compound(clean) {
+            if part.len() >= 3
+                && !stop_words.contains(part.to_lowercase().as_str())
+                && seen.insert(part.to_string())
+            {
+                symbols.push(part.to_string());
+            }
+        }
     }
+}
+
+/// Split a compound name into individual words.
+///
+/// Handles camelCase, PascalCase, and snake_case:
+/// - `getUserName` → `["get", "User", "Name"]`
+/// - `process_request` → `["process", "request"]`
+/// - `MAX_RETRIES` → `["MAX", "RETRIES"]`
+fn split_compound(name: &str) -> Vec<&str> {
+    if name.contains('_') {
+        return name.split('_').filter(|s| !s.is_empty()).collect();
+    }
+
+    // camelCase / PascalCase splitting
+    let bytes = name.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+
+    for i in 1..bytes.len() {
+        let cur = bytes[i] as char;
+        let prev = bytes[i - 1] as char;
+
+        // Split at lowercase→uppercase boundary (e.g. getUser → get|User)
+        let boundary = prev.is_ascii_lowercase() && cur.is_ascii_uppercase();
+        // Split at uppercase→uppercase+lowercase (e.g. XMLParser → XML|Parser)
+        let acronym_end = i + 1 < bytes.len()
+            && prev.is_ascii_uppercase()
+            && cur.is_ascii_uppercase()
+            && (bytes[i + 1] as char).is_ascii_lowercase();
+
+        if boundary || acronym_end {
+            if i > start {
+                parts.push(&name[start..i]);
+            }
+            start = i;
+        }
+    }
+    if start < name.len() {
+        parts.push(&name[start..]);
+    }
+    parts
 }
 
 /// Returns `true` if `word` looks like CamelCase.

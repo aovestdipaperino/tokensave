@@ -75,6 +75,34 @@ impl<'a> GraphTraverser<'a> {
 
                 if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
                     if self.node_matches_filter(&neighbor_node, opts) {
+                        // For Incoming traversals, if we discovered a container
+                        // (class/struct/trait/interface/module), also enqueue its
+                        // children so callers of methods appear in the container's
+                        // impact radius.
+                        if opts.direction == TraversalDirection::Incoming
+                            && is_container_kind(&neighbor_node.kind)
+                        {
+                            let children = self
+                                .get_edges_for_direction(
+                                    &neighbor_id,
+                                    &[EdgeKind::Contains],
+                                    &TraversalDirection::Outgoing,
+                                )
+                                .await?;
+                            for child_edge in children {
+                                let child_id = self.neighbor_id(
+                                    &child_edge,
+                                    &neighbor_id,
+                                    &TraversalDirection::Outgoing,
+                                );
+                                if !visited.contains(&child_id) {
+                                    visited.insert(child_id.clone());
+                                    result_edges.push(child_edge);
+                                    queue.push_back((child_id, depth + 1));
+                                }
+                            }
+                        }
+
                         result_nodes.push(neighbor_node);
                         if result_nodes.len() >= opts.limit as usize {
                             result_edges.push(edge);
@@ -509,4 +537,18 @@ impl<'a> GraphTraverser<'a> {
         }
         true
     }
+}
+
+/// Returns true if a node kind is a container that can hold child symbols.
+fn is_container_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Class
+            | NodeKind::Struct
+            | NodeKind::Trait
+            | NodeKind::Interface
+            | NodeKind::Module
+            | NodeKind::Impl
+            | NodeKind::Enum
+    )
 }

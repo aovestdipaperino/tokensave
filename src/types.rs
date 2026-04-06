@@ -390,6 +390,35 @@ pub struct ExtractionResult {
     pub duration_ms: u64,
 }
 
+impl ExtractionResult {
+    /// Strip nodes with empty names and remove any edges or unresolved refs
+    /// that reference their IDs. Tree-sitter can produce empty-name nodes
+    /// from complex declarators (especially C/C++); if we skip the node at
+    /// insert time but keep its edges, we get FK constraint violations.
+    pub fn sanitize(&mut self) {
+        let before = self.nodes.len();
+        let bad_ids: std::collections::HashSet<String> = self
+            .nodes
+            .iter()
+            .filter(|n| n.name.is_empty())
+            .map(|n| n.id.clone())
+            .collect();
+
+        if bad_ids.is_empty() {
+            return;
+        }
+
+        self.nodes.retain(|n| !n.name.is_empty());
+        self.edges.retain(|e| !bad_ids.contains(&e.source) && !bad_ids.contains(&e.target));
+        self.unresolved_refs.retain(|r| !bad_ids.contains(&r.from_node_id));
+
+        let removed = before - self.nodes.len();
+        if removed > 0 {
+            self.errors.push(format!("stripped {removed} node(s) with empty names"));
+        }
+    }
+}
+
 /// A subgraph containing a subset of nodes and edges.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Subgraph {
@@ -518,6 +547,7 @@ pub struct CodeBlock {
 /// The ID format is `"kind:32hexchars"` where the hex portion is the first 32
 /// characters of the SHA-256 hash of the input components.
 pub fn generate_node_id(file_path: &str, kind: &NodeKind, name: &str, line: u32) -> String {
+    debug_assert!(!name.is_empty(), "generate_node_id called with empty name for {file_path}:{line}");
     let input = format!("{}:{}:{}:{}", file_path, kind.as_str(), name, line);
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());

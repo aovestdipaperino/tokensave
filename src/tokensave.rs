@@ -269,7 +269,8 @@ impl TokenSave {
                 let abs_path = project_root.join(file_path);
                 let source = std::fs::read_to_string(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
-                let result = extractor.extract(file_path, &source);
+                let mut result = extractor.extract(file_path, &source);
+                result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
                 Some((file_path.clone(), result, hash, size))
@@ -403,7 +404,8 @@ impl TokenSave {
                 let abs_path = project_root.join(file_path);
                 let source = std::fs::read_to_string(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
-                let result = extractor.extract(file_path, &source);
+                let mut result = extractor.extract(file_path, &source);
+                result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
                 Some((file_path.clone(), result, hash, size))
@@ -475,7 +477,28 @@ impl TokenSave {
         debug_assert!(!supported_exts.is_empty(), "scan_files: no supported extensions registered");
 
         if self.config.git_ignore {
-            self.scan_files_with_gitignore(&supported_exts)
+            let files = self.scan_files_with_gitignore(&supported_exts)?;
+            if files.is_empty() {
+                // The project directory may be gitignored by a parent repo,
+                // causing the ignore-aware walker to skip everything. Fall
+                // back to plain walkdir if source files clearly exist.
+                let has_source = WalkDir::new(&self.project_root)
+                    .max_depth(2)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .any(|e| {
+                        e.file_type().is_file()
+                            && e.path()
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .is_some_and(|ext| supported_exts.contains(&ext))
+                    });
+                if has_source {
+                    eprintln!("warning: gitignore-aware scan found no files; falling back to plain walk (project may be gitignored by parent repo)");
+                    return self.scan_files_walkdir(&supported_exts);
+                }
+            }
+            Ok(files)
         } else {
             self.scan_files_walkdir(&supported_exts)
         }

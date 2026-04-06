@@ -1,10 +1,47 @@
 // Rust guideline compliant 2025-10-17
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rayon::prelude::*;
 
 use crate::db::Database;
 use crate::types::*;
+
+/// Infer a coarse language tag from a file path extension.
+fn lang_from_path(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "rs" => "rust",
+        "go" => "go",
+        "py" | "pyi" => "python",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "cpp",
+        "cs" => "csharp",
+        "rb" => "ruby",
+        "php" => "php",
+        "scala" | "sc" => "scala",
+        "dart" => "dart",
+        "lua" => "lua",
+        "pl" | "pm" => "perl",
+        "sh" | "bash" => "bash",
+        "nix" => "nix",
+        "zig" => "zig",
+        "proto" => "proto",
+        _ => "unknown",
+    }
+}
+
+/// Count shared path segments between two file paths.
+fn path_proximity(a: &str, b: &str) -> i64 {
+    let seg_a: Vec<&str> = a.split('/').collect();
+    let seg_b: Vec<&str> = b.split('/').collect();
+    let shared = seg_a.iter().zip(seg_b.iter()).take_while(|(x, y)| x == y).count();
+    // +5 per shared segment, capped at +40
+    (shared as i64 * 5).min(40)
+}
 
 /// Resolves unresolved references into concrete edges by matching them against
 /// known nodes loaded from the database.
@@ -22,6 +59,8 @@ pub struct ReferenceResolver<'a> {
     /// qualified name(s). Enables O(1) suffix lookups instead of scanning
     /// the entire qualified_name_cache.
     suffix_cache: HashMap<String, Vec<String>>,
+    /// All known symbol names (short + qualified + suffixes) for pre-filtering.
+    known_names: HashSet<String>,
 }
 
 impl<'a> ReferenceResolver<'a> {
@@ -74,11 +113,24 @@ impl<'a> ReferenceResolver<'a> {
             entries.dedup();
         }
 
+        // Build known_names set for pre-filtering unresolvable refs.
+        let mut known_names: HashSet<String> = HashSet::new();
+        for key in name_cache.keys() {
+            known_names.insert(key.clone());
+        }
+        for key in qualified_name_cache.keys() {
+            known_names.insert(key.clone());
+        }
+        for key in suffix_cache.keys() {
+            known_names.insert(key.clone());
+        }
+
         Self {
             db,
             name_cache,
             qualified_name_cache,
             suffix_cache,
+            known_names,
         }
     }
 
@@ -104,18 +156,31 @@ impl<'a> ReferenceResolver<'a> {
         self.try_exact_name_match(uref)
     }
 
+    /// Returns true if a reference name could plausibly resolve to a known symbol.
+    fn is_known_name(&self, name: &str) -> bool {
+        self.known_names.contains(name)
+    }
+
     /// Resolves a batch of unresolved references in parallel, returning a
     /// summary of the results.
+    ///
+    /// Pre-filters references whose name doesn't exist in the graph at all,
+    /// turning hopeless lookups into O(1) hash checks.
     pub fn resolve_all(&self, refs: &[UnresolvedRef]) -> ResolutionResult {
         let total = refs.len();
 
-        let results: Vec<_> = refs
+        // Partition into resolvable (name exists in graph) and hopeless.
+        let (candidates, hopeless): (Vec<_>, Vec<_>) = refs
+            .iter()
+            .partition(|uref| self.is_known_name(&uref.reference_name));
+
+        let results: Vec<_> = candidates
             .par_iter()
-            .map(|uref| (uref, self.resolve_one(uref)))
+            .map(|uref| (*uref, self.resolve_one(uref)))
             .collect();
 
         let mut resolved = Vec::new();
-        let mut unresolved = Vec::new();
+        let mut unresolved: Vec<UnresolvedRef> = hopeless.into_iter().cloned().collect();
         for (uref, res) in results {
             match res {
                 Some(r) => resolved.push(r),
@@ -189,10 +254,18 @@ impl<'a> ReferenceResolver<'a> {
         let candidates = self.name_cache.get(&uref.reference_name)?;
 
         if candidates.len() == 1 {
+            // Reduce confidence for cross-language single matches.
+            let ref_lang = lang_from_path(&uref.file_path);
+            let candidate_lang = lang_from_path(&candidates[0].file_path);
+            let confidence = if ref_lang != "unknown" && candidate_lang != "unknown" && ref_lang != candidate_lang {
+                0.5
+            } else {
+                0.9
+            };
             return Some(ResolvedRef {
                 original: uref.clone(),
                 target_node_id: candidates[0].id.clone(),
-                confidence: 0.9,
+                confidence,
                 resolved_by: "exact-match".to_string(),
             });
         }
@@ -212,6 +285,8 @@ impl<'a> ReferenceResolver<'a> {
     ///
     /// Scoring heuristics:
     /// - Same file as reference: +100
+    /// - Directory proximity (shared path segments): +5 per segment, capped at +40
+    /// - Same language: +50, cross-language: -80
     /// - Exported / pub visibility: +10
     /// - Callable kind (function/method) when the ref kind is `Calls`: +25
     /// - Line proximity (same file only): +20 - (line_distance / 10)
@@ -220,6 +295,7 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
+        let ref_lang = lang_from_path(&uref.file_path);
         let mut best_score = i64::MIN;
         let mut best_node: Option<&Node> = None;
 
@@ -234,6 +310,19 @@ impl<'a> ReferenceResolver<'a> {
                 let distance = node.start_line.abs_diff(uref.line);
                 let proximity = 20_i64.saturating_sub(i64::from(distance) / 10);
                 score += proximity.max(0);
+            } else {
+                // Directory proximity bonus (different files only)
+                score += path_proximity(&uref.file_path, &node.file_path);
+            }
+
+            // Language matching
+            let candidate_lang = lang_from_path(&node.file_path);
+            if ref_lang != "unknown" && candidate_lang != "unknown" {
+                if ref_lang == candidate_lang {
+                    score += 50;
+                } else {
+                    score -= 80;
+                }
             }
 
             // Exported / pub bonus

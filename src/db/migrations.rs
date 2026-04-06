@@ -15,7 +15,7 @@ use crate::errors::{TokenSaveError, Result};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 5;
+const LATEST_VERSION: u32 = 6;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -56,7 +56,7 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
 }
 
 /// Creates the complete latest schema from scratch for a brand-new database.
-/// This avoids running v0→v1→…→v5 migrations sequentially.
+/// This avoids running v0→v1→…→v6 migrations sequentially.
 pub async fn create_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS nodes (
@@ -162,7 +162,9 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
-        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);",
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
+
+        CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));",
     )
     .await
     .map_err(|e| TokenSaveError::Database {
@@ -243,6 +245,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         3 => migrate_v3(conn).await,
         4 => migrate_v4(conn).await,
         5 => migrate_v5(conn).await,
+        6 => migrate_v6(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -491,6 +494,26 @@ async fn migrate_v5(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v5: failed to deduplicate edges: {e}"),
         operation: "migrate_v5".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V6: expression index on lower(name) for case-insensitive lookups
+// ---------------------------------------------------------------------------
+
+/// Adds an expression index on `lower(name)` so that case-insensitive queries
+/// and LIKE fallbacks avoid full table scans on large codebases.
+async fn migrate_v6(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v6: failed to create lower(name) index: {e}"),
+        operation: "migrate_v6".to_string(),
     })?;
 
     Ok(())
