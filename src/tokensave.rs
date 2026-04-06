@@ -633,6 +633,12 @@ impl TokenSave {
         traverser.get_impact_radius(node_id, max_depth).await
     }
 
+    /// Builds a bidirectional call graph around a node.
+    pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser.get_call_graph(node_id, depth).await
+    }
+
     /// Finds potentially dead code (nodes with no incoming edges).
     pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         let qm = GraphQueryManager::new(&self.db);

@@ -672,6 +672,9 @@ impl JavaExtractor {
         // Extract annotations on this method from its modifiers.
         Self::extract_annotations_from_modifiers(state, node, &id);
 
+        // Extract type references from parameter and return type.
+        Self::extract_type_refs(state, node, &id);
+
         // Extract call sites from the method body.
         if has_body {
             Self::extract_call_sites(state, node, &id);
@@ -726,6 +729,9 @@ impl JavaExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract type references from parameter types.
+        Self::extract_type_refs(state, node, &id);
 
         // Extract call sites from the constructor body.
         Self::extract_call_sites(state, node, &id);
@@ -1266,6 +1272,75 @@ impl JavaExtractor {
         // Fallback: extract from text.
         let text = state.node_text(node);
         text.trim_start_matches('@').to_string()
+    }
+
+    /// Extract type references from parameter types and return type.
+    ///
+    /// In Java, `formal_parameter` children contain a `type_identifier` (or
+    /// generic_type wrapping one). The method's return type also appears as a
+    /// `type_identifier` direct child.
+    fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        let java_builtins: &[&str] = &[
+            "void", "int", "long", "short", "byte", "char", "float", "double",
+            "boolean", "String", "Object", "Integer", "Long", "Short", "Byte",
+            "Character", "Float", "Double", "Boolean", "Void",
+        ];
+
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            match child.kind() {
+                "formal_parameters" => {
+                    Self::extract_type_refs(state, child, fn_node_id);
+                }
+                "formal_parameter" | "spread_parameter" => {
+                    Self::collect_java_type_ids(state, child, fn_node_id, java_builtins);
+                }
+                // Return type
+                "type_identifier" | "generic_type" => {
+                    Self::collect_java_type_ids(state, child, fn_node_id, java_builtins);
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    /// Recursively collect `type_identifier` nodes and emit "uses" refs.
+    fn collect_java_type_ids(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        builtins: &[&str],
+    ) {
+        if node.kind() == "type_identifier" {
+            let type_name = state.node_text(node);
+            if !builtins.contains(&type_name.as_str()) {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: fn_node_id.to_string(),
+                    reference_name: type_name,
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_java_type_ids(state, cursor.node(), fn_node_id, builtins);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Recursively find method_invocation and object_creation_expression nodes inside a

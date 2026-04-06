@@ -917,6 +917,9 @@ impl KotlinExtractor {
 
         Self::extract_annotations_from_modifiers(state, node, &id);
 
+        // Extract type references from parameter and return type annotations.
+        Self::extract_type_refs(state, node, &id);
+
         // Extract call sites from the body.
         if let Some(body) = Self::find_child_by_kind(node, "function_body") {
             Self::extract_call_sites(state, body, &id);
@@ -1444,6 +1447,74 @@ impl KotlinExtractor {
             .unwrap_or(&text)
             .trim()
             .to_string()
+    }
+
+    /// Extract type references from Kotlin function parameters and return type.
+    ///
+    /// Kotlin uses `user_type` containing `type_identifier` for type references.
+    /// Parameters are `parameter` nodes with `: Type` syntax.
+    fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        let kotlin_builtins: &[&str] = &[
+            "Unit", "Int", "Long", "Short", "Byte", "Char", "Float", "Double",
+            "Boolean", "String", "Any", "Nothing", "Array", "List", "Map", "Set",
+            "MutableList", "MutableMap", "MutableSet",
+        ];
+
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            match child.kind() {
+                "function_value_parameters" => {
+                    Self::extract_type_refs(state, child, fn_node_id);
+                }
+                "parameter" => {
+                    Self::collect_kotlin_type_ids(state, child, fn_node_id, kotlin_builtins);
+                }
+                // Return type annotation
+                "user_type" | "nullable_type" => {
+                    Self::collect_kotlin_type_ids(state, child, fn_node_id, kotlin_builtins);
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    /// Recursively collect `type_identifier` inside Kotlin type nodes.
+    fn collect_kotlin_type_ids(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        builtins: &[&str],
+    ) {
+        if node.kind() == "type_identifier" {
+            let type_name = state.node_text(node);
+            if !builtins.contains(&type_name.as_str()) {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: fn_node_id.to_string(),
+                    reference_name: type_name,
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_kotlin_type_ids(state, cursor.node(), fn_node_id, builtins);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Recursively find call_expression nodes and create unresolved Calls references.

@@ -316,6 +316,9 @@ impl TypeScriptExtractor {
             });
         }
 
+        // Extract type references from parameter and return type annotations.
+        Self::extract_type_refs(state, node, &id);
+
         // Extract call sites from the function body.
         if let Some(body) = Self::find_child_by_kind(node, "statement_block") {
             Self::extract_call_sites(state, body, &id);
@@ -414,6 +417,9 @@ impl TypeScriptExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract type references from parameter and return type annotations.
+        Self::extract_type_refs(state, arrow_node, &id);
 
         // Extract call sites from the arrow function body.
         if let Some(body) = Self::find_child_by_kind(arrow_node, "statement_block") {
@@ -622,6 +628,9 @@ impl TypeScriptExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract type references from parameter and return type annotations.
+        Self::extract_type_refs(state, node, &id);
 
         // Extract call sites from the method body.
         if let Some(body) = Self::find_child_by_kind(node, "statement_block") {
@@ -1288,6 +1297,74 @@ impl TypeScriptExtractor {
                 if !cursor.goto_next_sibling() {
                     break;
                 }
+            }
+        }
+    }
+
+    /// Extract type references from parameter annotations and return type.
+    ///
+    /// In tree-sitter-typescript, type annotations appear as `type_annotation`
+    /// children on parameter nodes and on the function itself (return type).
+    /// Each `type_identifier` inside creates a "uses" unresolved ref.
+    fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            match child.kind() {
+                // Parameter nodes contain type_annotation children
+                "required_parameter" | "optional_parameter" | "rest_parameter" => {
+                    Self::collect_type_identifiers(state, child, fn_node_id);
+                }
+                // The function's own return type annotation
+                "type_annotation" => {
+                    Self::collect_type_identifiers(state, child, fn_node_id);
+                }
+                // Formal parameters container
+                "formal_parameters" => {
+                    Self::extract_type_refs(state, child, fn_node_id);
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    /// Recursively collect `type_identifier` nodes and emit "uses" refs.
+    fn collect_type_identifiers(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "type_identifier" {
+                let type_name = state.node_text(child);
+                // Skip built-in types
+                if !matches!(
+                    type_name.as_str(),
+                    "string" | "number" | "boolean" | "void" | "null"
+                        | "undefined" | "any" | "never" | "unknown" | "object"
+                        | "symbol" | "bigint"
+                ) {
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: fn_node_id.to_string(),
+                        reference_name: type_name,
+                        reference_kind: EdgeKind::Uses,
+                        line: child.start_position().row as u32,
+                        column: child.start_position().column as u32,
+                        file_path: state.file_path.clone(),
+                    });
+                }
+            } else {
+                Self::collect_type_identifiers(state, child, fn_node_id);
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }
