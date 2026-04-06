@@ -12,6 +12,41 @@ use tokio::time::{self, Instant};
 
 use crate::errors::{Result, TokenSaveError};
 
+/// Path to the file where the daemon writes its API port.
+fn api_port_path() -> PathBuf {
+    daemon_pid_dir().join("daemon.port")
+}
+
+/// Response from the daemon's status API.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct DaemonInfo {
+    pub version: String,
+    pub pid: u32,
+    pub uptime_secs: u64,
+    pub projects_watched: usize,
+}
+
+/// Query the running daemon's status API. Returns None if unreachable.
+pub fn query_daemon_info() -> Option<DaemonInfo> {
+    let port_str = std::fs::read_to_string(api_port_path()).ok()?;
+    let port: u16 = port_str.trim().parse().ok()?;
+
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_secs(2),
+    ).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+
+    use std::io::{Read, Write};
+    stream.write_all(b"GET /status HTTP/1.0\r\n\r\n").ok()?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).ok()?;
+
+    // Skip HTTP headers — find the blank line then parse JSON body.
+    let body = buf.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str(body).ok()
+}
+
 /// Snapshot of the on-disk binary for upgrade detection.
 struct BinarySnapshot {
     path: PathBuf,
@@ -114,6 +149,14 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
         }
     }
 
+    // Shared project count for the status API.
+    let project_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(watchers.len()));
+    let start_time = std::time::SystemTime::now();
+
+    // Start the status API listener.
+    let api_handle = start_status_api(project_count.clone(), start_time);
+
+
     daemon_log(&format!(
         "v{} started, watching {} projects",
         env!("CARGO_PKG_VERSION"),
@@ -191,11 +234,70 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
                     watchers.remove(&path);
                     dirty.remove(&path);
                 }
+                project_count.store(watchers.len(), std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
 
+    // Clean up status API.
+    drop(api_handle);
+    let _ = std::fs::remove_file(api_port_path());
+
     Ok(upgraded)
+}
+
+/// Starts a tiny TCP server on an ephemeral port that responds to
+/// `GET /status` with a JSON `DaemonInfo`. Writes the port to
+/// `~/.tokensave/daemon.port` so `--status` can connect.
+fn start_status_api(
+    project_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    start_time: std::time::SystemTime,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(l) => l,
+            Err(e) => {
+                daemon_log(&format!("status API bind failed: {e}"));
+                return;
+            }
+        };
+        let port = match listener.local_addr() {
+            Ok(a) => a.port(),
+            Err(_) => return,
+        };
+        // Write port file.
+        let port_path = api_port_path();
+        if let Some(parent) = port_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        if std::fs::write(&port_path, port.to_string()).is_err() {
+            daemon_log("failed to write daemon.port");
+            return;
+        }
+        daemon_log(&format!("status API listening on port {port}"));
+
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                continue;
+            };
+            let count = project_count.load(std::sync::atomic::Ordering::Relaxed);
+            let uptime = start_time.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+            let info = DaemonInfo {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                pid: std::process::id(),
+                uptime_secs: uptime,
+                projects_watched: count,
+            };
+            let body = serde_json::to_string(&info).unwrap_or_default();
+            let response = format!(
+                "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            use tokio::io::AsyncWriteExt;
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    })
 }
 
 /// Query the global DB for all tracked project paths.
@@ -387,13 +489,35 @@ pub fn stop() -> Result<()> {
 pub fn status() -> i32 {
     match running_daemon_pid() {
         Some(pid) => {
-            eprintln!("tokensave daemon is running (PID: {pid})");
+            if let Some(info) = query_daemon_info() {
+                eprintln!(
+                    "tokensave daemon v{} is running (PID: {}, uptime: {}, watching {} projects)",
+                    info.version,
+                    info.pid,
+                    format_uptime(info.uptime_secs),
+                    info.projects_watched,
+                );
+            } else {
+                eprintln!("tokensave daemon is running (PID: {pid})");
+            }
             0
         }
         None => {
             eprintln!("tokensave daemon is not running");
             1
         }
+    }
+}
+
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
 }
 
