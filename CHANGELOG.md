@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2-beta.1] - 2026-04-06
+
+### Added
+- **`keywords` parameter for `tokensave_context`** — agent-driven synonym expansion. The agent passes extra search terms (e.g. `["login", "session", "token"]` for a query about "authentication") and the context builder searches for each keyword independently. Bridges the gap between conceptual queries and lexically-unrelated symbol names without requiring embedding models.
+- **`tokensave_branch_list`** MCP tool — list tracked branches with DB sizes, parent branch, sync times.
+- **`tokensave://branches`** MCP resource — same data via `resources/read`.
+- **Parent branch in status output** — `tokensave status` and `tokensave_status` now show which branch a tracked branch was seeded from.
+- **Daemon version mismatch detection** — `tokensave daemon --status` warns when the daemon version differs from the CLI (beta/stable cross-channel, pending upgrade) with corrective restart command.
+
+### Removed
+- **Vector/embedding module** — removed `src/vectors/`, `enable_embeddings` config field, and `Vector` error variant. The `keywords` parameter on `tokensave_context` replaces the need for local embedding models. The `vectors` DB table is retained (empty, harmless) to avoid migration issues.
+
+### Changed
+- Tool count increased from 34 to 37.
+
 ## [4.0.1-beta.1] - 2026-04-06
 
 ### Added
@@ -13,9 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tokensave_branch_diff`** — compare code graphs between two branches: shows symbols added, removed, and changed (signature differs). Supports file and kind filters.
 - **Branch fallback warnings** — when the MCP server serves from an ancestor branch DB (current branch not tracked), every tool response is prepended with a warning suggesting `tokensave branch add`.
 - **Branch info in `tokensave_status`** — status output now includes `active_branch`, `branch_fallback`, and `branch_warning` fields when multi-branch is active.
-
-### Changed
-- Tool count increased from 34 to 36.
 
 ## [3.3.2] - 2026-04-05
 

@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 36 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
+Manual test queries for verifying all 37 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
 
 ### Staleness warnings
 

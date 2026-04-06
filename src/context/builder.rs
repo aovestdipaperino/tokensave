@@ -156,6 +156,21 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
+        // Search for agent-provided extra keywords (synonym expansion)
+        for keyword in &options.extra_keywords {
+            if entry_points.len() >= options.max_nodes {
+                break;
+            }
+            let results = self.db.search_nodes(keyword, options.search_limit).await?;
+            for sr in results {
+                if self.score_passes(sr.score, options.min_score)
+                    && seen_ids.insert(sr.node.id.clone())
+                {
+                    entry_points.push(sr.node.clone());
+                }
+            }
+        }
+
         // Cap at max_nodes
         entry_points.truncate(options.max_nodes);
         debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes after truncation");

@@ -137,6 +137,11 @@ fn def_context() -> ToolDefinition {
                     "type": "string",
                     "enum": ["explore", "plan"],
                     "description": "Context mode: 'explore' (default) for general exploration, 'plan' for implementation planning (adds extension points, dependency order, test coverage)"
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Extra search keywords for synonym expansion. Use this when the task uses conceptual terms that may not match symbol names — e.g. for 'authentication', pass [\"login\", \"session\", \"credential\", \"token\", \"auth\"]. The graph is searched for each keyword independently."
                 }
             },
             "required": ["task"]

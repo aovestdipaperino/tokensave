@@ -497,6 +497,9 @@ pub struct BuildContextOptions {
     pub search_limit: usize,
     pub traversal_depth: usize,
     pub min_score: f64,
+    /// Additional keywords to search for beyond those extracted from the query.
+    /// Enables agent-driven synonym expansion (e.g. "authentication" → ["login", "session"]).
+    pub extra_keywords: Vec<String>,
 }
 
 impl Default for BuildContextOptions {
@@ -510,6 +513,7 @@ impl Default for BuildContextOptions {
             search_limit: 3,
             traversal_depth: 1,
             min_score: 0.0,
+            extra_keywords: Vec::new(),
         }
     }
 }

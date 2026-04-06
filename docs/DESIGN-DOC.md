@@ -87,7 +87,7 @@ src/
 
   mcp/                Model Context Protocol server
     server.rs         McpServer: stdio JSON-RPC loop, lifecycle
-    tools.rs          36 tool definitions and dispatch
+    tools.rs          37 tool definitions and dispatch
     transport.rs      JSON-RPC request/response/error types
 
   agents/             Agent integration (install/uninstall/doctor)
@@ -225,13 +225,53 @@ The context builder (`context/builder.rs`) is the key integration point for AI a
 Given a natural language task description, it:
 
 1. Extracts symbol names from the query using heuristics (camelCase splitting, etc.)
-2. Searches the graph for matching nodes via FTS and fuzzy scoring
-3. Expands relevant nodes by following edges to include callers, callees, and types
-4. Reads source code snippets for the top-ranked nodes
-5. Assembles a `TaskContext` with ranked symbols, their code, and relationship summaries
+2. Searches for each extracted symbol via FTS5 full-text search
+3. Searches for each agent-provided keyword (the `extra_keywords` field)
+4. Expands relevant nodes by following edges to include callers, callees, and types
+5. Reads source code snippets for the top-ranked nodes
+6. Assembles a `TaskContext` with ranked symbols, their code, and relationship summaries
 
 The output can be formatted as markdown (for humans / LLM prompts) or JSON (for
 programmatic consumption).
+
+### Semantic Search: Keywords vs Embeddings
+
+The primary search mechanism is FTS5 with BM25 scoring, which matches against
+node names, qualified names, signatures, and docstrings. This works well when
+query terms appear literally in the code, but fails when concepts don't match
+symbol names (e.g. "authentication" won't find `login()` unless a docstring
+mentions it).
+
+Rather than embedding models, tokensave uses **agent-driven keyword expansion**.
+The `tokensave_context` MCP tool accepts a `keywords` array where the calling
+agent provides synonyms:
+
+```json
+{
+  "task": "how does authentication work",
+  "keywords": ["login", "session", "credential", "token", "jwt"]
+}
+```
+
+Each keyword runs as an independent FTS5 query, and results are merged with the
+main query's results (deduplicated by node ID).
+
+**Why keywords instead of embeddings:**
+
+| | Agent keywords | Local embeddings |
+|---|---|---|
+| Indexing cost | Zero | ~30s per 1,000 nodes (ONNX inference) |
+| Model dependency | None | ~50MB model download |
+| Query latency | ~1ms per keyword (FTS5 index hit) | ~200ms (brute-force cosine) |
+| Binary size impact | None | +15-20 MB (ONNX runtime) |
+| Conceptual match quality | Depends on agent's domain knowledge | Better for truly alien naming |
+| Works without an LLM | No (needs an agent to provide keywords) | Yes (standalone) |
+
+The trade-off: if the codebase uses naming conventions the agent can't predict
+(e.g. `guardianGateway` for authentication), keywords miss while embeddings
+would catch it via distributional semantics. In practice, the agent is an LLM
+that understands programming conventions well enough to supply good synonyms
+for the vast majority of cases.
 
 ## MCP Server
 
@@ -248,7 +288,7 @@ tool.
 
 ### Tool Categories
 
-The 36 MCP tools fall into several categories:
+The 37 MCP tools fall into several categories:
 
 | Category        | Tools                                                    |
 |-----------------|----------------------------------------------------------|

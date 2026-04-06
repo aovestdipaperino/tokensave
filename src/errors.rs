@@ -26,9 +26,6 @@ pub enum TokenSaveError {
     #[error("sync lock: {message}")]
     SyncLock { message: String },
 
-    #[error("vector error: {message}")]
-    Vector { message: String },
-
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

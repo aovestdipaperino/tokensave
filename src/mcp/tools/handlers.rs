@@ -186,10 +186,21 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_str())
         .unwrap_or("explore");
 
+    let extra_keywords: Vec<String> = args
+        .get("keywords")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let options = BuildContextOptions {
         max_nodes,
         include_code,
         max_code_blocks,
+        extra_keywords,
         ..Default::default()
     };
 

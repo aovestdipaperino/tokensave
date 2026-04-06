@@ -31,8 +31,6 @@ pub struct TokenSaveConfig {
     pub extract_docstrings: bool,
     /// Whether to track call-site locations for edges.
     pub track_call_sites: bool,
-    /// Whether to generate embeddings for semantic search.
-    pub enable_embeddings: bool,
     /// Whether to respect `.gitignore` rules when scanning files.
     #[serde(default)]
     pub git_ignore: bool,
@@ -58,7 +56,6 @@ impl Default for TokenSaveConfig {
             max_file_size: 1_048_576,
             extract_docstrings: true,
             track_call_sites: true,
-            enable_embeddings: false,
             git_ignore: false,
         }
     }

@@ -36,5 +36,4 @@ pub mod sync;
 pub mod tokensave;
 pub mod types;
 pub mod user_config;
-pub mod vectors;
 pub mod visualizer;

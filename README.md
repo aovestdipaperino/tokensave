@@ -95,7 +95,7 @@ Two new MCP tools enable cross-branch queries without switching your checkout:
 
 See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full guide.
 
-### 36 MCP Tools
+### 37 MCP Tools
 
 <details>
 <summary>Previous: v3.3 tools</summary>
@@ -110,7 +110,7 @@ Five tools added in v3.3:
 
 </details>
 
-All 36 tools include MCP annotations (`readOnlyHint`, `title`) and the three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+All 37 tools include MCP annotations (`readOnlyHint`, `title`) and the three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Upgrade-Aware Daemon
 
@@ -220,7 +220,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
 | **Graph visualizer** | Yes (interactive browser-based) | Yes |
-| **Semantic embeddings** | Planned | Yes (@xenova/transformers) |
+| **Semantic search** | Agent-driven keyword expansion (zero-cost) | Local embeddings (nomic-embed-text-v1.5 via ONNX) |
 | **MCP resources** | 4 (status, files, overview, branches) | No |
 | **MCP annotations** | Yes (readOnlyHint, alwaysLoad) | No |
 | **Dead code detection** | Yes | No |
@@ -233,6 +233,10 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **DB engine** | libsql (SQLite fork, WAL, async) | better-sqlite3 / wa-sqlite (WASM) |
 | **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
 | **Binary size** | ~25 MB (all grammars bundled) | ~80 MB (node_modules + WASM) |
+
+**Semantic search: two different approaches.** CodeGraph runs a local embedding model (nomic-embed-text-v1.5, 768-dim, ONNX) during indexing, storing a vector per symbol. Queries are embedded and matched by cosine similarity, so "authentication" finds `login()` even with zero lexical overlap. The cost is ~30s extra indexing per 1,000 nodes, a ~50MB model download, and ~200ms per query.
+
+tokensave takes a different path: the `keywords` parameter on `tokensave_context` lets the calling agent provide synonyms directly. When you ask "how does authentication work?", the agent passes `keywords: ["login", "session", "credential", "token"]` and the context builder runs an FTS5 search for each keyword. This adds zero indexing cost, zero model dependency, and ~1ms per extra keyword. The trade-off is that the agent must know the right synonyms to provide — but since the agent is an LLM, it usually does. Where this falls short: if the agent doesn't know what naming conventions the codebase uses (e.g. `guardianGateway` for auth), it can't provide the right keywords. Embeddings would catch that case because they encode distributional semantics from training data, not just lexical forms.
 
 CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. tokensave extends the concept with deeper analysis, more agents, background sync, and multi-branch support.
 
