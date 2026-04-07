@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-04-07
+
+### Fixed
+- **Beta Homebrew bottles 404** — the beta release workflow used double-dashes (`tokensave-beta--{version}`) in bottle archive names, but Homebrew expects single-dash (`tokensave-beta-{version}`). This caused `brew upgrade tokensave-beta` to fail with a 404 download error.
+- **Beta release resilience** — changed `fail-fast: true` to `false` in the beta build matrix, and added `if: !cancelled()` guards to the Homebrew/Scoop update jobs, matching the stable workflow. A single platform build failure no longer blocks updates for platforms that succeeded.
+- **Update notices now suggest `tokensave upgrade`** — all version-update warnings (CLI and MCP server) now suggest `tokensave upgrade` instead of platform-specific commands like `cargo install`, `brew upgrade`, or `scoop update`.
+
 ## [3.4.0] - 2026-04-07
 
 ### Added
