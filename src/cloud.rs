@@ -234,22 +234,10 @@ pub fn detect_install_method() -> InstallMethod {
     }
 }
 
-/// Returns the upgrade command string for the detected install method.
-/// Beta builds point to the beta package names.
-pub fn upgrade_command(method: &InstallMethod) -> &'static str {
-    if is_beta() {
-        match method {
-            InstallMethod::Cargo => "cargo install tokensave --version <beta-version>",
-            InstallMethod::Brew => "brew upgrade tokensave-beta",
-            InstallMethod::Scoop => "scoop update tokensave-beta",
-            InstallMethod::Unknown => "cargo install tokensave --version <beta-version>",
-        }
-    } else {
-        match method {
-            InstallMethod::Cargo => "cargo install tokensave",
-            InstallMethod::Brew => "brew upgrade tokensave",
-            InstallMethod::Scoop => "scoop update tokensave",
-            InstallMethod::Unknown => "cargo install tokensave",
-        }
-    }
+/// Returns the upgrade command string.
+///
+/// Always suggests `tokensave upgrade` which handles all install methods
+/// and channels automatically.
+pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
+    "tokensave upgrade"
 }
