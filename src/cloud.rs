@@ -114,7 +114,7 @@ pub fn fetch_latest_version() -> Option<String> {
 }
 
 /// Fetches the latest stable release version from GitHub.
-fn fetch_latest_stable_version() -> Option<String> {
+pub fn fetch_latest_stable_version() -> Option<String> {
     let agent = agent_with_timeout(FETCH_TIMEOUT);
     let release: GitHubRelease = agent
         .get(GITHUB_RELEASES_URL)
@@ -128,7 +128,7 @@ fn fetch_latest_stable_version() -> Option<String> {
 }
 
 /// Fetches the latest prerelease version from GitHub.
-fn fetch_latest_beta_version() -> Option<String> {
+pub fn fetch_latest_beta_version() -> Option<String> {
     let agent = agent_with_timeout(FETCH_TIMEOUT);
     let releases: Vec<GitHubRelease> = agent
         .get(GITHUB_RELEASES_LIST_URL)
