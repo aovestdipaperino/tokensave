@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.3] - 2026-04-07
+
+### Fixed
+- **UTF-16 encoded files no longer cause phantom "added" on every sync** — files saved as UTF-16 LE/BE (common for `.ps1` and `.cs` on Windows) were silently unreadable by `std::fs::read_to_string`, causing them to appear as newly added on every sync while never actually being indexed. The sync engine now detects UTF-16 LE, UTF-16 BE, and UTF-8 BOM via byte-order marks and decodes them transparently.
+- **Unreadable files are now reported instead of silently ignored** — if a file cannot be read or decoded, it is excluded from change detection and reported with the error reason (e.g. `8 skipped` in the summary line, with per-file details below).
+
 ## [3.4.2] - 2026-04-07
 
 ### Added
