@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in tokensave, please report it responsibly:
 
-- **Email:** security@tokensave.dev
+- **Email:** enzinol@gmail.com
 - **GitHub:** Open a [private security advisory](https://github.com/aovestdipaperino/tokensave/security/advisories/new)
 
 Please do **not** open a public issue for security vulnerabilities. We aim to acknowledge reports within 48 hours and provide a fix or mitigation plan within 7 days.
