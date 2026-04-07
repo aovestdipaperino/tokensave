@@ -447,3 +447,66 @@ Future<void> main() async {
     assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Enum));
     assert!(result.nodes.iter().any(|n| n.kind == NodeKind::TypeAlias));
 }
+
+#[test]
+fn test_dart_annotation_extraction() {
+    let source = r#"
+@deprecated
+class OldWidget {
+  @override
+  String toString() {
+    return 'OldWidget';
+  }
+}
+"#;
+    let result = extract(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+
+    let annot_names: Vec<&str> = annots.iter().map(|a| a.name.as_str()).collect();
+
+    assert!(
+        annot_names.contains(&"deprecated"),
+        "expected 'deprecated' annotation, got: {:?}",
+        annot_names
+    );
+
+    assert!(
+        annot_names.contains(&"override"),
+        "expected 'override' annotation, got: {:?}",
+        annot_names
+    );
+
+    // Verify Annotates edges exist
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert!(
+        !annotates_edges.is_empty(),
+        "expected Annotates edges, found none"
+    );
+    assert_eq!(
+        annotates_edges.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates edge"
+    );
+
+    // Verify Annotates unresolved refs exist
+    let annotates_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(
+        annotates_refs.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates unresolved ref"
+    );
+}

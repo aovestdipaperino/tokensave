@@ -360,6 +360,7 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         Self::extract_extends(state, node, &id);
         Self::extract_type_parameters(state, node, &id);
         Self::extract_class_params_as_fields(state, node, &id);
@@ -424,6 +425,7 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         Self::extract_extends(state, node, &id);
         Self::extract_type_parameters(state, node, &id);
 
@@ -490,6 +492,7 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         Self::extract_extends(state, node, &id);
 
         state.node_stack.push((name, id));
@@ -552,6 +555,7 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         Self::extract_type_parameters(state, node, &id);
 
         // Visit enum body to extract enum cases.
@@ -697,6 +701,8 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
+
         // Extract call sites from the body.
         if let Some(body) = node.child_by_field_name("body") {
             Self::extract_call_sites(state, body, &id);
@@ -751,11 +757,13 @@ impl ScalaExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        Self::extract_annotations(state, node, &id);
     }
 
     // -----------------------------------------------------------------------
@@ -807,6 +815,8 @@ impl ScalaExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
+
         // Extract call sites from the value expression.
         if let Some(value) = node.child_by_field_name("value") {
             Self::extract_call_sites(state, value, &id);
@@ -857,6 +867,8 @@ impl ScalaExtractor {
                 line: Some(start_line),
             });
         }
+
+        Self::extract_annotations(state, node, &id);
 
         if let Some(value) = node.child_by_field_name("value") {
             Self::extract_call_sites(state, value, &id);
@@ -1340,6 +1352,105 @@ impl ScalaExtractor {
             }
         }
         "<unknown>".to_string()
+    }
+
+    // -----------------------------------------------------------------------
+    // Annotations
+    // -----------------------------------------------------------------------
+
+    /// Extract annotations from a declaration node and create AnnotationUsage
+    /// nodes and Annotates edges.
+    ///
+    /// Scala annotations appear as direct `"annotation"` children of the
+    /// declaration node (class_definition, function_definition, etc.).
+    fn extract_annotations(state: &mut ExtractionState, node: TsNode<'_>, target_id: &str) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "annotation" {
+                    let annot_name = Self::extract_annotation_name(state, child);
+                    let start_line = child.start_position().row as u32;
+                    let end_line = child.end_position().row as u32;
+                    let start_column = child.start_position().column as u32;
+                    let end_column = child.end_position().column as u32;
+                    let qualified_name =
+                        format!("{}::@{}", state.qualified_prefix(), annot_name);
+                    let id = generate_node_id(
+                        &state.file_path,
+                        &NodeKind::AnnotationUsage,
+                        &annot_name,
+                        start_line,
+                    );
+
+                    let graph_node = Node {
+                        id: id.clone(),
+                        kind: NodeKind::AnnotationUsage,
+                        name: annot_name.clone(),
+                        qualified_name,
+                        file_path: state.file_path.clone(),
+                        start_line,
+                        end_line,
+                        start_column,
+                        end_column,
+                        signature: Some(state.node_text(child).trim().to_string()),
+                        docstring: None,
+                        visibility: Visibility::Private,
+                        is_async: false,
+                        branches: 0,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
+                    };
+                    state.nodes.push(graph_node);
+
+                    // Annotates unresolved ref.
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: id.clone(),
+                        reference_name: annot_name,
+                        reference_kind: EdgeKind::Annotates,
+                        line: start_line,
+                        column: start_column,
+                        file_path: state.file_path.clone(),
+                    });
+
+                    // Direct Annotates edge from the annotation to the target.
+                    state.edges.push(Edge {
+                        source: id,
+                        target: target_id.to_string(),
+                        kind: EdgeKind::Annotates,
+                        line: Some(start_line),
+                    });
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract the name from an annotation node.
+    ///
+    /// Looks for a `type_identifier` child first, then falls back to
+    /// stripping `@` prefix and `(` suffix from the text.
+    fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        if let Some(ti) = Self::find_child_by_kind(node, "type_identifier") {
+            return state.node_text(ti);
+        }
+        // Fallback: text after '@', before '('
+        let text = state.node_text(node);
+        text.trim()
+            .strip_prefix('@')
+            .unwrap_or(&text)
+            .split('(')
+            .next()
+            .unwrap_or(&text)
+            .trim()
+            .to_string()
     }
 
     /// Find the first child node of a specific kind.

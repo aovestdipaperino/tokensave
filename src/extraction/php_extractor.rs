@@ -221,6 +221,8 @@ impl PhpExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
+
         // Extract call sites from the function body.
         if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
@@ -279,6 +281,8 @@ impl PhpExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
+
         // Extract call sites from the method body.
         if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
@@ -336,6 +340,7 @@ impl PhpExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         // Extract base class (extends) references.
         Self::extract_class_extends(state, node, &id);
         // Extract interface (implements) references.
@@ -905,11 +910,14 @@ impl PhpExtractor {
                     if let Some(parent_id) = state.parent_node_id() {
                         state.edges.push(Edge {
                             source: parent_id.to_string(),
-                            target: id,
+                            target: id.clone(),
                             kind: EdgeKind::Contains,
                             line: Some(start_line),
                         });
                     }
+
+                    // Extract annotations from the enclosing property_declaration.
+                    Self::extract_annotations(state, node, &id);
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -1162,6 +1170,133 @@ impl PhpExtractor {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Annotations (PHP 8 Attributes)
+    // -----------------------------------------------------------------------
+
+    /// Extract PHP 8 attributes from a declaration node and create
+    /// AnnotationUsage nodes and Annotates edges.
+    ///
+    /// PHP 8 attributes appear as `attribute_list` children of the declaration.
+    /// Structure: attribute_list > attribute_group > attribute > name.
+    fn extract_annotations(state: &mut ExtractionState, node: TsNode<'_>, target_id: &str) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute_list" {
+                    Self::extract_annotations_from_attribute_list(state, child, target_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Walk an attribute_list node, iterating over attribute_group > attribute
+    /// children to create AnnotationUsage nodes.
+    fn extract_annotations_from_attribute_list(
+        state: &mut ExtractionState,
+        attr_list: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = attr_list.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let group = cursor.node();
+                if group.kind() == "attribute_group" {
+                    let mut inner = group.walk();
+                    if inner.goto_first_child() {
+                        loop {
+                            let child = inner.node();
+                            if child.kind() == "attribute" {
+                                let attr_name = Self::extract_attribute_name(state, child);
+                                let start_line = child.start_position().row as u32;
+                                let end_line = child.end_position().row as u32;
+                                let start_column = child.start_position().column as u32;
+                                let end_column = child.end_position().column as u32;
+                                let qualified_name =
+                                    format!("{}::@{}", state.qualified_prefix(), attr_name);
+                                let id = generate_node_id(
+                                    &state.file_path,
+                                    &NodeKind::AnnotationUsage,
+                                    &attr_name,
+                                    start_line,
+                                );
+
+                                let graph_node = Node {
+                                    id: id.clone(),
+                                    kind: NodeKind::AnnotationUsage,
+                                    name: attr_name.clone(),
+                                    qualified_name,
+                                    file_path: state.file_path.clone(),
+                                    start_line,
+                                    end_line,
+                                    start_column,
+                                    end_column,
+                                    signature: Some(
+                                        format!("#[{}]", state.node_text(child).trim()),
+                                    ),
+                                    docstring: None,
+                                    visibility: Visibility::Private,
+                                    is_async: false,
+                                    branches: 0,
+                                    loops: 0,
+                                    returns: 0,
+                                    max_nesting: 0,
+                                    unsafe_blocks: 0,
+                                    unchecked_calls: 0,
+                                    assertions: 0,
+                                    updated_at: state.timestamp,
+                                };
+                                state.nodes.push(graph_node);
+
+                                // Annotates unresolved ref.
+                                state.unresolved_refs.push(UnresolvedRef {
+                                    from_node_id: id.clone(),
+                                    reference_name: attr_name,
+                                    reference_kind: EdgeKind::Annotates,
+                                    line: start_line,
+                                    column: start_column,
+                                    file_path: state.file_path.clone(),
+                                });
+
+                                // Direct Annotates edge from annotation to target.
+                                state.edges.push(Edge {
+                                    source: id,
+                                    target: target_id.to_string(),
+                                    kind: EdgeKind::Annotates,
+                                    line: Some(start_line),
+                                });
+                            }
+                            if !inner.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract the name from a PHP attribute node.
+    fn extract_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        // PHP attributes have a "name" or "qualified_name" child.
+        if let Some(name) = Self::find_child_by_kind(node, "name") {
+            return state.node_text(name);
+        }
+        if let Some(qn) = Self::find_child_by_kind(node, "qualified_name") {
+            return state.node_text(qn);
+        }
+        // Fallback: full text before '('
+        let text = state.node_text(node);
+        text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
     /// Find the first child of a node with a given kind.

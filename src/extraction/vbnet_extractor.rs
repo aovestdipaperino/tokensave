@@ -410,6 +410,11 @@ impl VbNetExtractor {
             });
         }
 
+        // Extract annotations from previous siblings of the type_declaration parent.
+        if let Some(type_decl) = node.parent() {
+            Self::extract_annotations_from_prev_siblings(state, type_decl, &id);
+        }
+
         // Extract Inherits/Implements from text-based analysis of children.
         Self::extract_inherits_implements(state, node, &id);
 
@@ -711,6 +716,8 @@ impl VbNetExtractor {
                 line: Some(start_line),
             });
         }
+
+        Self::extract_annotations_from_children(state, node, &id);
 
         // Extract call sites from method body.
         Self::extract_call_sites_from_children(state, node, &id);
@@ -1298,6 +1305,151 @@ impl VbNetExtractor {
             }
         }
         state.node_text(node)
+    }
+
+    // -----------------------------------------------------------------------
+    // Annotations (VB.NET Attributes)
+    // -----------------------------------------------------------------------
+
+    /// Extract VB.NET attributes from a node's children (for methods,
+    /// constructors, properties) and create AnnotationUsage nodes and
+    /// Annotates edges.
+    ///
+    /// VB.NET attributes appear as `attribute_block` children containing
+    /// `attribute` nodes with `identifier` name children.
+    fn extract_annotations_from_children(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute_block" {
+                    Self::extract_annotations_from_block(state, child, target_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract VB.NET attributes from previous siblings (for classes, structs,
+    /// etc. where attribute_block appears before the type_declaration).
+    fn extract_annotations_from_prev_siblings(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut sibling = node.prev_sibling();
+        while let Some(sib) = sibling {
+            if sib.kind() == "attribute_block" {
+                Self::extract_annotations_from_block(state, sib, target_id);
+            } else if sib.kind() != "blank_line" && sib.kind() != "comment" {
+                // Stop if we hit a non-attribute, non-whitespace sibling.
+                break;
+            }
+            sibling = sib.prev_sibling();
+        }
+    }
+
+    /// Walk an attribute_block node to create AnnotationUsage nodes.
+    fn extract_annotations_from_block(
+        state: &mut ExtractionState,
+        attr_block: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = attr_block.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute" {
+                    let attr_name = Self::extract_vb_attribute_name(state, child);
+                    let start_line = child.start_position().row as u32;
+                    let end_line = child.end_position().row as u32;
+                    let start_column = child.start_position().column as u32;
+                    let end_column = child.end_position().column as u32;
+                    let qualified_name =
+                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let id = generate_node_id(
+                        &state.file_path,
+                        &NodeKind::AnnotationUsage,
+                        &attr_name,
+                        start_line,
+                    );
+
+                    let graph_node = Node {
+                        id: id.clone(),
+                        kind: NodeKind::AnnotationUsage,
+                        name: attr_name.clone(),
+                        qualified_name,
+                        file_path: state.file_path.clone(),
+                        start_line,
+                        end_line,
+                        start_column,
+                        end_column,
+                        signature: Some(
+                            format!("<{}>", state.node_text(child).trim()),
+                        ),
+                        docstring: None,
+                        visibility: Visibility::Private,
+                        is_async: false,
+                        branches: 0,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
+                    };
+                    state.nodes.push(graph_node);
+
+                    // Annotates unresolved ref.
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: id.clone(),
+                        reference_name: attr_name,
+                        reference_kind: EdgeKind::Annotates,
+                        line: start_line,
+                        column: start_column,
+                        file_path: state.file_path.clone(),
+                    });
+
+                    // Direct Annotates edge from annotation to target.
+                    state.edges.push(Edge {
+                        source: id,
+                        target: target_id.to_string(),
+                        kind: EdgeKind::Annotates,
+                        line: Some(start_line),
+                    });
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract the name from a VB.NET attribute node.
+    fn extract_vb_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        // Look for identifier child first.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "identifier" || child.kind() == "qualified_name" {
+                    return state.node_text(child);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        // Fallback: text before '('
+        let text = state.node_text(node);
+        text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
     /// Build the final ExtractionResult from the accumulated state.

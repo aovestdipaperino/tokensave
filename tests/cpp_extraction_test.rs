@@ -767,3 +767,46 @@ class C : public A, public B {};
     assert!(extends_refs.iter().any(|r| r.reference_name == "A"));
     assert!(extends_refs.iter().any(|r| r.reference_name == "B"));
 }
+
+#[test]
+fn test_cpp_attributes_on_function_and_class() {
+    let source = r#"
+[[nodiscard]]
+int getValue() { return 42; }
+
+[[deprecated("use newFunc")]]
+void oldFunc() {}
+
+class [[nodiscard]] Result {
+};
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("attr.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Should have 3 AnnotationUsage nodes: nodiscard, deprecated, nodiscard
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+    assert!(annots.len() >= 3, "expected at least 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert!(annots.iter().any(|a| a.name == "nodiscard"));
+    assert!(annots.iter().any(|a| a.name == "deprecated"));
+
+    // Should have Annotates edges.
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert!(annotates_edges.len() >= 3, "expected at least 3 Annotates edges");
+
+    // Should have Annotates unresolved refs.
+    let annot_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert!(annot_refs.len() >= 3, "expected at least 3 Annotates refs");
+}

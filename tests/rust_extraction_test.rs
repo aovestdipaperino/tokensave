@@ -317,3 +317,105 @@ fn test_rust_empty_source() {
     let files: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
     assert_eq!(files.len(), 1);
 }
+
+#[test]
+fn test_rust_annotation_extraction() {
+    let source = r#"
+#[test]
+fn my_test() {}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn guarded_fn() {}
+
+#[inline]
+pub fn fast_add(a: i32, b: i32) -> i32 { a + b }
+
+#[derive(Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    pub name: String,
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("attrs.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+
+    let annot_names: Vec<&str> = annots.iter().map(|a| a.name.as_str()).collect();
+
+    // #[test] on my_test
+    assert!(
+        annot_names.contains(&"test"),
+        "expected 'test' annotation, got: {:?}",
+        annot_names
+    );
+
+    // #[cfg(test)] on guarded_fn
+    assert!(
+        annot_names.contains(&"cfg"),
+        "expected 'cfg' annotation, got: {:?}",
+        annot_names
+    );
+
+    // #[allow(dead_code)] on guarded_fn
+    assert!(
+        annot_names.contains(&"allow"),
+        "expected 'allow' annotation, got: {:?}",
+        annot_names
+    );
+
+    // #[inline] on fast_add
+    assert!(
+        annot_names.contains(&"inline"),
+        "expected 'inline' annotation, got: {:?}",
+        annot_names
+    );
+
+    // #[serde(rename_all = "camelCase")] on Config (derive is skipped)
+    assert!(
+        annot_names.contains(&"serde"),
+        "expected 'serde' annotation, got: {:?}",
+        annot_names
+    );
+
+    // derive should NOT be in AnnotationUsage — it's handled separately by DerivesMacro
+    assert!(
+        !annot_names.contains(&"derive"),
+        "derive should not appear as AnnotationUsage, got: {:?}",
+        annot_names
+    );
+
+    // Verify Annotates edges exist
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert!(
+        !annotates_edges.is_empty(),
+        "expected Annotates edges, found none"
+    );
+    assert_eq!(
+        annotates_edges.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates edge"
+    );
+
+    // Verify Annotates unresolved refs exist
+    let annotates_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(
+        annotates_refs.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates unresolved ref"
+    );
+}

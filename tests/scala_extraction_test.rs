@@ -199,6 +199,47 @@ fn test_scala_qualified_names() {
 }
 
 #[test]
+fn test_scala_annotations_on_class_and_function() {
+    let source = r#"
+@deprecated
+@throws(classOf[Exception])
+class MyClass {
+  @tailrec
+  def factorial(n: Int): Int = if (n <= 1) 1 else n * factorial(n - 1)
+}
+"#;
+    let result = extract(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Should have 3 AnnotationUsage nodes: deprecated, throws, tailrec
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+    assert_eq!(annots.len(), 3, "expected 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert!(annots.iter().any(|a| a.name == "deprecated"));
+    assert!(annots.iter().any(|a| a.name == "throws"));
+    assert!(annots.iter().any(|a| a.name == "tailrec"));
+
+    // Should have Annotates edges.
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annotates_edges.len(), 3, "expected 3 Annotates edges");
+
+    // Should have Annotates unresolved refs.
+    let annot_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annot_refs.len(), 3, "expected 3 Annotates refs");
+}
+
+#[test]
 fn test_scala_scaladoc() {
     let result = extract(
         "/** A greeting object. */\nobject Greeter {\n  /** Says hi. */\n  def hi(): String = \"hi\"\n}",

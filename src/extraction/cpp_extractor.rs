@@ -265,6 +265,8 @@ impl CppExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
+
         // Extract call sites from the function body.
         if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
@@ -605,11 +607,13 @@ impl CppExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        Self::extract_annotations(state, node, &id);
     }
 
     /// Visit a field-like declaration inside a class body (not a function).
@@ -709,11 +713,13 @@ impl CppExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        Self::extract_annotations(state, node, &id);
     }
 
     /// Extract a global variable declaration.
@@ -885,6 +891,7 @@ impl CppExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         // Extract base classes (inheritance).
         Self::extract_base_classes(state, node, &id);
 
@@ -964,6 +971,7 @@ impl CppExtractor {
             });
         }
 
+        Self::extract_annotations(state, node, &id);
         // Extract base classes (inheritance).
         Self::extract_base_classes(state, node, &id);
 
@@ -2195,6 +2203,118 @@ impl CppExtractor {
             }
         }
         None
+    }
+
+    // -----------------------------------------------------------------------
+    // Annotations (C++ [[attributes]])
+    // -----------------------------------------------------------------------
+
+    /// Extract C++ attributes from a declaration node and create
+    /// AnnotationUsage nodes and Annotates edges.
+    ///
+    /// C++ attributes appear as `attribute_declaration` children of the
+    /// declaration node. Structure: attribute_declaration > attribute > identifier.
+    fn extract_annotations(state: &mut ExtractionState, node: TsNode<'_>, target_id: &str) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute_declaration" {
+                    Self::extract_attributes_from_decl(state, child, target_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Walk an attribute_declaration node, iterating over attribute children
+    /// to create AnnotationUsage nodes.
+    fn extract_attributes_from_decl(
+        state: &mut ExtractionState,
+        attr_decl: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut cursor = attr_decl.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "attribute" {
+                    let attr_name = Self::extract_cpp_attribute_name(state, child);
+                    let start_line = child.start_position().row as u32;
+                    let end_line = child.end_position().row as u32;
+                    let start_column = child.start_position().column as u32;
+                    let end_column = child.end_position().column as u32;
+                    let qualified_name =
+                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let id = generate_node_id(
+                        &state.file_path,
+                        &NodeKind::AnnotationUsage,
+                        &attr_name,
+                        start_line,
+                    );
+
+                    let graph_node = Node {
+                        id: id.clone(),
+                        kind: NodeKind::AnnotationUsage,
+                        name: attr_name.clone(),
+                        qualified_name,
+                        file_path: state.file_path.clone(),
+                        start_line,
+                        end_line,
+                        start_column,
+                        end_column,
+                        signature: Some(
+                            format!("[[{}]]", state.node_text(child).trim()),
+                        ),
+                        docstring: None,
+                        visibility: Visibility::Private,
+                        is_async: false,
+                        branches: 0,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
+                    };
+                    state.nodes.push(graph_node);
+
+                    // Annotates unresolved ref.
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: id.clone(),
+                        reference_name: attr_name,
+                        reference_kind: EdgeKind::Annotates,
+                        line: start_line,
+                        column: start_column,
+                        file_path: state.file_path.clone(),
+                    });
+
+                    // Direct Annotates edge from annotation to target.
+                    state.edges.push(Edge {
+                        source: id,
+                        target: target_id.to_string(),
+                        kind: EdgeKind::Annotates,
+                        line: Some(start_line),
+                    });
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Extract the name from a C++ attribute node.
+    fn extract_cpp_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+            return state.node_text(ident);
+        }
+        // Fallback: text before '('
+        let text = state.node_text(node);
+        text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
     /// Build the final ExtractionResult from the accumulated state.

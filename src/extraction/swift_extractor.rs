@@ -316,6 +316,9 @@ impl SwiftExtractor {
         // Extract inheritance (class Foo: Bar).
         Self::extract_inheritance(state, node, &id);
 
+        // Extract attribute annotations (e.g. @objc, @available).
+        Self::extract_annotations_from_modifiers(state, node, &id);
+
         // Visit class body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
@@ -372,6 +375,9 @@ impl SwiftExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract attribute annotations.
+        Self::extract_annotations_from_modifiers(state, node, &id);
 
         // Visit struct body.
         state.node_stack.push((name.clone(), id));
@@ -642,6 +648,9 @@ impl SwiftExtractor {
             });
         }
 
+        // Extract attribute annotations.
+        Self::extract_annotations_from_modifiers(state, node, &id);
+
         // Visit protocol body. Protocol functions are protocol_function_declaration.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
@@ -797,6 +806,9 @@ impl SwiftExtractor {
 
         // Extract call sites from the function body.
         Self::extract_call_sites(state, node, &id);
+
+        // Extract attribute annotations (e.g. @discardableResult, @objc).
+        Self::extract_annotations_from_modifiers(state, node, &id);
     }
 
     // ----------------------------------
@@ -854,6 +866,9 @@ impl SwiftExtractor {
 
         // Extract call sites from the init body.
         Self::extract_call_sites(state, node, &id);
+
+        // Extract attribute annotations.
+        Self::extract_annotations_from_modifiers(state, node, &id);
     }
 
     // ----------------------------------
@@ -909,11 +924,14 @@ impl SwiftExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // Extract attribute annotations.
+        Self::extract_annotations_from_modifiers(state, node, &id);
     }
 
     // ----------------------------------
@@ -1232,6 +1250,136 @@ impl SwiftExtractor {
             }
         }
         None
+    }
+
+    /// Walk previous siblings of a declaration looking for `attribute` nodes
+    /// and extract annotation usages from each one.
+    fn extract_annotations_from_modifiers(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let mut current = node.prev_named_sibling();
+        while let Some(sibling) = current {
+            if sibling.kind() == "attribute" {
+                Self::extract_annotations_from_node(state, sibling, target_id);
+                current = sibling.prev_named_sibling();
+            } else if sibling.kind() == "comment" || sibling.kind() == "multiline_comment" {
+                current = sibling.prev_named_sibling();
+            } else {
+                break;
+            }
+        }
+        // Also check children of a "modifiers" child node.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "modifiers" {
+                    let mut inner = child.walk();
+                    if inner.goto_first_child() {
+                        loop {
+                            let m = inner.node();
+                            if m.kind() == "attribute" {
+                                Self::extract_annotations_from_node(state, m, target_id);
+                            }
+                            if !inner.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Create an `AnnotationUsage` node and edges for a single `attribute` node.
+    fn extract_annotations_from_node(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let annot_name = Self::extract_annotation_name(state, node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let qualified_name = format!("{}::@{}", state.qualified_prefix(), annot_name);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::AnnotationUsage,
+            &annot_name,
+            start_line,
+        );
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::AnnotationUsage,
+            name: annot_name.clone(),
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature: Some(state.node_text(node).trim().to_string()),
+            docstring: None,
+            visibility: Visibility::Private,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            updated_at: state.timestamp,
+        };
+        state.nodes.push(graph_node);
+
+        // Annotates unresolved ref.
+        state.unresolved_refs.push(UnresolvedRef {
+            from_node_id: id.clone(),
+            reference_name: annot_name,
+            reference_kind: EdgeKind::Annotates,
+            line: start_line,
+            column: start_column,
+            file_path: state.file_path.clone(),
+        });
+
+        // Direct Annotates edge from the annotation to the target.
+        state.edges.push(Edge {
+            source: id,
+            target: target_id.to_string(),
+            kind: EdgeKind::Annotates,
+            line: Some(start_line),
+        });
+    }
+
+    /// Extract the name from a Swift `attribute` node.
+    ///
+    /// Looks for a `user_type` child, or falls back to text after `@`, before `(`.
+    fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        // Try user_type -> type_identifier path.
+        if let Some(ut) = Self::find_child_by_kind(node, "user_type") {
+            if let Some(ti) = Self::find_child_by_kind(ut, "type_identifier") {
+                return state.node_text(ti);
+            }
+            return state.node_text(ut);
+        }
+        // Fallback: text after '@', before '('.
+        let text = state.node_text(node);
+        text.trim()
+            .strip_prefix('@')
+            .unwrap_or(&text)
+            .split('(')
+            .next()
+            .unwrap_or(&text)
+            .trim()
+            .to_string()
     }
 
     /// Build the final ExtractionResult from the accumulated state.

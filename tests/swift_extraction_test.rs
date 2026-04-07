@@ -433,3 +433,77 @@ fn test_swift_async_function() {
         .expect("connect method not found");
     assert!(connect.is_async, "connect should be async");
 }
+
+#[test]
+fn test_swift_annotation_extraction() {
+    let source = r#"
+@objc class MyController {
+    @discardableResult
+    func doWork() -> Bool {
+        return true
+    }
+
+    @available(iOS 13, *)
+    func newFeature() {
+        print("new")
+    }
+}
+"#;
+    let extractor = SwiftExtractor;
+    let result = extractor.extract("attrs.swift", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+
+    let annot_names: Vec<&str> = annots.iter().map(|a| a.name.as_str()).collect();
+
+    assert!(
+        annot_names.contains(&"objc"),
+        "expected 'objc' annotation, got: {:?}",
+        annot_names
+    );
+
+    assert!(
+        annot_names.contains(&"discardableResult"),
+        "expected 'discardableResult' annotation, got: {:?}",
+        annot_names
+    );
+
+    assert!(
+        annot_names.contains(&"available"),
+        "expected 'available' annotation, got: {:?}",
+        annot_names
+    );
+
+    // Verify Annotates edges exist
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert!(
+        !annotates_edges.is_empty(),
+        "expected Annotates edges, found none"
+    );
+    assert_eq!(
+        annotates_edges.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates edge"
+    );
+
+    // Verify Annotates unresolved refs exist
+    let annotates_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(
+        annotates_refs.len(),
+        annots.len(),
+        "each AnnotationUsage should have an Annotates unresolved ref"
+    );
+}

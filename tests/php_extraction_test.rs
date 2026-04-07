@@ -202,6 +202,52 @@ class Widget {
 }
 
 #[test]
+fn test_php_attributes_on_function_and_class() {
+    let source = r#"<?php
+#[Route('/api')]
+#[Deprecated]
+function hello() {}
+
+#[Override]
+class MyController {
+    #[AllowDynamicProperties]
+    public function handle() {}
+}
+"#;
+    let extractor = PhpExtractor;
+    let result = extractor.extract("attr.php", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Should have 4 AnnotationUsage nodes: Route, Deprecated, Override, AllowDynamicProperties
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+    assert_eq!(annots.len(), 4, "expected 4 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert!(annots.iter().any(|a| a.name == "Route"));
+    assert!(annots.iter().any(|a| a.name == "Deprecated"));
+    assert!(annots.iter().any(|a| a.name == "Override"));
+    assert!(annots.iter().any(|a| a.name == "AllowDynamicProperties"));
+
+    // Should have Annotates edges.
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annotates_edges.len(), 4, "expected 4 Annotates edges");
+
+    // Should have Annotates unresolved refs.
+    let annot_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annot_refs.len(), 4, "expected 4 Annotates refs");
+}
+
+#[test]
 fn test_php_empty_source() {
     let extractor = PhpExtractor;
     let result = extractor.extract("empty.php", "<?php\n");

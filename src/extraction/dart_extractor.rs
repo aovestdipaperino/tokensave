@@ -373,6 +373,9 @@ impl DartExtractor {
         if let Some(body_node) = body {
             Self::extract_call_sites(state, body_node, &id);
         }
+
+        // Extract annotation usages from preceding siblings of the signature.
+        Self::extract_annotations_from_modifiers(state, sig_node, &id);
     }
 
     // ----------------------------------
@@ -452,6 +455,9 @@ impl DartExtractor {
             }
         }
 
+        // Extract annotation usages (e.g. @JsonSerializable).
+        Self::extract_annotations_from_modifiers(state, node, &id);
+
         // Visit class body.
         if let Some(body) = node.child_by_field_name("body") {
             state.node_stack.push((name, id.clone()));
@@ -514,6 +520,9 @@ impl DartExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract annotation usages.
+        Self::extract_annotations_from_modifiers(state, node, &id);
 
         // Visit mixin body (it uses class_body).
         if let Some(body) = Self::find_child_by_kind(node, "class_body") {
@@ -641,6 +650,9 @@ impl DartExtractor {
                 line: Some(start_line),
             });
         }
+
+        // Extract annotation usages.
+        Self::extract_annotations_from_modifiers(state, node, &id);
 
         // Extract enum constants and members from enum_body.
         if let Some(body) = node.child_by_field_name("body") {
@@ -987,6 +999,13 @@ impl DartExtractor {
 
         if let Some(body_node) = body {
             Self::extract_call_sites(state, body_node, &id);
+        }
+
+        // Extract annotation usages from the signature node and its parent
+        // (method_signature or declaration wrapper).
+        Self::extract_annotations_from_modifiers(state, sig_node, &id);
+        if let Some(parent) = sig_node.parent() {
+            Self::extract_annotations_from_modifiers(state, parent, &id);
         }
     }
 
@@ -1538,6 +1557,124 @@ impl DartExtractor {
             }
         }
         None
+    }
+
+    /// Walk previous siblings and children of a declaration looking for
+    /// `annotation` or `marker_annotation` nodes and extract annotation usages.
+    fn extract_annotations_from_modifiers(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        // Check previous siblings of the declaration.
+        let mut current = node.prev_named_sibling();
+        while let Some(sibling) = current {
+            match sibling.kind() {
+                "annotation" | "marker_annotation" => {
+                    Self::extract_annotations_from_node(state, sibling, target_id);
+                    current = sibling.prev_named_sibling();
+                }
+                "comment" | "documentation_comment" => {
+                    current = sibling.prev_named_sibling();
+                }
+                _ => break,
+            }
+        }
+        // Also check children of the declaration node.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "annotation" || child.kind() == "marker_annotation" {
+                    Self::extract_annotations_from_node(state, child, target_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Create an `AnnotationUsage` node and edges for a single annotation node.
+    fn extract_annotations_from_node(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        target_id: &str,
+    ) {
+        let annot_name = Self::extract_annotation_name(state, node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let qualified_name = format!("{}::@{}", state.qualified_prefix(), annot_name);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::AnnotationUsage,
+            &annot_name,
+            start_line,
+        );
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::AnnotationUsage,
+            name: annot_name.clone(),
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature: Some(state.node_text(node).trim().to_string()),
+            docstring: None,
+            visibility: Visibility::Private,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            updated_at: state.timestamp,
+        };
+        state.nodes.push(graph_node);
+
+        // Annotates unresolved ref.
+        state.unresolved_refs.push(UnresolvedRef {
+            from_node_id: id.clone(),
+            reference_name: annot_name,
+            reference_kind: EdgeKind::Annotates,
+            line: start_line,
+            column: start_column,
+            file_path: state.file_path.clone(),
+        });
+
+        // Direct Annotates edge from the annotation to the target.
+        state.edges.push(Edge {
+            source: id,
+            target: target_id.to_string(),
+            kind: EdgeKind::Annotates,
+            line: Some(start_line),
+        });
+    }
+
+    /// Extract the name from a Dart annotation node.
+    ///
+    /// Looks for an `identifier` child, or falls back to text after `@`, before `(`.
+    fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
+        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+            return state.node_text(ident);
+        }
+        // Fallback: text after '@', before '('.
+        let text = state.node_text(node);
+        text.trim()
+            .strip_prefix('@')
+            .unwrap_or(&text)
+            .split('(')
+            .next()
+            .unwrap_or(&text)
+            .trim()
+            .to_string()
     }
 
     /// Build the final ExtractionResult from the accumulated state.

@@ -384,3 +384,45 @@ End Class
         .collect();
     assert!(fields.iter().any(|f| f.name == "_value"), "Expected _value field, got: {:?}", fields.iter().map(|f| &f.name).collect::<Vec<_>>());
 }
+
+#[test]
+fn test_vb_attributes_on_class_and_method() {
+    let source = r#"
+<Serializable>
+<Obsolete("message")>
+Class MyClass
+    <TestMethod>
+    Sub DoSomething()
+    End Sub
+End Class
+"#;
+    let extractor = VbNetExtractor;
+    let result = extractor.extract("attr.vb", source);
+
+    // Should have 3 AnnotationUsage nodes: Serializable, Obsolete, TestMethod
+    let annots: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::AnnotationUsage)
+        .collect();
+    assert_eq!(annots.len(), 3, "expected 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert!(annots.iter().any(|a| a.name == "Serializable"));
+    assert!(annots.iter().any(|a| a.name == "Obsolete"));
+    assert!(annots.iter().any(|a| a.name == "TestMethod"));
+
+    // Should have Annotates edges.
+    let annotates_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annotates_edges.len(), 3, "expected 3 Annotates edges");
+
+    // Should have Annotates unresolved refs.
+    let annot_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Annotates)
+        .collect();
+    assert_eq!(annot_refs.len(), 3, "expected 3 Annotates refs");
+}
