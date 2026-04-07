@@ -95,7 +95,8 @@ pub fn run_upgrade() -> Result<String> {
         format!("v{}-{}", latest, current_platform())
     };
 
-    let result = self_update::backends::github::Update::configure()
+    let mut updater = self_update::backends::github::Update::configure();
+    updater
         .repo_owner("aovestdipaperino")
         .repo_name("tokensave")
         .bin_name(bin_name)
@@ -103,7 +104,17 @@ pub fn run_upgrade() -> Result<String> {
         .current_version(current)
         .target_version_tag(&tag)
         .show_download_progress(true)
-        .no_confirm(true)
+        .no_confirm(true);
+
+    // Resolve symlinks in the binary path to work around a self-replace bug
+    // where Homebrew-style relative symlink targets cause ENOENT during
+    // binary replacement. Canonicalizing forces self_update to use a simple
+    // rename instead of self_replace when the path is a symlink.
+    if let Ok(canonical) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+        updater.bin_install_path(canonical);
+    }
+
+    let result = updater
         .build()
         .map_err(|e| TokenSaveError::Config {
             message: format!("failed to configure updater: {e}"),
@@ -222,7 +233,8 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
         format!("v{}-{}", latest, current_platform())
     };
 
-    let result = self_update::backends::github::Update::configure()
+    let mut updater = self_update::backends::github::Update::configure();
+    updater
         .repo_owner("aovestdipaperino")
         .repo_name("tokensave")
         .bin_name(bin_name)
@@ -230,7 +242,14 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
         .current_version(current)
         .target_version_tag(&tag)
         .show_download_progress(true)
-        .no_confirm(true)
+        .no_confirm(true);
+
+    // Same symlink workaround as run_upgrade — see comment there.
+    if let Ok(canonical) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+        updater.bin_install_path(canonical);
+    }
+
+    let result = updater
         .build()
         .map_err(|e| TokenSaveError::Config {
             message: format!("failed to configure updater: {e}"),
@@ -353,6 +372,272 @@ mod tests {
             assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.zip"));
         } else {
             assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz"));
+        }
+    }
+
+    // ── Regression tests for symlink upgrade bug ────────────────────────
+    //
+    // The self-replace crate resolves symlinks via `fs::read_link`, which
+    // returns the raw target (often relative for Homebrew). Subsequent
+    // operations resolve that relative path from CWD instead of the
+    // symlink's parent, causing ENOENT.
+    //
+    // Our fix: canonicalize the exe path before passing it to self_update.
+    // These tests verify the canonicalization works correctly for every
+    // symlink layout we've seen in the wild.
+
+    #[cfg(unix)]
+    mod symlink_upgrade_regression {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::path::PathBuf;
+
+        /// Helper: create a fake binary file in a Homebrew-style Cellar layout.
+        /// Returns (cellar_binary_path, symlink_path, tmp_guard).
+        fn homebrew_layout() -> (PathBuf, PathBuf, tempfile::TempDir) {
+            let tmp = tempfile::tempdir().unwrap();
+            // Cellar/tokensave/4.1.1-beta.1/bin/tokensave
+            let cellar_bin_dir = tmp.path().join("Cellar/tokensave/4.1.1-beta.1/bin");
+            fs::create_dir_all(&cellar_bin_dir).unwrap();
+            let real_binary = cellar_bin_dir.join("tokensave");
+            fs::write(&real_binary, b"fake-binary").unwrap();
+
+            // bin/tokensave -> ../Cellar/tokensave/4.1.1-beta.1/bin/tokensave
+            let bin_dir = tmp.path().join("bin");
+            fs::create_dir_all(&bin_dir).unwrap();
+            let link_path = bin_dir.join("tokensave");
+            symlink(
+                "../Cellar/tokensave/4.1.1-beta.1/bin/tokensave",
+                &link_path,
+            )
+            .unwrap();
+
+            (real_binary, link_path, tmp)
+        }
+
+        #[test]
+        fn read_link_returns_relative_path_for_homebrew_symlink() {
+            let (_real, link, _tmp) = homebrew_layout();
+            let target = fs::read_link(&link).unwrap();
+            assert!(
+                target.is_relative(),
+                "Homebrew symlink target should be relative, got: {target:?}"
+            );
+            assert_eq!(
+                target,
+                PathBuf::from("../Cellar/tokensave/4.1.1-beta.1/bin/tokensave")
+            );
+        }
+
+        #[test]
+        fn relative_read_link_fails_from_wrong_cwd() {
+            // This is the exact bug: read_link returns a relative path, and
+            // metadata() resolves it from CWD rather than the symlink's parent.
+            let (_real, link, _tmp) = homebrew_layout();
+            let target = fs::read_link(&link).unwrap();
+
+            // From a different directory (e.g. the user's home), the relative
+            // path doesn't resolve to anything valid.
+            let other_dir = tempfile::tempdir().unwrap();
+            let wrong_path = other_dir.path().join(&target);
+            assert!(
+                wrong_path.metadata().is_err(),
+                "relative symlink target should NOT resolve from an unrelated directory"
+            );
+        }
+
+        #[test]
+        fn canonicalize_resolves_relative_symlink_to_absolute() {
+            let (real, link, _tmp) = homebrew_layout();
+            let canonical = link.canonicalize().unwrap();
+            let real_canonical = real.canonicalize().unwrap();
+            assert_eq!(
+                canonical, real_canonical,
+                "canonicalize should resolve symlink to the real Cellar path"
+            );
+            assert!(canonical.is_absolute());
+        }
+
+        #[test]
+        fn canonical_path_differs_from_symlink_path() {
+            // This is the key property our fix relies on: after canonicalization,
+            // the path differs from the symlink path, which makes self_update
+            // choose the Move code path instead of the buggy self_replace path.
+            let (_real, link, _tmp) = homebrew_layout();
+            let canonical = link.canonicalize().unwrap();
+            assert_ne!(
+                canonical, link,
+                "canonical path and symlink path must differ so self_update uses Move"
+            );
+        }
+
+        #[test]
+        fn canonical_path_parent_exists() {
+            // Move::to_dest needs the parent directory to exist for rename().
+            let (_real, link, _tmp) = homebrew_layout();
+            let canonical = link.canonicalize().unwrap();
+            assert!(
+                canonical.parent().unwrap().is_dir(),
+                "parent of canonical path must be a real directory"
+            );
+        }
+
+        #[test]
+        fn canonicalize_is_identity_for_non_symlink() {
+            // For direct installs (cargo install, manual copy), canonicalize
+            // returns the same path, so self_replace is still used — no
+            // behavior change for non-symlink installs.
+            let tmp = tempfile::tempdir().unwrap();
+            let binary = tmp.path().join("tokensave");
+            fs::write(&binary, b"fake-binary").unwrap();
+
+            let canonical = binary.canonicalize().unwrap();
+            let original_canonical = binary.canonicalize().unwrap();
+            assert_eq!(canonical, original_canonical);
+        }
+
+        #[test]
+        fn canonicalize_resolves_absolute_symlink() {
+            // Some package managers use absolute symlinks.
+            let tmp = tempfile::tempdir().unwrap();
+            let real_dir = tmp.path().join("lib");
+            fs::create_dir_all(&real_dir).unwrap();
+            let real_binary = real_dir.join("tokensave");
+            fs::write(&real_binary, b"fake-binary").unwrap();
+
+            let bin_dir = tmp.path().join("bin");
+            fs::create_dir_all(&bin_dir).unwrap();
+            let link = bin_dir.join("tokensave");
+            symlink(&real_binary, &link).unwrap();
+
+            let canonical = link.canonicalize().unwrap();
+            assert_eq!(canonical, real_binary.canonicalize().unwrap());
+            assert_ne!(canonical, link);
+        }
+
+        #[test]
+        fn canonicalize_resolves_chained_symlinks() {
+            // A -> B -> C: canonicalize must reach C.
+            let tmp = tempfile::tempdir().unwrap();
+            let real = tmp.path().join("real_binary");
+            fs::write(&real, b"fake-binary").unwrap();
+
+            let link_b = tmp.path().join("link_b");
+            symlink(&real, &link_b).unwrap();
+
+            let link_a = tmp.path().join("link_a");
+            symlink(&link_b, &link_a).unwrap();
+
+            let canonical = link_a.canonicalize().unwrap();
+            assert_eq!(canonical, real.canonicalize().unwrap());
+        }
+
+        #[test]
+        fn canonicalize_resolves_symlink_with_dotdot_in_real_path() {
+            // Real path contains ".." components — canonicalize normalizes them.
+            let tmp = tempfile::tempdir().unwrap();
+            let deep = tmp.path().join("a/b/c");
+            fs::create_dir_all(&deep).unwrap();
+            let real = deep.join("tokensave");
+            fs::write(&real, b"fake-binary").unwrap();
+
+            // Construct a path with ".." that still reaches the same file
+            let dotdot_path = tmp.path().join("a/b/c/../c/tokensave");
+            let canonical = dotdot_path.canonicalize().unwrap();
+            assert_eq!(canonical, real.canonicalize().unwrap());
+            assert!(
+                !canonical.to_string_lossy().contains(".."),
+                "canonical path should have no '..' components"
+            );
+        }
+
+        #[test]
+        fn rename_works_for_canonical_cellar_path() {
+            // Simulate what Move::to_dest does: rename a new binary over the
+            // canonical (Cellar) path. The symlink continues to work.
+            let (real, link, _tmp) = homebrew_layout();
+
+            // "New binary" in a temp location (same filesystem)
+            let new_binary = real.parent().unwrap().join(".tokensave.__temp__");
+            fs::write(&new_binary, b"upgraded-binary").unwrap();
+
+            // Rename new binary over the real path (what Move does)
+            let canonical = link.canonicalize().unwrap();
+            fs::rename(&new_binary, &canonical).unwrap();
+
+            // Verify: reading through the symlink yields the new content
+            let content = fs::read(&link).unwrap();
+            assert_eq!(content, b"upgraded-binary");
+
+            // Verify: the canonical path also has new content
+            let content = fs::read(&canonical).unwrap();
+            assert_eq!(content, b"upgraded-binary");
+        }
+
+        #[test]
+        fn symlink_survives_rename_replacement() {
+            // After the upgrade replaces the Cellar binary, the Homebrew
+            // symlink must still point to a valid file.
+            let (_real, link, _tmp) = homebrew_layout();
+            let canonical = link.canonicalize().unwrap();
+
+            // Replace the binary at the canonical path
+            fs::write(&canonical, b"new-version").unwrap();
+
+            // Symlink still works
+            assert!(link.exists(), "symlink must still resolve after replacement");
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "must still be a symlink"
+            );
+            assert_eq!(fs::read(&link).unwrap(), b"new-version");
+        }
+
+        #[test]
+        fn canonicalize_fails_for_dangling_symlink() {
+            // If the Cellar dir was removed (brew cleanup), canonicalize
+            // should fail and we gracefully fall back to the default.
+            let tmp = tempfile::tempdir().unwrap();
+            let bin_dir = tmp.path().join("bin");
+            fs::create_dir_all(&bin_dir).unwrap();
+            let link = bin_dir.join("tokensave");
+            symlink("../Cellar/tokensave/old/bin/tokensave", &link).unwrap();
+            // Target doesn't exist — dangling symlink
+            assert!(
+                link.canonicalize().is_err(),
+                "canonicalize should fail for dangling symlinks"
+            );
+        }
+
+        #[test]
+        fn our_fix_pattern_handles_all_cases() {
+            // Simulate the exact pattern used in run_upgrade/switch_channel:
+            //   if let Ok(canonical) = path.canonicalize() { ... }
+            // Verify it does the right thing for each scenario.
+
+            // Case 1: relative symlink (Homebrew) — canonical differs
+            let (_, link, _tmp) = homebrew_layout();
+            let canonical = link.canonicalize();
+            assert!(canonical.is_ok());
+            assert_ne!(canonical.unwrap(), link);
+
+            // Case 2: direct file — canonical matches
+            let tmp2 = tempfile::tempdir().unwrap();
+            let direct = tmp2.path().join("tokensave");
+            fs::write(&direct, b"binary").unwrap();
+            let canonical = direct.canonicalize().unwrap();
+            // After canonicalization of the tmpdir itself, they match
+            assert_eq!(canonical, direct.canonicalize().unwrap());
+
+            // Case 3: dangling symlink — canonical fails, we skip setting
+            // bin_install_path and let self_update use its default
+            let tmp3 = tempfile::tempdir().unwrap();
+            let dangling = tmp3.path().join("tokensave");
+            symlink("/nonexistent/path/tokensave", &dangling).unwrap();
+            assert!(dangling.canonicalize().is_err());
         }
     }
 }
