@@ -199,6 +199,8 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Download and install the latest version from GitHub
+    Upgrade,
     /// Disable uploading token counts to the worldwide counter
     #[command(name = "disable-upload-counter")]
     DisableUploadCounter,
@@ -724,6 +726,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let server = tokensave::mcp::McpServer::new(cg).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
             server.run(&mut transport).await?;
+        }
+        Commands::Upgrade => {
+            tokensave::upgrade::run_upgrade()?;
         }
         Commands::DisableUploadCounter => {
             let mut config = tokensave::user_config::UserConfig::load();
