@@ -101,7 +101,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap
-    if: github.event_name == 'release' && !cancelled()
+    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -191,7 +191,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket
-    if: github.event_name == 'release' && !cancelled()
+    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:

@@ -99,7 +99,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap (beta)
-    if: "!cancelled()"
+    if: github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -191,7 +191,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket (beta)
-    if: "!cancelled()"
+    if: github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
