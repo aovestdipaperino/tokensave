@@ -98,6 +98,9 @@ enum Commands {
         /// Folders to skip during indexing (can be repeated)
         #[arg(long = "skip-folder", num_args = 1..)]
         skip_folders: Vec<String>,
+        /// List added, modified, and removed files after sync
+        #[arg(long)]
+        doctor: bool,
     },
     /// Show project statistics
     Status {
@@ -276,7 +279,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Sync { path, force, skip_folders } => {
+        Commands::Sync { path, force, skip_folders, doctor } => {
             let project_path = tokensave::config::resolve_path(path);
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -329,6 +332,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.files_removed,
                     result.duration_ms
                 ));
+                if doctor {
+                    print_sync_doctor(&result);
+                }
                 update_global_db(&cg).await;
             }
 
@@ -862,6 +868,36 @@ async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensa
     ));
     update_global_db(&cg).await;
     Ok(cg)
+}
+
+/// Print the `--doctor` report after an incremental sync.
+fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
+    let has_changes = !result.added_paths.is_empty()
+        || !result.modified_paths.is_empty()
+        || !result.removed_paths.is_empty();
+    if !has_changes {
+        eprintln!("\n\x1b[2mNo files changed.\x1b[0m");
+        return;
+    }
+    eprintln!();
+    if !result.added_paths.is_empty() {
+        eprintln!("\x1b[32mAdded ({}):\x1b[0m", result.added_paths.len());
+        for p in &result.added_paths {
+            eprintln!("  + {p}");
+        }
+    }
+    if !result.modified_paths.is_empty() {
+        eprintln!("\x1b[33mModified ({}):\x1b[0m", result.modified_paths.len());
+        for p in &result.modified_paths {
+            eprintln!("  ~ {p}");
+        }
+    }
+    if !result.removed_paths.is_empty() {
+        eprintln!("\x1b[31mRemoved ({}):\x1b[0m", result.removed_paths.len());
+        for p in &result.removed_paths {
+            eprintln!("  - {p}");
+        }
+    }
 }
 
 /// Opens an existing project, or tells the user to run `tokensave sync` first.

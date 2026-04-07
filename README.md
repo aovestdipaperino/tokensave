@@ -78,6 +78,10 @@ When Claude Code works on a complex task, it spawns **Explore agents** that scan
 
 ## What's New in v3.3
 
+### `sync --doctor`
+
+The `sync` command now accepts a `--doctor` flag that lists every added, modified, and removed file after an incremental sync. Useful for verifying what changed in the index without digging through logs.
+
 ### 34 MCP Tools
 
 Five new tools round out the analysis suite:
@@ -220,8 +224,8 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 
 ```bash
 # Example: Linux x86_64
-curl -LO https://github.com/aovestdipaperino/tokensave/releases/latest/download/tokensave-v3.3.2-x86_64-linux.tar.gz
-tar xzf tokensave-v3.3.2-x86_64-linux.tar.gz
+curl -LO https://github.com/aovestdipaperino/tokensave/releases/latest/download/tokensave-v3.3.3-x86_64-linux.tar.gz
+tar xzf tokensave-v3.3.3-x86_64-linux.tar.gz
 sudo mv tokensave /usr/local/bin/
 ```
 
@@ -352,6 +356,7 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 ```bash
 tokensave sync [path]            # Sync (creates index if missing, incremental by default)
 tokensave sync --force [path]    # Force a full re-index
+tokensave sync --doctor [path]   # Sync and list added/modified/removed files
 tokensave status [path]          # Show statistics
 tokensave status [path] --json   # Show statistics (JSON output)
 tokensave query <search> [path]  # Search symbols
