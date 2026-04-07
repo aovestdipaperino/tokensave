@@ -18,7 +18,7 @@ jobs:
     if: github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - name: aarch64-macos
@@ -88,17 +88,18 @@ jobs:
           mkdir -p tokensave-beta/${VERSION}/bin
           cp target/${{ matrix.target }}/release/tokensave tokensave-beta/${VERSION}/bin/tokensave
           chmod +x tokensave-beta/${VERSION}/bin/tokensave
-          tar czf "tokensave-beta--${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave-beta/
+          tar czf "tokensave-beta-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave-beta/
 
       - name: Upload bottle artifact
         if: matrix.bottle_tag
         uses: actions/upload-artifact@v4
         with:
           name: bottle-beta-${{ matrix.bottle_tag }}
-          path: "tokensave-beta--*.bottle.tar.gz"
+          path: "tokensave-beta-*.bottle.tar.gz"
 
   update-homebrew:
     name: Update Homebrew tap (beta)
+    if: "!cancelled()"
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -120,7 +121,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for f in bottles/tokensave-beta--*.bottle.tar.gz; do
+          for f in bottles/tokensave-beta-*.bottle.tar.gz; do
             gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
           done
 
@@ -136,8 +137,8 @@ jobs:
           SOURCE_SHA=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 
-          for f in bottles/tokensave-beta--*.bottle.tar.gz; do
-            tag=$(basename "$f" | sed "s/tokensave-beta--${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
+          for f in bottles/tokensave-beta-*.bottle.tar.gz; do
+            tag=$(basename "$f" | sed "s/tokensave-beta-${VERSION}\.\(.*\)\.bottle\.tar\.gz/\1/")
             sha=$(sha256sum "$f" | awk '{print $1}')
             echo "${tag}_sha=${sha}" >> "$GITHUB_OUTPUT"
           done
@@ -190,6 +191,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket (beta)
+    if: "!cancelled()"
     needs: build
     runs-on: ubuntu-latest
     steps:
