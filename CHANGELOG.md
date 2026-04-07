@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0-beta.1] - 2026-04-07
+
+### Added
+- **`tokensave upgrade` command** — self-update the binary directly from GitHub releases. Detects the current channel (stable vs beta), downloads the correct platform-specific archive, and replaces the running binary. The daemon is stopped before the update and restarted afterwards if it was running.
+- **Annotation/attribute extraction for 7 languages** — Rust (`#[test]`, `#[cfg]`, `#[serde]`), Swift (`@objc`, `@available`), Dart (`@override`, `@deprecated`), Scala (`@deprecated`, `@tailrec`), PHP (`#[Route]`, `#[Deprecated]`), C++ (`[[nodiscard]]`, `[[deprecated]]`), and VB.NET (`<Serializable>`, `<Obsolete>`). All create `AnnotationUsage` nodes with `Annotates` edges, matching the existing Java/Kotlin/C#/Python/TypeScript pattern. Brings annotation support to 12 of 31 languages.
+- **McpTransport trait** — zero-cost abstraction layer for the MCP server I/O, enabling in-memory test transports.
+- **370+ new tests** — line coverage 71% → 84% across 15 test files.
+
 ## [4.0.2-beta.1] - 2026-04-06
 
 ### Added
