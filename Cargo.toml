@@ -75,6 +75,7 @@ daemon-kit = "0.1.4"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
 rayon = "1"
+self_update = { version = "0.44", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "ureq", "rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO"] }

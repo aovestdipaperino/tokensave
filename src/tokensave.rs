@@ -56,6 +56,12 @@ pub struct SyncResult {
     pub files_removed: usize,
     /// Time taken in milliseconds.
     pub duration_ms: u64,
+    /// Paths of added files (populated only when doctor mode is requested).
+    pub added_paths: Vec<String>,
+    /// Paths of modified files (populated only when doctor mode is requested).
+    pub modified_paths: Vec<String>,
+    /// Paths of removed files (populated only when doctor mode is requested).
+    pub removed_paths: Vec<String>,
 }
 
 /// Returns the current UNIX timestamp in seconds.
@@ -587,6 +593,9 @@ impl TokenSave {
             files_modified: stale.len(),
             files_removed: removed.len(),
             duration_ms: start.elapsed().as_millis() as u64,
+            added_paths: new,
+            modified_paths: stale,
+            removed_paths: removed,
         })
     }
 
