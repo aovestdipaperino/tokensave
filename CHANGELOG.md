@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-04-07
+
+### Added
+- **`tokensave upgrade` command** — self-update the binary directly from GitHub releases. Detects the current channel (stable vs beta), downloads the correct platform-specific archive, and replaces the running binary. The daemon is stopped before the update and restarted afterwards if it was running.
+- **Annotation/attribute extraction for 7 languages** — Rust (`#[test]`, `#[cfg]`, `#[serde]`), Swift (`@objc`, `@available`), Dart (`@override`, `@deprecated`), Scala (`@deprecated`, `@tailrec`), PHP (`#[Route]`, `#[Deprecated]`), C++ (`[[nodiscard]]`, `[[deprecated]]`), and VB.NET (`<Serializable>`, `<Obsolete>`). All create `AnnotationUsage` nodes with `Annotates` edges, matching the existing Java/Kotlin/C#/Python/TypeScript pattern.
+- **McpTransport trait** — zero-cost abstraction layer for the MCP server I/O. The server's `run()` method is now generic over a `McpTransport` trait, enabling in-memory test transports. The `StdioTransport` (real stdin/stdout) is monomorphized at compile time with no runtime overhead.
+
+### Changed
+- Extracted `is_in_gitignore`, `add_to_gitignore`, `resolve_path` from `main.rs` into `config.rs` for testability.
+- Extracted `hook_pre_tool_use` from `main.rs` into `hooks.rs` with a pure `evaluate_hook_decision()` function.
+- `handle_request` on `McpServer` is now `pub(crate)` for direct testing.
+
+### Tests
+- **370+ new tests** across 15 test files, increasing line coverage from 71% to 84%.
+- New test files: `mcp_handler_test.rs`, `mcp_server_test.rs`, `agent_test.rs`, `claude_agent_test.rs`, `copilot_agent_test.rs`, `opencode_agent_test.rs`, `db_query_test.rs`, `migration_test.rs`, `display_test.rs`, `hooks_test.rs`, `cloud_test.rs`, `config_test.rs`, `tokensave_test.rs`.
+
 ## [3.3.2] - 2026-04-05
 
 ### Fixed
