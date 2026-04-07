@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.2] - 2026-04-07
+
+### Added
+- **`tokensave channel` command** — show or switch the update channel. `tokensave channel` prints the current channel, `tokensave channel beta` switches to the latest beta, `tokensave channel stable` switches to the latest stable release.
+
+### Fixed
+- **Cross-workflow release failures** — the stable release workflow's Homebrew/Scoop jobs now skip beta tags (and vice versa), eliminating spurious "failure" badges on GitHub Actions.
+- **Better upgrade error when CI is building** — `tokensave upgrade` now explains that binaries may not be available yet when the release exists but CI hasn't finished, instead of a cryptic "No asset found" error.
+
 ## [3.4.1] - 2026-04-07
 
 ### Fixed
