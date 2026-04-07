@@ -62,6 +62,8 @@ pub struct SyncResult {
     pub modified_paths: Vec<String>,
     /// Paths of removed files (populated only when doctor mode is requested).
     pub removed_paths: Vec<String>,
+    /// Files that were found on disk but could not be read (path, error message).
+    pub skipped_paths: Vec<(String, String)>,
 }
 
 /// Returns the current UNIX timestamp in seconds.
@@ -505,22 +507,39 @@ impl TokenSave {
         on_progress(0, 0, "scanning files");
         let current_files = self.scan_files()?;
 
-        // Compute current hashes in parallel
+        // Compute current hashes in parallel, collecting read failures
         on_progress(0, 0, "hashing files");
         let project_root = &self.project_root;
-        let current_hashes: Vec<_> = current_files
+        let hash_results: Vec<_> = current_files
             .par_iter()
-            .filter_map(|path| {
+            .map(|path| {
                 let abs_path = project_root.join(path);
-                let source = std::fs::read_to_string(&abs_path).ok()?;
-                Some((path.clone(), sync::content_hash(&source)))
+                match sync::read_source_file(&abs_path) {
+                    Ok(source) => Ok((path.clone(), sync::content_hash(&source))),
+                    Err(e) => Err((path.clone(), e.to_string())),
+                }
             })
             .collect();
 
+        let mut current_hashes = Vec::new();
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut readable_files: Vec<String> = Vec::new();
+        for result in hash_results {
+            match result {
+                Ok((path, hash)) => {
+                    readable_files.push(path.clone());
+                    current_hashes.push((path, hash));
+                }
+                Err((path, reason)) => {
+                    skipped.push((path, reason));
+                }
+            }
+        }
+
         on_progress(0, 0, "detecting changes");
         let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
-        let new = sync::find_new_files(&self.db, &current_files).await?;
-        let removed = sync::find_removed_files(&self.db, &current_files).await?;
+        let new = sync::find_new_files(&self.db, &readable_files).await?;
+        let removed = sync::find_removed_files(&self.db, &readable_files).await?;
 
         // Remove deleted files
         for path in &removed {
@@ -536,7 +555,7 @@ impl TokenSave {
             .par_iter()
             .filter_map(|file_path| {
                 let abs_path = project_root.join(file_path);
-                let source = std::fs::read_to_string(&abs_path).ok()?;
+                let source = sync::read_source_file(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
                 let mut result = extractor.extract(file_path, &source);
                 result.sanitize();
@@ -596,6 +615,7 @@ impl TokenSave {
             added_paths: new,
             modified_paths: stale,
             removed_paths: removed,
+            skipped_paths: skipped,
         })
     }
 

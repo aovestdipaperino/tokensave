@@ -378,13 +378,28 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         }
                     })
                     .await?;
+                let skipped_msg = if result.skipped_paths.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} skipped", result.skipped_paths.len())
+                };
                 spinner.done(&format!(
-                    "sync done — {} added, {} modified, {} removed in {}ms",
+                    "sync done — {} added, {} modified, {} removed{skipped_msg} in {}ms",
                     result.files_added,
                     result.files_modified,
                     result.files_removed,
                     result.duration_ms
                 ));
+                if !result.skipped_paths.is_empty() {
+                    eprintln!();
+                    eprintln!(
+                        "\x1b[33mSkipped ({}) — files found but not readable:\x1b[0m",
+                        result.skipped_paths.len()
+                    );
+                    for (path, reason) in &result.skipped_paths {
+                        eprintln!("  ! {path}: {reason}");
+                    }
+                }
                 if doctor {
                     print_sync_doctor(&result);
                 }
@@ -971,10 +986,25 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
                 let _ = branch_meta::save_branch_meta(&tokensave_dir, &meta);
             }
 
+            let skipped_msg = if result.skipped_paths.is_empty() {
+                String::new()
+            } else {
+                format!(", {} skipped", result.skipped_paths.len())
+            };
             spinner.done(&format!(
-                "branch '{branch_name}' tracked — {} added, {} modified, {} removed",
+                "branch '{branch_name}' tracked — {} added, {} modified, {} removed{skipped_msg}",
                 result.files_added, result.files_modified, result.files_removed
             ));
+            if !result.skipped_paths.is_empty() {
+                eprintln!();
+                eprintln!(
+                    "\x1b[33mSkipped ({}) — files found but not readable:\x1b[0m",
+                    result.skipped_paths.len()
+                );
+                for (path, reason) in &result.skipped_paths {
+                    eprintln!("  ! {path}: {reason}");
+                }
+            }
         }
         BranchAction::Remove { name, path } => {
             let project_path = tokensave::config::resolve_path(path);
