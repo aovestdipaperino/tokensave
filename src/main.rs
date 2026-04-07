@@ -201,6 +201,11 @@ enum Commands {
     },
     /// Download and install the latest version from GitHub
     Upgrade,
+    /// Show or switch the update channel (stable or beta)
+    Channel {
+        /// Target channel: "stable" or "beta" (omit to show current)
+        channel: Option<String>,
+    },
     /// Disable uploading token counts to the worldwide counter
     #[command(name = "disable-upload-counter")]
     DisableUploadCounter,
@@ -727,6 +732,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Upgrade => {
             tokensave::upgrade::run_upgrade()?;
+        }
+        Commands::Channel { channel } => {
+            match channel {
+                Some(target) => { tokensave::upgrade::switch_channel(&target)?; }
+                None => tokensave::upgrade::show_channel(),
+            }
         }
         Commands::DisableUploadCounter => {
             let mut config = tokensave::user_config::UserConfig::load();

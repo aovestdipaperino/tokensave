@@ -135,9 +135,136 @@ pub fn run_upgrade() -> Result<String> {
                 eprintln!("  Restarting daemon (upgrade failed, old version still in place)...");
                 restart_daemon();
             }
-            Err(TokenSaveError::Config {
-                message: format!("upgrade failed: {e}"),
-            })
+            let err_str = e.to_string();
+            let message = if err_str.contains("No asset found") {
+                format!(
+                    "upgrade failed: release v{latest} exists but binaries are not yet available \
+                     for your platform ({}).\n  \
+                     This usually means the CI build is still in progress — try again in a few minutes.\n  \
+                     If the problem persists, download manually from:\n  \
+                     https://github.com/aovestdipaperino/tokensave/releases/tag/{tag}",
+                    current_platform(), tag = tag,
+                )
+            } else {
+                format!("upgrade failed: {e}")
+            };
+            Err(TokenSaveError::Config { message })
+        }
+    }
+}
+
+/// Print the current channel.
+pub fn show_channel() {
+    let current = env!("CARGO_PKG_VERSION");
+    let channel = if cloud::is_beta() { "beta" } else { "stable" };
+    eprintln!("v{current} ({channel})");
+}
+
+/// Switch to a different channel by downloading the latest release from it.
+///
+/// Stops the daemon before replacing the binary and restarts it afterwards
+/// if it was running.
+pub fn switch_channel(target_channel: &str) -> Result<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let current_is_beta = cloud::is_beta();
+    let current_channel = if current_is_beta { "beta" } else { "stable" };
+
+    let target_is_beta = match target_channel {
+        "beta" => true,
+        "stable" => false,
+        other => {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "unknown channel '{other}'. Valid channels: stable, beta"
+                ),
+            });
+        }
+    };
+
+    if target_is_beta == current_is_beta {
+        eprintln!("Already on the {current_channel} channel (v{current}).");
+        eprintln!("Run `tokensave upgrade` to check for updates within this channel.");
+        return Err(TokenSaveError::Config {
+            message: format!("already on {current_channel} channel"),
+        });
+    }
+
+    eprintln!("Switching from {current_channel} to {target_channel}...");
+
+    let latest = if target_is_beta {
+        cloud::fetch_latest_beta_version()
+    } else {
+        cloud::fetch_latest_stable_version()
+    }
+    .ok_or_else(|| TokenSaveError::Config {
+        message: format!(
+            "failed to find latest {target_channel} release — could not reach GitHub"
+        ),
+    })?;
+
+    let tag = release_tag(&latest);
+    let expected_asset = asset_name(&latest, target_is_beta);
+    let bin_name = if cfg!(windows) { "tokensave.exe" } else { "tokensave" };
+
+    eprintln!("  Target: v{latest}");
+    eprintln!("  Asset: {expected_asset}");
+
+    // Stop the daemon before replacing the binary.
+    let daemon_was_running = daemon::running_daemon_pid().is_some();
+    if daemon_was_running {
+        eprintln!("  Stopping daemon...");
+        daemon::stop().ok();
+    }
+
+    let target_suffix = if target_is_beta {
+        format!("beta-v{}-{}", latest, current_platform())
+    } else {
+        format!("v{}-{}", latest, current_platform())
+    };
+
+    let result = self_update::backends::github::Update::configure()
+        .repo_owner("aovestdipaperino")
+        .repo_name("tokensave")
+        .bin_name(bin_name)
+        .target(&target_suffix)
+        .current_version(current)
+        .target_version_tag(&tag)
+        .show_download_progress(true)
+        .no_confirm(true)
+        .build()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("failed to configure updater: {e}"),
+        })?
+        .update();
+
+    match result {
+        Ok(status) => {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{}",
+                status.version()
+            );
+            if daemon_was_running {
+                eprintln!("  Restarting daemon...");
+                restart_daemon();
+            }
+            Ok(status.version().to_string())
+        }
+        Err(e) => {
+            if daemon_was_running {
+                eprintln!("  Restarting daemon (switch failed, old version still in place)...");
+                restart_daemon();
+            }
+            let err_str = e.to_string();
+            let message = if err_str.contains("No asset found") {
+                format!(
+                    "channel switch failed: v{latest} binaries not yet available for {}.\n  \
+                     CI build may still be in progress — try again in a few minutes.",
+                    current_platform(),
+                )
+            } else {
+                format!("channel switch failed: {e}")
+            };
+            Err(TokenSaveError::Config { message })
         }
     }
 }
