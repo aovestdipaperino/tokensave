@@ -184,11 +184,9 @@ impl McpServer {
                 if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
                     let latest = cache.latest.as_deref()?;
                     return if crate::cloud::is_newer_minor_version(current, latest) {
-                        let method = crate::cloud::detect_install_method();
-                        let cmd = crate::cloud::upgrade_command(&method);
                         Some(format!(
                             "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                             Run `{cmd}` to upgrade."
+                             Run `tokensave upgrade` to update."
                         ))
                     } else {
                         None
@@ -211,11 +209,9 @@ impl McpServer {
 
         let latest = latest?;
         if crate::cloud::is_newer_minor_version(current, &latest) {
-            let method = crate::cloud::detect_install_method();
-            let cmd = crate::cloud::upgrade_command(&method);
             Some(format!(
                 "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                 Run `{cmd}` to upgrade."
+                 Run `tokensave upgrade` to update."
             ))
         } else {
             None
