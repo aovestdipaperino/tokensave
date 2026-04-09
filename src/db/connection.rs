@@ -143,6 +143,46 @@ impl Database {
         Ok(size as u64)
     }
 
+    /// Runs `PRAGMA quick_check` and returns `true` if the database is intact.
+    ///
+    /// This is faster than `integrity_check` — it verifies B-tree structure
+    /// without cross-checking index contents against table data.
+    pub async fn quick_check(&self) -> Result<bool> {
+        let mut rows = self
+            .conn
+            .query("PRAGMA quick_check", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to run quick_check: {e}"),
+                operation: "quick_check".to_string(),
+            })?;
+
+        if let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read quick_check result: {e}"),
+            operation: "quick_check".to_string(),
+        })? {
+            let result: String = row.get::<String>(0).unwrap_or_default();
+            Ok(result == "ok")
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Rebuilds the FTS5 index from the content table.
+    ///
+    /// This fixes FTS-only corruption (e.g. from an interrupted bulk load)
+    /// without requiring a full re-index of the codebase.
+    pub async fn rebuild_fts(&self) -> Result<()> {
+        self.conn
+            .execute("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to rebuild FTS index: {e}"),
+                operation: "rebuild_fts".to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Applies performance-oriented SQLite pragmas.
     async fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
@@ -169,8 +209,7 @@ impl Database {
     /// rebuild indexes in one optimized pass.
     pub async fn begin_bulk_load(&self) -> Result<()> {
         self.conn.execute_batch(
-            "PRAGMA synchronous = OFF;
-             PRAGMA foreign_keys = OFF;
+            "PRAGMA foreign_keys = OFF;
              DROP INDEX IF EXISTS idx_nodes_kind;
              DROP INDEX IF EXISTS idx_nodes_name;
              DROP INDEX IF EXISTS idx_nodes_qualified_name;
@@ -228,8 +267,7 @@ impl Database {
              END;
              INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
                  SELECT rowid, name, qualified_name, docstring, signature FROM nodes;
-             PRAGMA foreign_keys = ON;
-             PRAGMA synchronous = NORMAL;",
+             PRAGMA foreign_keys = ON;",
         ).await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to end bulk load: {e}"),
             operation: "end_bulk_load".to_string(),

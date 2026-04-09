@@ -1519,8 +1519,9 @@ impl Database {
 impl Database {
     /// Searches nodes by name, qualified name, docstring, or signature.
     ///
-    /// Attempts an FTS5 prefix match first. If no results are found, falls back
-    /// to a `LIKE` query.
+    /// Attempts an FTS5 prefix match first. If the FTS index is corrupted,
+    /// it is automatically rebuilt and the query retried. If FTS returns no
+    /// results, falls back to a `LIKE` query.
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         debug_assert!(!query.is_empty(), "search_nodes called with empty query");
         debug_assert!(limit > 0, "search_nodes limit must be positive");
@@ -1540,48 +1541,23 @@ impl Database {
             return Ok(Vec::new());
         }
 
-        let mut rows = self
-            .conn()
-            .query(
-                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
-                    n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                    rank
-                 FROM nodes_fts
-                 JOIN nodes n ON nodes_fts.rowid = n.rowid
-                 WHERE nodes_fts MATCH ?1
-                 ORDER BY rank
-                 LIMIT ?2",
-                params![fts_query.as_str(), limit as i64],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to execute FTS query: {e}"),
-                operation: "search_nodes".to_string(),
-            })?;
-
-        let mut results = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read search result: {e}"),
-            operation: "search_nodes".to_string(),
-        })? {
-            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to map search result: {e}"),
-                operation: "search_nodes".to_string(),
-            })?;
-            let rank: f64 = row.get::<f64>(21).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read rank: {e}"),
-                operation: "search_nodes".to_string(),
-            })?;
-            // FTS5 rank is negative (lower = better match). Convert to positive score.
-            results.push(SearchResult {
-                node,
-                score: -rank,
-            });
-        }
-
-        if !results.is_empty() {
-            return Ok(results);
+        // Try FTS search, with one self-healing retry on corruption.
+        let fts_result = self.search_nodes_fts(&fts_query, limit).await;
+        match fts_result {
+            Ok(ref results) if !results.is_empty() => return fts_result,
+            Ok(_) => {} // empty — fall through to LIKE
+            Err(ref e) if Self::is_corruption_error(e) => {
+                eprintln!("[tokensave] FTS index corruption detected — rebuilding…");
+                if self.rebuild_fts().await.is_ok() {
+                    match self.search_nodes_fts(&fts_query, limit).await {
+                        Ok(results) if !results.is_empty() => return Ok(results),
+                        Ok(_) => {} // fall through to LIKE
+                        Err(e) => return Err(e),
+                    }
+                }
+                // rebuild_fts failed — fall through to LIKE as last resort
+            }
+            Err(e) => return Err(e),
         }
 
         // Fallback: LIKE query
@@ -1615,6 +1591,61 @@ impl Database {
             results.push(SearchResult { node, score: 1.0 });
         }
         Ok(results)
+    }
+
+    /// Executes the FTS5 query and returns ranked results.
+    async fn search_nodes_fts(&self, fts_query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                    n.start_line, n.end_line, n.start_column, n.end_column,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    rank
+                 FROM nodes_fts
+                 JOIN nodes n ON nodes_fts.rowid = n.rowid
+                 WHERE nodes_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2",
+                params![fts_query, limit as i64],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to execute FTS query: {e}"),
+                operation: "search_nodes".to_string(),
+            })?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read search result: {e}"),
+            operation: "search_nodes".to_string(),
+        })? {
+            let node = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map search result: {e}"),
+                operation: "search_nodes".to_string(),
+            })?;
+            let rank: f64 = row.get::<f64>(21).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read rank: {e}"),
+                operation: "search_nodes".to_string(),
+            })?;
+            results.push(SearchResult {
+                node,
+                score: -rank,
+            });
+        }
+        Ok(results)
+    }
+
+    /// Returns `true` if the error indicates SQLite database corruption.
+    pub fn is_corruption_error(e: &TokenSaveError) -> bool {
+        match e {
+            TokenSaveError::Database { message, .. } => {
+                message.contains("malformed")
+                    || message.contains("corrupt")
+                    || message.contains("disk image")
+            }
+            _ => false,
+        }
     }
 }
 

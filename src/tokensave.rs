@@ -117,6 +117,8 @@ impl TokenSave {
     /// If branch metadata exists, resolves the current git branch and opens
     /// the corresponding DB. Falls back to the nearest tracked ancestor DB
     /// with a warning if the current branch is untracked.
+    /// If the previous operation was interrupted (dirty sentinel exists),
+    /// the database is integrity-checked and rebuilt if corrupted.
     pub async fn open(project_root: &Path) -> Result<Self> {
         let config = load_config(project_root)?;
         let tokensave_dir = get_tokensave_dir(project_root);
@@ -134,7 +136,72 @@ impl TokenSave {
             });
         }
 
-        let (db, migrated) = Database::open(&db_path).await?;
+        // If the dirty sentinel exists, a previous sync/index was interrupted.
+        // Check integrity and rebuild if necessary.
+        let crashed = has_dirty_sentinel(project_root);
+        if crashed {
+            eprintln!(
+                "[tokensave] previous operation was interrupted — checking database integrity…"
+            );
+        }
+
+        // Try to open; if the database is completely unreadable, delete and
+        // re-initialize rather than failing permanently.
+        let open_result = Database::open(&db_path).await;
+        let (db, migrated) = match open_result {
+            Ok(pair) => pair,
+            Err(ref e) if Database::is_corruption_error(e) || crashed => {
+                print_corruption_warning();
+                delete_db_files(&db_path);
+                clear_dirty_sentinel(project_root);
+                let (db, _) = Database::initialize(&db_path).await?;
+                let ts = Self {
+                    db,
+                    config,
+                    project_root: project_root.to_path_buf(),
+                    registry: LanguageRegistry::new(),
+                    active_branch: active_branch.clone(),
+                    fallback_warning: fallback_warning.clone(),
+                };
+                ts.index_all_with_progress(|c, t, f| {
+                    eprintln!("[tokensave] re-indexing [{c}/{t}] {f}");
+                })
+                .await?;
+                eprintln!("[tokensave] re-index complete.");
+                return Ok(ts);
+            }
+            Err(e) => return Err(e),
+        };
+
+        // If the sentinel was set but the database opened successfully, run a
+        // quick integrity check.
+        if crashed {
+            let intact = db.quick_check().await.unwrap_or(false);
+            if !intact {
+                print_corruption_warning();
+                drop(db);
+                delete_db_files(&db_path);
+                clear_dirty_sentinel(project_root);
+                let (new_db, _) = Database::initialize(&db_path).await?;
+                let ts = Self {
+                    db: new_db,
+                    config,
+                    project_root: project_root.to_path_buf(),
+                    registry: LanguageRegistry::new(),
+                    active_branch: active_branch.clone(),
+                    fallback_warning: fallback_warning.clone(),
+                };
+                ts.index_all_with_progress(|c, t, f| {
+                    eprintln!("[tokensave] re-indexing [{c}/{t}] {f}");
+                })
+                .await?;
+                eprintln!("[tokensave] re-index complete.");
+                return Ok(ts);
+            }
+            // DB is fine — clean up the stale sentinel.
+            clear_dirty_sentinel(project_root);
+        }
+
         let ts = Self {
             db,
             config,
@@ -267,6 +334,67 @@ impl TokenSave {
 }
 
 // ---------------------------------------------------------------------------
+// Dirty sentinel — detects interrupted sync/index operations
+// ---------------------------------------------------------------------------
+
+/// Creates a `.tokensave/dirty` sentinel file before a sync or index begins.
+///
+/// This file is intentionally NOT cleaned up by a Drop guard — it must be
+/// removed explicitly by `clear_dirty_sentinel` after the operation succeeds.
+/// If the process is killed (SIGKILL, OOM), the sentinel survives and signals
+/// a potential crash on the next open.
+fn write_dirty_sentinel(project_root: &Path) {
+    let path = get_tokensave_dir(project_root).join("dirty");
+    let _ = std::fs::write(
+        &path,
+        format!(
+            "pid={}\ntime={}\nversion={}",
+            std::process::id(),
+            current_timestamp(),
+            env!("CARGO_PKG_VERSION"),
+        ),
+    );
+}
+
+/// Removes the dirty sentinel after a successful sync/index.
+fn clear_dirty_sentinel(project_root: &Path) {
+    let path = get_tokensave_dir(project_root).join("dirty");
+    let _ = std::fs::remove_file(path);
+}
+
+/// Returns `true` if the dirty sentinel exists (previous operation was
+/// interrupted).
+fn has_dirty_sentinel(project_root: &Path) -> bool {
+    get_tokensave_dir(project_root).join("dirty").exists()
+}
+
+/// Deletes the database and its WAL/SHM sidecars.
+fn delete_db_files(db_path: &std::path::Path) {
+    let _ = std::fs::remove_file(db_path);
+    // WAL and SHM files use the same base name with different extensions
+    let mut wal = db_path.to_path_buf();
+    wal.set_extension("db-wal");
+    let _ = std::fs::remove_file(&wal);
+    wal.set_extension("db-shm");
+    let _ = std::fs::remove_file(&wal);
+}
+
+/// Prints a user-facing warning about database corruption with a request to
+/// report the issue.
+fn print_corruption_warning() {
+    let version = env!("CARGO_PKG_VERSION");
+    eprintln!("[tokensave] \x1b[33m⚠ database corruption detected — rebuilding index\x1b[0m");
+    eprintln!("[tokensave]");
+    eprintln!("[tokensave] This was likely caused by a crash or kill during indexing.");
+    eprintln!("[tokensave] Please report this at:");
+    eprintln!("[tokensave]   https://github.com/aovestdipaperino/tokensave/issues");
+    eprintln!(
+        "[tokensave]   Include: tokensave version (v{version}), OS, and what happened before the crash."
+    );
+    eprintln!("[tokensave]");
+}
+
+// ---------------------------------------------------------------------------
 // Sync lock — prevents concurrent sync/index operations
 // ---------------------------------------------------------------------------
 
@@ -385,6 +513,7 @@ impl TokenSave {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(self.project_root.is_dir(), "project root is not a directory");
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
         // 1. Clear existing data and enter bulk-load mode
@@ -478,6 +607,7 @@ impl TokenSave {
             "fewer nodes than files is unexpected");
         debug_assert!(result.duration_ms > 0 || result.file_count == 0,
             "non-empty index completed in zero milliseconds");
+        clear_dirty_sentinel(&self.project_root);
         Ok(result)
     }
 
@@ -502,6 +632,7 @@ impl TokenSave {
         debug_assert!(self.project_root.exists(), "sync: project root does not exist");
         debug_assert!(self.project_root.is_dir(), "sync: project root is not a directory");
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
         on_progress(0, 0, "scanning files");
@@ -607,6 +738,7 @@ impl TokenSave {
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
 
+        clear_dirty_sentinel(&self.project_root);
         Ok(SyncResult {
             files_added: new.len(),
             files_modified: stale.len(),
