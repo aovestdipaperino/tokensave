@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
 
 /// Name of the configuration file stored inside the `.tokensave` directory.
 pub const CONFIG_FILENAME: &str = "config.json";
@@ -146,8 +147,45 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
     Ok(())
 }
 
-/// Returns `true` if `.tokensave` is already listed in the project's `.gitignore`.
+/// Returns `true` if `.tokensave` is ignored by Git for this project.
+///
+/// This respects the repository `.gitignore`, `.git/info/exclude`, and the
+/// user's global excludes file via `git check-ignore`. If Git cannot answer
+/// (for example outside a Git repository), falls back to checking the local
+/// `.gitignore` file only.
 pub fn is_in_gitignore(project_path: &Path) -> bool {
+    if let Some(is_ignored) = is_ignored_by_git(project_path, None) {
+        return is_ignored;
+    }
+
+    is_in_local_gitignore(project_path)
+}
+
+fn is_ignored_by_git(project_path: &Path, git_config_global: Option<&Path>) -> Option<bool> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(project_path)
+        .arg("check-ignore")
+        .arg("-q")
+        .arg(".tokensave/")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    if let Some(path) = git_config_global {
+        command.env("GIT_CONFIG_GLOBAL", path);
+    }
+
+    let status = command.status().ok()?;
+
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+fn is_in_local_gitignore(project_path: &Path) -> bool {
     let gitignore = project_path.join(".gitignore");
     match fs::read_to_string(&gitignore) {
         Ok(content) => content.lines().any(|line| {
@@ -155,6 +193,47 @@ pub fn is_in_gitignore(project_path: &Path) -> bool {
             trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
         }),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ignored_by_git;
+    use std::fs;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_is_in_gitignore_respects_global_excludes_file() {
+        let sandbox = TempDir::new().unwrap();
+        let repo = sandbox.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("init")
+            .arg("-q")
+            .status()
+            .unwrap();
+
+        let excludes = sandbox.path().join("global_ignore");
+        fs::write(&excludes, ".tokensave\n").unwrap();
+
+        let git_config = sandbox.path().join("gitconfig");
+        let status = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", &git_config)
+            .arg("config")
+            .arg("--global")
+            .arg("core.excludesFile")
+            .arg(&excludes)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let ignored = is_ignored_by_git(&repo, Some(&git_config));
+
+        assert_eq!(ignored, Some(true));
     }
 }
 
