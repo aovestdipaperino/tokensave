@@ -77,6 +77,9 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 hex = "0.4"
 rayon = "1"
 self-replace = "1"
+memmap2 = "0.9"
+crossterm = "0.28"
+fs2 = "0.4"
 
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"
