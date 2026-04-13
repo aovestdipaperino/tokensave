@@ -311,6 +311,12 @@ enum BranchAction {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Remove all tracked branches (keeps only the default branch)
+    Removeall {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
     /// Remove DBs for branches that no longer exist in git
     Gc {
         /// Project path (default: current directory)
@@ -1111,6 +1117,34 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
                 eprintln!("\x1b[32m✔\x1b[0m Branch '{name}' removed.");
             } else {
                 eprintln!("Branch '{name}' is not tracked.");
+            }
+        }
+        BranchAction::Removeall { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
+                eprintln!("No branch tracking configured.");
+                return Ok(());
+            };
+            let removed = meta.remove_all_branches();
+            if removed.is_empty() {
+                eprintln!("No non-default branches to remove.");
+            } else {
+                for (name, entry) in &removed {
+                    let db_path = tokensave_dir.join(&entry.db_file);
+                    if db_path.exists() {
+                        std::fs::remove_file(&db_path)?;
+                        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+                        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+                    }
+                    eprintln!("  removed '{name}'");
+                }
+                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
+                eprintln!(
+                    "\x1b[32m✔\x1b[0m Removed {} branch(es). Only '{}' remains.",
+                    removed.len(),
+                    meta.default_branch
+                );
             }
         }
         BranchAction::Gc { path } => {

@@ -5,76 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.5.1-beta.1] - 2026-04-13
-
-### Fixed
-- **Doctor validates hook subcommands** — `tokensave doctor` now checks that each hook event uses the correct tokensave subcommand (e.g. `hook-prompt-submit` for `UserPromptSubmit`, not an invalid or mismatched command). Previously it only checked whether a tokensave hook existed, not whether it invoked the right subcommand.
-- **Doctor auto-repairs broken hooks** — when a hook has a wrong subcommand or is missing entirely, `tokensave doctor` now replaces it with the correct command automatically instead of only suggesting `tokensave install`.
+## [4.0.0] - 2026-04-13
 
 ### Added
-- **18 unit tests for Claude hook lifecycle** — install, uninstall, doctor detection, and doctor auto-repair for all three hook events (`PreToolUse`, `UserPromptSubmit`, `Stop`), including wrong-subcommand and missing-subcommand scenarios.
-
-## [4.5.0-beta.1] - 2026-04-13
-
-### Added
-- **Per-call token savings reported inline** — every MCP tool response now appends a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided, and the MCP server instruction tells the LLM to surface it (e.g. "TokenSave'd ~63k tokens").
-- **`UserPromptSubmit` and `Stop` hooks** — `tokensave install` now registers three hooks (PreToolUse, UserPromptSubmit, Stop) instead of just PreToolUse. Existing installs are silently backfilled on startup via `check_install_stale()`.
-- **`tokensave current-counter` / `reset-counter` commands** — expose and reset a per-project local token counter, separate from the lifetime total.
-- **Resettable local counter** in `TokenSave` — `get_local_counter`, `reset_local_counter`, and `add_local_counter` backed by a `local_counter` metadata key.
-
-### Changed
-- **Hook install/uninstall generalized** — `install_hook` and `uninstall_hook` now iterate over all three hook events, with a shared `install_single_hook` / `uninstall_single_hook` helper. `doctor` validates all three events.
-- **Sync uses mtime/size pre-filter** — skips hashing unchanged files, only reads files whose mtime or size changed since last sync.
-- **Dependency upgrades** — dialoguer 0.11→0.12, notify 7→8, sha2 0.10→0.11, zip 6→8, windows-sys 0.59→0.61.
-- **Deprecated API replaced** — `peel_to_commit_in_place()` → `peel_to_commit()` (gix).
-
-## [4.1.2-beta.1] - 2026-04-07
-
-### Added
-- **`tokensave channel` command** — show or switch the update channel. `tokensave channel` prints the current channel, `tokensave channel beta` switches to the latest beta, `tokensave channel stable` switches to the latest stable release.
-
-### Fixed
-- **Cross-workflow release failures** — stable/beta release workflows no longer trigger spurious failures on each other's tags.
-- **Better upgrade error when CI is building** — `tokensave upgrade` now explains that binaries may not be available yet instead of a cryptic "No asset found" error.
-
-## [4.1.1-beta.1] - 2026-04-07
-
-### Fixed
-- **Homebrew bottles 404** — the beta release workflow used double-dashes (`tokensave-beta--{version}`) in bottle archive names, but Homebrew expects single-dash (`tokensave-beta-{version}`). This caused `brew upgrade tokensave-beta` to fail with a 404 download error.
-- **Beta release resilience** — changed `fail-fast: true` to `false` in the beta build matrix, and added `if: !cancelled()` guards to the Homebrew/Scoop update jobs. A single platform build failure no longer blocks updates for platforms that succeeded.
-- **Update notices now suggest `tokensave upgrade`** — all version-update warnings (CLI and MCP server) now suggest `tokensave upgrade` instead of platform-specific commands.
-
-## [4.1.0-beta.1] - 2026-04-07
-
-### Added
-- **`tokensave upgrade` command** — self-update the binary directly from GitHub releases. Detects the current channel (stable vs beta), downloads the correct platform-specific archive, and replaces the running binary. The daemon is stopped before the update and restarted afterwards if it was running.
-- **Annotation/attribute extraction for 7 languages** — Rust (`#[test]`, `#[cfg]`, `#[serde]`), Swift (`@objc`, `@available`), Dart (`@override`, `@deprecated`), Scala (`@deprecated`, `@tailrec`), PHP (`#[Route]`, `#[Deprecated]`), C++ (`[[nodiscard]]`, `[[deprecated]]`), and VB.NET (`<Serializable>`, `<Obsolete>`). All create `AnnotationUsage` nodes with `Annotates` edges, matching the existing Java/Kotlin/C#/Python/TypeScript pattern. Brings annotation support to 12 of 31 languages.
-- **McpTransport trait** — zero-cost abstraction layer for the MCP server I/O, enabling in-memory test transports.
-- **370+ new tests** — line coverage 71% → 84% across 15 test files.
-
-## [4.0.2-beta.1] - 2026-04-06
-
-### Added
-- **`keywords` parameter for `tokensave_context`** — agent-driven synonym expansion. The agent passes extra search terms (e.g. `["login", "session", "token"]` for a query about "authentication") and the context builder searches for each keyword independently. Bridges the gap between conceptual queries and lexically-unrelated symbol names without requiring embedding models.
-- **`tokensave_branch_list`** MCP tool — list tracked branches with DB sizes, parent branch, sync times.
-- **`tokensave://branches`** MCP resource — same data via `resources/read`.
+- **Multi-branch indexing** — opt-in per-branch databases so switching branches never gives stale results. `tokensave branch add` tracks a branch by copying the nearest ancestor DB and syncing only changed files. `tokensave branch list`, `tokensave branch remove`, `tokensave branch removeall`, and `tokensave branch gc` manage tracked branches.
+- **`tokensave branch removeall`** — remove all tracked branches except the default in one command, deleting their DB files.
+- **`tokensave_branch_search`** MCP tool — search symbols in another branch's code graph without switching your checkout.
+- **`tokensave_branch_diff`** MCP tool — compare code graphs between two branches: shows symbols added, removed, and changed (signature differs). Supports file and kind filters.
+- **`tokensave_branch_list`** MCP tool and **`tokensave://branches`** MCP resource — list tracked branches with DB sizes, parent branch, sync times.
+- **Branch fallback warnings** — when the MCP server serves from an ancestor branch DB (current branch not tracked), every tool response warns to `tokensave branch add`.
+- **`keywords` parameter for `tokensave_context`** — agent-driven synonym expansion. Pass extra search terms (e.g. `["login", "session", "token"]` for "authentication") and the context builder searches each keyword independently, bridging conceptual queries to lexically-unrelated symbol names without embedding models.
+- **`tokensave monitor` CLI command** — live TUI showing MCP tool calls in real time via memory-mapped ring buffer. Uses `memmap2` for zero-copy IPC between the MCP server and the monitor process.
+- **Right-click context menu in graph visualizer** — callers, callees, call graph, and impact actions on node right-click.
+- **Type annotation references** — TypeScript, Java, and Kotlin type annotation references now tracked as edges in the graph.
+- **Graph visualizer** — interactive Cytoscape.js-based code graph visualization served via `tokensave visualize`.
+- **Daemon version mismatch detection** — `tokensave daemon --status` warns when the daemon version differs from the CLI with a corrective restart command.
 - **Parent branch in status output** — `tokensave status` and `tokensave_status` now show which branch a tracked branch was seeded from.
-- **Daemon version mismatch detection** — `tokensave daemon --status` warns when the daemon version differs from the CLI (beta/stable cross-channel, pending upgrade) with corrective restart command.
 
 ### Removed
 - **Vector/embedding module** — removed `src/vectors/`, `enable_embeddings` config field, and `Vector` error variant. The `keywords` parameter on `tokensave_context` replaces the need for local embedding models. The `vectors` DB table is retained (empty, harmless) to avoid migration issues.
 
 ### Changed
+- Quality improvements to resolution, search, and traversal.
 - Tool count increased from 34 to 37.
 
-## [4.0.1-beta.1] - 2026-04-06
+### Dependencies
+- Added `memmap2`, `crossterm`, `fs2` for the monitor feature.
+
+## [3.5.1] - 2026-04-13
+
+### Fixed
+- **Doctor validates hook subcommands** — `tokensave doctor` now checks that each hook event uses the correct tokensave subcommand (e.g. `hook-prompt-submit` for `UserPromptSubmit`, not an invalid or mismatched command).
+- **Doctor auto-repairs broken hooks** — when a hook has a wrong subcommand or is missing entirely, `tokensave doctor` replaces it with the correct command automatically.
 
 ### Added
-- **Multi-branch indexing** — opt-in per-branch databases so switching branches never gives stale results. `tokensave branch add` tracks a branch by copying the nearest ancestor DB and syncing only changed files. `tokensave branch list`, `tokensave branch remove`, and `tokensave branch gc` manage tracked branches.
-- **`tokensave_branch_search`** — search symbols in another branch's code graph without switching your checkout.
-- **`tokensave_branch_diff`** — compare code graphs between two branches: shows symbols added, removed, and changed (signature differs). Supports file and kind filters.
-- **Branch fallback warnings** — when the MCP server serves from an ancestor branch DB (current branch not tracked), every tool response is prepended with a warning suggesting `tokensave branch add`.
-- **Branch info in `tokensave_status`** — status output now includes `active_branch`, `branch_fallback`, and `branch_warning` fields when multi-branch is active.
+- **18 unit tests for Claude hook lifecycle** — install, uninstall, doctor detection, and doctor auto-repair for all three hook events.
+
+## [3.5.0] - 2026-04-13
+
+### Added
+- **Per-call token savings reported inline** — every MCP tool response now appends a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided.
+- **`UserPromptSubmit` and `Stop` hooks** — `tokensave install` now registers three hooks (PreToolUse, UserPromptSubmit, Stop) instead of just PreToolUse. Existing installs are silently backfilled on startup.
+- **`tokensave current-counter` / `reset-counter` commands** — expose and reset a per-project local token counter, separate from the lifetime total.
+- **Respect global gitignore** for `.tokensave` warning.
+
+### Changed
+- **Hook install/uninstall generalized** — `install_hook` and `uninstall_hook` now iterate over all three hook events.
+- **Sync uses mtime/size pre-filter** — skips hashing unchanged files, only reads files whose mtime or size changed since last sync.
+- **Dependency upgrades** — dialoguer 0.11→0.12, notify 7→8, sha2 0.10→0.11, zip 6→8, windows-sys 0.59→0.61.
+
+## [3.4.6] - 2026-04-07
+
+### Fixed
+- **SQLite FTS corruption from interrupted sync** — handle UTF-16 encoded files, report unreadable files during sync.
+
+## [3.4.5] - 2026-04-07
+
+### Added
+- **`--version` / `-V` flag** to CLI.
+
+### Fixed
+- Replace `self_update` crate with direct `ureq`+`tar`+`self_replace` implementation for more reliable upgrades.
+
+## [3.4.4] - 2026-04-07
+
+### Fixed
+- Fix `tokensave upgrade` ENOENT error on Homebrew symlink installs.
+
+## [3.4.3] - 2026-04-07
+
+### Fixed
+- Handle UTF-16 encoded files and report unreadable files during sync.
+
+## [3.4.2] - 2026-04-07
+
+### Added
+- **`tokensave channel` command** — show or switch the update channel (stable/beta).
+
+### Fixed
+- Cross-workflow Homebrew/Scoop failures on wrong release type.
+- Better upgrade error messages when CI is still building.
+
+## [3.4.1] - 2026-04-07
+
+### Fixed
+- Beta Homebrew bottle 404 — fix bottle archive naming.
+- Update notices now suggest `tokensave upgrade` instead of platform-specific commands.
+
+## [3.4.0] - 2026-04-07
+
+### Added
+- **`tokensave upgrade` command** — self-update the binary directly from GitHub releases. Detects the current channel, downloads the correct platform-specific archive, and replaces the running binary.
+- **Annotation/attribute extraction for 7 languages** — Rust, Swift, Dart, Scala, PHP, C++, and VB.NET. All create `AnnotationUsage` nodes with `Annotates` edges. Brings annotation support to 12 of 31 languages.
+- **McpTransport trait** — zero-cost abstraction for MCP server I/O, enabling in-memory test transports.
+- **370+ new tests** — line coverage 71% → 84%.
+
+## [3.3.3] - 2026-04-05
+
+### Added
+- `tokensave sync --doctor` lists added/modified/removed files.
 
 ## [3.3.2] - 2026-04-05
 

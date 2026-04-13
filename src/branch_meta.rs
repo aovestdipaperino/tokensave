@@ -81,6 +81,21 @@ impl BranchMeta {
         }
     }
 
+    /// Removes all tracked branches except the default. Returns removed entries.
+    pub fn remove_all_branches(&mut self) -> Vec<(String, BranchEntry)> {
+        let default = self.default_branch.clone();
+        let removed: Vec<(String, BranchEntry)> = self
+            .branches
+            .keys()
+            .filter(|name| *name != &default)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|name| self.branches.remove(&name).map(|e| (name, e)))
+            .collect();
+        removed
+    }
+
     /// Returns true if the given branch is tracked.
     pub fn is_tracked(&self, name: &str) -> bool {
         self.branches.contains_key(name)
