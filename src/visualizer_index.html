@@ -27,6 +27,10 @@
   #detail .actions button:hover { background: #565f89; }
   #status-bar { padding: 6px 20px; background: #24283b; border-top: 1px solid #3b4261; font-size: 12px; color: #565f89; }
   .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #565f89; font-size: 14px; gap: 8px; }
+  #ctx-menu { position: fixed; display: none; background: #24283b; border: 1px solid #3b4261; border-radius: 6px; padding: 4px 0; min-width: 160px; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  #ctx-menu .ctx-item { padding: 6px 14px; font-size: 13px; color: #c0caf5; cursor: pointer; }
+  #ctx-menu .ctx-item:hover { background: #3b4261; }
+  #ctx-menu .ctx-header { padding: 6px 14px 4px; font-size: 11px; color: #565f89; border-bottom: 1px solid #3b4261; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 </style>
 </head>
 <body>
@@ -52,18 +56,21 @@
     <div class="actions" id="detail-actions"></div>
   </div>
 </div>
-<div id="status-bar" id="status-bar">Loading...</div>
+<div id="ctx-menu"></div>
+<div id="status-bar">Loading...</div>
 <script>
 const cy = cytoscape({
   container: document.getElementById('cy'),
   style: [
     { selector: 'node', style: {
-      'label': 'data(label)',
+      'label': 'data(name)',
       'background-color': '#7aa2f7',
       'color': '#c0caf5',
       'font-size': '11px',
       'text-valign': 'bottom',
       'text-margin-y': 6,
+      'text-max-width': 200,
+      'text-wrap': 'ellipsis',
       'width': 24, 'height': 24,
       'border-width': 2, 'border-color': '#3b4261',
     }},
@@ -131,11 +138,9 @@ function renderGraph(data) {
   const elements = [];
 
   for (const node of data.nodes) {
-    const shortKind = node.kind.replace('_', ' ');
     elements.push({
       data: {
         id: node.id,
-        label: `${node.name}\n${shortKind}`,
         kind: node.kind,
         name: node.name,
         file: node.file_path,
@@ -199,6 +204,64 @@ cy.on('tap', function(evt) {
     document.getElementById('detail').style.display = 'none';
   }
 });
+
+// Right-click context menu
+const ctxMenu = document.getElementById('ctx-menu');
+let ctxNodeData = null;
+
+function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxNodeData = null; }
+
+function showCtxMenu(x, y, d) {
+  ctxNodeData = d;
+  const items = [
+    { label: 'Show Callers', endpoint: 'callers' },
+    { label: 'Show Callees', endpoint: 'callees' },
+    { label: 'Show Call Graph', endpoint: 'callgraph' },
+    { label: 'Show Impact', endpoint: 'impact' },
+  ];
+  ctxMenu.innerHTML = `<div class="ctx-header" title="${d.name}">${d.name}</div>` +
+    items.map(i => `<div class="ctx-item" data-ep="${i.endpoint}">${i.label}</div>`).join('');
+  ctxMenu.style.display = 'block';
+
+  // Position within viewport
+  const rect = ctxMenu.getBoundingClientRect();
+  const mx = Math.min(x, window.innerWidth - rect.width - 4);
+  const my = Math.min(y, window.innerHeight - rect.height - 4);
+  ctxMenu.style.left = mx + 'px';
+  ctxMenu.style.top = my + 'px';
+}
+
+ctxMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.ctx-item');
+  if (!item || !ctxNodeData) return;
+  const ep = item.dataset.ep;
+  const d = ctxNodeData;
+  hideCtxMenu();
+  try {
+    const res = await fetch(`/api/node/${encodeURIComponent(d.id)}/${ep}?depth=2`);
+    const data = await res.json();
+    renderGraph(data);
+    const label = item.textContent;
+    document.getElementById('status-bar').textContent =
+      `${label.replace('Show ', '')} of ${d.name}: ${data.nodes.length} nodes`;
+  } catch (err) {
+    document.getElementById('status-bar').textContent = `Error: ${err.message}`;
+  }
+});
+
+// Cytoscape right-click on node
+cy.on('cxttap', 'node', function(evt) {
+  const d = evt.target.data();
+  const pos = evt.originalEvent;
+  showCtxMenu(pos.clientX, pos.clientY, d);
+});
+
+// Dismiss context menu on click/tap/pan/zoom
+document.addEventListener('click', (e) => { if (!ctxMenu.contains(e.target)) hideCtxMenu(); });
+cy.on('tap pan zoom', hideCtxMenu);
+
+// Suppress browser context menu on the graph
+document.getElementById('cy').addEventListener('contextmenu', (e) => e.preventDefault());
 </script>
 </body>
 </html>
