@@ -55,6 +55,19 @@ fn test_write_entry_noop_without_tokensave_dir() {
 }
 
 #[test]
+fn test_write_entry_accumulates_total() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();
+
+    tokensave::monitor::write_entry(dir.path(), "tokensave_context", 100, 500);
+    tokensave::monitor::write_entry(dir.path(), "tokensave_search", 50, 200);
+
+    let reader = tokensave::monitor::MmapReader::open(dir.path()).unwrap();
+    assert_eq!(reader.total_saved(), 150);
+    assert_eq!(reader.write_idx(), 2);
+}
+
+#[test]
 fn test_tool_name_truncation() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();

@@ -702,6 +702,12 @@ impl McpServer {
         match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
             Ok(mut result) => {
                 let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
+                crate::monitor::write_entry(
+                    self.cg.project_root(),
+                    tool_name,
+                    raw_file_tokens,
+                    raw_file_tokens,
+                );
                 self.maybe_flush_worldwide().await;
 
                 // Estimate approximate token count of the graph response.
