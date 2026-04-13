@@ -684,6 +684,7 @@ fn doctor_check_mcp_binary(dc: &mut DoctorCounters, mcp_entry: &serde_json::Valu
 }
 
 /// Check ~/.claude/settings.json for hook, permissions, and stale entries.
+/// Auto-repairs missing hooks when a tokensave binary can be determined.
 fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
     let settings_path = home.join(".claude").join("settings.json");
 
@@ -715,7 +716,18 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
 
     dc.pass(&format!("Settings: {}", settings_path.display()));
     doctor_check_hook(dc, &settings);
+    doctor_fix_hooks(dc, &settings_path, &settings);
     doctor_check_permissions(dc, &settings);
+}
+
+/// Expected subcommand for each hook event.
+fn expected_hook_subcommand(event: &str) -> &'static str {
+    match event {
+        "PreToolUse" => "hook-pre-tool-use",
+        "UserPromptSubmit" => "hook-prompt-submit",
+        "Stop" => "hook-stop",
+        _ => unreachable!("unexpected hook event: {event}"),
+    }
 }
 
 /// Check all tokensave hooks in settings.
@@ -726,6 +738,7 @@ fn doctor_check_hook(dc: &mut DoctorCounters, settings: &serde_json::Value) {
 }
 
 /// Check a single hook event for a tokensave entry.
+/// Validates that the subcommand is correct for this event.
 fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Value, event: &str) {
     let hook_cmd_str: Option<String> = settings["hooks"][event]
         .as_array()
@@ -740,18 +753,97 @@ fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Valu
             })
         });
     let Some(ref hook_cmd) = hook_cmd_str else {
-        dc.fail(&format!("{event} hook NOT installed — run `tokensave install`"));
+        dc.fail(&format!("{event} hook NOT installed"));
         return;
     };
+
+    // Validate the subcommand is correct for this event.
+    let expected_sub = expected_hook_subcommand(event);
+    let parts: Vec<&str> = hook_cmd.split_whitespace().collect();
+    let actual_sub = parts.get(1).copied().unwrap_or("");
+    if actual_sub != expected_sub {
+        dc.fail(&format!(
+            "{event} hook has wrong subcommand: \"{actual_sub}\" (expected \"{expected_sub}\")"
+        ));
+        return;
+    }
+
     dc.pass(&format!("{event} hook installed"));
 
-    let hook_bin = hook_cmd.split_whitespace().next().unwrap_or(hook_cmd);
+    let hook_bin = parts.first().copied().unwrap_or(hook_cmd.as_str());
     if Path::new(hook_bin).exists() {
         dc.pass(&format!("Hook binary exists: {hook_bin}"));
     } else {
         dc.fail(&format!(
             "Hook binary not found: {hook_bin} — run `tokensave install`"
         ));
+    }
+}
+
+/// Auto-repair missing or misconfigured hooks. Only touches hooks that are
+/// actually wrong — correctly configured hooks are left untouched.
+fn doctor_fix_hooks(
+    dc: &mut DoctorCounters,
+    settings_path: &Path,
+    settings: &serde_json::Value,
+) {
+    // Determine the tokensave binary: prefer existing hook, fall back to current exe.
+    let bin = extract_tokensave_bin_from_hooks(settings).or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+    });
+    let Some(bin) = bin else {
+        return;
+    };
+
+    let mut settings = settings.clone();
+    let mut repaired = false;
+
+    for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
+        let expected_sub = expected_hook_subcommand(event);
+        let expected_cmd = format!("{bin} {expected_sub}");
+
+        // Find the existing tokensave command for this event (if any).
+        let current_cmd: Option<String> = settings["hooks"][event]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter().find_map(|h| {
+                    h["hooks"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|c| c["command"].as_str())
+                        .filter(|c| c.contains("tokensave"))
+                        .map(|s| s.to_string())
+                })
+            });
+
+        match current_cmd {
+            Some(cmd) if cmd == expected_cmd => continue, // already correct
+            Some(_) => {
+                // Wrong subcommand — remove the bad entry, then add the correct one.
+                uninstall_single_hook(&mut settings, event);
+            }
+            None => {} // missing — just add below
+        }
+
+        let matcher = if *event == "PreToolUse" {
+            Some("Agent")
+        } else {
+            None
+        };
+        install_single_hook(&mut settings, event, &expected_cmd, matcher, true);
+        repaired = true;
+    }
+
+    if repaired {
+        let pretty =
+            serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
+        if std::fs::write(settings_path, format!("{pretty}\n")).is_ok() {
+            dc.pass("Auto-repaired hook(s)");
+        } else {
+            dc.fail("Could not write settings.json to repair hooks");
+        }
     }
 }
 
@@ -1039,4 +1131,349 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Build a settings value with the three tokensave hooks installed.
+    fn settings_with_all_hooks(bin: &str) -> serde_json::Value {
+        json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Agent",
+                    "hooks": [{ "type": "command", "command": format!("{bin} hook-pre-tool-use") }]
+                }],
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": format!("{bin} hook-prompt-submit") }]
+                }],
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": format!("{bin} hook-stop") }]
+                }]
+            },
+            "permissions": {
+                "allow": ["mcp__tokensave__search", "mcp__tokensave__lookup"]
+            }
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Uninstall tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn uninstall_hook_removes_all_three_events() {
+        let mut settings = settings_with_all_hooks("/usr/bin/tokensave");
+        let modified = uninstall_hook(&mut settings);
+        assert!(modified);
+        // All three hook events should be gone.
+        assert!(settings.get("hooks").is_none() || settings["hooks"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn uninstall_hook_removes_user_prompt_submit() {
+        let mut settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "tokensave hook-prompt-submit" }]
+                }]
+            }
+        });
+        let modified = uninstall_single_hook(&mut settings, "UserPromptSubmit");
+        assert!(modified);
+        assert!(
+            settings.get("hooks").is_none(),
+            "hooks key should be removed when empty"
+        );
+    }
+
+    #[test]
+    fn uninstall_preserves_non_tokensave_hooks() {
+        let mut settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [{ "type": "command", "command": "tokensave hook-prompt-submit" }]
+                    },
+                    {
+                        "hooks": [{ "type": "command", "command": "other-tool do-something" }]
+                    }
+                ],
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "afplay /System/Library/Sounds/Submarine.aiff" }]
+                }]
+            }
+        });
+        uninstall_hook(&mut settings);
+        // The non-tokensave UserPromptSubmit entry should survive.
+        let arr = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert!(arr[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("other-tool"));
+        // The Stop event (no tokensave) should survive.
+        assert!(settings["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn uninstall_noop_when_no_hooks() {
+        let mut settings = json!({ "permissions": { "allow": [] } });
+        let modified = uninstall_hook(&mut settings);
+        assert!(!modified);
+    }
+
+    #[test]
+    fn uninstall_permissions_removes_tokensave_entries() {
+        let mut settings = json!({
+            "permissions": {
+                "allow": [
+                    "Bash",
+                    "mcp__tokensave__search",
+                    "mcp__tokensave__lookup",
+                    "Read"
+                ]
+            }
+        });
+        let modified = uninstall_permissions(&mut settings);
+        assert!(modified);
+        let remaining: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(remaining, vec!["Bash", "Read"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Install tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn install_adds_all_three_hooks() {
+        let mut settings = json!({});
+        install_hook(&mut settings, "/usr/bin/tokensave");
+        assert!(settings["hooks"]["PreToolUse"].is_array());
+        assert!(settings["hooks"]["UserPromptSubmit"].is_array());
+        assert!(settings["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let mut settings = json!({});
+        install_hook(&mut settings, "/usr/bin/tokensave");
+        let snapshot = settings.clone();
+        install_hook(&mut settings, "/usr/bin/tokensave");
+        assert_eq!(settings, snapshot, "second install should be a no-op");
+    }
+
+    #[test]
+    fn install_preserves_existing_hooks() {
+        let mut settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "other-tool" }]
+                }]
+            }
+        });
+        install_hook(&mut settings, "/usr/bin/tokensave");
+        // Should have both entries in UserPromptSubmit.
+        let arr = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_tokensave_bin_from_hooks tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_bin_from_any_hook_event() {
+        let settings = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "/opt/bin/tokensave hook-stop" }]
+                }]
+            }
+        });
+        assert_eq!(
+            extract_tokensave_bin_from_hooks(&settings),
+            Some("/opt/bin/tokensave".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_bin_returns_none_without_hooks() {
+        let settings = json!({ "permissions": {} });
+        assert_eq!(extract_tokensave_bin_from_hooks(&settings), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Doctor check tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn doctor_detects_missing_user_prompt_submit() {
+        let mut dc = DoctorCounters::new();
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{ "type": "command", "command": "tokensave hook-pre-tool-use" }]
+                }]
+            }
+        });
+        doctor_check_single_hook(&mut dc, &settings, "UserPromptSubmit");
+        assert!(dc.issues > 0, "should report missing UserPromptSubmit hook");
+    }
+
+    #[test]
+    fn doctor_passes_when_user_prompt_submit_present() {
+        let mut dc = DoctorCounters::new();
+        // Use the actual test binary path so the exists() check passes.
+        let bin = std::env::current_exe()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": format!("{bin} hook-prompt-submit") }]
+                }]
+            }
+        });
+        doctor_check_single_hook(&mut dc, &settings, "UserPromptSubmit");
+        assert_eq!(dc.issues, 0, "should pass when UserPromptSubmit hook is present");
+    }
+
+    #[test]
+    fn doctor_detects_wrong_subcommand() {
+        let mut dc = DoctorCounters::new();
+        let settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "tokensave invalidcommand" }]
+                }]
+            }
+        });
+        doctor_check_single_hook(&mut dc, &settings, "UserPromptSubmit");
+        assert!(dc.issues > 0, "should report wrong subcommand");
+    }
+
+    #[test]
+    fn doctor_detects_wrong_subcommand_on_stop() {
+        let mut dc = DoctorCounters::new();
+        let settings = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "tokensave hook-pre-tool-use" }]
+                }]
+            }
+        });
+        doctor_check_single_hook(&mut dc, &settings, "Stop");
+        assert!(dc.issues > 0, "should report wrong subcommand for Stop");
+    }
+
+    #[test]
+    fn doctor_detects_missing_subcommand() {
+        let mut dc = DoctorCounters::new();
+        let settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "tokensave" }]
+                }]
+            }
+        });
+        doctor_check_single_hook(&mut dc, &settings, "UserPromptSubmit");
+        assert!(dc.issues > 0, "should report missing subcommand");
+    }
+
+    // -----------------------------------------------------------------------
+    // Doctor fix tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn doctor_fix_adds_missing_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        // Start with only Stop hook.
+        let settings = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave hook-stop" }]
+                }]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let mut dc = DoctorCounters::new();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        // Re-read and verify all three hooks are present.
+        let fixed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(fixed["hooks"]["PreToolUse"].is_array());
+        assert!(fixed["hooks"]["UserPromptSubmit"].is_array());
+        assert!(fixed["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn doctor_fix_replaces_wrong_subcommand() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Agent",
+                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave hook-pre-tool-use" }]
+                }],
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave invalidcommand" }]
+                }],
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave hook-stop" }]
+                }]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let mut dc = DoctorCounters::new();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        let fixed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let cmd = fixed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(
+            cmd.ends_with("hook-prompt-submit"),
+            "should have correct subcommand, got: {cmd}"
+        );
+    }
+
+    #[test]
+    fn doctor_fix_noop_when_all_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        let settings = settings_with_all_hooks("/usr/bin/tokensave");
+        let pretty = serde_json::to_string_pretty(&settings).unwrap();
+        std::fs::write(&settings_path, &pretty).unwrap();
+
+        let mut dc = DoctorCounters::new();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        // File should be unchanged.
+        let after = std::fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(after, pretty, "should not modify file when all hooks present");
+    }
 }

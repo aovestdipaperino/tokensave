@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-04-13
+
+### Fixed
+- **Doctor validates hook subcommands** — `tokensave doctor` now checks that each hook event uses the correct tokensave subcommand (e.g. `hook-prompt-submit` for `UserPromptSubmit`, not an invalid or mismatched command). Previously it only checked whether a tokensave hook existed, not whether it invoked the right subcommand.
+- **Doctor auto-repairs broken hooks** — when a hook has a wrong subcommand or is missing entirely, `tokensave doctor` now replaces it with the correct command automatically instead of only suggesting `tokensave install`.
+
+### Added
+- **18 unit tests for Claude hook lifecycle** — install, uninstall, doctor detection, and doctor auto-repair for all three hook events (`PreToolUse`, `UserPromptSubmit`, `Stop`), including wrong-subcommand and missing-subcommand scenarios.
+
 ## [3.5.0] - 2026-04-13
 
 ### Added
