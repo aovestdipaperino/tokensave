@@ -84,7 +84,7 @@ tokensave has ~7x more tools, and critically, they are specialized. "What breaks
 | Incremental sync | Yes (hash + mtime/size pre-filter) | Rescans on launch |
 | Background daemon | Yes -- launchd/systemd/Windows Service, auto-restarts on upgrade | No |
 | Git hooks | Global post-commit hook, auto-installed | No |
-| Multi-branch | Per-branch databases, cross-branch diff/search | No |
+| Multi-branch | Optional per-branch databases, cross-branch diff/search | No |
 | Sync doctor | `--doctor` flag shows added/modified/removed files | No |
 
 tokensave keeps the graph warm between sessions via the daemon. Dual-Graph rebuilds its graph at the start of each session. For large codebases, this startup cost adds up.
@@ -182,7 +182,7 @@ Dual-Graph exposes environment variables (`DG_HARD_MAX_READ_CHARS`, `DG_TURN_REA
 
 ### 11. Where tokensave Is Ahead
 
-tokensave's advantages are covered in detail in sections 2-9 above. The short version: 37 vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 31 vs 11 languages, libSQL vs JSON storage, background daemon, multi-branch indexing, 9 vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
+tokensave's advantages are covered in detail in sections 2-9 above. The short version: 37 vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 31 vs 11 languages, libSQL vs JSON storage, background daemon, optional multi-branch indexing, 9 vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
 
 ---
 
@@ -201,7 +201,7 @@ CodeGraph ([`@colbymchenry/codegraph`](https://www.npmjs.com/package/@colbymchen
 
 ### 1. Relationship
 
-tokensave started as a Rust port of CodeGraph and shares the core idea: parse a codebase with tree-sitter, store symbols and edges in a local database, expose the graph via MCP tools. The two projects have since evolved independently. CodeGraph continues to ship improvements (notably `codegraph_explore` and local embeddings), while tokensave has expanded into code quality analysis, multi-branch indexing, multi-agent support, and a background daemon.
+tokensave started as a Rust port of CodeGraph and shares the core idea: parse a codebase with tree-sitter, store symbols and edges in a local database, expose the graph via MCP tools. The two projects have since evolved independently. CodeGraph continues to ship improvements (notably `codegraph_explore` and local embeddings), while tokensave has expanded into code quality analysis, optional multi-branch indexing, multi-agent support, and a background daemon.
 
 ---
 
@@ -215,7 +215,7 @@ tokensave started as a Rust port of CodeGraph and shares the core idea: parse a 
 | MCP tools | 37 | 9 |
 | Agent integrations | 9 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed) | 1 (Claude Code) |
 | Background daemon | Yes (launchd/systemd/Windows Service, upgrade-aware) | No (hook-based sync only) |
-| Multi-branch indexing | Yes (per-branch DBs, cross-branch diff/search) | No |
+| Multi-branch indexing | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | Complexity metrics | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | Porting tools | Yes (`port_status`, `port_order`) | No |
 | Graph visualizer | Yes (interactive browser-based) | Yes |
@@ -322,7 +322,7 @@ In practice, the agent usually knows the right synonyms because it has already s
 
 ### 6. Summary
 
-CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. Its `codegraph_explore` tool represents a genuinely better interaction pattern for Explore agents that tokensave should adopt. tokensave extends the core concept with deeper analysis, more agents, background sync, multi-branch support, and a native binary with no runtime dependencies. The two projects are MIT-licensed and share the same philosophy -- they just diverge on scope and implementation language.
+CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. Its `codegraph_explore` tool represents a genuinely better interaction pattern for Explore agents that tokensave should adopt. tokensave extends the core concept with deeper analysis, more agents, background sync, optional multi-branch support, and a native binary with no runtime dependencies. The two projects are MIT-licensed and share the same philosophy -- they just diverge on scope and implementation language.
 
 ---
 ---
@@ -426,7 +426,7 @@ code-review-graph publishes impact accuracy metrics (average F1 0.54, precision 
 | Language depth | Deep extractors (Nix derivation fields, Protobuf schema, COBOL, Fortran, legacy BASIC) | Standard tree-sitter extraction |
 | Code quality suite | `complexity`, `coupling`, `god_class`, `inheritance_depth`, `doc_coverage`, `recursion`, `unused_imports`, `dead_code`, `simplify_scan` | `find_large_functions_tool` only |
 | Type system | `type_hierarchy`, `inheritance_depth` | -- |
-| Multi-branch | Per-branch DBs, cross-branch diff/search | -- |
+| Multi-branch | Optional per-branch DBs, cross-branch diff/search | -- |
 | Porting tools | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `diff_context`, `changelog`, `test_map` | `detect_changes_tool` |
 | Background daemon | launchd/systemd/Windows SCM, upgrade-aware | Foreground `watch` only |
@@ -469,7 +469,7 @@ Notable from code-review-graph's benchmarks: the tool performs worse than naive 
 
 ### 7. Summary
 
-code-review-graph is the most direct competitor to tokensave. Both build symbol-level graphs with tree-sitter, store them in SQLite, and expose them via MCP tools. The differences: tokensave has deeper code quality analysis, more languages, multi-branch indexing, a persistent daemon, and ships as a zero-dependency Rust binary. code-review-graph has multi-repo support, execution flow analysis, community detection, wiki generation, MCP prompts, notebook support, and published accuracy benchmarks. Both are MIT-licensed and fully open source.
+code-review-graph is the most direct competitor to tokensave. Both build symbol-level graphs with tree-sitter, store them in SQLite, and expose them via MCP tools. The differences: tokensave has deeper code quality analysis, more languages, optional multi-branch indexing, a persistent daemon, and ships as a zero-dependency Rust binary. code-review-graph has multi-repo support, execution flow analysis, community detection, wiki generation, MCP prompts, notebook support, and published accuracy benchmarks. Both are MIT-licensed and fully open source.
 
 ---
 ---
@@ -551,7 +551,7 @@ OpenWolf has no code understanding. It knows files exist and how big they are, b
 | Quality analysis | `complexity`, `dead_code`, `god_class`, `coupling` | No |
 | Refactoring support | `rename_preview`, `similar` | No |
 | Git-aware context | `commit_context`, `pr_context`, `diff_context` | No |
-| Multi-branch indexing | Per-branch DBs with cross-branch diff | No |
+| Multi-branch indexing | Optional per-branch DBs with cross-branch diff | No |
 | Language-specific extraction | 31 languages with deep tree-sitter parsing | Language-agnostic file listing |
 | MCP tools | 37 | 0 |
 | Agent support | 9 agents | Claude Code only |

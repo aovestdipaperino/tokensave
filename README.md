@@ -72,8 +72,8 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
 | **37 MCP Tools** | **31 Languages** | **9 Agent Integrations** |
 | From call graph traversal to dead code detection, test mapping, rename preview, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 22 more. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed. |
-| **Multi-Branch Indexing** | **100% Local** | **Always Fresh** |
-| Per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Background daemon syncs the index automatically. Survives reboots. Restarts after upgrades. |
+| **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
+| Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Background daemon syncs the index automatically. Survives reboots. Restarts after upgrades. |
 
 ---
 
@@ -169,9 +169,9 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 
 ---
 
-## Multi-Branch Indexing
+## Multi-Branch Indexing (Optional)
 
-tokensave maintains a separate code graph per git branch. Switching branches never gives you stale results and never re-indexes files you already parsed on another branch.
+tokensave can optionally maintain a separate code graph per git branch. When enabled, switching branches never gives you stale results and never re-indexes files you already parsed on another branch. Multi-branch tracking is opt-in -- without it, tokensave uses a single database for all branches.
 
 ### How it works
 
@@ -502,7 +502,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **MCP tools** | 37 | 9 |
 | **Agent integrations** | 9 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed) | 1 (Claude Code) |
 | **Background daemon** | Yes (launchd/systemd/Windows Service) | No (hook-based sync only) |
-| **Multi-branch indexing** | Yes (per-branch DBs, cross-branch diff/search) | No |
+| **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
 | **Graph visualizer** | Yes (interactive browser-based) | Yes |
@@ -546,7 +546,7 @@ tokensave works at the symbol level: functions, structs, fields, call edges, typ
 
 ### Multi-branch indexing
 
-The only tool in this space that maintains per-branch graph databases and supports cross-branch diff and search. Switching branches is instant, no re-indexing required.
+The only tool in this space with optional per-branch graph databases and cross-branch diff and search. When enabled, switching branches is instant -- no re-indexing required.
 
 ### Per-call token tracking
 
