@@ -97,15 +97,16 @@ impl McpServer {
 
     /// Adds the approximate token count for the given file paths to the
     /// running saved-tokens counter and persists it to the database.
-    async fn accumulate_tokens_saved(&self, file_paths: &[String]) {
+    /// Returns the delta (tokens saved by this call).
+    async fn accumulate_tokens_saved(&self, file_paths: &[String]) -> u64 {
         if file_paths.is_empty() {
-            return;
+            return 0;
         }
         debug_assert!(file_paths.iter().all(|p| !p.is_empty()), "accumulate_tokens_saved received empty file path");
         let delta = {
             let map = match self.file_token_map.lock() {
                 Ok(m) => m,
-                Err(_) => return,
+                Err(_) => return 0,
             };
             let mut total: u64 = 0;
             for path in file_paths {
@@ -119,11 +120,14 @@ impl McpServer {
             let new_total = self.tokens_saved.fetch_add(delta, Ordering::Relaxed) + delta;
             // Persist to DB (best-effort, don't block on failure)
             let _ = self.cg.set_tokens_saved(new_total).await;
+            // Also increment the resettable local counter
+            let _ = self.cg.add_local_counter(delta).await;
             // Best-effort update to global DB
             if let Some(ref gdb) = self.global_db {
                 gdb.upsert(self.cg.project_root(), new_total).await;
             }
         }
+        delta
     }
 
     /// Flushes pending tokens to the worldwide counter if at least 30 seconds
@@ -424,7 +428,9 @@ impl McpServer {
                     — it returns relevant symbols, relationships, and code \
                     snippets for a natural-language query. Use tokensave_search \
                     to find specific symbols by name. All tools are read-only \
-                    and safe to call in parallel."
+                    and safe to call in parallel. \
+                    When a tool result contains a `tokensave_metrics:` line, \
+                    report the savings to the user (e.g. 'TokenSave\\'d ~N tokens')."
             }),
         )
     }
@@ -646,8 +652,30 @@ impl McpServer {
 
         match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
             Ok(mut result) => {
-                self.accumulate_tokens_saved(&result.touched_files).await;
+                let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
                 self.maybe_flush_worldwide().await;
+
+                // Estimate approximate token count of the graph response.
+                let response_tokens: u64 = result.value
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|arr| {
+                        let total_chars: usize = arr.iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .map(|text| text.len())
+                            .sum();
+                        (total_chars / 4) as u64
+                    })
+                    .unwrap_or(0);
+
+                // Append per-call token savings to the response content.
+                if raw_file_tokens > 0 {
+                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        content.push(json!({"type": "text", "text": format!(
+                            "\ntokensave_metrics: before={raw_file_tokens} after={response_tokens}"
+                        )}));
+                    }
+                }
 
                 // Prepend version-update warning + queue logging notification.
                 if let Some(warning) = self.check_version_update().await {

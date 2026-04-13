@@ -29,6 +29,7 @@ pub mod global_db;
 pub mod graph;
 pub mod hooks;
 pub mod mcp;
+pub mod project_watcher;
 pub mod resolution;
 pub mod sync;
 pub mod tokensave;

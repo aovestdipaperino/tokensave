@@ -997,6 +997,30 @@ impl TokenSave {
             .await
     }
 
+    /// Returns the resettable project-local token counter.
+    ///
+    /// This is separate from the main `tokens_saved` counter and can be
+    /// independently reset via [`Self::reset_local_counter`].
+    pub async fn get_local_counter(&self) -> Result<u64> {
+        match self.db.get_metadata("local_counter").await? {
+            Some(v) => Ok(v.parse::<u64>().unwrap_or(0)),
+            None => Ok(0),
+        }
+    }
+
+    /// Resets the project-local token counter to zero.
+    pub async fn reset_local_counter(&self) -> Result<()> {
+        self.db.set_metadata("local_counter", "0").await
+    }
+
+    /// Increments the project-local token counter by the given amount.
+    pub async fn add_local_counter(&self, delta: u64) -> Result<()> {
+        let current = self.get_local_counter().await?;
+        self.db
+            .set_metadata("local_counter", &(current + delta).to_string())
+            .await
+    }
+
     /// Returns all nodes under a directory prefix filtered by kinds.
     pub async fn get_nodes_by_dir(&self, dir: &str, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         self.db.get_nodes_by_dir(dir, kinds).await

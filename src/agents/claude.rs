@@ -138,37 +138,85 @@ fn install_migrate_old_mcp(settings: &mut serde_json::Value, settings_path: &Pat
     }
 }
 
-/// Add PreToolUse hook (idempotent).
+/// Add all tokensave hooks (idempotent). Prints progress messages.
 fn install_hook(settings: &mut serde_json::Value, tokensave_bin: &str) {
-    let hook_command = format!("{} hook-pre-tool-use", tokensave_bin);
-    let hooks_arr = settings["hooks"]["PreToolUse"]
+    install_hook_inner(settings, tokensave_bin, false);
+}
+
+/// Add all tokensave hooks silently (for post-upgrade migration).
+fn install_hook_quiet(settings: &mut serde_json::Value, tokensave_bin: &str) {
+    install_hook_inner(settings, tokensave_bin, true);
+}
+
+fn install_hook_inner(settings: &mut serde_json::Value, tokensave_bin: &str, quiet: bool) {
+    install_single_hook(
+        settings,
+        "PreToolUse",
+        &format!("{tokensave_bin} hook-pre-tool-use"),
+        Some("Agent"),
+        quiet,
+    );
+    install_single_hook(
+        settings,
+        "UserPromptSubmit",
+        &format!("{tokensave_bin} hook-prompt-submit"),
+        None,
+        quiet,
+    );
+    install_single_hook(
+        settings,
+        "Stop",
+        &format!("{tokensave_bin} hook-stop"),
+        None,
+        quiet,
+    );
+}
+
+/// Install a single hook entry under `settings.hooks.<event>` (idempotent).
+///
+/// If `matcher` is `Some`, the hook entry includes a `"matcher"` field
+/// (used by `PreToolUse`). Matcherless hooks apply unconditionally.
+fn install_single_hook(
+    settings: &mut serde_json::Value,
+    event: &str,
+    command: &str,
+    matcher: Option<&str>,
+    quiet: bool,
+) {
+    let hooks_arr = settings["hooks"][event]
         .as_array()
         .cloned()
         .unwrap_or_default();
+
     let has_hook = hooks_arr.iter().any(|h| {
-        h.get("matcher").and_then(|m| m.as_str()) == Some("Agent")
-            && h.get("hooks")
-                .and_then(|a| a.as_array())
-                .map(|arr| {
-                    arr.iter().any(|entry| {
-                        entry
-                            .get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains("tokensave"))
-                    })
+        let hooks_list = h.get("hooks").and_then(|a| a.as_array());
+        hooks_list
+            .map(|arr| {
+                arr.iter().any(|entry| {
+                    entry
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.contains("tokensave"))
                 })
-                .unwrap_or(false)
+            })
+            .unwrap_or(false)
     });
+
     if !has_hook {
         let mut new_hooks = hooks_arr;
-        new_hooks.push(json!({
-            "matcher": "Agent",
-            "hooks": [{ "type": "command", "command": hook_command }]
-        }));
-        settings["hooks"]["PreToolUse"] = serde_json::Value::Array(new_hooks);
-        eprintln!("\x1b[32m✔\x1b[0m Added PreToolUse hook");
-    } else {
-        eprintln!("  PreToolUse hook already present, skipping");
+        let mut entry = json!({
+            "hooks": [{ "type": "command", "command": command }]
+        });
+        if let Some(m) = matcher {
+            entry["matcher"] = json!(m);
+        }
+        new_hooks.push(entry);
+        settings["hooks"][event] = serde_json::Value::Array(new_hooks);
+        if !quiet {
+            eprintln!("\x1b[32m✔\x1b[0m Added {event} hook");
+        }
+    } else if !quiet {
+        eprintln!("  {event} hook already present, skipping");
     }
 }
 
@@ -433,9 +481,18 @@ fn uninstall_stale_mcp(settings: &mut serde_json::Value) -> bool {
     false
 }
 
-/// Remove PreToolUse hook. Returns true if modified.
+/// Remove all tokensave hooks. Returns true if modified.
 fn uninstall_hook(settings: &mut serde_json::Value) -> bool {
-    let Some(arr) = settings["hooks"]["PreToolUse"].as_array().cloned() else {
+    let mut modified = false;
+    for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
+        modified |= uninstall_single_hook(settings, event);
+    }
+    modified
+}
+
+/// Remove tokensave entries from a single hook event. Returns true if modified.
+fn uninstall_single_hook(settings: &mut serde_json::Value, event: &str) -> bool {
+    let Some(arr) = settings["hooks"][event].as_array().cloned() else {
         return false;
     };
     let filtered: Vec<serde_json::Value> = arr
@@ -455,7 +512,7 @@ fn uninstall_hook(settings: &mut serde_json::Value) -> bool {
         })
         .collect();
     if filtered.len()
-        >= settings["hooks"]["PreToolUse"]
+        >= settings["hooks"][event]
             .as_array()
             .map_or(0, |a| a.len())
     {
@@ -463,15 +520,15 @@ fn uninstall_hook(settings: &mut serde_json::Value) -> bool {
     }
     if filtered.is_empty() {
         if let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-            hooks.remove("PreToolUse");
+            hooks.remove(event);
             if hooks.is_empty() {
                 settings.as_object_mut().map(|o| o.remove("hooks"));
             }
         }
     } else {
-        settings["hooks"]["PreToolUse"] = serde_json::Value::Array(filtered);
+        settings["hooks"][event] = serde_json::Value::Array(filtered);
     }
-    eprintln!("\x1b[32m✔\x1b[0m Removed PreToolUse hook");
+    eprintln!("\x1b[32m✔\x1b[0m Removed {event} hook");
     true
 }
 
@@ -661,9 +718,16 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
     doctor_check_permissions(dc, &settings);
 }
 
-/// Check PreToolUse hook in settings.
+/// Check all tokensave hooks in settings.
 fn doctor_check_hook(dc: &mut DoctorCounters, settings: &serde_json::Value) {
-    let hook_cmd_str: Option<String> = settings["hooks"]["PreToolUse"]
+    for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
+        doctor_check_single_hook(dc, settings, event);
+    }
+}
+
+/// Check a single hook event for a tokensave entry.
+fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Value, event: &str) {
+    let hook_cmd_str: Option<String> = settings["hooks"][event]
         .as_array()
         .and_then(|arr| {
             arr.iter().find_map(|h| {
@@ -676,10 +740,10 @@ fn doctor_check_hook(dc: &mut DoctorCounters, settings: &serde_json::Value) {
             })
         });
     let Some(ref hook_cmd) = hook_cmd_str else {
-        dc.fail("PreToolUse hook NOT installed — run `tokensave install`");
+        dc.fail(&format!("{event} hook NOT installed — run `tokensave install`"));
         return;
     };
-    dc.pass("PreToolUse hook installed");
+    dc.pass(&format!("{event} hook installed"));
 
     let hook_bin = hook_cmd.split_whitespace().next().unwrap_or(hook_cmd);
     if Path::new(hook_bin).exists() {
@@ -900,6 +964,9 @@ fn clean_orphaned_local_mcp_keys(local_val: &mut serde_json::Value) {
 /// Best-effort check: warn if `install` needs re-running.
 /// Reads ~/.claude/settings.json and compares installed permissions
 /// against what the current version expects. Silent on any error.
+///
+/// Also silently backfills any missing hooks when at least one tokensave
+/// hook already exists (post-upgrade migration).
 pub fn check_install_stale() {
     let Some(home) = super::home_dir() else {
         return;
@@ -908,10 +975,11 @@ pub fn check_install_stale() {
     let Ok(contents) = std::fs::read_to_string(&settings_path) else {
         return;
     };
-    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return;
     };
 
+    // --- permissions check (warn only) ---
     let installed: Vec<&str> = settings["permissions"]["allow"]
         .as_array()
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
@@ -928,4 +996,47 @@ pub fn check_install_stale() {
             missing_count
         );
     }
+
+    // --- silent hook backfill (post-upgrade) ---
+    // If at least one tokensave hook exists, extract the binary path from it
+    // and silently add any missing hooks so the user doesn't need to re-install.
+    if let Some(bin) = extract_tokensave_bin_from_hooks(&settings) {
+        let before = serde_json::to_string(&settings["hooks"]).unwrap_or_default();
+        install_hook_quiet(&mut settings, &bin);
+        let after = serde_json::to_string(&settings["hooks"]).unwrap_or_default();
+        if before != after {
+            let pretty =
+                serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
+            std::fs::write(&settings_path, format!("{pretty}\n")).ok();
+        }
+    }
+}
+
+/// Extracts the tokensave binary path from any existing hook command.
+///
+/// Scans all hook events for a command containing "tokensave" and returns
+/// the binary portion (everything before the first space/subcommand).
+/// Returns `None` if no tokensave hook is found.
+fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<String> {
+    let hooks = settings.get("hooks")?.as_object()?;
+    for (_event, entries) in hooks {
+        let arr = entries.as_array()?;
+        for entry in arr {
+            if let Some(cmds) = entry.get("hooks").and_then(|a| a.as_array()) {
+                for cmd in cmds {
+                    if let Some(command) = cmd.get("command").and_then(|c| c.as_str()) {
+                        if command.contains("tokensave") {
+                            // "path/to/tokensave hook-pre-tool-use" → "path/to/tokensave"
+                            let bin = command
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or(command);
+                            return Some(bin.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }

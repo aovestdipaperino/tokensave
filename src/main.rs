@@ -193,6 +193,12 @@ enum Commands {
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
     HookPreToolUse,
+    /// UserPromptSubmit hook handler (resets session counter)
+    #[command(name = "hook-prompt-submit", hide = true)]
+    HookPromptSubmit,
+    /// Stop hook handler (prints session token savings)
+    #[command(name = "hook-stop", hide = true)]
+    HookStop,
     /// Start MCP server over stdio
     Serve {
         /// Project path
@@ -205,6 +211,20 @@ enum Commands {
     Channel {
         /// Target channel: "stable" or "beta" (omit to show current)
         channel: Option<String>,
+    },
+    /// Show the resettable project-local token counter
+    #[command(name = "current-counter")]
+    CurrentCounter {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Reset the project-local token counter to zero
+    #[command(name = "reset-counter")]
+    ResetCounter {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
     },
     /// Disable uploading token counts to the worldwide counter
     #[command(name = "disable-upload-counter")]
@@ -738,12 +758,43 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::HookPreToolUse => {
             tokensave::hooks::hook_pre_tool_use();
         }
+        Commands::HookPromptSubmit => {
+            tokensave::hooks::hook_prompt_submit().await;
+        }
+        Commands::HookStop => {
+            tokensave::hooks::hook_stop().await;
+        }
         Commands::Serve { path } => {
             let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
+
+            // If the daemon isn't running, watch this project for local changes.
+            let watcher_cancel = if tokensave::daemon::running_daemon_pid().is_none() {
+                let config = tokensave::user_config::UserConfig::load();
+                let debounce = tokensave::daemon::parse_duration(&config.daemon_debounce)
+                    .unwrap_or(std::time::Duration::from_secs(15));
+                if let Some(pw) = tokensave::project_watcher::ProjectWatcher::new(
+                    project_path.clone(),
+                    debounce,
+                ) {
+                    let token = tokio_util::sync::CancellationToken::new();
+                    tokio::spawn(pw.run(token.clone()));
+                    Some(token)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let server = tokensave::mcp::McpServer::new(cg).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
             server.run(&mut transport).await?;
+
+            // Stop the watcher when the server exits.
+            if let Some(token) = watcher_cancel {
+                token.cancel();
+            }
         }
         Commands::Upgrade => {
             tokensave::upgrade::run_upgrade()?;
@@ -753,6 +804,19 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 Some(target) => { tokensave::upgrade::switch_channel(&target)?; }
                 None => tokensave::upgrade::show_channel(),
             }
+        }
+        Commands::CurrentCounter { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = ensure_initialized(&project_path).await?;
+            let value = cg.get_local_counter().await?;
+            println!("{value}");
+        }
+        Commands::ResetCounter { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = ensure_initialized(&project_path).await?;
+            let prev = cg.get_local_counter().await?;
+            cg.reset_local_counter().await?;
+            eprintln!("Local counter reset (was {prev})");
         }
         Commands::DisableUploadCounter => {
             let mut config = tokensave::user_config::UserConfig::load();

@@ -1,7 +1,8 @@
 //! Hook handlers for Claude Code integration.
 //!
 //! These functions are invoked by Claude Code's hook system to intercept
-//! tool calls and redirect exploration work to tokensave MCP tools.
+//! tool calls, redirect exploration work to tokensave MCP tools, and
+//! track per-session token savings.
 
 /// PreToolUse hook handler for Claude Code's Agent tool matcher.
 ///
@@ -53,3 +54,18 @@ pub fn evaluate_hook_decision(tool_input: &str) -> String {
 
     r#"{"decision": "allow"}"#.to_string()
 }
+
+/// `UserPromptSubmit` hook handler: resets the per-session local counter.
+///
+/// Token savings are now reported inline in each MCP tool response,
+/// so this hook only needs to reset the counter for the new turn.
+pub async fn hook_prompt_submit() {
+    let project_path = crate::config::resolve_path(None);
+    if let Ok(cg) = crate::tokensave::TokenSave::open(&project_path).await {
+        let _ = cg.reset_local_counter().await;
+    }
+}
+
+/// `Stop` hook handler. Currently a no-op; token savings are reported
+/// by the `UserPromptSubmit` hook on the next turn instead.
+pub async fn hook_stop() {}

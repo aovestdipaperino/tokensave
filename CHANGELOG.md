@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-04-13
+
+### Added
+- **Per-call token savings reported inline** — every MCP tool response now appends a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided, and the MCP server instruction tells the LLM to surface it (e.g. "TokenSave'd ~63k tokens").
+- **`UserPromptSubmit` and `Stop` hooks** — `tokensave install` now registers three hooks (PreToolUse, UserPromptSubmit, Stop) instead of just PreToolUse. Existing installs are silently backfilled on startup via `check_install_stale()`.
+- **`tokensave current-counter` / `reset-counter` commands** — expose and reset a per-project local token counter, separate from the lifetime total.
+- **`ProjectWatcher` module** (`src/project_watcher.rs`) — extracted the per-project file-watching + debounce + sync logic into a reusable struct with cancellation support.
+- **Inline file watcher in `serve`** — when the daemon isn't running, the MCP server now spawns a `ProjectWatcher` for the active project so the graph stays fresh during interactive use.
+- **Resettable local counter** in `TokenSave` — `get_local_counter`, `reset_local_counter`, and `add_local_counter` backed by a `local_counter` metadata key.
+
+### Changed
+- **Daemon rewritten around `ProjectWatcher`** — `run_loop` no longer manages raw `notify` watchers and a manual debounce map; each project gets its own `ProjectWatcher` task with a `CancellationToken`. Shutdown cancels all watchers (flushing pending syncs) instead of draining a shared dirty map.
+- **Hook install/uninstall generalized** — `install_hook` and `uninstall_hook` now iterate over all three hook events, with a shared `install_single_hook` / `uninstall_single_hook` helper. `doctor` validates all three events.
+- **Dependency upgrades** — dialoguer 0.11→0.12, notify 7→8, sha2 0.10→0.11, zip 6→8, windows-sys 0.59→0.61. Added `tokio-util` for `CancellationToken`.
+- **Deprecated API replaced** — `peel_to_commit_in_place()` → `peel_to_commit()` (gix).
+
+## [3.4.6] - 2026-04-10
+
+### Fixed
+- **SQLite FTS corruption from interrupted sync** — `begin_bulk_load()` set `PRAGMA synchronous = OFF`, so a crash during indexing could corrupt the FTS5 index. Removed the unsafe pragma, added a dirty sentinel file (`.tokensave/dirty`) that survives SIGKILL, and auto-detect + rebuild on next open. FTS queries that hit "malformed" now self-heal by rebuilding the index and retrying. ([#16](https://github.com/aovestdipaperino/tokensave/issues/16))
+
 ## [3.4.5] - 2026-04-07
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "3.4.6"
+version = "3.5.0"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
@@ -61,18 +61,19 @@ serde_json = "1"
 toml = "1"
 ureq = { version = "3", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sha2 = "0.10"
+sha2 = "0.11"
 glob = "0.3"
 walkdir = "2"
 ignore = "0.4"
 gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
-dialoguer = "0.11"
+dialoguer = "0.12"
 dirs = "6"
 daemon-kit = "0.1.4"
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
 rayon = "1"
 self-replace = "1"
@@ -82,8 +83,8 @@ flate2 = "1"
 tar = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-zip = { version = "6", default-features = false, features = ["deflate"] }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO"] }
 
 [build-dependencies]
 logo-art = "0.2"

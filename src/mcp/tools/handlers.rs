@@ -2295,7 +2295,7 @@ fn git_changed_files(
     let head_tree = repo
         .head()
         .map_err(|e| format!("cannot read HEAD: {e}"))?
-        .peel_to_commit_in_place()
+        .peel_to_commit()
         .map_err(|e| format!("cannot peel HEAD to commit: {e}"))?
         .tree()
         .map_err(|e| format!("cannot read HEAD tree: {e}"))?;

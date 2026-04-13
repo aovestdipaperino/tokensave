@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use daemon_kit::{Daemon, DaemonConfig};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tokio::time::{self, Instant};
+use tokio::time;
+use tokio_util::sync::CancellationToken;
+
+use crate::project_watcher::ProjectWatcher;
 
 use crate::errors::{Result, TokenSaveError};
 
@@ -86,32 +88,23 @@ pub fn is_autostart_enabled() -> bool {
     build_daemon().ok().is_some_and(|d| d.is_service_installed())
 }
 
-/// Directories to ignore inside watched projects.
-const IGNORED_DIRS: &[&str] = &[
-    ".tokensave", ".git", "node_modules", "target", ".build",
-    "__pycache__", ".next", "dist", "build", ".cache",
-];
-
-/// The core daemon event loop. Watches projects, debounces changes, syncs.
+/// The core daemon event loop. Manages per-project watchers, discovers
+/// new projects, and detects binary upgrades.
 ///
 /// Returns `true` if the loop exited because the on-disk binary was updated
 /// (upgrade detected), signalling the caller to exit with a non-zero code so
 /// the service manager restarts with the new version.
 async fn run_loop(debounce: Duration) -> Result<bool> {
-    let (tx, mut rx) = mpsc::channel::<PathBuf>(256);
-
-    let mut watchers: HashMap<PathBuf, RecommendedWatcher> = HashMap::new();
-    let mut dirty: HashMap<PathBuf, Instant> = HashMap::new();
+    let mut watchers: HashMap<PathBuf, (CancellationToken, tokio::task::JoinHandle<()>)> =
+        HashMap::new();
 
     // Snapshot the current binary for upgrade detection.
     let binary_snapshot = BinarySnapshot::capture();
 
     // Initial project discovery
     let project_paths = discover_projects().await;
-    for path in &project_paths {
-        if let Some(w) = create_watcher(path, tx.clone()) {
-            watchers.insert(path.clone(), w);
-        }
+    for path in project_paths {
+        spawn_watcher(&mut watchers, path, debounce);
     }
 
     daemon_log(&format!(
@@ -133,44 +126,16 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
     let mut upgraded = false;
 
     loop {
-        // Find the next debounce deadline
-        let next_deadline = dirty.values().copied().min();
-        let sleep_dur = match next_deadline {
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            None => Duration::from_secs(3600),
-        };
-
         tokio::select! {
             _ = shutdown_rx.recv() => {
                 daemon_log("shutting down (signal)");
                 break;
-            }
-            Some(project_root) = rx.recv() => {
-                dirty.insert(project_root, Instant::now() + debounce);
-            }
-            _ = tokio::time::sleep(sleep_dur), if next_deadline.is_some() => {
-                let now = Instant::now();
-                let ready: Vec<PathBuf> = dirty
-                    .iter()
-                    .filter(|(_, deadline)| **deadline <= now)
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                for path in ready {
-                    dirty.remove(&path);
-                    sync_project(&path).await;
-                }
             }
             _ = discovery_interval.tick() => {
                 // Check for binary upgrade.
                 if let Some(ref snapshot) = binary_snapshot {
                     if snapshot.has_changed() {
                         daemon_log("binary updated on disk, restarting to pick up new version");
-                        // Flush pending syncs before exiting.
-                        let pending: Vec<PathBuf> = dirty.keys().cloned().collect();
-                        for path in pending {
-                            dirty.remove(&path);
-                            sync_project(&path).await;
-                        }
                         upgraded = true;
                         break;
                     }
@@ -181,21 +146,48 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
                 let watched_set: HashSet<PathBuf> = watchers.keys().cloned().collect();
 
                 for path in current_set.difference(&watched_set) {
-                    if let Some(w) = create_watcher(path, tx.clone()) {
-                        daemon_log(&format!("discovered new project: {}", path.display()));
-                        watchers.insert(path.clone(), w);
-                    }
+                    daemon_log(&format!("discovered new project: {}", path.display()));
+                    spawn_watcher(&mut watchers, path.clone(), debounce);
                 }
                 let stale: Vec<PathBuf> = watched_set.difference(&current_set).cloned().collect();
-                for path in stale {
-                    watchers.remove(&path);
-                    dirty.remove(&path);
+                for path in &stale {
+                    cancel_watcher(&mut watchers, path).await;
                 }
             }
         }
     }
 
+    // Cancel all watchers — each flushes its pending sync before returning.
+    let all_paths: Vec<PathBuf> = watchers.keys().cloned().collect();
+    for path in &all_paths {
+        cancel_watcher(&mut watchers, path).await;
+    }
+
     Ok(upgraded)
+}
+
+/// Spawn a [`ProjectWatcher`] for a single project directory.
+fn spawn_watcher(
+    watchers: &mut HashMap<PathBuf, (CancellationToken, tokio::task::JoinHandle<()>)>,
+    path: PathBuf,
+    debounce: Duration,
+) {
+    if let Some(pw) = ProjectWatcher::new(path.clone(), debounce) {
+        let token = CancellationToken::new();
+        let handle = tokio::spawn(pw.run(token.clone()));
+        watchers.insert(path, (token, handle));
+    }
+}
+
+/// Cancel a running [`ProjectWatcher`] and wait for it to finish.
+async fn cancel_watcher(
+    watchers: &mut HashMap<PathBuf, (CancellationToken, tokio::task::JoinHandle<()>)>,
+    path: &Path,
+) {
+    if let Some((token, handle)) = watchers.remove(path) {
+        token.cancel();
+        handle.await.ok();
+    }
 }
 
 /// Query the global DB for all tracked project paths.
@@ -215,96 +207,6 @@ async fn discover_projects() -> Vec<PathBuf> {
             }
         })
         .collect()
-}
-
-/// Create a notify watcher for a project root.
-fn create_watcher(project_root: &Path, tx: mpsc::Sender<PathBuf>) -> Option<RecommendedWatcher> {
-    let root = project_root.to_path_buf();
-    let mut watcher = notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
-        let Ok(event) = res else { return };
-        if !matches!(
-            event.kind,
-            notify::EventKind::Create(_)
-                | notify::EventKind::Modify(_)
-                | notify::EventKind::Remove(_)
-        ) {
-            return;
-        }
-        let dominated_by_ignored = event.paths.iter().all(|p| {
-            p.components().any(|c| {
-                IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or(""))
-            })
-        });
-        if dominated_by_ignored {
-            return;
-        }
-        let _ = tx.blocking_send(root.clone());
-    })
-    .ok()?;
-    watcher.watch(project_root, RecursiveMode::Recursive).ok()?;
-    Some(watcher)
-}
-
-/// Run an incremental sync on a single project. Best-effort.
-///
-/// Catches panics (e.g. from extractor bugs on malformed files) so one
-/// bad project doesn't kill the entire daemon.
-async fn sync_project(project_root: &Path) {
-    let root = project_root.to_path_buf();
-    let result = tokio::task::spawn(async move {
-        sync_project_inner(&root).await;
-    })
-    .await;
-
-    if let Err(e) = result {
-        let msg = if e.is_panic() {
-            let panic = e.into_panic();
-            if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else {
-                "unknown panic".to_string()
-            }
-        } else {
-            format!("task error: {e}")
-        };
-        daemon_log(&format!(
-            "sync panicked for {}: {msg}",
-            project_root.display()
-        ));
-    }
-}
-
-async fn sync_project_inner(project_root: &Path) {
-    let start = std::time::Instant::now();
-    let Ok(cg) = crate::tokensave::TokenSave::open(project_root).await else {
-        daemon_log(&format!("failed to open {}", project_root.display()));
-        return;
-    };
-    match cg.sync().await {
-        Ok(result) => {
-            let ms = start.elapsed().as_millis();
-            if result.files_added > 0 || result.files_modified > 0 || result.files_removed > 0 {
-                daemon_log(&format!(
-                    "synced {} — {} added, {} modified, {} removed ({}ms)",
-                    project_root.display(),
-                    result.files_added,
-                    result.files_modified,
-                    result.files_removed,
-                    ms
-                ));
-            }
-            // Best-effort update global DB
-            if let Some(gdb) = crate::global_db::GlobalDb::open().await {
-                let tokens = cg.get_tokens_saved().await.unwrap_or(0);
-                gdb.upsert(project_root, tokens).await;
-            }
-        }
-        Err(e) => {
-            daemon_log(&format!("sync failed for {}: {e}", project_root.display()));
-        }
-    }
 }
 
 /// Log a timestamped daemon message to stderr.
