@@ -80,3 +80,13 @@ fn test_tool_name_truncation() {
     // Should be truncated to 63 chars (64 bytes with null)
     assert_eq!(entry.tool_name.len(), 63);
 }
+
+#[test]
+fn test_large_total_saved() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();
+
+    tokensave::monitor::write_entry(dir.path(), "test", 1_234_567, 0);
+    let reader = tokensave::monitor::MmapReader::open(dir.path()).unwrap();
+    assert_eq!(reader.total_saved(), 1_234_567);
+}
