@@ -528,14 +528,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 if !short {
                     print!("{}", include_str!("resources/logo.ansi"));
                 }
-                let branch_info = cg.active_branch().map(|b| {
-                    let parent = {
-                        let ts_dir = tokensave::config::get_tokensave_dir(&project_path);
-                        tokensave::branch_meta::load_branch_meta(&ts_dir)
-                            .and_then(|meta| meta.branches.get(b)?.parent.clone())
+                let branch_info = cg.active_branch().map(|_| {
+                    let ts_dir = tokensave::config::get_tokensave_dir(&project_path);
+                    let meta = tokensave::branch_meta::load_branch_meta(&ts_dir);
+                    let has_tracking = meta.as_ref().is_some_and(|m| !m.branches.is_empty());
+                    let display_branch = if has_tracking {
+                        cg.serving_branch().unwrap_or("[single-db]").to_string()
+                    } else {
+                        "[single-db]".to_string()
                     };
+                    let parent = meta.and_then(|m| m.branches.get(cg.serving_branch()?)?.parent.clone());
                     tokensave::display::BranchInfo {
-                        branch: b.to_string(),
+                        branch: display_branch,
                         parent,
                         is_fallback: cg.is_fallback(),
                     }
