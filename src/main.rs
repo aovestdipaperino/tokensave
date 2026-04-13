@@ -274,6 +274,12 @@ enum Commands {
         #[arg(long, default_value = "0")]
         port: u16,
     },
+    /// Live token savings monitor
+    Monitor {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
     /// Manage multi-branch indexing
     Branch {
         #[command(subcommand)]
@@ -946,6 +952,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let project_path = tokensave::config::resolve_path(path);
             let cg = TokenSave::open(&project_path).await?;
             tokensave::visualizer::run(&cg, port).await?;
+        }
+        Commands::Monitor { path } => {
+            let project_path = tokensave::config::resolve_path(path);
+            if let Err(e) = tokensave::monitor::run(&project_path) {
+                eprintln!("Monitor error: {e}");
+                process::exit(1);
+            }
         }
         Commands::Branch { action } => {
             handle_branch_action(action).await?;
