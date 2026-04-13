@@ -68,6 +68,21 @@ async fn test_find_removed_files() {
 }
 
 #[test]
+fn test_file_stat_returns_mtime_and_size() {
+    let mut f = NamedTempFile::new().unwrap();
+    f.write_all(b"hello world").unwrap();
+    f.flush().unwrap();
+    let (mtime, size) = file_stat(f.path()).unwrap();
+    assert!(mtime > 0, "mtime should be positive");
+    assert_eq!(size, 11);
+}
+
+#[test]
+fn test_file_stat_nonexistent() {
+    assert!(file_stat(std::path::Path::new("/nonexistent/file.rs")).is_none());
+}
+
+#[test]
 fn test_read_source_file_utf8() {
     let mut f = NamedTempFile::new().unwrap();
     f.write_all(b"fn main() {}").unwrap();

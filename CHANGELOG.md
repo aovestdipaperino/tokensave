@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0-beta.1] - 2026-04-13
+
+### Added
+- **Per-call token savings reported inline** — every MCP tool response now appends a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided, and the MCP server instruction tells the LLM to surface it (e.g. "TokenSave'd ~63k tokens").
+- **`UserPromptSubmit` and `Stop` hooks** — `tokensave install` now registers three hooks (PreToolUse, UserPromptSubmit, Stop) instead of just PreToolUse. Existing installs are silently backfilled on startup via `check_install_stale()`.
+- **`tokensave current-counter` / `reset-counter` commands** — expose and reset a per-project local token counter, separate from the lifetime total.
+- **Resettable local counter** in `TokenSave` — `get_local_counter`, `reset_local_counter`, and `add_local_counter` backed by a `local_counter` metadata key.
+
+### Changed
+- **Hook install/uninstall generalized** — `install_hook` and `uninstall_hook` now iterate over all three hook events, with a shared `install_single_hook` / `uninstall_single_hook` helper. `doctor` validates all three events.
+- **Sync uses mtime/size pre-filter** — skips hashing unchanged files, only reads files whose mtime or size changed since last sync.
+- **Dependency upgrades** — dialoguer 0.11→0.12, notify 7→8, sha2 0.10→0.11, zip 6→8, windows-sys 0.59→0.61.
+- **Deprecated API replaced** — `peel_to_commit_in_place()` → `peel_to_commit()` (gix).
+
 ## [4.1.2-beta.1] - 2026-04-07
 
 ### Added
