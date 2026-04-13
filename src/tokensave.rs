@@ -405,7 +405,9 @@ impl TokenSave {
                 let result = extractor.extract(file_path, &source);
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
-                Some((file_path.clone(), result, hash, size))
+                let mtime = sync::file_stat(&abs_path)
+                    .map_or_else(current_timestamp, |(m, _)| m);
+                Some((file_path.clone(), result, hash, size, mtime))
             })
             .collect();
 
@@ -417,7 +419,7 @@ impl TokenSave {
         let mut total_nodes = 0;
         let total_edges;
 
-        for (idx, (file_path, result, hash, size)) in extractions.iter().enumerate() {
+        for (idx, (file_path, result, hash, size, mtime)) in extractions.iter().enumerate() {
             on_file(idx + 1, total, file_path);
             total_nodes += result.nodes.len();
             all_nodes.extend_from_slice(&result.nodes);
@@ -427,7 +429,7 @@ impl TokenSave {
                 path: file_path.clone(),
                 content_hash: hash.clone(),
                 size: *size,
-                modified_at: current_timestamp(),
+                modified_at: *mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
             });
@@ -505,28 +507,73 @@ impl TokenSave {
         on_progress(0, 0, "scanning files");
         let current_files = self.scan_files()?;
 
-        // Compute current hashes in parallel, collecting read failures
-        on_progress(0, 0, "hashing files");
+        // Stat all files in parallel to get (mtime, size) — ~11ms for 20k files
+        on_progress(0, 0, "checking file timestamps");
         let project_root = &self.project_root;
-        let hash_results: Vec<_> = current_files
+        let file_stats: Vec<(String, i64, u64)> = current_files
+            .par_iter()
+            .filter_map(|path| {
+                let abs_path = project_root.join(path);
+                let (mtime, size) = sync::file_stat(&abs_path)?;
+                Some((path.clone(), mtime, size))
+            })
+            .collect();
+
+        // Load all DB file records into a map for O(1) lookups
+        let db_files = self.db.get_all_files().await?;
+        let db_map: HashMap<String, FileRecord> = db_files
+            .into_iter()
+            .map(|f| (f.path.clone(), f))
+            .collect();
+
+        // Partition files by comparing (mtime, size) against stored values
+        let mut new_files: Vec<String> = Vec::new();
+        let mut stat_changed: Vec<String> = Vec::new();
+        let mut current_set: std::collections::HashSet<&str> =
+            std::collections::HashSet::with_capacity(file_stats.len());
+        let mut stat_map: HashMap<String, (i64, u64)> =
+            HashMap::with_capacity(file_stats.len());
+
+        for (path, mtime, size) in &file_stats {
+            current_set.insert(path.as_str());
+            stat_map.insert(path.clone(), (*mtime, *size));
+            match db_map.get(path) {
+                None => new_files.push(path.clone()),
+                Some(record) => {
+                    if record.modified_at != *mtime || record.size != *size as u64 {
+                        stat_changed.push(path.clone());
+                    }
+                }
+            }
+        }
+
+        // Detect removed files from the same DB map
+        let removed: Vec<String> = db_map
+            .keys()
+            .filter(|path| !current_set.contains(path.as_str()))
+            .cloned()
+            .collect();
+
+        // Read + hash only files with changed stats or new files
+        on_progress(0, 0, "hashing changed files");
+        let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
+        let hash_results: Vec<_> = needs_read
             .par_iter()
             .map(|path| {
-                let abs_path = project_root.join(path);
+                let abs_path = project_root.join(path.as_str());
                 match sync::read_source_file(&abs_path) {
-                    Ok(source) => Ok((path.clone(), sync::content_hash(&source))),
-                    Err(e) => Err((path.clone(), e.to_string())),
+                    Ok(source) => Ok(((*path).clone(), sync::content_hash(&source))),
+                    Err(e) => Err(((*path).clone(), e.to_string())),
                 }
             })
             .collect();
 
-        let mut current_hashes = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut readable_files: Vec<String> = Vec::new();
+        let mut hash_map: HashMap<String, String> = HashMap::new();
         for result in hash_results {
             match result {
                 Ok((path, hash)) => {
-                    readable_files.push(path.clone());
-                    current_hashes.push((path, hash));
+                    hash_map.insert(path, hash);
                 }
                 Err((path, reason)) => {
                     skipped.push((path, reason));
@@ -534,10 +581,37 @@ impl TokenSave {
             }
         }
 
+        // Among stat_changed files, find those with actually different content
         on_progress(0, 0, "detecting changes");
-        let stale = sync::find_stale_files(&self.db, &current_hashes).await?;
-        let new = sync::find_new_files(&self.db, &readable_files).await?;
-        let removed = sync::find_removed_files(&self.db, &readable_files).await?;
+        let mut stale: Vec<String> = Vec::new();
+        let mut mtime_only_changed: Vec<String> = Vec::new();
+        for path in &stat_changed {
+            if let Some(new_hash) = hash_map.get(path) {
+                if let Some(record) = db_map.get(path) {
+                    if record.content_hash != *new_hash {
+                        stale.push(path.clone());
+                    } else {
+                        // mtime changed but content identical (e.g. touch) —
+                        // update stored mtime so we skip it next time
+                        mtime_only_changed.push(path.clone());
+                    }
+                }
+            }
+        }
+
+        // Update mtime for false-positive files so future syncs skip them
+        for path in &mtime_only_changed {
+            if let (Some(record), Some(&(mtime, size))) =
+                (db_map.get(path), stat_map.get(path))
+            {
+                let updated = FileRecord {
+                    modified_at: mtime,
+                    size,
+                    ..record.clone()
+                };
+                self.db.upsert_file(&updated).await?;
+            }
+        }
 
         // Remove deleted files
         for path in &removed {
@@ -546,7 +620,7 @@ impl TokenSave {
         }
 
         // Re-index stale and new files — extract in parallel, insert sequentially
-        let to_index: Vec<String> = stale.iter().chain(new.iter()).cloned().collect();
+        let to_index: Vec<String> = stale.iter().chain(new_files.iter()).cloned().collect();
         let registry = &self.registry;
 
         let sync_extractions: Vec<_> = to_index
@@ -558,12 +632,18 @@ impl TokenSave {
                 let result = extractor.extract(file_path, &source);
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
-                Some((file_path.clone(), result, hash, size))
+                let mtime = stat_map.get(file_path).map_or_else(
+                    || current_timestamp(),
+                    |&(m, _)| m,
+                );
+                Some((file_path.clone(), result, hash, size, mtime))
             })
             .collect();
 
         let total = sync_extractions.len();
-        for (idx, (file_path, result, hash, size)) in sync_extractions.iter().enumerate() {
+        for (idx, (file_path, result, hash, size, mtime)) in
+            sync_extractions.iter().enumerate()
+        {
             on_progress(idx + 1, total, file_path);
 
             self.db.delete_nodes_by_file(file_path).await?;
@@ -577,7 +657,7 @@ impl TokenSave {
                 path: file_path.clone(),
                 content_hash: hash.clone(),
                 size: *size,
-                modified_at: current_timestamp(),
+                modified_at: *mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
             };
@@ -606,11 +686,11 @@ impl TokenSave {
 
         clear_dirty_sentinel(&self.project_root);
         Ok(SyncResult {
-            files_added: new.len(),
+            files_added: new_files.len(),
             files_modified: stale.len(),
             files_removed: removed.len(),
             duration_ms: start.elapsed().as_millis() as u64,
-            added_paths: new,
+            added_paths: new_files,
             modified_paths: stale,
             skipped_paths: skipped,
             removed_paths: removed,

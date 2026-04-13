@@ -41,6 +41,17 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
     })
 }
 
+/// Get filesystem mtime (seconds since epoch) and size for pre-filter.
+pub fn file_stat(path: &Path) -> Option<(i64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let secs = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some((secs, meta.len()))
+}
+
 /// Compute SHA-256 content hash of file content.
 pub fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
