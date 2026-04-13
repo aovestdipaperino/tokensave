@@ -467,6 +467,10 @@ fn def_rank() -> ToolDefinition {
                     "type": "string",
                     "description": "Optional filter for node kind (e.g. 'interface', 'class', 'trait', 'function', 'method')"
                 },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -488,6 +492,10 @@ fn def_largest() -> ToolDefinition {
                 "node_kind": {
                     "type": "string",
                     "description": "Filter by node kind (e.g. 'class', 'method', 'function', 'interface', 'enum', 'struct')"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
                 },
                 "limit": {
                     "type": "number",
@@ -511,6 +519,10 @@ fn def_coupling() -> ToolDefinition {
                     "enum": ["fan_in", "fan_out"],
                     "description": "fan_in: files depended on by the most others. fan_out: files that depend on the most others (default: fan_in)"
                 },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -528,6 +540,10 @@ fn def_inheritance_depth() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -566,6 +582,10 @@ fn def_recursion() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of cycles to return (default: 10)"
@@ -586,6 +606,10 @@ fn def_complexity() -> ToolDefinition {
                 "node_kind": {
                     "type": "string",
                     "description": "Filter by node kind (default: function and method)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
                 },
                 "limit": {
                     "type": "number",
@@ -625,6 +649,10 @@ fn def_god_class() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"

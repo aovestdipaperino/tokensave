@@ -202,7 +202,7 @@ async fn test_find_dead_code_custom_kinds() {
 #[tokio::test]
 async fn test_get_file_coupling_fan_in() {
     let (cg, _dir) = setup().await;
-    let coupling = cg.get_file_coupling(true, 10).await.unwrap();
+    let coupling = cg.get_file_coupling(true, None, 10).await.unwrap();
     // Even if coupling is empty (due to how the extractor resolves cross-file refs),
     // the method should succeed.
     for (path, count) in &coupling {
@@ -214,7 +214,7 @@ async fn test_get_file_coupling_fan_in() {
 #[tokio::test]
 async fn test_get_file_coupling_fan_out() {
     let (cg, _dir) = setup().await;
-    let coupling = cg.get_file_coupling(false, 10).await.unwrap();
+    let coupling = cg.get_file_coupling(false, None, 10).await.unwrap();
     for (path, count) in &coupling {
         assert!(!path.is_empty());
         assert!(*count > 0);
@@ -292,7 +292,7 @@ async fn test_tokens_saved_round_trip() {
 #[tokio::test]
 async fn test_get_complexity_ranked() {
     let (cg, _dir) = setup().await;
-    let ranked = cg.get_complexity_ranked(None, 10).await.unwrap();
+    let ranked = cg.get_complexity_ranked(None, None, 10).await.unwrap();
     // Should return functions/methods from our indexed project
     assert!(
         !ranked.is_empty(),
@@ -387,7 +387,7 @@ async fn test_is_initialized() {
 #[tokio::test]
 async fn test_get_god_classes_empty() {
     let (cg, _dir) = setup().await;
-    let god = cg.get_god_classes(10).await.unwrap();
+    let god = cg.get_god_classes(None, 10).await.unwrap();
     // Pure Rust project with no classes should return empty
     assert!(
         god.is_empty(),
@@ -402,7 +402,7 @@ async fn test_get_god_classes_empty() {
 #[tokio::test]
 async fn test_get_inheritance_depth_empty() {
     let (cg, _dir) = setup().await;
-    let depths = cg.get_inheritance_depth(10).await.unwrap();
+    let depths = cg.get_inheritance_depth(None, 10).await.unwrap();
     assert!(
         depths.is_empty(),
         "Rust project without class hierarchies should have no inheritance depth"

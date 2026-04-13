@@ -1219,8 +1219,10 @@ async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
     let results = cg
-        .get_ranked_nodes_by_edge_kind(&edge_kind, node_kind.as_ref(), incoming, limit)
+        .get_ranked_nodes_by_edge_kind(&edge_kind, node_kind.as_ref(), incoming, path_prefix, limit)
         .await?;
 
     let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
@@ -1269,7 +1271,9 @@ async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let results = cg.get_largest_nodes(node_kind.as_ref(), limit).await?;
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
+    let results = cg.get_largest_nodes(node_kind.as_ref(), path_prefix, limit).await?;
 
     let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
 
@@ -1329,7 +1333,9 @@ async fn handle_coupling(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let results = cg.get_file_coupling(fan_in, limit).await?;
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
+    let results = cg.get_file_coupling(fan_in, path_prefix, limit).await?;
 
     let items: Vec<Value> = results
         .iter()
@@ -1364,7 +1370,9 @@ async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolRes
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let results = cg.get_inheritance_depth(limit).await?;
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
+    let results = cg.get_inheritance_depth(path_prefix, limit).await?;
 
     let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
 
@@ -1473,9 +1481,11 @@ async fn handle_recursion(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
     debug_assert!(limit > 0, "handle_recursion limit must be positive");
 
-    let call_edges = cg.get_call_edges().await?;
+    let call_edges = cg.get_call_edges(path_prefix).await?;
 
     // Build adjacency list
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
@@ -1601,8 +1611,10 @@ async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
     let results = cg
-        .get_complexity_ranked(node_kind.as_ref(), limit)
+        .get_complexity_ranked(node_kind.as_ref(), path_prefix, limit)
         .await?;
 
     let touched_files =
@@ -1718,7 +1730,9 @@ async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let results = cg.get_god_classes(limit).await?;
+    let path_prefix = args.get("path").and_then(|v| v.as_str());
+
+    let results = cg.get_god_classes(path_prefix, limit).await?;
 
     let touched_files =
         unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));

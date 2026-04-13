@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tokensave_branch_list`** MCP tool and **`tokensave://branches`** MCP resource — list tracked branches with DB sizes, parent branch, sync times.
 - **Branch fallback warnings** — when the MCP server serves from an ancestor branch DB (current branch not tracked), every tool response warns to `tokensave branch add`.
 - **`keywords` parameter for `tokensave_context`** — agent-driven synonym expansion. Pass extra search terms (e.g. `["login", "session", "token"]` for "authentication") and the context builder searches each keyword independently, bridging conceptual queries to lexically-unrelated symbol names without embedding models.
-- **`tokensave monitor` CLI command** — live TUI showing MCP tool calls in real time via memory-mapped ring buffer. Uses `memmap2` for zero-copy IPC between the MCP server and the monitor process.
+- **`tokensave monitor` CLI command** — global live TUI showing MCP tool calls from all projects in real time via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Entries show `prefix - project - tool_name` so multiple tool suites and projects are distinguishable. Uses `memmap2` with file locking for concurrent writer safety.
+- **`path` filter on 7 analytics MCP tools** — `tokensave_god_class`, `tokensave_largest`, `tokensave_complexity`, `tokensave_rank`, `tokensave_coupling`, `tokensave_inheritance_depth`, and `tokensave_recursion` now accept an optional `path` parameter to scope results to a directory (e.g. `"path": "src/main/java"`), preventing large languages from dominating global rankings.
 - **Right-click context menu in graph visualizer** — callers, callees, call graph, and impact actions on node right-click.
 - **Type annotation references** — TypeScript, Java, and Kotlin type annotation references now tracked as edges in the graph.
 - **Graph visualizer** — interactive Cytoscape.js-based code graph visualization served via `tokensave visualize`.
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vector/embedding module** — removed `src/vectors/`, `enable_embeddings` config field, and `Vector` error variant. The `keywords` parameter on `tokensave_context` replaces the need for local embedding models. The `vectors` DB table is retained (empty, harmless) to avoid migration issues.
 
 ### Changed
+- **Monitor is now global** — moved from per-project (`<project>/.tokensave/monitor.mmap`) to machine-level (`~/.tokensave/monitor.mmap`). `tokensave monitor` no longer takes a `--path` flag.
 - Quality improvements to resolution, search, and traversal.
 - Tool count increased from 34 to 37.
 

@@ -289,7 +289,7 @@ async fn test_get_ranked_nodes_by_edge_kind_incoming() {
         .expect("insert_edges failed");
 
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, true, 10)
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, true, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -321,7 +321,7 @@ async fn test_get_ranked_nodes_by_edge_kind_outgoing() {
         .expect("insert_edges failed");
 
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, false, 10)
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, false, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -360,6 +360,7 @@ async fn test_get_ranked_nodes_by_edge_kind_with_node_filter() {
             &EdgeKind::Calls,
             Some(&NodeKind::Function),
             true,
+            None,
             10,
         )
         .await
@@ -394,7 +395,7 @@ async fn test_get_largest_nodes() {
         .expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(None, 10)
+        .get_largest_nodes(None, None, 10)
         .await
         .expect("get_largest_nodes failed");
 
@@ -427,7 +428,7 @@ async fn test_get_largest_nodes_with_kind_filter() {
         .expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(Some(&NodeKind::Function), 10)
+        .get_largest_nodes(Some(&NodeKind::Function), None, 10)
         .await
         .expect("get_largest_nodes failed");
 
@@ -450,7 +451,7 @@ async fn test_get_largest_nodes_respects_limit() {
     db.insert_nodes(&nodes).await.expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(None, 3)
+        .get_largest_nodes(None, None, 3)
         .await
         .expect("get_largest_nodes failed");
 
@@ -484,7 +485,7 @@ async fn test_get_file_coupling_fan_in() {
         .expect("insert_edges failed");
 
     let coupling = db
-        .get_file_coupling(true, 10)
+        .get_file_coupling(true, None, 10)
         .await
         .expect("get_file_coupling failed");
 
@@ -515,7 +516,7 @@ async fn test_get_file_coupling_fan_out() {
         .expect("insert_edges failed");
 
     let coupling = db
-        .get_file_coupling(false, 10)
+        .get_file_coupling(false, None, 10)
         .await
         .expect("get_file_coupling failed");
 
@@ -565,7 +566,7 @@ async fn test_get_inheritance_depth() {
         .expect("insert_edges failed");
 
     let depths = db
-        .get_inheritance_depth(10)
+        .get_inheritance_depth(None, 10)
         .await
         .expect("get_inheritance_depth failed");
 
@@ -658,7 +659,7 @@ async fn test_get_call_edges() {
         .await
         .expect("insert_edges failed");
 
-    let call_edges = db.get_call_edges().await.expect("get_call_edges failed");
+    let call_edges = db.get_call_edges(None).await.expect("get_call_edges failed");
 
     assert_eq!(call_edges.len(), 2);
     // Should only return calls edges
@@ -702,7 +703,7 @@ async fn test_get_complexity_ranked_no_filter() {
 
     // No node_kind filter -> defaults to function + method
     let ranked = db
-        .get_complexity_ranked(None, 10)
+        .get_complexity_ranked(None, None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -735,7 +736,7 @@ async fn test_get_complexity_ranked_with_filter() {
         .expect("insert_nodes failed");
 
     let ranked = db
-        .get_complexity_ranked(Some(&NodeKind::Function), 10)
+        .get_complexity_ranked(Some(&NodeKind::Function), None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -885,7 +886,7 @@ async fn test_get_god_classes() {
         .expect("insert_edges failed");
 
     let god_classes = db
-        .get_god_classes(10)
+        .get_god_classes(None, 10)
         .await
         .expect("get_god_classes failed");
 
@@ -1496,7 +1497,7 @@ async fn test_get_complexity_ranked_by_branches_and_nesting() {
         .expect("insert_nodes failed");
 
     let ranked = db
-        .get_complexity_ranked(None, 10)
+        .get_complexity_ranked(None, None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -1552,7 +1553,7 @@ async fn test_get_god_classes_multiple_classes() {
     ];
     db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let god = db.get_god_classes(10).await.expect("get_god_classes failed");
+    let god = db.get_god_classes(None, 10).await.expect("get_god_classes failed");
 
     // BigClass should be first (5 total), SmallClass second (1 total)
     assert_eq!(god.len(), 2);

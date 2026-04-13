@@ -685,6 +685,7 @@ impl Database {
         edge_kind: &EdgeKind,
         node_kind: Option<&NodeKind>,
         incoming: bool,
+        path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
         debug_assert!(limit > 0, "get_ranked_nodes_by_edge_kind limit must be positive");
@@ -695,45 +696,37 @@ impl Database {
             ("e.source", "e.source")
         };
 
-        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
-            Some(nk) => (
-                format!(
-                    "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
-                            n.start_line, n.end_line, n.start_column, n.end_column,
-                            n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                            COUNT(*) AS cnt
-                     FROM edges e
-                     JOIN nodes n ON {join_col} = n.id
-                     WHERE e.kind = ?1 AND n.kind = ?2
-                     GROUP BY {group_col}
-                     ORDER BY cnt DESC
-                     LIMIT ?3"
-                ),
-                vec![
-                    libsql::Value::Text(edge_kind.as_str().to_string()),
-                    libsql::Value::Text(nk.as_str().to_string()),
-                    libsql::Value::Integer(limit as i64),
-                ],
-            ),
-            None => (
-                format!(
-                    "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
-                            n.start_line, n.end_line, n.start_column, n.end_column,
-                            n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                            COUNT(*) AS cnt
-                     FROM edges e
-                     JOIN nodes n ON {join_col} = n.id
-                     WHERE e.kind = ?1
-                     GROUP BY {group_col}
-                     ORDER BY cnt DESC
-                     LIMIT ?2"
-                ),
-                vec![
-                    libsql::Value::Text(edge_kind.as_str().to_string()),
-                    libsql::Value::Integer(limit as i64),
-                ],
-            ),
-        };
+        let mut conditions = vec!["e.kind = ?1".to_string()];
+        let mut param_values: Vec<libsql::Value> = vec![
+            libsql::Value::Text(edge_kind.as_str().to_string()),
+        ];
+        let mut param_idx = 2;
+
+        if let Some(nk) = node_kind {
+            conditions.push(format!("n.kind = ?{param_idx}"));
+            param_values.push(libsql::Value::Text(nk.as_str().to_string()));
+            param_idx += 1;
+        }
+        if let Some(prefix) = path_prefix {
+            conditions.push(format!("n.file_path LIKE ?{param_idx}"));
+            param_values.push(libsql::Value::Text(format!("{prefix}%")));
+            param_idx += 1;
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                    n.start_line, n.end_line, n.start_column, n.end_column,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    COUNT(*) AS cnt
+             FROM edges e
+             JOIN nodes n ON {join_col} = n.id
+             WHERE {where_clause}
+             GROUP BY {group_col}
+             ORDER BY cnt DESC
+             LIMIT ?{param_idx}"
+        );
+        param_values.push(libsql::Value::Integer(limit as i64));
 
         let op = "get_ranked_nodes_by_edge_kind";
         let mut rows = self
@@ -769,36 +762,41 @@ impl Database {
     pub async fn get_largest_nodes(
         &self,
         node_kind: Option<&NodeKind>,
+        path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u32)>> {
-        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
-            Some(nk) => (
-                "SELECT id, kind, name, qualified_name, file_path,
-                        start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at,
-                        (end_line - start_line + 1) AS lines
-                 FROM nodes
-                 WHERE kind = ?1
-                 ORDER BY lines DESC
-                 LIMIT ?2"
-                    .to_string(),
-                vec![
-                    libsql::Value::Text(nk.as_str().to_string()),
-                    libsql::Value::Integer(limit as i64),
-                ],
-            ),
-            None => (
-                "SELECT id, kind, name, qualified_name, file_path,
-                        start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at,
-                        (end_line - start_line + 1) AS lines
-                 FROM nodes
-                 ORDER BY lines DESC
-                 LIMIT ?1"
-                    .to_string(),
-                vec![libsql::Value::Integer(limit as i64)],
-            ),
+        let mut conditions: Vec<String> = Vec::new();
+        let mut param_values: Vec<libsql::Value> = Vec::new();
+        let mut param_idx = 1;
+
+        if let Some(nk) = node_kind {
+            conditions.push(format!("kind = ?{param_idx}"));
+            param_values.push(libsql::Value::Text(nk.as_str().to_string()));
+            param_idx += 1;
+        }
+        if let Some(prefix) = path_prefix {
+            conditions.push(format!("file_path LIKE ?{param_idx}"));
+            param_values.push(libsql::Value::Text(format!("{prefix}%")));
+            param_idx += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
         };
+
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at,
+                    (end_line - start_line + 1) AS lines
+             FROM nodes
+             {where_clause}
+             ORDER BY lines DESC
+             LIMIT ?{param_idx}"
+        );
+        param_values.push(libsql::Value::Integer(limit as i64));
 
         let op = "get_largest_nodes";
         let mut rows = self
@@ -837,34 +835,37 @@ impl Database {
     pub async fn get_file_coupling(
         &self,
         fan_in: bool,
+        path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>> {
-        let sql = if fan_in {
-            "SELECT n_tgt.file_path, COUNT(DISTINCT n_src.file_path) AS coupling
-             FROM edges e
-             JOIN nodes n_src ON e.source = n_src.id
-             JOIN nodes n_tgt ON e.target = n_tgt.id
-             WHERE e.kind IN ('calls', 'uses', 'implements', 'extends')
-               AND n_src.file_path != n_tgt.file_path
-             GROUP BY n_tgt.file_path
-             ORDER BY coupling DESC
-             LIMIT ?1"
+        let (group_alias, count_alias) = if fan_in {
+            ("n_tgt", "n_src")
         } else {
-            "SELECT n_src.file_path, COUNT(DISTINCT n_tgt.file_path) AS coupling
+            ("n_src", "n_tgt")
+        };
+
+        let path_filter = match path_prefix {
+            Some(prefix) => format!("AND {group_alias}.file_path LIKE '{prefix}%'"),
+            None => String::new(),
+        };
+
+        let sql = format!(
+            "SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupling
              FROM edges e
              JOIN nodes n_src ON e.source = n_src.id
              JOIN nodes n_tgt ON e.target = n_tgt.id
              WHERE e.kind IN ('calls', 'uses', 'implements', 'extends')
                AND n_src.file_path != n_tgt.file_path
-             GROUP BY n_src.file_path
+               {path_filter}
+             GROUP BY {group_alias}.file_path
              ORDER BY coupling DESC
              LIMIT ?1"
-        };
+        );
 
         let op = "get_file_coupling";
         let mut rows = self
             .conn()
-            .query(sql, params![limit as i64])
+            .query(&sql, params![limit as i64])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file coupling: {e}"),
@@ -895,8 +896,17 @@ impl Database {
     ///
     /// Each result is a (leaf_node, depth) pair where depth is the number of
     /// `extends` hops from the leaf to the root of its hierarchy.
-    pub async fn get_inheritance_depth(&self, limit: usize) -> Result<Vec<(Node, u64)>> {
-        let sql =
+    pub async fn get_inheritance_depth(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u64)>> {
+        let path_filter = match path_prefix {
+            Some(prefix) => format!("WHERE n.file_path LIKE '{prefix}%'"),
+            None => String::new(),
+        };
+
+        let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth) AS (
                  SELECT e.source, e.target, 1
                  FROM edges e
@@ -913,14 +923,16 @@ impl Database {
                     MAX(h.depth) AS max_depth
              FROM hierarchy h
              JOIN nodes n ON h.leaf_id = n.id
+             {path_filter}
              GROUP BY h.leaf_id
              ORDER BY max_depth DESC
-             LIMIT ?1";
+             LIMIT ?1"
+        );
 
         let op = "get_inheritance_depth";
         let mut rows = self
             .conn()
-            .query(sql, params![limit as i64])
+            .query(&sql, params![limit as i64])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query inheritance depth: {e}"),
@@ -1008,14 +1020,24 @@ impl Database {
     /// Returns all `calls` edges for cycle detection in the call graph.
     ///
     /// Returns `(source_id, target_id)` pairs for every `calls` edge.
-    pub async fn get_call_edges(&self) -> Result<Vec<(String, String)>> {
+    pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
         let op = "get_call_edges";
+        let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
+            Some(prefix) => (
+                "SELECT e.source, e.target FROM edges e
+                 JOIN nodes n ON e.source = n.id
+                 WHERE e.kind = 'calls' AND n.file_path LIKE ?1"
+                    .to_string(),
+                vec![libsql::Value::Text(format!("{prefix}%"))],
+            ),
+            None => (
+                "SELECT source, target FROM edges WHERE kind = 'calls'".to_string(),
+                vec![],
+            ),
+        };
         let mut rows = self
             .conn()
-            .query(
-                "SELECT source, target FROM edges WHERE kind = 'calls'",
-                (),
-            )
+            .query(&sql, libsql::params_from_iter(param_values))
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query call edges: {e}"),
@@ -1049,49 +1071,47 @@ impl Database {
     pub async fn get_complexity_ranked(
         &self,
         node_kind: Option<&NodeKind>,
+        path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u32, u64, u64, u64)>> {
         debug_assert!(limit > 0, "get_complexity_ranked limit must be positive");
-        // line_count, fan_out, fan_in, score
-        let (sql, param_values): (String, Vec<libsql::Value>) = match node_kind {
-            Some(nk) => (
-                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
-                        n.start_line, n.end_line, n.start_column, n.end_column,
-                        n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                        (n.end_line - n.start_line + 1) AS lines,
-                        COALESCE(out_calls.cnt, 0) AS fan_out,
-                        COALESCE(in_calls.cnt, 0) AS fan_in,
-                        ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-                 FROM nodes n
-                 LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-                 WHERE n.kind = ?1
-                 ORDER BY score DESC
-                 LIMIT ?2"
-                    .to_string(),
-                vec![
-                    libsql::Value::Text(nk.as_str().to_string()),
-                    libsql::Value::Integer(limit as i64),
-                ],
-            ),
-            None => (
-                "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
-                        n.start_line, n.end_line, n.start_column, n.end_column,
-                        n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                        (n.end_line - n.start_line + 1) AS lines,
-                        COALESCE(out_calls.cnt, 0) AS fan_out,
-                        COALESCE(in_calls.cnt, 0) AS fan_in,
-                        ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-                 FROM nodes n
-                 LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-                 WHERE n.kind IN ('function', 'method')
-                 ORDER BY score DESC
-                 LIMIT ?1"
-                    .to_string(),
-                vec![libsql::Value::Integer(limit as i64)],
-            ),
-        };
+        let mut conditions: Vec<String> = Vec::new();
+        let mut param_values: Vec<libsql::Value> = Vec::new();
+        let mut param_idx = 1;
+
+        match node_kind {
+            Some(nk) => {
+                conditions.push(format!("n.kind = ?{param_idx}"));
+                param_values.push(libsql::Value::Text(nk.as_str().to_string()));
+                param_idx += 1;
+            }
+            None => {
+                conditions.push("n.kind IN ('function', 'method')".to_string());
+            }
+        }
+        if let Some(prefix) = path_prefix {
+            conditions.push(format!("n.file_path LIKE ?{param_idx}"));
+            param_values.push(libsql::Value::Text(format!("{prefix}%")));
+            param_idx += 1;
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+                    n.start_line, n.end_line, n.start_column, n.end_column,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    (n.end_line - n.start_line + 1) AS lines,
+                    COALESCE(out_calls.cnt, 0) AS fan_out,
+                    COALESCE(in_calls.cnt, 0) AS fan_in,
+                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
+             FROM nodes n
+             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
+             WHERE {where_clause}
+             ORDER BY score DESC
+             LIMIT ?{param_idx}"
+        );
+        param_values.push(libsql::Value::Integer(limit as i64));
 
         let op = "get_complexity_ranked";
         let mut rows = self
@@ -1192,9 +1212,17 @@ impl Database {
     /// Returns classes/structs ranked by number of contained members
     /// (methods, fields, constructors). Identifies "god classes" with
     /// excessive responsibility.
-    pub async fn get_god_classes(&self, limit: usize) -> Result<Vec<(Node, u64, u64, u64)>> {
-        // Returns (node, method_count, field_count, total_members)
-        let sql =
+    pub async fn get_god_classes(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(Node, u64, u64, u64)>> {
+        let path_filter = match path_prefix {
+            Some(prefix) => format!("AND n.file_path LIKE '{prefix}%'"),
+            None => String::new(),
+        };
+
+        let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
@@ -1206,14 +1234,16 @@ impl Database {
              JOIN nodes c ON e.target = c.id
              WHERE e.kind = 'contains'
                AND n.kind IN ('class', 'struct', 'inner_class', 'object')
+               {path_filter}
              GROUP BY e.source
              ORDER BY total DESC
-             LIMIT ?1";
+             LIMIT ?1"
+        );
 
         let op = "get_god_classes";
         let mut rows = self
             .conn()
-            .query(sql, params![limit as i64])
+            .query(&sql, params![limit as i64])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query god classes: {e}"),

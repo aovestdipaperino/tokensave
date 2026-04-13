@@ -704,6 +704,7 @@ impl McpServer {
                 let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
                 crate::monitor::write_entry(
                     self.cg.project_root(),
+                    "tokensave",
                     tool_name,
                     raw_file_tokens,
                     raw_file_tokens,
