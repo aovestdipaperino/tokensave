@@ -1798,3 +1798,52 @@ async fn test_batch_incoming_call_counts() {
         "gamma has 0 callers so should be absent"
     );
 }
+
+/// Regression test: a node whose signature contains non-UTF-8 bytes (e.g. from
+/// a Latin-1 encoded source file) must not crash `row_to_node`. The lossy
+/// fallback replaces invalid bytes with U+FFFD.
+#[tokio::test]
+async fn test_non_utf8_signature_does_not_crash() {
+    let (db, _dir) = setup_db().await;
+
+    // Insert a node with a BLOB signature containing 0xFF (invalid UTF-8)
+    // via raw SQL — the Rust insert_node API only accepts valid Strings.
+    db.conn()
+        .execute(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, \
+             start_line, end_line, start_column, end_column, \
+             docstring, signature, visibility, is_async, \
+             branches, loops, returns, max_nesting, \
+             unsafe_blocks, unchecked_calls, assertions, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            libsql::params![
+                "function:bad_utf8",
+                "function",
+                "render",
+                "src/view.cpp::render",
+                "src/view.cpp",
+                1i64, 10i64, 0i64, 50i64,
+                // docstring with a Latin-1 copyright symbol (0xA9) — invalid UTF-8
+                libsql::Value::Blob(b"Renders the sc\xe8ne with \xa9 effects".to_vec()),
+                // signature with 0xFF byte
+                libsql::Value::Blob(b"void render(const std::string& sc\xe8ne)".to_vec()),
+                "public",
+                0i64,
+                0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64,
+            ],
+        )
+        .await
+        .unwrap();
+
+    // This used to fail with "invalid utf-8 sequence of 1 bytes from index N"
+    let node = db.get_node_by_id("function:bad_utf8").await;
+    assert!(node.is_ok(), "get_node_by_id should not fail on non-UTF-8: {:?}", node.err());
+    let node = node.unwrap();
+    assert!(node.is_some(), "node should exist");
+    let node = node.unwrap();
+    assert_eq!(node.name, "render");
+    // The invalid bytes are replaced with U+FFFD (replacement character)
+    assert!(node.signature.is_some());
+    assert!(node.docstring.is_some());
+}

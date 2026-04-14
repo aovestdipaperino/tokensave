@@ -19,22 +19,22 @@ use crate::types::*;
 /// branches(13), loops(14), returns(15), max_nesting(16),
 /// unsafe_blocks(17), unchecked_calls(18), assertions(19), updated_at(20).
 fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
-    let kind_str = row.get::<String>(1)?;
-    let vis_str = row.get::<String>(11)?;
+    let kind_str = get_string_lossy(row, 1)?;
+    let vis_str = get_string_lossy(row, 11)?;
     let is_async_int = row.get::<i64>(12)?;
 
     Ok(Node {
-        id: row.get::<String>(0)?,
+        id: get_string_lossy(row, 0)?,
         kind: NodeKind::from_str(&kind_str).unwrap_or(NodeKind::Function),
-        name: row.get::<String>(2)?,
-        qualified_name: row.get::<String>(3)?,
-        file_path: row.get::<String>(4)?,
+        name: get_string_lossy(row, 2)?,
+        qualified_name: get_string_lossy(row, 3)?,
+        file_path: get_string_lossy(row, 4)?,
         start_line: row.get::<u32>(5)?,
         end_line: row.get::<u32>(6)?,
         start_column: row.get::<u32>(7)?,
         end_column: row.get::<u32>(8)?,
-        signature: row.get::<Option<String>>(10)?,
-        docstring: row.get::<Option<String>>(9)?,
+        signature: get_opt_string_lossy(row, 10)?,
+        docstring: get_opt_string_lossy(row, 9)?,
         visibility: Visibility::from_str(&vis_str).unwrap_or_default(),
         is_async: is_async_int != 0,
         branches: row.get::<u32>(13)?,
@@ -46,6 +46,35 @@ fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
         assertions: row.get::<u32>(19)?,
         updated_at: row.get::<u64>(20)?,
     })
+}
+
+/// Reads a text column as String, replacing invalid UTF-8 bytes with U+FFFD.
+/// This prevents crashes when source files with non-UTF-8 encoding (e.g. Latin-1)
+/// have their signatures or docstrings stored in the database.
+///
+/// libsql's `get::<String>()` panics on Blob values via `unreachable!()`, so we
+/// must read as `Value` first and convert.
+fn get_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<String, libsql::Error> {
+    let val = row.get::<libsql::Value>(idx)?;
+    match val {
+        libsql::Value::Text(s) => Ok(s),
+        libsql::Value::Blob(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        libsql::Value::Null => Ok(String::new()),
+        libsql::Value::Integer(i) => Ok(i.to_string()),
+        libsql::Value::Real(f) => Ok(f.to_string()),
+    }
+}
+
+/// Like `get_string_lossy` but for nullable columns.
+fn get_opt_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<Option<String>, libsql::Error> {
+    let val = row.get::<libsql::Value>(idx)?;
+    match val {
+        libsql::Value::Null => Ok(None),
+        libsql::Value::Text(s) => Ok(Some(s)),
+        libsql::Value::Blob(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        libsql::Value::Integer(i) => Ok(Some(i.to_string())),
+        libsql::Value::Real(f) => Ok(Some(f.to_string())),
+    }
 }
 
 /// Maps a row from the `edges` table to an `Edge`.
