@@ -356,6 +356,7 @@ tokensave query <search> [path]    # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
 tokensave install [--agent NAME]   # Configure agent integration + daemon offer
+tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
 tokensave serve                    # Start MCP server
 tokensave monitor                  # Live TUI showing MCP calls across all projects

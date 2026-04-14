@@ -183,6 +183,8 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Refresh settings for all already-installed agents
+    Reinstall,
     /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {
@@ -346,7 +348,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     // Best-effort check: warn if install needs re-running
-    if !matches!(command, Commands::Install { .. }) {
+    if !matches!(command, Commands::Install { .. } | Commands::Reinstall) {
         tokensave::agents::claude::check_install_stale();
     }
 
@@ -782,6 +784,33 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
             tokensave::daemon::offer_daemon_autostart();
+        }
+        Commands::Reinstall => {
+            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                message: "could not determine home directory".to_string(),
+            })?;
+            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                message: "tokensave not found on PATH".to_string(),
+            })?;
+            let mut user_cfg = tokensave::user_config::UserConfig::load();
+            tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            if user_cfg.installed_agents.is_empty() {
+                eprintln!("No installed agents found. Run `tokensave install` first.");
+            } else {
+                let agents = user_cfg.installed_agents.clone();
+                eprintln!("Reinstalling {} agent(s): {}", agents.len(), agents.join(", "));
+                for id in &agents {
+                    let ag = tokensave::agents::get_integration(id)?;
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    };
+                    ag.install(&ctx)?;
+                }
+                eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
+            }
         }
         Commands::Uninstall { agent } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
