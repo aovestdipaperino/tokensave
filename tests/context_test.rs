@@ -1,6 +1,70 @@
 use tokensave::context::*;
 use tokensave::types::*;
 
+#[tokio::test]
+async fn test_reranking_demotes_fixture_nodes() {
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    // Fixture node: enum variant in tests/fixtures/
+    let fixture_node = Node {
+        id: "enum_variant:fixture_debug".to_string(),
+        kind: NodeKind::EnumVariant,
+        name: "debug".to_string(),
+        qualified_name: "tests/fixtures/sample.dart::LogLevel::debug".to_string(),
+        file_path: "tests/fixtures/sample.dart".to_string(),
+        start_line: 14, end_line: 14,
+        start_column: 0, end_column: 10,
+        signature: Some("debug".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0, loops: 0, returns: 0, max_nesting: 0,
+        unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+        updated_at: 0,
+    };
+    db.insert_node(&fixture_node).await.unwrap();
+
+    // Source node: function in src/
+    let source_node = Node {
+        id: "function:debug_handler".to_string(),
+        kind: NodeKind::Function,
+        name: "debug_handler".to_string(),
+        qualified_name: "src/debug.rs::debug_handler".to_string(),
+        file_path: "src/debug.rs".to_string(),
+        start_line: 1, end_line: 10,
+        start_column: 0, end_column: 1,
+        signature: Some("pub fn debug_handler()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0, loops: 0, returns: 0, max_nesting: 0,
+        unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+        updated_at: 0,
+    };
+    db.insert_node(&source_node).await.unwrap();
+
+    let builder = ContextBuilder::new(&db, project);
+    let result = builder
+        .build_context("debug", &BuildContextOptions::default())
+        .await
+        .unwrap();
+
+    assert!(!result.entry_points.is_empty());
+    assert_eq!(
+        result.entry_points[0].id, "function:debug_handler",
+        "source function should outrank fixture enum variant after re-ranking"
+    );
+}
+
 #[test]
 fn test_extract_symbols_from_query() {
     let symbols = extract_symbols_from_query("fix the process_request function");

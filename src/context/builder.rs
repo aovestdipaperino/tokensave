@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use crate::context::ranking::{rerank_candidates, apply_connectivity_boost};
 use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
@@ -130,20 +131,20 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(!query.is_empty(), "find_entry_points called with empty query");
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
         let mut seen_ids: HashSet<String> = HashSet::new();
-        let mut entry_points: Vec<Node> = Vec::new();
+        let mut candidates: Vec<SearchResult> = Vec::new();
 
         // Search using the full query
         let search_results = self.db.search_nodes(query, options.search_limit).await?;
-        for sr in &search_results {
+        for sr in search_results {
             if self.score_passes(sr.score, options.min_score) && seen_ids.insert(sr.node.id.clone())
             {
-                entry_points.push(sr.node.clone());
+                candidates.push(sr);
             }
         }
 
         // Search for each extracted symbol individually
         for symbol in symbols {
-            if entry_points.len() >= options.max_nodes {
+            if candidates.len() >= options.max_nodes * 2 {
                 break;
             }
             let results = self.db.search_nodes(symbol, options.search_limit).await?;
@@ -151,14 +152,14 @@ impl<'a> ContextBuilder<'a> {
                 if self.score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
                 {
-                    entry_points.push(sr.node.clone());
+                    candidates.push(sr);
                 }
             }
         }
 
         // Search for agent-provided extra keywords (synonym expansion)
         for keyword in &options.extra_keywords {
-            if entry_points.len() >= options.max_nodes {
+            if candidates.len() >= options.max_nodes * 2 {
                 break;
             }
             let results = self.db.search_nodes(keyword, options.search_limit).await?;
@@ -166,12 +167,22 @@ impl<'a> ContextBuilder<'a> {
                 if self.score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
                 {
-                    entry_points.push(sr.node.clone());
+                    candidates.push(sr);
                 }
             }
         }
 
-        // Cap at max_nodes
+        // Re-rank with structural signals (kind, visibility, path)
+        rerank_candidates(&mut candidates);
+
+        // Apply connectivity boost (batch edge-count query)
+        let node_ids: Vec<String> = candidates.iter().map(|c| c.node.id.clone()).collect();
+        if let Ok(call_counts) = self.db.batch_incoming_call_counts(&node_ids).await {
+            apply_connectivity_boost(&mut candidates, &call_counts);
+        }
+
+        // Extract nodes, cap at max_nodes
+        let mut entry_points: Vec<Node> = candidates.into_iter().map(|sr| sr.node).collect();
         entry_points.truncate(options.max_nodes);
         debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes after truncation");
         Ok(entry_points)
