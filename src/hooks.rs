@@ -12,7 +12,10 @@
 /// Claude to use tokensave MCP tools instead.
 pub fn hook_pre_tool_use() {
     let tool_input = std::env::var("TOOL_INPUT").unwrap_or_default();
-    println!("{}", evaluate_hook_decision(&tool_input));
+    let decision = evaluate_hook_decision(&tool_input);
+    if !decision.is_empty() {
+        println!("{}", decision);
+    }
 }
 
 /// Pure decision logic for the PreToolUse hook.
@@ -21,13 +24,16 @@ pub fn hook_pre_tool_use() {
 /// string to print to stdout.
 pub fn evaluate_hook_decision(tool_input: &str) -> String {
     let block_msg = serde_json::json!({
-        "decision": "block",
-        "reason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, \
-                   tokensave_callees, tokensave_callers, tokensave_impact, tokensave_files, \
-                   tokensave_affected) instead of agents for code research. Tokensave is \
-                   faster and more precise for symbol relationships, call paths, and code \
-                   structure. Only use agents for code exploration if you have already tried \
-                   tokensave and it cannot answer the question."
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "STOP: Use tokensave MCP tools (tokensave_context, tokensave_search, \
+                       tokensave_callees, tokensave_callers, tokensave_impact, tokensave_files, \
+                       tokensave_affected) instead of agents for code research. Tokensave is \
+                       faster and more precise for symbol relationships, call paths, and code \
+                       structure. Only use agents for code exploration if you have already tried \
+                       tokensave and it cannot answer the question."
+        }
     });
 
     let parsed: serde_json::Value =
@@ -52,7 +58,8 @@ pub fn evaluate_hook_decision(tool_input: &str) -> String {
         }
     }
 
-    r#"{"decision": "allow"}"#.to_string()
+    // Empty string = no output → Claude Code implicitly allows the tool call
+    String::new()
 }
 
 /// `UserPromptSubmit` hook handler: resets the per-session local counter.
