@@ -1666,6 +1666,45 @@ impl Database {
         Ok(results)
     }
 
+    /// Returns a map of node_id → incoming "calls" edge count for the given IDs.
+    /// IDs not found in any edge target are omitted from the result.
+    pub async fn batch_incoming_call_counts(
+        &self,
+        node_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let mut counts = std::collections::HashMap::new();
+        if node_ids.is_empty() {
+            return Ok(counts);
+        }
+        let placeholders: Vec<String> =
+            (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({}) AND kind = 'calls' GROUP BY target",
+            placeholders.join(", ")
+        );
+        let param_values: Vec<libsql::Value> = node_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to batch count incoming calls: {e}"),
+                operation: "batch_incoming_call_counts".to_string(),
+            })?;
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read batch call count row: {e}"),
+            operation: "batch_incoming_call_counts".to_string(),
+        })? {
+            let id: String = row.get(0).unwrap_or_default();
+            let cnt: u64 = row.get::<u64>(1).unwrap_or(0);
+            counts.insert(id, cnt);
+        }
+        Ok(counts)
+    }
+
     /// Returns `true` if the error indicates SQLite database corruption.
     pub fn is_corruption_error(e: &TokenSaveError) -> bool {
         match e {

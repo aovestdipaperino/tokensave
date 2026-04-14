@@ -53,6 +53,21 @@ pub fn path_boost(file_path: &str) -> f64 {
     1.0
 }
 
+/// Applies a log-scale connectivity boost based on incoming call counts.
+/// `call_counts` maps node_id → incoming "calls" edge count.
+pub fn apply_connectivity_boost(
+    candidates: &mut Vec<SearchResult>,
+    call_counts: &std::collections::HashMap<String, u64>,
+) {
+    for candidate in candidates.iter_mut() {
+        let count = call_counts.get(&candidate.node.id).copied().unwrap_or(0);
+        // log2(count + 1) scaled to 1.0–2.0 range, capped at 4.0 bits
+        let boost = 1.0 + (count as f64 + 1.0).log2().min(4.0) / 4.0;
+        candidate.score *= boost;
+    }
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+}
+
 /// Re-ranks search result candidates using structural signals.
 pub fn rerank_candidates(candidates: &mut Vec<SearchResult>) {
     for candidate in candidates.iter_mut() {
@@ -188,5 +203,26 @@ mod tests {
         assert_eq!(path_boost("tests/sync_test.rs"), 0.4);
         assert_eq!(path_boost("test/fixtures/foo.js"), 0.1);
         assert_eq!(path_boost("src/components/Button.test.tsx"), 0.4);
+    }
+
+    #[test]
+    fn test_connectivity_boost_prefers_high_fanin() {
+        let mut candidates = vec![
+            make_result(NodeKind::Function, Visibility::Pub, "src/a.rs", 10.0),
+            make_result(NodeKind::Function, Visibility::Pub, "src/b.rs", 10.0),
+        ];
+        rerank_candidates(&mut candidates);
+        let base_score = candidates[0].score;
+        assert_eq!(candidates[1].score, base_score, "same base score");
+
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("test:src/a.rs".to_string(), 15u64);
+
+        apply_connectivity_boost(&mut candidates, &counts);
+        assert_eq!(
+            candidates[0].node.file_path, "src/a.rs",
+            "high fan-in should rank first"
+        );
+        assert!(candidates[0].score > candidates[1].score);
     }
 }

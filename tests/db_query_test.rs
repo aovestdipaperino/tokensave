@@ -1734,3 +1734,67 @@ async fn test_fts_name_match_outranks_docstring_match() {
         "name match should rank first"
     );
 }
+
+#[tokio::test]
+async fn test_batch_incoming_call_counts() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
+
+    for (id, name) in [("fn:a", "alpha"), ("fn:b", "beta"), ("fn:c", "gamma")] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: name.to_string(),
+            qualified_name: format!("src/lib.rs::{name}"),
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: None,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    }
+
+    // alpha has 2 callers, beta has 1, gamma has 0
+    for (src, tgt) in [("fn:b", "fn:a"), ("fn:c", "fn:a"), ("fn:c", "fn:b")] {
+        db.insert_edge(&Edge {
+            source: src.to_string(),
+            target: tgt.to_string(),
+            kind: EdgeKind::Calls,
+            line: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let counts = db
+        .batch_incoming_call_counts(&[
+            "fn:a".to_string(),
+            "fn:b".to_string(),
+            "fn:c".to_string(),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(*counts.get("fn:a").unwrap_or(&0), 2);
+    assert_eq!(*counts.get("fn:b").unwrap_or(&0), 1);
+    assert_eq!(
+        counts.get("fn:c"),
+        None,
+        "gamma has 0 callers so should be absent"
+    );
+}
