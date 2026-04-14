@@ -56,7 +56,7 @@ pub fn path_boost(file_path: &str) -> f64 {
 /// Applies a log-scale connectivity boost based on incoming call counts.
 /// `call_counts` maps node_id → incoming "calls" edge count.
 pub fn apply_connectivity_boost(
-    candidates: &mut Vec<SearchResult>,
+    candidates: &mut [SearchResult],
     call_counts: &std::collections::HashMap<String, u64>,
 ) {
     for candidate in candidates.iter_mut() {
@@ -69,7 +69,7 @@ pub fn apply_connectivity_boost(
 }
 
 /// Re-ranks search result candidates using structural signals.
-pub fn rerank_candidates(candidates: &mut Vec<SearchResult>) {
+pub fn rerank_candidates(candidates: &mut [SearchResult]) {
     for candidate in candidates.iter_mut() {
         let boost = kind_boost(&candidate.node.kind)
             * visibility_boost(&candidate.node.visibility)
