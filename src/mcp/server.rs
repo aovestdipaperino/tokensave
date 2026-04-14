@@ -15,7 +15,7 @@ use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 use crate::errors::Result;
 
-use super::tools::{get_tool_definitions, handle_tool_call};
+use super::tools::{get_tool_definitions_with_budget, explore_call_budget, handle_tool_call};
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
 /// Runtime statistics for the MCP server.
@@ -386,7 +386,7 @@ impl McpServer {
                 // Alternative notification path - no response required
                 None
             }
-            "tools/list" => Some(self.handle_tools_list(id)),
+            "tools/list" => Some(self.handle_tools_list(id).await),
             "tools/call" => Some(self.handle_tools_call(id, &request.params).await),
             "resources/list" => Some(self.handle_resources_list(id)),
             "resources/read" => Some(self.handle_resources_read(id, &request.params).await),
@@ -436,8 +436,12 @@ impl McpServer {
     }
 
     /// Handles the `tools/list` method, returning all available tool definitions.
-    fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let tools = get_tool_definitions();
+    async fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
+        let node_count = self.cg.get_stats().await
+            .map(|s| s.node_count)
+            .unwrap_or(0);
+        let budget = explore_call_budget(node_count);
+        let tools = get_tool_definitions_with_budget(node_count, budget);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 

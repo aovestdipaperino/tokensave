@@ -38,6 +38,41 @@ fn def_always_load(name: &str, title: &str, description: &str, input_schema: Val
     }
 }
 
+/// Computes the call budget based on project size.
+pub fn explore_call_budget(total_nodes: u64) -> u8 {
+    match total_nodes {
+        0..=5_000 => 3,
+        5_001..=20_000 => 4,
+        20_001..=80_000 => 5,
+        80_001..=250_000 => 7,
+        _ => 10,
+    }
+}
+
+/// Generates the tokensave_context description with a dynamic call budget.
+pub fn context_description(node_count: u64, budget: u8) -> String {
+    format!(
+        "Build an AI-ready context for a task description. Returns relevant symbols, \
+         relationships, and optionally code snippets.\n\n\
+         CALL BUDGET: {} calls maximum for this project ({} nodes). \
+         Stop after {} calls. If the question is not fully answered, synthesise \
+         from what you have — do not exceed the budget.",
+        budget, node_count, budget
+    )
+}
+
+/// Returns tool definitions with a dynamic call budget for tokensave_context.
+pub fn get_tool_definitions_with_budget(node_count: u64, budget: u8) -> Vec<ToolDefinition> {
+    let mut defs = get_tool_definitions();
+    // Replace the context tool's description with the budgeted version
+    for def in &mut defs {
+        if def.name == "tokensave_context" {
+            def.description = context_description(node_count, budget);
+        }
+    }
+    defs
+}
+
 /// Returns the list of all tool definitions exposed by this MCP server.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     let definitions = vec![
@@ -113,7 +148,7 @@ fn def_context() -> ToolDefinition {
     def_always_load(
         "tokensave_context",
         "Task Context",
-        "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and optionally code snippets.",
+        &context_description(0, 3),
         json!({
             "type": "object",
             "properties": {
@@ -147,6 +182,10 @@ fn def_context() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Node IDs to exclude from results (pass seen_node_ids from previous call for session deduplication)"
+                },
+                "merge_adjacent": {
+                    "type": "boolean",
+                    "description": "When true, merge code blocks from the same file whose line ranges are adjacent or overlapping (default: false)"
                 }
             },
             "required": ["task"]
@@ -908,4 +947,37 @@ fn def_branch_list() -> ToolDefinition {
             "properties": {}
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_explore_call_budget_tiers() {
+        assert_eq!(explore_call_budget(0), 3);
+        assert_eq!(explore_call_budget(5000), 3);
+        assert_eq!(explore_call_budget(5001), 4);
+        assert_eq!(explore_call_budget(20000), 4);
+        assert_eq!(explore_call_budget(20001), 5);
+        assert_eq!(explore_call_budget(80000), 5);
+        assert_eq!(explore_call_budget(80001), 7);
+        assert_eq!(explore_call_budget(250000), 7);
+        assert_eq!(explore_call_budget(250001), 10);
+    }
+
+    #[test]
+    fn test_context_description_contains_budget() {
+        let desc = context_description(5000, 4);
+        assert!(desc.contains("4 calls maximum"), "description should contain budget: {desc}");
+        assert!(desc.contains("5000 nodes"), "description should contain node count: {desc}");
+    }
+
+    #[test]
+    fn test_get_tool_definitions_with_budget() {
+        let defs = get_tool_definitions_with_budget(10000, 4);
+        let context_tool = defs.iter().find(|d| d.name == "tokensave_context").unwrap();
+        assert!(context_tool.description.contains("4 calls maximum"));
+        assert!(context_tool.description.contains("10000 nodes"));
+    }
 }

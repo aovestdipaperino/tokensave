@@ -10,7 +10,7 @@ mod handlers;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use definitions::get_tool_definitions;
+pub use definitions::{get_tool_definitions, get_tool_definitions_with_budget, explore_call_budget, context_description};
 pub use handlers::handle_tool_call;
 
 /// Maximum character length for a tool response before truncation.
