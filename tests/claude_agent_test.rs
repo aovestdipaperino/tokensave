@@ -151,6 +151,73 @@ fn test_install_creates_claude_md_with_rules() {
         claude_md.contains("NEVER use Agent(subagent_type=Explore)"),
         "CLAUDE.md should contain the no-explore-agent rule"
     );
+    assert!(
+        claude_md.contains("When you spawn an Explore agent"),
+        "CLAUDE.md should contain the explore agent guidance paragraph"
+    );
+    assert!(
+        claude_md.contains("exclude_node_ids"),
+        "CLAUDE.md should mention exclude_node_ids for dedup"
+    );
+}
+
+#[test]
+fn test_claude_md_contains_explore_agent_paragraph() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Pre-populate CLAUDE.md with existing content
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("CLAUDE.md"), "# Existing content\n").unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(
+        content.contains("When you spawn an Explore agent"),
+        "should contain explore agent paragraph"
+    );
+    assert!(
+        content.contains("tokensave_context"),
+        "should reference tokensave_context as the tool"
+    );
+    assert!(
+        content.contains("exclude_node_ids"),
+        "should mention exclude_node_ids for dedup"
+    );
+}
+
+#[test]
+fn test_uninstall_removes_explore_agent_paragraph() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Pre-populate CLAUDE.md with existing content
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("CLAUDE.md"), "# My Rules\n\nKeep it clean.\n").unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    // Verify install added the explore agent paragraph
+    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(content.contains("When you spawn an Explore agent"));
+
+    // Now uninstall
+    ClaudeIntegration.uninstall(&ctx).unwrap();
+
+    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(
+        !content.contains("When you spawn an Explore agent"),
+        "explore agent paragraph should be removed after uninstall"
+    );
+    assert!(
+        content.contains("My Rules"),
+        "existing content should be preserved after uninstall"
+    );
 }
 
 #[test]

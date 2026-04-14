@@ -288,7 +288,16 @@ fn install_claude_md_rules(claude_md_path: &Path) -> Result<()> {
         improved to answer a question natively, propose to the user that they open an issue \
         at https://github.com/aovestdipaperino/tokensave describing the limitation. \
         **Remind the user to strip any sensitive or proprietary code from the bug description \
-        before submitting.**\n"
+        before submitting.**\n\n\
+        ## When you spawn an Explore agent in a tokensave-enabled project\n\n\
+        If you do spawn an Explore agent (e.g. because the user asked for one, or \
+        because a sub-task requires it), include the following in the agent prompt:\n\n\
+        > This project has tokensave initialised (.tokensave/ exists). Use \
+        `tokensave_context` as your ONLY exploration tool. Call it with your \
+        question in plain English. Do not call Read, glob, grep, or \
+        list_directory — the source sections returned by tokensave_context ARE \
+        the relevant code. Follow the call budget in the tool description. \
+        Pass `seen_node_ids` from each response to the next call's `exclude_node_ids`.\n"
     ).ok();
     eprintln!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
@@ -582,10 +591,30 @@ fn uninstall_claude_md_rules(claude_md_path: &Path) {
         return;
     };
     let after_marker = start + marker.len();
-    let end = contents[after_marker..]
-        .find("\n## ")
-        .map(|pos| after_marker + pos)
-        .unwrap_or(contents.len());
+    // Skip past any sub-headings that are part of our tokensave rules block
+    // (e.g. "## When you spawn an Explore agent").
+    let end = {
+        let mut search_from = after_marker;
+        loop {
+            match contents[search_from..].find("\n## ") {
+                Some(pos) => {
+                    let abs = search_from + pos;
+                    let heading_start = abs + 1; // skip the leading '\n'
+                    let heading_line = contents[heading_start..]
+                        .lines()
+                        .next()
+                        .unwrap_or("");
+                    if heading_line.contains("tokensave") {
+                        // This heading is part of our rules block — skip past it
+                        search_from = heading_start + heading_line.len();
+                    } else {
+                        break abs;
+                    }
+                }
+                None => break contents.len(),
+            }
+        }
+    };
     let mut new_contents = String::new();
     new_contents.push_str(contents[..start].trim_end());
     let remainder = &contents[end..];
