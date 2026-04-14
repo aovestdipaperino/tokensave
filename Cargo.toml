@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "4.0.0"
+version = "4.0.1"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
@@ -18,7 +18,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
+full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile"]
 
 # Language features (all grammars provided by tokensave-large-treesitters)
 lang-dart = []
@@ -40,6 +40,7 @@ lang-cobol = []
 lang-msbasic2 = []
 lang-gwbasic = []
 lang-qbasic = []
+lang-dockerfile = ["dep:tree-sitter-dockerfile"]
 test-transport = []
 
 [lib]
@@ -52,7 +53,8 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tokensave-large-treesitters = "0.2"
+tokensave-large-treesitters = "0.2.1"
+tree-sitter-dockerfile = { version = "0.2", optional = true }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }

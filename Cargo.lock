@@ -4038,7 +4038,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokensave"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "clap",
  "crossterm",
@@ -4071,7 +4071,8 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "tree-sitter",
+ "tree-sitter 0.26.8",
+ "tree-sitter-dockerfile",
  "ureq",
  "walkdir",
  "windows-sys 0.61.2",
@@ -4080,14 +4081,15 @@ dependencies = [
 
 [[package]]
 name = "tokensave-large-treesitters"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba7a581dd2f7d41369e4a4b77814786f866ac9832751fe40061a567aa3cd1616"
+checksum = "fd94a25234c987eec2efbf0ff1a43082b043e7cc49299aab91751440264110d0"
 dependencies = [
  "cc",
  "tokensave-medium-treesitters",
- "tree-sitter",
+ "tree-sitter 0.26.8",
  "tree-sitter-batch",
+ "tree-sitter-dockerfile",
  "tree-sitter-fortran",
  "tree-sitter-gwbasic",
  "tree-sitter-language",
@@ -4108,7 +4110,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b645134fbb55b21381bde082fcdd09f300123506239333fd81ac1c7c82b72314"
 dependencies = [
- "tree-sitter",
+ "tree-sitter 0.26.8",
  "tree-sitter-c",
  "tree-sitter-go",
  "tree-sitter-java",
@@ -4126,7 +4128,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce5b721b1cfbe70cfc5c77ed9c909a989bed4a748f400b92f3a71a72128fa60"
 dependencies = [
  "tokensave-lite-treesitters",
- "tree-sitter",
+ "tree-sitter 0.26.8",
  "tree-sitter-bash",
  "tree-sitter-c-sharp",
  "tree-sitter-cpp",
@@ -4415,6 +4417,16 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e747b1f9b7b931ed39a548c1fae149101497de3c1fc8d9e18c62c1a66c683d3d"
+dependencies = [
+ "cc",
+ "regex",
+]
+
+[[package]]
+name = "tree-sitter"
 version = "0.26.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "887bd495d0582c5e3e0d8ece2233666169fa56a9644d172fc22ad179ab2d0538"
@@ -4485,6 +4497,16 @@ checksum = "3fcc68a1fd54afbeabc13b64a07b1ef611805690800fa2a57c1d1b90970a902e"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-dockerfile"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba46310efcac616744ca79aa4b0e228202e388913ebcd4a1ba107072f7f4432a"
+dependencies = [
+ "cc",
+ "tree-sitter 0.20.10",
 ]
 
 [[package]]
@@ -4610,7 +4632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e79d4ae71b42e595c24c354b59905ade8162bd400ebc53ab916ea8aec54da92d"
 dependencies = [
  "cc",
- "tree-sitter",
+ "tree-sitter 0.26.8",
  "tree-sitter-language",
 ]
 

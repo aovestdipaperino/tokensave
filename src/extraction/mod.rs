@@ -62,6 +62,8 @@ mod gwbasic_extractor;
 pub(crate) mod qbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
 mod quickbasic_extractor;
+#[cfg(feature = "lang-dockerfile")]
+mod dockerfile_extractor;
 
 // Lite — always available (no cfg needed)
 pub use rust_extractor::RustExtractor;
@@ -119,6 +121,8 @@ pub use gwbasic_extractor::GwBasicExtractor;
 pub use qbasic_extractor::QBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use quickbasic_extractor::QuickBasicExtractor;
+#[cfg(feature = "lang-dockerfile")]
+pub use dockerfile_extractor::DockerfileExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -209,6 +213,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(QBasicExtractor));
         #[cfg(feature = "lang-qbasic")]
         extractors.push(Box::new(QuickBasicExtractor));
+        #[cfg(feature = "lang-dockerfile")]
+        extractors.push(Box::new(DockerfileExtractor));
 
         Self { extractors }
     }
