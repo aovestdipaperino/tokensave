@@ -389,6 +389,9 @@ pub fn write_json_file(path: &Path, value: &serde_json::Value) -> Result<()> {
 }
 
 /// Finds the tokensave binary path.
+///
+/// On Windows the returned path uses forward slashes so it can be safely
+/// embedded in JSON hook commands without backslash-escaping issues.
 pub fn which_tokensave() -> Option<String> {
     // Check the current executable first
     if let Ok(exe) = std::env::current_exe() {
@@ -397,7 +400,9 @@ pub fn which_tokensave() -> Option<String> {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("tokensave"))
         {
-            return Some(exe.to_string_lossy().to_string());
+            return Some(normalize_path_separators(
+                &exe.to_string_lossy(),
+            ));
         }
     }
     // Fall back to PATH lookup
@@ -412,8 +417,14 @@ pub fn which_tokensave() -> Option<String> {
         let candidate = PathBuf::from(dir).join(bin_name);
         candidate
             .exists()
-            .then(|| candidate.to_string_lossy().to_string())
+            .then(|| normalize_path_separators(&candidate.to_string_lossy()))
     })
+}
+
+/// Replace backslashes with forward slashes so paths work in JSON/shell
+/// contexts on Windows. No-op on Unix where paths already use `/`.
+fn normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 /// Returns the user's home directory, cross-platform.
@@ -1619,5 +1630,26 @@ mod safe_config_tests {
         let reparsed: serde_json::Value =
             serde_json::from_str(&raw).expect("written file must be valid JSON");
         assert_eq!(reparsed, value);
+    }
+}
+
+#[cfg(test)]
+mod path_normalize_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_windows_backslashes() {
+        assert_eq!(
+            normalize_path_separators(r"C:\Users\dev\scoop\shims\tokensave.exe"),
+            "C:/Users/dev/scoop/shims/tokensave.exe"
+        );
+    }
+
+    #[test]
+    fn leaves_unix_paths_unchanged() {
+        assert_eq!(
+            normalize_path_separators("/usr/local/bin/tokensave"),
+            "/usr/local/bin/tokensave"
+        );
     }
 }

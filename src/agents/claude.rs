@@ -1152,7 +1152,8 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
                                 .split_whitespace()
                                 .next()
                                 .unwrap_or(command);
-                            return Some(bin.to_string());
+                            // Normalize backslashes from pre-fix Windows installs.
+                            return Some(bin.replace('\\', "/"));
                         }
                     }
                 }
@@ -1337,6 +1338,21 @@ mod tests {
     fn extract_bin_returns_none_without_hooks() {
         let settings = json!({ "permissions": {} });
         assert_eq!(extract_tokensave_bin_from_hooks(&settings), None);
+    }
+
+    #[test]
+    fn extract_bin_normalizes_windows_backslashes() {
+        let settings = json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": "C:\\Users\\dev\\scoop\\shims\\tokensave.exe hook-prompt-submit" }]
+                }]
+            }
+        });
+        assert_eq!(
+            extract_tokensave_bin_from_hooks(&settings),
+            Some("C:/Users/dev/scoop/shims/tokensave.exe".to_string())
+        );
     }
 
     // -----------------------------------------------------------------------
