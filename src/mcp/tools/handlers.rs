@@ -207,6 +207,12 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let max_per_file: Option<usize> = args
+        .get("max_per_file")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .or(Some((max_nodes / 3).max(3)));
+
     let options = BuildContextOptions {
         max_nodes,
         include_code,
@@ -214,6 +220,7 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         extra_keywords,
         exclude_node_ids,
         merge_adjacent,
+        max_per_file,
         ..Default::default()
     };
 

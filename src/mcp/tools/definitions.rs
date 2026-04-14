@@ -186,6 +186,10 @@ fn def_context() -> ToolDefinition {
                 "merge_adjacent": {
                     "type": "boolean",
                     "description": "When true, merge code blocks from the same file whose line ranges are adjacent or overlapping (default: false)"
+                },
+                "max_per_file": {
+                    "type": "number",
+                    "description": "Maximum symbols from a single file in results. Prevents one large file from dominating (default: max_nodes/3, minimum 3)"
                 }
             },
             "required": ["task"]

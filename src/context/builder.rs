@@ -1,5 +1,5 @@
 // Rust guideline compliant 2025-10-17
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -127,9 +127,17 @@ impl<'a> ContextBuilder<'a> {
 
     /// Searches for entry-point nodes matching the query and extracted symbols.
     ///
-    /// The search results from the database are already ranked by relevance and
-    /// limited. We apply `min_score` only when it is positive, allowing the
-    /// caller to disable filtering with `min_score = 0.0`.
+    /// Pipeline:
+    /// 1. FTS search on the full query, each extracted symbol, stem variants,
+    ///    and agent-provided extra keywords.
+    /// 2. Exact name supplement — ensures perfect name matches are never buried
+    ///    by BM25 noise.
+    /// 3. Re-rank with structural signals (kind, visibility, path).
+    /// 4. Connectivity boost (incoming call counts).
+    /// 5. Co-occurrence boost for multi-term queries — symbols whose file
+    ///    contains multiple search terms rank higher.
+    /// 6. Per-file diversity cap — limits how many symbols from a single file
+    ///    appear so one large file doesn't dominate the output.
     async fn find_entry_points(
         &self,
         query: &str,
@@ -140,8 +148,9 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
         let mut seen_ids: HashSet<String> = options.exclude_node_ids.clone();
         let mut candidates: Vec<SearchResult> = Vec::new();
+        let cap = options.max_nodes * 2;
 
-        // Search using the full query
+        // --- FTS search: full query ---
         let search_results = self.db.search_nodes(query, options.search_limit).await?;
         for sr in search_results {
             if self.score_passes(sr.score, options.min_score) && seen_ids.insert(sr.node.id.clone())
@@ -150,11 +159,9 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
-        // Search for each extracted symbol individually
+        // --- FTS search: each extracted symbol ---
         for symbol in symbols {
-            if candidates.len() >= options.max_nodes * 2 {
-                break;
-            }
+            if candidates.len() >= cap { break; }
             let results = self.db.search_nodes(symbol, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
@@ -165,11 +172,23 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
-        // Search for agent-provided extra keywords (synonym expansion)
-        for keyword in &options.extra_keywords {
-            if candidates.len() >= options.max_nodes * 2 {
-                break;
+        // --- FTS search: stem variants ---
+        let stems = generate_stem_variants(symbols);
+        for stem in &stems {
+            if candidates.len() >= cap { break; }
+            let results = self.db.search_nodes(stem, options.search_limit).await?;
+            for sr in results {
+                if self.score_passes(sr.score, options.min_score)
+                    && seen_ids.insert(sr.node.id.clone())
+                {
+                    candidates.push(sr);
+                }
             }
+        }
+
+        // --- FTS search: agent-provided extra keywords (synonym expansion) ---
+        for keyword in &options.extra_keywords {
+            if candidates.len() >= cap { break; }
             let results = self.db.search_nodes(keyword, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
@@ -180,19 +199,48 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
-        // Re-rank with structural signals (kind, visibility, path)
+        // --- Exact name supplement ---
+        // Ensures perfect name matches aren't buried by BM25 noise.
+        let exact_names: Vec<String> = symbols.iter()
+            .filter(|s| !s.contains("::") && s.len() >= 3)
+            .cloned()
+            .collect();
+        if !exact_names.is_empty() {
+            let exact_nodes = self.db.search_nodes_by_exact_name(
+                &exact_names, options.search_limit,
+            ).await?;
+            for node in exact_nodes {
+                if seen_ids.insert(node.id.clone()) {
+                    // Give exact matches a high base score so they compete well.
+                    candidates.push(SearchResult { node, score: 20.0 });
+                }
+            }
+        }
+
+        // --- Re-rank with structural signals (kind, visibility, path) ---
         rerank_candidates(&mut candidates);
 
-        // Apply connectivity boost (batch edge-count query)
+        // --- Connectivity boost (batch edge-count query) ---
         let node_ids: Vec<String> = candidates.iter().map(|c| c.node.id.clone()).collect();
         if let Ok(call_counts) = self.db.batch_incoming_call_counts(&node_ids).await {
             apply_connectivity_boost(&mut candidates, &call_counts);
         }
 
-        // Extract nodes, cap at max_nodes
-        let mut entry_points: Vec<Node> = candidates.into_iter().map(|sr| sr.node).collect();
-        entry_points.truncate(options.max_nodes);
-        debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes after truncation");
+        // --- Co-occurrence boost for multi-term queries ---
+        let query_terms: Vec<String> = query
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .filter(|w| w.len() >= 3)
+            .collect();
+        if query_terms.len() >= 2 {
+            apply_cooccurrence_boost(&mut candidates, &query_terms);
+        }
+
+        // --- Per-file diversity cap ---
+        let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
+        let entry_points = apply_per_file_cap(candidates, options.max_nodes, max_per_file);
+
+        debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes");
         Ok(entry_points)
     }
 
@@ -251,7 +299,17 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
-        all_nodes.truncate(options.max_nodes);
+        // --- Edge recovery after node trimming ---
+        // When we truncate nodes, some edges may reference removed nodes.
+        // Instead of discarding those edges entirely, we keep edges that
+        // connect any two surviving nodes, preserving subgraph connectivity.
+        let surviving: HashSet<&str> = if all_nodes.len() > options.max_nodes {
+            all_nodes.truncate(options.max_nodes);
+            all_nodes.iter().map(|n| n.id.as_str()).collect()
+        } else {
+            all_nodes.iter().map(|n| n.id.as_str()).collect()
+        };
+        all_edges.retain(|e| surviving.contains(e.source.as_str()) && surviving.contains(e.target.as_str()));
 
         Ok(Subgraph {
             nodes: all_nodes,
@@ -575,6 +633,117 @@ fn is_camel_case(word: &str) -> bool {
     word[1..].chars().any(|c| c.is_ascii_uppercase())
 }
 
+/// Generates suffix-based stem variants for a set of symbols.
+///
+/// For each symbol, tries common suffixes (e.g. "authenticate" generates
+/// "authentication", "authenticator", "authenticated"). Only produces
+/// variants that differ from the original and from other symbols.
+fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
+    /// Common English derivational suffixes, ordered longest-first so that
+    /// stripping "ation" is preferred over "ion" when both match.
+    const SUFFIX_PAIRS: &[(&str, &[&str])] = &[
+        ("tion", &["te", "tor", "t", "ting"]),
+        ("sion", &["de", "d", "ding"]),
+        ("ment", &["", "ing", "ed"]),
+        ("ness", &["", "ly"]),
+        ("ing", &["", "e", "ion", "ment"]),
+        ("ed", &["", "e", "ing", "ion"]),
+        ("er", &["", "e", "ing", "ed"]),
+        ("or", &["", "e", "ion"]),
+        ("ly", &["", "ness"]),
+        ("ize", &["ization", "ized"]),
+        ("ise", &["isation", "ised"]),
+        ("ate", &["ation", "ator", "ated", "ating"]),
+        ("ify", &["ification", "ified"]),
+    ];
+
+    let existing: HashSet<String> = symbols.iter().map(|s| s.to_lowercase()).collect();
+    let mut variants: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for symbol in symbols {
+        let lower = symbol.to_lowercase();
+        if lower.len() < 4 { continue; }
+
+        for &(suffix, replacements) in SUFFIX_PAIRS {
+            if let Some(stem) = lower.strip_suffix(suffix) {
+                if stem.len() < 2 { continue; }
+                for &replacement in replacements {
+                    let variant = format!("{stem}{replacement}");
+                    if variant.len() >= 3
+                        && !existing.contains(&variant)
+                        && seen.insert(variant.clone())
+                    {
+                        variants.push(variant);
+                    }
+                }
+                break; // only strip the first matching suffix
+            }
+        }
+    }
+
+    variants
+}
+
+/// Boosts candidates whose file contains multiple query terms.
+///
+/// For each candidate, counts how many of the query terms appear (case-
+/// insensitive) in the candidate's `name`, `qualified_name`, or `file_path`.
+/// Candidates matching 2+ terms get a multiplicative boost.
+fn apply_cooccurrence_boost(candidates: &mut [SearchResult], query_terms: &[String]) {
+    for candidate in candidates.iter_mut() {
+        let haystack = format!(
+            "{} {} {}",
+            candidate.node.name.to_lowercase(),
+            candidate.node.qualified_name.to_lowercase(),
+            candidate.node.file_path.to_lowercase(),
+        );
+        let hits: usize = query_terms.iter()
+            .filter(|term| haystack.contains(term.as_str()))
+            .count();
+        if hits >= 2 {
+            // Boost proportional to coverage: 2 terms → 1.3×, 3 → 1.6×, etc.
+            candidate.score *= 1.0 + (hits as f64 - 1.0) * 0.3;
+        }
+    }
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+/// Applies a per-file cap to search results, keeping the top `max_total`
+/// results but allowing at most `max_per_file` from any single file.
+///
+/// Results must already be sorted by score (descending). Excess results from
+/// over-represented files are moved to a spillover list and appended at the
+/// end if there's room.
+fn apply_per_file_cap(
+    candidates: Vec<SearchResult>,
+    max_total: usize,
+    max_per_file: usize,
+) -> Vec<Node> {
+    let mut file_counts: HashMap<String, usize> = HashMap::new();
+    let mut accepted: Vec<Node> = Vec::new();
+    let mut spillover: Vec<Node> = Vec::new();
+
+    for sr in candidates {
+        let count = file_counts.entry(sr.node.file_path.clone()).or_insert(0);
+        if *count < max_per_file {
+            *count += 1;
+            accepted.push(sr.node);
+        } else {
+            spillover.push(sr.node);
+        }
+        if accepted.len() >= max_total { break; }
+    }
+
+    // Fill remaining slots from spillover
+    for node in spillover {
+        if accepted.len() >= max_total { break; }
+        accepted.push(node);
+    }
+
+    accepted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,5 +785,135 @@ mod tests {
         assert!(!is_camel_case("user"));
         assert!(!is_camel_case("U"));
         assert!(!is_camel_case("process_request"));
+    }
+
+    // --- stem variant tests ---
+
+    #[test]
+    fn test_stem_variants_ate_suffix() {
+        let symbols = vec!["authenticate".to_string()];
+        let variants = generate_stem_variants(&symbols);
+        assert!(variants.contains(&"authentication".to_string()));
+        assert!(variants.contains(&"authenticator".to_string()));
+    }
+
+    #[test]
+    fn test_stem_variants_tion_suffix() {
+        let symbols = vec!["authentication".to_string()];
+        let variants = generate_stem_variants(&symbols);
+        assert!(variants.contains(&"authenticate".to_string()));
+    }
+
+    #[test]
+    fn test_stem_variants_ing_suffix() {
+        let symbols = vec!["parsing".to_string()];
+        let variants = generate_stem_variants(&symbols);
+        // "parsing" → strip "ing" → stem "pars" → ["pars", "parse", "parsion", "parsment"]
+        assert!(variants.contains(&"parse".to_string()));
+    }
+
+    #[test]
+    fn test_stem_variants_short_words_skipped() {
+        let symbols = vec!["ab".to_string()];
+        let variants = generate_stem_variants(&symbols);
+        assert!(variants.is_empty());
+    }
+
+    #[test]
+    fn test_stem_variants_no_duplicates_with_existing() {
+        let symbols = vec!["authenticate".to_string(), "authentication".to_string()];
+        let variants = generate_stem_variants(&symbols);
+        // "authentication" is already in symbols, so it shouldn't appear in variants
+        assert!(!variants.contains(&"authentication".to_string()));
+        // "authenticate" is already in symbols, so it shouldn't appear in variants
+        assert!(!variants.contains(&"authenticate".to_string()));
+    }
+
+    // --- co-occurrence boost tests ---
+
+    fn make_search_result(name: &str, file_path: &str, score: f64) -> SearchResult {
+        SearchResult {
+            node: Node {
+                id: format!("test:{name}"),
+                kind: NodeKind::Function,
+                name: name.to_string(),
+                qualified_name: format!("{file_path}::{name}"),
+                file_path: file_path.to_string(),
+                start_line: 1,
+                end_line: 5,
+                start_column: 0,
+                end_column: 1,
+                signature: None,
+                docstring: None,
+                visibility: Visibility::Pub,
+                is_async: false,
+                branches: 0,
+                loops: 0,
+                returns: 0,
+                max_nesting: 0,
+                unsafe_blocks: 0,
+                unchecked_calls: 0,
+                assertions: 0,
+                updated_at: 0,
+            },
+            score,
+        }
+    }
+
+    #[test]
+    fn test_cooccurrence_boost_multi_term() {
+        let mut candidates = vec![
+            make_search_result("auth_handler", "src/auth.rs", 10.0),
+            make_search_result("user_list", "src/user.rs", 10.0),
+        ];
+        let terms = vec!["auth".to_string(), "handler".to_string()];
+        apply_cooccurrence_boost(&mut candidates, &terms);
+        // auth_handler matches both terms, user_list matches neither
+        assert!(candidates[0].node.name == "auth_handler");
+        assert!(candidates[0].score > candidates[1].score);
+    }
+
+    #[test]
+    fn test_cooccurrence_no_boost_single_term() {
+        let mut candidates = vec![
+            make_search_result("auth", "src/auth.rs", 10.0),
+        ];
+        let terms = vec!["auth".to_string(), "handler".to_string()];
+        apply_cooccurrence_boost(&mut candidates, &terms);
+        // Only 1 term matches — no boost
+        assert_eq!(candidates[0].score, 10.0);
+    }
+
+    // --- per-file diversity cap tests ---
+
+    #[test]
+    fn test_per_file_cap_limits_single_file() {
+        let candidates = vec![
+            make_search_result("fn1", "src/big.rs", 10.0),
+            make_search_result("fn2", "src/big.rs", 9.0),
+            make_search_result("fn3", "src/big.rs", 8.0),
+            make_search_result("fn4", "src/other.rs", 7.0),
+        ];
+        let result = apply_per_file_cap(candidates, 10, 2);
+        // Only 2 from big.rs, then other.rs, then spillover
+        let big_count = result.iter().filter(|n| n.file_path == "src/big.rs").count();
+        assert!(big_count <= 3); // 2 accepted + possibly 1 spillover
+        assert!(result.len() == 4);
+        // First 2 slots for big.rs, 3rd for other.rs
+        assert_eq!(result[0].name, "fn1");
+        assert_eq!(result[1].name, "fn2");
+        assert_eq!(result[2].name, "fn4");
+        assert_eq!(result[3].name, "fn3"); // spillover
+    }
+
+    #[test]
+    fn test_per_file_cap_respects_max_total() {
+        let candidates = vec![
+            make_search_result("fn1", "src/a.rs", 10.0),
+            make_search_result("fn2", "src/b.rs", 9.0),
+            make_search_result("fn3", "src/c.rs", 8.0),
+        ];
+        let result = apply_per_file_cap(candidates, 2, 5);
+        assert_eq!(result.len(), 2);
     }
 }

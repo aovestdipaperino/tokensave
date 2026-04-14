@@ -505,6 +505,10 @@ pub struct BuildContextOptions {
     /// When true, merge code blocks from the same file whose line ranges are
     /// adjacent or overlapping into a single block.
     pub merge_adjacent: bool,
+    /// Maximum symbols from a single file in context results. Prevents one
+    /// large file from dominating the output. `None` means no cap (defaults
+    /// to `max_nodes`).
+    pub max_per_file: Option<usize>,
 }
 
 impl Default for BuildContextOptions {
@@ -521,6 +525,7 @@ impl Default for BuildContextOptions {
             extra_keywords: Vec::new(),
             exclude_node_ids: HashSet::new(),
             merge_adjacent: false,
+            max_per_file: None,
         }
     }
 }

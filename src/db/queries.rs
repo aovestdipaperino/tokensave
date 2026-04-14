@@ -1734,6 +1734,49 @@ impl Database {
         Ok(counts)
     }
 
+    /// Finds nodes whose `name` column exactly matches one of the given names
+    /// (case-insensitive). Used to supplement FTS results so that perfect
+    /// matches are never buried by BM25 noise.
+    pub async fn search_nodes_by_exact_name(
+        &self,
+        names: &[String],
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        if names.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> =
+            (1..=names.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    docstring, signature, visibility, is_async,
+                    branches, loops, returns, max_nesting,
+                    unsafe_blocks, unchecked_calls, assertions, updated_at
+             FROM nodes
+             WHERE LOWER(name) IN ({})
+             LIMIT ?{}",
+            placeholders.join(", "),
+            names.len() + 1
+        );
+        let mut param_values: Vec<libsql::Value> = names
+            .iter()
+            .map(|n| libsql::Value::Text(n.to_lowercase()))
+            .collect();
+        param_values.push(libsql::Value::Integer(limit as i64));
+
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to search by exact name: {e}"),
+                operation: "search_nodes_by_exact_name".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_node, "search_nodes_by_exact_name").await
+    }
+
     /// Returns `true` if the error indicates SQLite database corruption.
     pub fn is_corruption_error(e: &TokenSaveError) -> bool {
         match e {
