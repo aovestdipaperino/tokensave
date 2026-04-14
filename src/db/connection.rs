@@ -7,6 +7,26 @@ use crate::errors::{TokenSaveError, Result};
 
 use super::migrations;
 
+/// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
+///
+/// - **cache_size**: 25% of DB size, clamped to \[2 MB, 64 MB\] (in KiB).
+/// - **mmap_size**: 2× DB size, clamped to \[0, 256 MB\].
+///
+/// This avoids the fixed 320 MB memory baseline for small/medium projects.
+pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+
+    // cache_size: 25% of DB, clamped [2 MB .. 64 MB], expressed in KiB
+    let cache_bytes = (db_file_size / 4).clamp(2 * MB, 64 * MB);
+    let cache_kb = cache_bytes / KB;
+
+    // mmap_size: 2× DB, clamped [0 .. 256 MB]
+    let mmap = db_file_size.saturating_mul(2).min(256 * MB);
+
+    (cache_kb, mmap)
+}
+
 /// SQLite database backing the code graph, powered by libsql.
 pub struct Database {
     conn: Connection,
@@ -42,7 +62,7 @@ impl Database {
             operation: "initialize".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn).await?;
+        Self::apply_pragmas(&conn, 0).await?;
         migrations::create_schema(&conn).await?;
 
         Ok((Self { conn, _db: db }, false))
@@ -66,7 +86,8 @@ impl Database {
             operation: "open".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn).await?;
+        let file_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+        Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
 
         Ok((Self { conn, _db: db }, migrated))
@@ -184,17 +205,21 @@ impl Database {
     }
 
     /// Applies performance-oriented SQLite pragmas.
-    async fn apply_pragmas(conn: &Connection) -> Result<()> {
-        conn.execute_batch(
+    ///
+    /// `cache_size` and `mmap_size` are scaled to the on-disk DB size so
+    /// small projects don't pay the 320 MB baseline of a large project.
+    async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
+        let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
+        conn.execute_batch(&format!(
             "PRAGMA page_size = 8192;
              PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 120000;
              PRAGMA synchronous = NORMAL;
-             PRAGMA cache_size = -65536;
+             PRAGMA cache_size = -{cache_kb};
              PRAGMA temp_store = MEMORY;
-             PRAGMA mmap_size = 268435456;",
-        )
+             PRAGMA mmap_size = {mmap};",
+        ))
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("failed to apply pragmas: {e}"),
@@ -273,5 +298,52 @@ impl Database {
             operation: "end_bulk_load".to_string(),
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+
+    #[test]
+    fn adaptive_new_db_gets_minimum() {
+        let (cache_kb, mmap) = adaptive_cache_sizes(0);
+        assert_eq!(cache_kb, 2 * MB / KB); // 2 MB in KiB = 2048
+        assert_eq!(mmap, 0);
+    }
+
+    #[test]
+    fn adaptive_small_db() {
+        // 5 MB DB → cache = 2 MB (floor), mmap = 10 MB
+        let (cache_kb, mmap) = adaptive_cache_sizes(5 * MB);
+        assert_eq!(cache_kb, 2 * MB / KB);
+        assert_eq!(mmap, 10 * MB);
+    }
+
+    #[test]
+    fn adaptive_medium_db() {
+        // 100 MB DB → cache = 25 MB, mmap = 200 MB
+        let (cache_kb, mmap) = adaptive_cache_sizes(100 * MB);
+        assert_eq!(cache_kb, 25 * MB / KB);
+        assert_eq!(mmap, 200 * MB);
+    }
+
+    #[test]
+    fn adaptive_large_db() {
+        // 500 MB DB → cache = 64 MB (cap), mmap = 256 MB (cap)
+        let (cache_kb, mmap) = adaptive_cache_sizes(500 * MB);
+        assert_eq!(cache_kb, 64 * MB / KB);
+        assert_eq!(mmap, 256 * MB);
+    }
+
+    #[test]
+    fn adaptive_very_large_db() {
+        // 2 GB DB → both capped at max
+        let (cache_kb, mmap) = adaptive_cache_sizes(2 * 1024 * MB);
+        assert_eq!(cache_kb, 64 * MB / KB);
+        assert_eq!(mmap, 256 * MB);
     }
 }

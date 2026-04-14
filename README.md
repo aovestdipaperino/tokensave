@@ -623,6 +623,16 @@ cargo check --no-default-features              # verify lite compiles
 cargo clippy --all
 ```
 
+## Star History
+
+<a href="https://www.star-history.com/#aovestdipaperino/tokensave&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
+ </picture>
+</a>
+
 ## License
 
 MIT License -- see [LICENSE](LICENSE) for details.
