@@ -599,6 +599,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         is_fallback: cg.is_fallback(),
                     }
                 });
+                // Ingest new session data so cost info is up-to-date.
+                if let Some(ref db) = gdb {
+                    tokensave::accounting::parser::ingest(db).await;
+                }
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
                     Some(db) => tokensave::accounting::quick_cost_summary(
