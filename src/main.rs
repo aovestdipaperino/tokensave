@@ -352,6 +352,41 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::agents::claude::check_install_stale();
     }
 
+    // Silent reinstall: if the running version is newer than the one that last
+    // installed agents, re-run the install for every tracked agent so that
+    // permissions, hooks, and MCP config stay in sync with the new binary.
+    if !matches!(command, Commands::Install { .. } | Commands::Reinstall | Commands::Uninstall { .. }) {
+        let running = env!("CARGO_PKG_VERSION");
+        if !user_config.installed_agents.is_empty()
+            && !running.is_empty()
+            && (user_config.last_installed_version.is_empty()
+                || tokensave::cloud::is_newer_version(&user_config.last_installed_version, running))
+        {
+            if let (Some(home), Some(bin)) = (
+                tokensave::agents::home_dir(),
+                tokensave::agents::which_tokensave(),
+            ) {
+                let mut all_ok = true;
+                for id in &user_config.installed_agents {
+                    if let Ok(ag) = tokensave::agents::get_integration(id) {
+                        let ctx = tokensave::agents::InstallContext {
+                            home: home.clone(),
+                            tokensave_bin: bin.clone(),
+                            tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        };
+                        if ag.install(&ctx).is_err() {
+                            all_ok = false;
+                        }
+                    }
+                }
+                if all_ok {
+                    user_config.last_installed_version = running.to_string();
+                    user_config.save();
+                }
+            }
+        }
+    }
+
     match command {
         Commands::Sync { path, force, skip_folders, doctor } => {
             let project_path = tokensave::config::resolve_path(path);
@@ -782,6 +817,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 user_cfg.save();
             }
 
+            user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+            user_cfg.save();
+
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
             tokensave::daemon::offer_daemon_autostart();
         }
@@ -810,6 +848,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     ag.install(&ctx)?;
                 }
                 eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
+                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.save();
             }
         }
         Commands::Uninstall { agent } => {

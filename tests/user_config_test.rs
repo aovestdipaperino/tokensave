@@ -27,6 +27,7 @@ fn round_trip_serialization() {
         daemon_debounce: "30s".to_string(),
         cached_country_flags: Vec::new(),
         last_flags_fetch_at: 0,
+        last_installed_version: "1.2.3".to_string(),
     };
     let toml_str = toml::to_string_pretty(&config).unwrap();
     let parsed: UserConfig = toml::from_str(&toml_str).unwrap();
