@@ -331,16 +331,6 @@ The daemon is upgrade-aware: it snapshots its own binary's mtime and size at sta
 
 ---
 
-## Graph Visualizer
-
-```bash
-tokensave visualize
-```
-
-Opens an interactive, browser-based code graph visualization powered by Cytoscape.js. Right-click any node to explore callers, callees, the call graph, or impact analysis.
-
----
-
 ## Self-Upgrade
 
 ```bash
@@ -368,7 +358,6 @@ tokensave affected <files...> [--stdin] [--depth N]        # Find affected test 
 tokensave install [--agent NAME]   # Configure agent integration + daemon offer
 tokensave uninstall [--agent NAME] # Remove agent integration
 tokensave serve                    # Start MCP server
-tokensave visualize                # Open graph visualizer
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
@@ -505,7 +494,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
-| **Graph visualizer** | Yes (interactive browser-based) | Yes |
+| **Graph visualizer** | Removed (v4.0.1) | Yes |
 | **Semantic search** | Agent-driven keyword expansion (zero-cost) | Local embeddings (nomic-embed-text-v1.5 via ONNX) |
 | **MCP resources** | 4 (status, files, overview, branches) | No |
 | **MCP annotations** | Yes (readOnlyHint, alwaysLoad) | No |

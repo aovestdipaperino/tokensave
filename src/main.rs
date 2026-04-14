@@ -265,15 +265,6 @@ enum Commands {
         #[arg(long)]
         disable_autostart: bool,
     },
-    /// Launch interactive graph visualizer in the browser
-    Visualize {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Port to listen on (default: auto-assign)
-        #[arg(long, default_value = "0")]
-        port: u16,
-    },
     /// Live token savings monitor (global, all projects)
     Monitor,
     /// Manage multi-branch indexing
@@ -949,11 +940,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     std::process::exit(1);
                 }
             }
-        }
-        Commands::Visualize { path, port } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = TokenSave::open(&project_path).await?;
-            tokensave::visualizer::run(&cg, port).await?;
         }
         Commands::Monitor => {
             if let Err(e) = tokensave::monitor::run() {

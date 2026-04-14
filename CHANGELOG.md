@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Edge recovery after node trimming** — when BFS subgraph expansion trims nodes to fit `max_nodes`, edges are now filtered to retain only those connecting surviving nodes, keeping the returned subgraph consistent.
 - **Adaptive SQLite pragmas** — `cache_size` and `mmap_size` now scale to the DB file size instead of using fixed 64 MB / 256 MB values. Small projects (5 MB DB) drop from ~320 MB baseline to ~12 MB; large projects keep the same performance.
 
+### Removed
+- **Graph visualizer** — `tokensave visualize` command, `src/visualizer.rs`, and the embedded HTML file have been removed. The upstream CodeGraph project also removed its visualizer in the same period.
+
 ### Fixed
 - **Windows path separators in hooks and MCP config** — `which_tokensave()` now normalizes backslash paths to forward slashes, fixing broken hook command execution on Windows (e.g. Scoop installs). Existing settings with backslash paths are also normalized when read back.
 

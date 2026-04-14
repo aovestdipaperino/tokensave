@@ -218,7 +218,7 @@ tokensave started as a Rust port of CodeGraph and shares the core idea: parse a 
 | Multi-branch indexing | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | Complexity metrics | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | Porting tools | Yes (`port_status`, `port_order`) | No |
-| Graph visualizer | Yes (interactive browser-based) | Yes |
+| Graph visualizer | Removed | Yes |
 | Semantic search | Agent-driven keyword expansion via FTS5 (zero-cost) | Local embeddings (nomic-embed-text-v1.5 via ONNX) |
 | MCP resources | 4 (status, files, overview, branches) | No |
 | MCP annotations | Yes (readOnlyHint, alwaysLoad) | No |
@@ -370,7 +370,7 @@ Both tools are local-only with no cloud dependency. code-review-graph's `watch` 
 | Multi-repo | -- | `list_repos_tool`, `cross_repo_search_tool` |
 | Execution flows | -- | `list_flows_tool`, `get_flow_tool`, `get_affected_flows_tool` |
 | Documentation | -- | `generate_wiki_tool`, `get_wiki_page_tool` |
-| Visualization | `tokensave visualize` (Cytoscape.js) | `code-review-graph visualize` (D3.js) |
+| Visualization | Removed | `code-review-graph visualize` (D3.js) |
 | MCP prompts | -- | 5 templates (`review_changes`, `architecture_map`, `debug_issue`, `onboard_developer`, `pre_merge_check`) |
 | Meta | `status` | `build_or_update_graph_tool`, `list_graph_stats_tool` |
 
