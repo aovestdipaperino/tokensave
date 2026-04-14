@@ -39,7 +39,12 @@ impl<'a> ContextBuilder<'a> {
 
         // Step 4: extract code blocks from source files
         let code_blocks = if options.include_code {
-            self.extract_code_blocks(&entry_points, options).await?
+            let blocks = self.extract_code_blocks(&entry_points, options).await?;
+            if options.merge_adjacent {
+                self.merge_adjacent_blocks(blocks).await
+            } else {
+                blocks
+            }
         } else {
             Vec::new()
         };
@@ -297,6 +302,75 @@ impl<'a> ContextBuilder<'a> {
         }
 
         Ok(blocks)
+    }
+
+    /// Merges code blocks from the same file that are adjacent or overlapping.
+    /// Two blocks are "adjacent" if the gap between them is <= 5 lines.
+    async fn merge_adjacent_blocks(&self, blocks: Vec<CodeBlock>) -> Vec<CodeBlock> {
+        if blocks.len() <= 1 {
+            return blocks;
+        }
+
+        // Group by file_path
+        let mut by_file: std::collections::HashMap<String, Vec<CodeBlock>> =
+            std::collections::HashMap::new();
+        for block in blocks {
+            by_file
+                .entry(block.file_path.clone())
+                .or_default()
+                .push(block);
+        }
+
+        let mut merged: Vec<CodeBlock> = Vec::new();
+        for (_file, mut file_blocks) in by_file {
+            file_blocks.sort_by_key(|b| b.start_line);
+            let mut current = file_blocks.remove(0);
+            for next in file_blocks {
+                // Merge if overlapping or gap <= 5 lines
+                if next.start_line <= current.end_line + 5 {
+                    let new_end = current.end_line.max(next.end_line);
+                    // Re-read the merged range from the file
+                    let merged_node = Node {
+                        id: current.node_id.clone().unwrap_or_default(),
+                        kind: NodeKind::Function,
+                        name: String::new(),
+                        qualified_name: String::new(),
+                        file_path: current.file_path.clone(),
+                        start_line: current.start_line,
+                        end_line: new_end,
+                        start_column: 0,
+                        end_column: 0,
+                        signature: None,
+                        docstring: None,
+                        visibility: Visibility::default(),
+                        is_async: false,
+                        branches: 0,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: 0,
+                    };
+                    if let Ok(Some(code)) = self.get_code(&merged_node).await {
+                        current.content = code;
+                        current.end_line = new_end;
+                    } else {
+                        // Can't re-read; just concatenate
+                        current.content.push_str("\n\n");
+                        current.content.push_str(&next.content);
+                        current.end_line = new_end;
+                    }
+                } else {
+                    merged.push(current);
+                    current = next;
+                }
+            }
+            merged.push(current);
+        }
+        merged.sort_by(|a, b| (&a.file_path, a.start_line).cmp(&(&b.file_path, b.start_line)));
+        merged
     }
 
     /// Checks whether a search score passes the minimum threshold.

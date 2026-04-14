@@ -202,12 +202,18 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
+    let merge_adjacent = args
+        .get("merge_adjacent")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let options = BuildContextOptions {
         max_nodes,
         include_code,
         max_code_blocks,
         extra_keywords,
         exclude_node_ids,
+        merge_adjacent,
         ..Default::default()
     };
 

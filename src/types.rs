@@ -502,6 +502,9 @@ pub struct BuildContextOptions {
     pub extra_keywords: Vec<String>,
     /// Node IDs to exclude from results (for session deduplication across calls).
     pub exclude_node_ids: HashSet<String>,
+    /// When true, merge code blocks from the same file whose line ranges are
+    /// adjacent or overlapping into a single block.
+    pub merge_adjacent: bool,
 }
 
 impl Default for BuildContextOptions {
@@ -517,6 +520,7 @@ impl Default for BuildContextOptions {
             min_score: 0.0,
             extra_keywords: Vec::new(),
             exclude_node_ids: HashSet::new(),
+            merge_adjacent: false,
         }
     }
 }
