@@ -5,9 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.0.2] - 2026-04-14
 
 ### Added
+- **Token cost observability** — new `tokensave cost` command parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`), classifies each API turn into 13 task categories (coding, debugging, exploration, ...), and computes dollar cost per model. Supports `--by-model`, `--by-task`, `--export json|csv`, and time ranges (`today`, `7d`, `30d`, `all`). Model pricing is refreshed from LiteLLM every 24 hours and cached at `~/.tokensave/pricing.json`. Cost data is stored in the existing `~/.tokensave/global.db`. The `tokensave status` header now shows today's cost, 7-day cost, and efficiency ratio. The `tokensave monitor` TUI includes a cost panel. The `hook_stop` handler prints a session cost receipt. Task classification adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).
+- **`tokensave status --details`** — the node-kind breakdown table is now opt-in via the `--details` flag. Default status output is more compact.
 - **Per-file diversity caps** — `tokensave_context` now limits how many symbols from a single file appear in results (default: `max_nodes/3`, minimum 3), preventing one large file from dominating context output. Configurable via the new `max_per_file` parameter.
 - **Exact name match supplementing** — context search now supplements FTS5 results with exact case-insensitive name lookups, so perfect symbol name matches are never buried by BM25 noise.
 - **Stem variant search expansion** — search terms are expanded with suffix-based stem variants (e.g. "authenticate" also finds "authentication", "authenticator") via 13 derivational suffix rules, improving recall for conceptual queries.

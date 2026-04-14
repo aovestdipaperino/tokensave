@@ -81,6 +81,13 @@ fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_co
     line
 }
 
+/// Data for the cost row in the status header.
+pub struct CostRow {
+    pub today_cost: f64,
+    pub week_cost: f64,
+    pub efficiency_pct: f64,
+}
+
 /// Prints only the header section of the status table (version, tokens, sync times).
 /// Optional branch info for the status display.
 pub struct BranchInfo {
@@ -96,6 +103,7 @@ pub fn print_status_header(
     worldwide: Option<u64>,
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
+    cost_info: Option<&CostRow>,
 ) {
     let num_cols = 3;
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -106,6 +114,9 @@ pub fn print_status_header(
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
     print_version_flags_row(country_flags, inner_width);
     print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
+    if let Some(ci) = cost_info {
+        print_cost_row(ci, inner_width);
+    }
     print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
@@ -121,6 +132,8 @@ pub fn print_status_table(
     worldwide: Option<u64>,
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
+    cost_info: Option<&CostRow>,
+    details: bool,
 ) {
     let num_cols = 3;
     debug_assert!(stats.file_count > 0 || stats.node_count == 0,
@@ -138,6 +151,9 @@ pub fn print_status_table(
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
     print_version_flags_row(country_flags, inner_width);
     print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
+    if let Some(ci) = cost_info {
+        print_cost_row(ci, inner_width);
+    }
     print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
@@ -147,7 +163,7 @@ pub fn print_status_table(
     let stats_rows = build_stats_rows(stats, num_cols);
     print_table_rows(&stats_rows, cell_width, num_cols);
 
-    if !sorted_kinds.is_empty() {
+    if details && !sorted_kinds.is_empty() {
         println!("{}", table_separator('├', '┼', '┤', cell_width, num_cols));
         print_kind_rows(&sorted_kinds, num_kind_rows, num_cols, cell_width);
     }
@@ -285,6 +301,31 @@ fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     let visible_len = text.replace("\x1b[33m", "").replace("\x1b[0m", "").len();
     let pad = available.saturating_sub(visible_len);
     println!("│ {}{} │", " ".repeat(pad), text);
+}
+
+/// Print the cost summary row: today's cost, 7-day cost, efficiency ratio.
+fn print_cost_row(cost_info: &CostRow, inner_width: usize) {
+    let mut parts = Vec::new();
+    if cost_info.today_cost >= 0.001 {
+        parts.push(format!("Today ${:.2}", cost_info.today_cost));
+    }
+    if cost_info.week_cost >= 0.001 {
+        parts.push(format!("7d ${:.2}", cost_info.week_cost));
+    }
+    if cost_info.efficiency_pct > 0.0 {
+        parts.push(format!("Efficiency {:.0}%", cost_info.efficiency_pct));
+    }
+    if parts.is_empty() {
+        return;
+    }
+    let text = parts.join("  ");
+    let available = inner_width.saturating_sub(2);
+    let pad = available.saturating_sub(text.len());
+    println!(
+        "│ {}\x1b[36m{}\x1b[0m │",
+        " ".repeat(pad),
+        text,
+    );
 }
 
 /// Build the stats rows (files/nodes/edges, DB size, languages).

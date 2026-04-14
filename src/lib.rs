@@ -15,6 +15,7 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::wildcard_imports)]
 
+pub mod accounting;
 pub mod agents;
 pub mod branch;
 pub mod branch_meta;

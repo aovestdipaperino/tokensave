@@ -58,7 +58,7 @@ pub fn evaluate_hook_decision(tool_input: &str) -> String {
         }
     }
 
-    // Empty string = no output → Claude Code implicitly allows the tool call
+    // Empty string = no output -> Claude Code implicitly allows the tool call
     String::new()
 }
 
@@ -73,6 +73,43 @@ pub async fn hook_prompt_submit() {
     }
 }
 
-/// `Stop` hook handler. Currently a no-op; token savings are reported
-/// by the `UserPromptSubmit` hook on the next turn instead.
-pub async fn hook_stop() {}
+/// `Stop` hook handler: ingests new session data and prints a cost receipt.
+///
+/// Parses any new JSONL lines from Claude Code sessions, inserts them into
+/// the global DB, and prints a one-line summary to stderr showing the
+/// session cost, tokens saved, and efficiency ratio.
+pub async fn hook_stop() {
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return;
+    };
+
+    let stats = crate::accounting::parser::ingest(&gdb).await;
+    if stats.turns_inserted == 0 {
+        return;
+    }
+
+    // Read tokens saved for efficiency calculation
+    let project_path = crate::config::resolve_path(None);
+    let tokens_saved = if let Ok(cg) = crate::tokensave::TokenSave::open(&project_path).await {
+        cg.get_tokens_saved().await.unwrap_or(0)
+    } else {
+        0
+    };
+
+    let efficiency = if tokens_saved + stats.tokens_consumed > 0 {
+        (tokens_saved as f64 / (tokens_saved + stats.tokens_consumed) as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let saved_str = crate::display::format_token_count(tokens_saved);
+
+    // Print to stderr so it appears in the terminal but doesn't interfere
+    // with stdout (which Claude Code may parse).
+    if stats.cost_usd >= 0.001 {
+        eprintln!(
+            "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
+            stats.cost_usd
+        );
+    }
+}

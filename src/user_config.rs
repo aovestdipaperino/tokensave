@@ -66,6 +66,10 @@ pub struct UserConfig {
     /// silent reinstall when the binary is upgraded.
     #[serde(default)]
     pub last_installed_version: String,
+
+    /// UNIX timestamp of last LiteLLM pricing fetch.
+    #[serde(default)]
+    pub last_pricing_fetch_at: i64,
 }
 
 fn default_true() -> bool {
@@ -93,6 +97,7 @@ impl Default for UserConfig {
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
             last_installed_version: String::new(),
+            last_pricing_fetch_at: 0,
         }
     }
 }

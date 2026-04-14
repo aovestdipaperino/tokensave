@@ -30,7 +30,7 @@ tokensave builds a **local** code graph stored in a SQLite database (`.tokensave
 
 It does **not** store raw source code. The database is local-only — there is no cloud sync, remote database, or server-side storage.
 
-A second database (`~/.tokensave/global.db`) tracks which projects have been indexed and aggregate token-saved counts. It contains only directory paths and counters.
+A second database (`~/.tokensave/global.db`) tracks which projects have been indexed, aggregate token-saved counts, and cost accounting data parsed from Claude Code session transcripts. It contains directory paths, counters, per-turn cost/token/category records, and JSONL parse offsets. No source code or conversation content is stored.
 
 ### Network access
 
@@ -43,8 +43,9 @@ Outbound connections are limited to:
 | `api.github.com` | Check for new releases | None (public API) | Silently ignored |
 | `github.com` | Download binary during `tokensave upgrade` | None (public releases) | Error shown to user |
 | `tokensave-counter.enzinol.workers.dev` | Aggregate token-saved counter | None | Silently ignored |
+| `raw.githubusercontent.com` | Fetch model pricing from [LiteLLM](https://github.com/BerriAI/litellm) | None (public file) | Falls back to embedded pricing |
 
-All best-effort network calls use short timeouts (1-2 seconds) and never block the CLI or MCP server.
+All best-effort network calls use short timeouts (1-5 seconds) and never block the CLI or MCP server. The pricing fetch (5s timeout) only runs during `tokensave cost` and is cached for 24 hours at `~/.tokensave/pricing.json`.
 
 ### No credentials or secrets
 

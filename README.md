@@ -294,20 +294,37 @@ Four resources are exposed via `resources/list` and `resources/read`:
 
 tokensave measures the tokens it saves on every MCP tool call. Each tool response includes a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided by that specific call.
 
+### Cost observability
+
+```bash
+tokensave cost                     # 7-day cost summary (default)
+tokensave cost today               # today only
+tokensave cost --by-model          # breakdown by Claude model
+tokensave cost --by-task           # breakdown by task category (coding, debugging, exploration, ...)
+tokensave cost --export json       # JSON export to stdout
+tokensave cost --export csv        # CSV export to stdout
+```
+
+Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`), classifies each API turn into one of 13 task categories, computes dollar cost using model pricing, and stores results in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
+
+The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal.
+
+Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Testing, Exploration, Planning, Delegation, Git Ops, Build/Deploy, Brainstorming, Conversation, General. Classification is deterministic (pattern matching on tool names and Bash commands), requires no LLM calls, and is adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).
+
 ### Live monitor
 
 ```bash
 tokensave monitor
 ```
 
-A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta.
+A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's spend, savings, efficiency, and top model (refreshed every 30 seconds).
 
 ### Session and lifetime counters
 
 ```bash
 tokensave current-counter          # show per-project session counter
 tokensave reset-counter            # reset the session counter
-tokensave status                   # shows project + global lifetime totals
+tokensave status                   # shows project + global lifetime totals + cost
 ```
 
 ### Worldwide counter
@@ -350,8 +367,13 @@ tokensave channel stable           # switch back to stable
 tokensave sync [path]              # Sync (creates index if missing, incremental by default)
 tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
-tokensave status [path]            # Show statistics
+tokensave status [path]            # Show statistics + cost summary
 tokensave status [path] --json     # Show statistics (JSON output)
+tokensave status --details         # Include node-kind breakdown
+tokensave cost [range]             # Token cost summary (default: 7d)
+tokensave cost --by-model          # Cost grouped by model
+tokensave cost --by-task           # Cost grouped by task category
+tokensave cost --export json|csv   # Export cost data
 tokensave query <search> [path]    # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
@@ -412,8 +434,11 @@ tokensave's core functionality (indexing, search, graph queries, MCP server) is 
 | Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, MCP sessions | `tokensave disable-upload-counter` |
 | Worldwide counter read | Nothing (GET request) | status | N/A (read-only, 1s timeout) |
 | Version check | Nothing (GET request) | status (cached 5m), sync (parallel) | N/A (1s timeout, no-op on failure) |
+| Model pricing refresh | Nothing (GET request) | `tokensave cost` (cached 24h) | N/A (5s timeout, falls back to embedded pricing) |
 
 The worldwide counter upload sends a single HTTP POST with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker logs the country of your IP address (derived from request headers) for aggregate geographic statistics -- your actual IP address is not stored.
+
+The model pricing refresh fetches a public JSON file from GitHub (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`) to keep Claude model pricing up to date for `tokensave cost`. No data is sent -- it is a plain HTTPS GET. The response is cached at `~/.tokensave/pricing.json` for 24 hours. If the fetch fails, tokensave uses its compiled-in pricing table.
 
 ---
 

@@ -30,7 +30,7 @@ struct WorkerResponse {
 }
 
 /// Creates a ureq agent with the given timeout.
-fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .build()

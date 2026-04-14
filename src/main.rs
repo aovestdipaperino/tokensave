@@ -112,6 +112,9 @@ enum Commands {
         /// Show only the header (version, tokens, sync times)
         #[arg(short, long)]
         short: bool,
+        /// Show node-kind breakdown
+        #[arg(short, long)]
+        details: bool,
     },
     /// Search for symbols
     Query {
@@ -266,6 +269,21 @@ enum Commands {
         /// Remove autostart service
         #[arg(long)]
         disable_autostart: bool,
+    },
+    /// Token cost summary from Claude Code sessions
+    Cost {
+        /// Time range: "today", "7d", "30d", "month", or "all"
+        #[arg(default_value = "7d")]
+        range: String,
+        /// Group by model
+        #[arg(long)]
+        by_model: bool,
+        /// Group by task category
+        #[arg(long)]
+        by_task: bool,
+        /// Export format: csv or json
+        #[arg(long)]
+        export: Option<String>,
     },
     /// Live token savings monitor (global, all projects)
     Monitor,
@@ -482,7 +500,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json, short } => {
+        Commands::Status { path, json, short, details } => {
             let project_path = tokensave::config::resolve_path(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
@@ -516,10 +534,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
                 // Register project and read global total in one open.
                 // Subtract this project's count so "Global" means "all other projects".
-                let global_tokens_saved = match tokensave::global_db::GlobalDb::open().await {
-                    Some(gdb) => {
-                        gdb.upsert(&project_path, tokens_saved).await;
-                        gdb.global_tokens_saved().await
+                let gdb = tokensave::global_db::GlobalDb::open().await;
+                let global_tokens_saved = match &gdb {
+                    Some(db) => {
+                        db.upsert(&project_path, tokens_saved).await;
+                        db.global_tokens_saved().await
                             .map(|total| total.saturating_sub(tokens_saved))
                             .filter(|&other| other > 0)
                     }
@@ -580,10 +599,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         is_fallback: cg.is_fallback(),
                     }
                 });
+                // Best-effort cost summary for the status header.
+                let cost_info = match &gdb {
+                    Some(db) => tokensave::accounting::quick_cost_summary(
+                        db, tokens_saved, global_tokens_saved.unwrap_or(0),
+                    ).await,
+                    None => None,
+                };
                 if short {
-                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
+                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref(), cost_info.as_ref());
                 } else {
-                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
+                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref(), cost_info.as_ref(), details);
                 }
 
                 // Warn if .tokensave is not in .gitignore
@@ -1007,6 +1033,110 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     // KeepAlive / systemd Restart=on-failure / Windows SCM
                     // failure actions) restarts with the new binary.
                     std::process::exit(1);
+                }
+            }
+        }
+        Commands::Cost { range, by_model, by_task, export } => {
+            // Refresh LiteLLM pricing if cache is older than 24h
+            tokensave::accounting::pricing::refresh_if_stale();
+
+            let gdb = match tokensave::global_db::GlobalDb::open().await {
+                Some(db) => db,
+                None => {
+                    eprintln!("Could not open global database.");
+                    process::exit(1);
+                }
+            };
+
+            // Ingest new session data before querying
+            let ingest_stats = tokensave::accounting::parser::ingest(&gdb).await;
+            if ingest_stats.turns_inserted > 0 {
+                eprintln!("Ingested {} new turns from Claude Code sessions.", ingest_stats.turns_inserted);
+            }
+
+            let since = tokensave::accounting::metrics::parse_range(&range);
+            let tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
+            let summary = tokensave::accounting::metrics::cost_summary(
+                &gdb, since, tokens_saved,
+            ).await;
+
+            let Some(s) = summary else {
+                println!("No session data found. Use Claude Code and then run `tokensave cost` to see spending.");
+                return Ok(());
+            };
+
+            if let Some(ref fmt) = export {
+                match fmt.as_str() {
+                    "json" => {
+                        let obj = serde_json::json!({
+                            "range": range,
+                            "total_cost_usd": s.total_cost,
+                            "total_input_tokens": s.total_input_tokens,
+                            "total_output_tokens": s.total_output_tokens,
+                            "tokens_saved": s.tokens_saved,
+                            "efficiency_ratio": s.efficiency_ratio,
+                            "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
+                            "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
+                    }
+                    "csv" => {
+                        if by_model {
+                            println!("model,cost_usd,tokens");
+                            for (model, cost, tokens) in &s.by_model {
+                                println!("{model},{cost:.4},{tokens}");
+                            }
+                        } else if by_task {
+                            println!("category,cost_usd,turns");
+                            for (cat, cost, turns) in &s.by_category {
+                                println!("{cat},{cost:.4},{turns}");
+                            }
+                        } else {
+                            println!("total_cost_usd,input_tokens,output_tokens,tokens_saved,efficiency");
+                            println!("{:.4},{},{},{},{:.4}", s.total_cost, s.total_input_tokens, s.total_output_tokens, s.tokens_saved, s.efficiency_ratio);
+                        }
+                    }
+                    _ => eprintln!("Unknown export format '{fmt}'. Use 'json' or 'csv'."),
+                }
+            } else if by_model {
+                let total = s.total_cost.max(0.001);
+                println!("  {:<24} {:>10} {:>10} {:>6}", "Model", "Cost", "Tokens", "Share");
+                for (model, cost, tokens) in &s.by_model {
+                    let share = cost / total * 100.0;
+                    let tok_str = tokensave::display::format_token_count(*tokens);
+                    println!("  {:<24} {:>9} {:>10} {:>5.0}%", model, format!("${cost:.2}"), tok_str, share);
+                }
+            } else if by_task {
+                println!("  {:<16} {:>10} {:>6}", "Category", "Cost", "Turns");
+                for (cat, cost, turns) in &s.by_category {
+                    println!("  {:<16} {:>9} {:>6}", cat, format!("${cost:.2}"), turns);
+                }
+            } else {
+                // Default summary
+                let today_since = tokensave::accounting::metrics::parse_range("today");
+                let today_cost = gdb.total_cost_since(today_since).await.unwrap_or(0.0);
+                let today_breakdown = gdb.token_breakdown_since(today_since).await.unwrap_or((0, 0, 0));
+
+                let fmt_row = |label: &str, cost: f64, input: u64, output: u64, cache_read: u64| {
+                    let input_s = tokensave::display::format_token_count(input);
+                    let output_s = tokensave::display::format_token_count(output);
+                    let cache_pct = if input + cache_read > 0 {
+                        (cache_read as f64 / (input + cache_read) as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("  {:<10} {:>9} {:>10} {:>10} {:>9.0}%",
+                        label, format!("${cost:.2}"), input_s, output_s, cache_pct);
+                };
+
+                println!("  {:<10} {:>10} {:>10} {:>10} {:>10}", "Period", "Cost", "Input", "Output", "Cache-hit");
+                fmt_row("Today", today_cost, today_breakdown.0, today_breakdown.1, today_breakdown.2);
+                fmt_row(&range, s.total_cost, s.total_input_tokens, s.total_output_tokens, s.total_cache_read_tokens);
+
+                if s.tokens_saved > 0 {
+                    let saved_str = tokensave::display::format_token_count(s.tokens_saved);
+                    println!();
+                    println!("  Savings  {} tokens ({:.0}% efficiency)", saved_str, s.efficiency_ratio * 100.0);
                 }
             }
         }

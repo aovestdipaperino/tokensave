@@ -341,6 +341,82 @@ pub fn run() -> std::io::Result<()> {
     result
 }
 
+/// Cached cost data for the monitor panel, refreshed periodically.
+struct CostCache {
+    today_cost: f64,
+    week_cost: f64,
+    tokens_saved: u64,
+    efficiency_pct: f64,
+    top_model: String,
+    top_model_cost: f64,
+    last_refresh: std::time::Instant,
+}
+
+impl CostCache {
+    fn new() -> Self {
+        Self {
+            today_cost: 0.0,
+            week_cost: 0.0,
+            tokens_saved: 0,
+            efficiency_pct: 0.0,
+            top_model: String::new(),
+            top_model_cost: 0.0,
+            last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(999),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.last_refresh.elapsed() > std::time::Duration::from_secs(30)
+    }
+}
+
+/// Refresh cost data from the global DB. Best-effort, non-blocking.
+/// Uses a tokio runtime because GlobalDb is async.
+fn refresh_cost_cache(cache: &mut CostCache) {
+    // Build a single-threaded runtime for the async DB call.
+    // This runs ~2 fast SQL queries, well under 10ms.
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    rt.block_on(async {
+        let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+            return;
+        };
+
+        // Ingest any new data first
+        crate::accounting::parser::ingest(&gdb).await;
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let today_start = now_epoch - (now_epoch % 86400);
+        let week_start = now_epoch.saturating_sub(7 * 86400);
+
+        cache.today_cost = gdb.total_cost_since(today_start).await.unwrap_or(0.0);
+        cache.week_cost = gdb.total_cost_since(week_start).await.unwrap_or(0.0);
+
+        let week_consumed = gdb.total_tokens_since(week_start).await.unwrap_or(0);
+        cache.tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
+
+        cache.efficiency_pct = if cache.tokens_saved + week_consumed > 0 {
+            (cache.tokens_saved as f64 / (cache.tokens_saved + week_consumed) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let models = gdb.cost_by_model_since(today_start).await;
+        if let Some((model, cost, _)) = models.first() {
+            cache.top_model = model.clone();
+            cache.top_model_cost = *cost;
+        }
+    });
+    cache.last_refresh = std::time::Instant::now();
+}
+
 fn monitor_loop(
     reader: &mut MmapReader,
     entries: &mut Vec<MonitorEntry>,
@@ -348,6 +424,8 @@ fn monitor_loop(
     stdout: &mut std::io::Stdout,
 ) -> std::io::Result<()> {
     use crossterm::{cursor, event, execute, terminal};
+
+    let mut cost_cache = CostCache::new();
 
     loop {
         // Poll for key events (100ms timeout = our refresh rate).
@@ -382,6 +460,11 @@ fn monitor_loop(
             *last_idx = current_idx;
         }
 
+        // Refresh cost cache every 30 seconds.
+        if cost_cache.is_stale() {
+            refresh_cost_cache(&mut cost_cache);
+        }
+
         // Render.
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let w = width as usize;
@@ -389,10 +472,32 @@ fn monitor_loop(
 
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
-        // Footer takes 3 lines. Log area = h - 3.
-        let log_lines = if h > 4 { h - 4 } else { 1 };
+        // Layout: cost panel (3 lines) + separator + log + separator + footer (2 lines)
+        let has_cost = cost_cache.today_cost >= 0.001 || cost_cache.week_cost >= 0.001;
+        let cost_lines = if has_cost { 4 } else { 0 }; // 3 lines + separator
+        let footer_lines = 4; // separator + 2 footer lines + bottom separator
+        let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
 
-        // Print log entries (most recent at bottom of log area).
+        // ── Cost panel ──
+        if has_cost {
+            let sep = "\u{2500}".repeat(w);
+
+            let saved_str = crate::display::format_token_count(cost_cache.tokens_saved);
+            let line1 = format!(
+                "  Spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+                cost_cache.today_cost, cost_cache.week_cost, saved_str
+            );
+            let line2 = format!(
+                "  Efficiency: {:.0}%    Top model: {} (${:.2})",
+                cost_cache.efficiency_pct, cost_cache.top_model, cost_cache.top_model_cost
+            );
+
+            write!(stdout, "\r\x1b[36m{}\x1b[0m{}\r\n", line1, " ".repeat(w.saturating_sub(line1.len())))?;
+            write!(stdout, "\r\x1b[36m{}\x1b[0m{}\r\n", line2, " ".repeat(w.saturating_sub(line2.len())))?;
+            write!(stdout, "\r{}\r\n", sep)?;
+        }
+
+        // ── Log entries (most recent at bottom of log area) ──
         let visible: Vec<&MonitorEntry> = entries
             .iter()
             .rev()
@@ -414,7 +519,7 @@ fn monitor_loop(
             write!(stdout, "\r{}{}{}\r\n", label, " ".repeat(padding), delta_str)?;
         }
 
-        // Footer.
+        // ── Footer ──
         let sep = "\u{2500}".repeat(w);
         let total_saved: u64 = entries.iter().map(|e| e.delta).sum();
         let total_str = format_number(total_saved);
