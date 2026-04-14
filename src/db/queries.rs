@@ -1631,11 +1631,11 @@ impl Database {
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
-                    rank
+                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0) AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY rank
+                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0)
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )

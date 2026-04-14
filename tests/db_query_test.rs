@@ -1668,3 +1668,69 @@ async fn test_get_internal_edges_larger_set() {
     let has_external = internal.iter().any(|e| e.target == "iel-5");
     assert!(!has_external, "edge to node outside subset should be excluded");
 }
+
+#[tokio::test]
+async fn test_fts_name_match_outranks_docstring_match() {
+    let (db, _dir) = setup_db().await;
+
+    // Node A: search term in name
+    let node_a = Node {
+        id: "function:aaa".to_string(),
+        kind: NodeKind::Function,
+        name: "sync_data".to_string(),
+        qualified_name: "src/lib.rs::sync_data".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 1,
+        end_line: 5,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn sync_data()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        updated_at: 0,
+    };
+    db.insert_node(&node_a).await.unwrap();
+
+    // Node B: search term only in docstring
+    let node_b = Node {
+        id: "function:bbb".to_string(),
+        kind: NodeKind::Function,
+        name: "upload_report".to_string(),
+        qualified_name: "src/lib.rs::upload_report".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 10,
+        end_line: 15,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn upload_report()".to_string()),
+        docstring: Some(
+            "This function runs after sync completes to upload the sync report".to_string(),
+        ),
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        updated_at: 0,
+    };
+    db.insert_node(&node_b).await.unwrap();
+
+    let results = db.search_nodes("sync", 10).await.unwrap();
+    assert!(results.len() >= 2, "both nodes should match 'sync'");
+    assert_eq!(
+        results[0].node.id, "function:aaa",
+        "name match should rank first"
+    );
+}
