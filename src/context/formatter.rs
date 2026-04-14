@@ -117,6 +117,7 @@ mod tests {
             entry_points: vec![],
             code_blocks: vec![],
             related_files: vec![],
+            seen_node_ids: vec![],
         }
     }
 
@@ -167,6 +168,7 @@ mod tests {
             }],
             code_blocks: vec![],
             related_files: vec!["src/lib.rs".to_string()],
+            seen_node_ids: vec![],
         };
 
         let md = format_context_as_markdown(&ctx);
@@ -213,6 +215,7 @@ mod tests {
                 node_id: Some("function:abc".to_string()),
             }],
             related_files: vec!["src/main.rs".to_string()],
+            seen_node_ids: vec![],
         };
 
         let md = format_context_as_markdown(&ctx);

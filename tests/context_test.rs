@@ -104,6 +104,7 @@ fn test_format_context_markdown() {
         entry_points: vec![],
         code_blocks: vec![],
         related_files: vec![],
+        seen_node_ids: vec![],
     };
     let md = format_context_as_markdown(&context);
     assert!(md.contains("## Code Context"));
@@ -119,6 +120,7 @@ fn test_format_context_json() {
         entry_points: vec![],
         code_blocks: vec![],
         related_files: vec![],
+        seen_node_ids: vec![],
     };
     let json = format_context_as_json(&context);
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -315,4 +317,55 @@ async fn test_find_relevant_context() {
         .await
         .unwrap();
     assert!(!subgraph.nodes.is_empty());
+}
+
+#[tokio::test]
+async fn test_exclude_node_ids_deduplication() {
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    for (id, name) in [("fn:first", "compute"), ("fn:second", "compute_batch")] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: name.to_string(),
+            qualified_name: format!("src/lib.rs::{name}"),
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1, end_line: 5,
+            start_column: 0, end_column: 1,
+            signature: Some(format!("pub fn {name}()")),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0, loops: 0, returns: 0, max_nesting: 0,
+            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            updated_at: 0,
+        }).await.unwrap();
+    }
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // First call — fn:first should appear
+    let opts = BuildContextOptions::default();
+    let ctx1 = builder.build_context("compute", &opts).await.unwrap();
+    assert!(ctx1.entry_points.iter().any(|n| n.id == "fn:first"));
+
+    // Second call — exclude fn:first
+    let opts2 = BuildContextOptions {
+        exclude_node_ids: vec!["fn:first".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let ctx2 = builder.build_context("compute", &opts2).await.unwrap();
+    assert!(
+        !ctx2.entry_points.iter().any(|n| n.id == "fn:first"),
+        "excluded node should not appear in second call"
+    );
 }

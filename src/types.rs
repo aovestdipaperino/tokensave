@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kinds of nodes in the code graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -500,6 +500,8 @@ pub struct BuildContextOptions {
     /// Additional keywords to search for beyond those extracted from the query.
     /// Enables agent-driven synonym expansion (e.g. "authentication" → ["login", "session"]).
     pub extra_keywords: Vec<String>,
+    /// Node IDs to exclude from results (for session deduplication across calls).
+    pub exclude_node_ids: HashSet<String>,
 }
 
 impl Default for BuildContextOptions {
@@ -514,6 +516,7 @@ impl Default for BuildContextOptions {
             traversal_depth: 1,
             min_score: 0.0,
             extra_keywords: Vec::new(),
+            exclude_node_ids: HashSet::new(),
         }
     }
 }
@@ -534,6 +537,8 @@ pub struct TaskContext {
     pub entry_points: Vec<Node>,
     pub code_blocks: Vec<CodeBlock>,
     pub related_files: Vec<String>,
+    /// IDs of all nodes returned as entry points (pass to next call's exclude_node_ids for dedup).
+    pub seen_node_ids: Vec<String>,
 }
 
 /// A block of source code extracted from a file.

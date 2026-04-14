@@ -196,11 +196,18 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         })
         .unwrap_or_default();
 
+    let exclude_node_ids: std::collections::HashSet<String> = args
+        .get("exclude_node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
     let options = BuildContextOptions {
         max_nodes,
         include_code,
         max_code_blocks,
         extra_keywords,
+        exclude_node_ids,
         ..Default::default()
     };
 
@@ -276,6 +283,13 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                 }
             }
         }
+    }
+
+    if !context.seen_node_ids.is_empty() {
+        output.push_str(&format!(
+            "\nseen_node_ids: {}\n",
+            serde_json::to_string(&context.seen_node_ids).unwrap_or_default()
+        ));
     }
 
     Ok(ToolResult {

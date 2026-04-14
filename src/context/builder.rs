@@ -50,6 +50,8 @@ impl<'a> ContextBuilder<'a> {
         // Build summary
         let summary = self.build_summary(query, &entry_points, &subgraph);
 
+        let seen_node_ids: Vec<String> = entry_points.iter().map(|n| n.id.clone()).collect();
+
         Ok(TaskContext {
             query: query.to_string(),
             summary,
@@ -57,6 +59,7 @@ impl<'a> ContextBuilder<'a> {
             entry_points,
             code_blocks,
             related_files,
+            seen_node_ids,
         })
     }
 
@@ -130,7 +133,7 @@ impl<'a> ContextBuilder<'a> {
     ) -> Result<Vec<Node>> {
         debug_assert!(!query.is_empty(), "find_entry_points called with empty query");
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
-        let mut seen_ids: HashSet<String> = HashSet::new();
+        let mut seen_ids: HashSet<String> = options.exclude_node_ids.clone();
         let mut candidates: Vec<SearchResult> = Vec::new();
 
         // Search using the full query

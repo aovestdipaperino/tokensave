@@ -142,6 +142,11 @@ fn def_context() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Extra search keywords for synonym expansion. Use this when the task uses conceptual terms that may not match symbol names — e.g. for 'authentication', pass [\"login\", \"session\", \"credential\", \"token\", \"auth\"]. The graph is searched for each keyword independently."
+                },
+                "exclude_node_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node IDs to exclude from results (pass seen_node_ids from previous call for session deduplication)"
                 }
             },
             "required": ["task"]
