@@ -4,17 +4,40 @@ use std::path::Path;
 
 use crate::branch_meta::BranchMeta;
 
-/// Resolves the current branch name using `gix`, which correctly handles
-/// git worktrees (where `.git` is a file, not a directory).
+/// Resolves the current branch name using `gix`. Falls back to
+/// `git symbolic-ref HEAD` for worktrees when gix cannot resolve HEAD
+/// (e.g. with minimal feature flags that exclude worktree support).
 ///
 /// Returns `None` for detached HEAD or if the repository cannot be opened.
 pub fn current_branch(project_root: &Path) -> Option<String> {
+    if let Some(branch) = current_branch_gix(project_root) {
+        return Some(branch);
+    }
+    current_branch_git(project_root)
+}
+
+fn current_branch_gix(project_root: &Path) -> Option<String> {
     let repo = gix::open(project_root).ok()?;
     let head = repo.head().ok()?;
     let name = head.name().as_bstr();
     let name_str = std::str::from_utf8(name).ok()?;
     name_str
         .strip_prefix("refs/heads/")
+        .map(|s| s.to_string())
+}
+
+fn current_branch_git(project_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .current_dir(project_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = std::str::from_utf8(&output.stdout).ok()?;
+    name.strip_prefix("refs/heads/")
+        .and_then(|s| s.strip_suffix('\n'))
         .map(|s| s.to_string())
 }
 
