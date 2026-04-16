@@ -4,15 +4,18 @@ use std::path::Path;
 
 use crate::branch_meta::BranchMeta;
 
-/// Reads `.git/HEAD` and resolves the current branch name.
+/// Resolves the current branch name using `gix`, which correctly handles
+/// git worktrees (where `.git` is a file, not a directory).
 ///
-/// Returns `None` for detached HEAD or if `.git/HEAD` cannot be read.
+/// Returns `None` for detached HEAD or if the repository cannot be opened.
 pub fn current_branch(project_root: &Path) -> Option<String> {
-    let head_path = project_root.join(".git/HEAD");
-    let content = std::fs::read_to_string(head_path).ok()?;
-    let trimmed = content.trim();
-    let branch = trimmed.strip_prefix("ref: refs/heads/")?;
-    Some(branch.to_string())
+    let repo = gix::open(project_root).ok()?;
+    let head = repo.head().ok()?;
+    let name = head.name().as_bstr();
+    let name_str = std::str::from_utf8(name).ok()?;
+    name_str
+        .strip_prefix("refs/heads/")
+        .map(|s| s.to_string())
 }
 
 /// Auto-detects the default branch (main or master).
