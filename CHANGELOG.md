@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Windows daemon nested runtime panic** — `tokensave daemon` panicked on Windows because `daemon-kit` runs the closure inline (no fork), creating a nested tokio runtime. Now uses `block_in_place` + `Handle::current()` on Windows while keeping `Runtime::new()` on Unix where the forked child genuinely has no runtime.
+
 ## [4.0.2] - 2026-04-14
 
 ### Added
