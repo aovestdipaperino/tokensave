@@ -841,4 +841,33 @@ mod tests {
         };
         assert!(tampered.has_changed(), "different mtime should count as changed");
     }
+
+    /// Regression test for the Windows daemon nested-runtime panic.
+    ///
+    /// On Windows, daemon-kit runs the closure inline (no fork), so creating
+    /// `Runtime::new()` inside an existing `#[tokio::main]` runtime panics
+    /// with "Cannot start a runtime from within a runtime."
+    ///
+    /// The fix uses `block_in_place` + `Handle::current().block_on()` on
+    /// Windows, which is safe inside a multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nested_runtime_block_in_place_does_not_panic() {
+        // Simulate what the daemon closure does on Windows: run an async
+        // block from inside an already-running tokio runtime using
+        // block_in_place + Handle::current().
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async { 42 })
+        });
+        assert_eq!(result, 42);
+    }
+
+    /// Verify that creating a nested `Runtime::new()` inside an existing
+    /// multi-thread runtime panics — this is the bug the Windows fix prevents.
+    /// The exact message varies by tokio version ("Cannot start a runtime…"
+    /// vs "Cannot drop a runtime…"), so we just assert it panics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "runtime")]
+    async fn nested_runtime_new_panics() {
+        let _rt = tokio::runtime::Runtime::new().unwrap();
+    }
 }
