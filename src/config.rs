@@ -62,8 +62,28 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns the path to the `.tokensave` directory within the given project root.
+/// Returns the path to the `.tokensave` directory.
+///
+/// When running inside a git worktree, resolves to the **main repo's**
+/// `.tokensave` directory so that all worktrees share the same database,
+/// branch metadata, and configuration.
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
+    let git_marker = project_root.join(".git");
+    if git_marker.is_file() {
+        // Worktree: .git is a file containing "gitdir: <path>"
+        if let Ok(content) = fs::read_to_string(&git_marker) {
+            for line in content.lines() {
+                if let Some(gitdir) = line.strip_prefix("gitdir: ") {
+                    // gitdir = "/path/main/.git/worktrees/<name>"
+                    // Walk up 2 levels → "/path/main/.git" → parent → repo root
+                    let path = PathBuf::from(gitdir.trim());
+                    if let Some(repo_root) = path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                        return repo_root.join(TOKENSAVE_DIR);
+                    }
+                }
+            }
+        }
+    }
     project_root.join(TOKENSAVE_DIR)
 }
 
