@@ -461,10 +461,7 @@ pub async fn run(foreground: bool) -> Result<bool> {
         // the upgrade exit code internally via std::process::exit.
         daemon
             .start(false, move || {
-                let rt = tokio::runtime::Runtime::new().map_err(|e| {
-                    daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
-                })?;
-                rt.block_on(async {
+                let future = async {
                     match run_loop(debounce).await {
                         Ok(true) => {
                             // Upgrade detected — exit non-zero for service manager restart.
@@ -473,7 +470,23 @@ pub async fn run(foreground: bool) -> Result<bool> {
                         Ok(false) => Ok(()),
                         Err(e) => Err(daemon_kit::DaemonError::Daemonize(e.to_string())),
                     }
-                })
+                };
+                // On Unix, daemon-kit forks — the child has no tokio runtime,
+                // so we must create one. On Windows, the closure runs inline in
+                // the existing #[tokio::main] runtime, so we use block_in_place.
+                #[cfg(windows)]
+                {
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(future)
+                    })
+                }
+                #[cfg(not(windows))]
+                {
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                        daemon_kit::DaemonError::Daemonize(format!("failed to create runtime: {e}"))
+                    })?;
+                    rt.block_on(future)
+                }
             })
             .map_err(|e| TokenSaveError::Config {
                 message: format!("daemon error: {e}"),
