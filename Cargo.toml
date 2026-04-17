@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "4.5.2-beta.1"
+version = "4.0.4"
 edition = "2021"
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
