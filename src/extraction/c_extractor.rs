@@ -177,8 +177,8 @@ impl CExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let signature = Self::extract_function_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -300,8 +300,8 @@ impl CExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
         let docstring = Self::extract_docstring(state, node);
@@ -679,12 +679,10 @@ impl CExtractor {
     fn visit_typedef_function_pointer(state: &mut ExtractionState, node: TsNode<'_>) {
         // For `typedef int (*compare_fn)(const void *, const void *);`
         // The name is inside the parenthesized_declarator within the function_declarator
-        let name = Self::extract_function_pointer_typedef_name(state, node)
-            .unwrap_or_else(|| {
-                // Fallback: try the standard typedef name extraction
-                Self::find_typedef_name(state, node)
-                    .unwrap_or_else(|| "<anonymous>".to_string())
-            });
+        let name = Self::extract_function_pointer_typedef_name(state, node).unwrap_or_else(|| {
+            // Fallback: try the standard typedef name extraction
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string())
+        });
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -745,9 +743,7 @@ impl CExtractor {
                 if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
-                if let Some(ident) =
-                    Self::find_descendant_by_kind(paren_decl, "type_identifier")
-                {
+                if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "type_identifier") {
                     return Some(state.node_text(ident));
                 }
             }
@@ -757,8 +753,8 @@ impl CExtractor {
 
     /// Extract a simple typedef (e.g., `typedef unsigned long ulong;`).
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_typedef_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -1276,12 +1272,7 @@ impl CExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(
-            &state.file_path,
-            &NodeKind::EnumVariant,
-            &name,
-            start_line,
-        );
+        let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, &name, start_line);
 
         let graph_node = Node {
             id: id.clone(),

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use libsql::params;
 
 use super::connection::Database;
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
 use crate::types::*;
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,10 @@ fn get_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<String, 
 }
 
 /// Like `get_string_lossy` but for nullable columns.
-fn get_opt_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<Option<String>, libsql::Error> {
+fn get_opt_string_lossy(
+    row: &libsql::Row,
+    idx: i32,
+) -> std::result::Result<Option<String>, libsql::Error> {
     let val = row.get::<libsql::Value>(idx)?;
     match val {
         libsql::Value::Null => Ok(None),
@@ -111,9 +114,7 @@ fn row_to_file(row: &libsql::Row) -> std::result::Result<FileRecord, libsql::Err
 ///
 /// Expected column order: from_node_id(0), reference_name(1),
 /// reference_kind(2), line(3), col(4), file_path(5).
-fn row_to_unresolved_ref(
-    row: &libsql::Row,
-) -> std::result::Result<UnresolvedRef, libsql::Error> {
+fn row_to_unresolved_ref(row: &libsql::Row) -> std::result::Result<UnresolvedRef, libsql::Error> {
     let kind_str = row.get::<String>(2)?;
 
     Ok(UnresolvedRef {
@@ -182,9 +183,8 @@ impl Database {
         edges: &[Edge],
         files: &[FileRecord],
     ) -> Result<()> {
-        let mut sql = String::with_capacity(
-            nodes.len() * 400 + edges.len() * 120 + files.len() * 120
-        );
+        let mut sql =
+            String::with_capacity(nodes.len() * 400 + edges.len() * 120 + files.len() * 120);
         sql.push_str("BEGIN;\n");
 
         // Nodes
@@ -195,31 +195,53 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at) VALUES "
+                 unsafe_blocks,unchecked_calls,assertions,updated_at) VALUES ",
             );
             for (i, node) in chunk.iter().enumerate() {
-                if i > 0 { sql.push(','); }
+                if i > 0 {
+                    sql.push(',');
+                }
                 sql.push('(');
-                push_quoted(&mut sql, &node.id); sql.push(',');
-                push_quoted(&mut sql, node.kind.as_str()); sql.push(',');
-                push_quoted(&mut sql, &node.name); sql.push(',');
-                push_quoted(&mut sql, &node.qualified_name); sql.push(',');
-                push_quoted(&mut sql, &node.file_path); sql.push(',');
-                push_int(&mut sql, node.start_line as i64); sql.push(',');
-                push_int(&mut sql, node.end_line as i64); sql.push(',');
-                push_int(&mut sql, node.start_column as i64); sql.push(',');
-                push_int(&mut sql, node.end_column as i64); sql.push(',');
-                push_opt_quoted(&mut sql, &node.docstring); sql.push(',');
-                push_opt_quoted(&mut sql, &node.signature); sql.push(',');
-                push_quoted(&mut sql, node.visibility.as_str()); sql.push(',');
-                push_int(&mut sql, node.is_async as i64); sql.push(',');
-                push_int(&mut sql, node.branches as i64); sql.push(',');
-                push_int(&mut sql, node.loops as i64); sql.push(',');
-                push_int(&mut sql, node.returns as i64); sql.push(',');
-                push_int(&mut sql, node.max_nesting as i64); sql.push(',');
-                push_int(&mut sql, node.unsafe_blocks as i64); sql.push(',');
-                push_int(&mut sql, node.unchecked_calls as i64); sql.push(',');
-                push_int(&mut sql, node.assertions as i64); sql.push(',');
+                push_quoted(&mut sql, &node.id);
+                sql.push(',');
+                push_quoted(&mut sql, node.kind.as_str());
+                sql.push(',');
+                push_quoted(&mut sql, &node.name);
+                sql.push(',');
+                push_quoted(&mut sql, &node.qualified_name);
+                sql.push(',');
+                push_quoted(&mut sql, &node.file_path);
+                sql.push(',');
+                push_int(&mut sql, node.start_line as i64);
+                sql.push(',');
+                push_int(&mut sql, node.end_line as i64);
+                sql.push(',');
+                push_int(&mut sql, node.start_column as i64);
+                sql.push(',');
+                push_int(&mut sql, node.end_column as i64);
+                sql.push(',');
+                push_opt_quoted(&mut sql, &node.docstring);
+                sql.push(',');
+                push_opt_quoted(&mut sql, &node.signature);
+                sql.push(',');
+                push_quoted(&mut sql, node.visibility.as_str());
+                sql.push(',');
+                push_int(&mut sql, node.is_async as i64);
+                sql.push(',');
+                push_int(&mut sql, node.branches as i64);
+                sql.push(',');
+                push_int(&mut sql, node.loops as i64);
+                sql.push(',');
+                push_int(&mut sql, node.returns as i64);
+                sql.push(',');
+                push_int(&mut sql, node.max_nesting as i64);
+                sql.push(',');
+                push_int(&mut sql, node.unsafe_blocks as i64);
+                sql.push(',');
+                push_int(&mut sql, node.unchecked_calls as i64);
+                sql.push(',');
+                push_int(&mut sql, node.assertions as i64);
+                sql.push(',');
                 push_int(&mut sql, node.updated_at as i64);
                 sql.push(')');
             }
@@ -230,11 +252,16 @@ impl Database {
         for chunk in edges.chunks(500) {
             sql.push_str("INSERT OR IGNORE INTO edges (source,target,kind,line) VALUES ");
             for (i, edge) in chunk.iter().enumerate() {
-                if i > 0 { sql.push(','); }
+                if i > 0 {
+                    sql.push(',');
+                }
                 sql.push('(');
-                push_quoted(&mut sql, &edge.source); sql.push(',');
-                push_quoted(&mut sql, &edge.target); sql.push(',');
-                push_quoted(&mut sql, edge.kind.as_str()); sql.push(',');
+                push_quoted(&mut sql, &edge.source);
+                sql.push(',');
+                push_quoted(&mut sql, &edge.target);
+                sql.push(',');
+                push_quoted(&mut sql, edge.kind.as_str());
+                sql.push(',');
                 match edge.line {
                     Some(l) => push_int(&mut sql, l as i64),
                     None => sql.push_str("NULL"),
@@ -248,16 +275,23 @@ impl Database {
         for chunk in files.chunks(500) {
             sql.push_str(
                 "INSERT OR REPLACE INTO files \
-                 (path,content_hash,size,modified_at,indexed_at,node_count) VALUES "
+                 (path,content_hash,size,modified_at,indexed_at,node_count) VALUES ",
             );
             for (i, file) in chunk.iter().enumerate() {
-                if i > 0 { sql.push(','); }
+                if i > 0 {
+                    sql.push(',');
+                }
                 sql.push('(');
-                push_quoted(&mut sql, &file.path); sql.push(',');
-                push_quoted(&mut sql, &file.content_hash); sql.push(',');
-                push_int(&mut sql, file.size as i64); sql.push(',');
-                push_int(&mut sql, file.modified_at); sql.push(',');
-                push_int(&mut sql, file.indexed_at); sql.push(',');
+                push_quoted(&mut sql, &file.path);
+                sql.push(',');
+                push_quoted(&mut sql, &file.content_hash);
+                sql.push(',');
+                push_int(&mut sql, file.size as i64);
+                sql.push(',');
+                push_int(&mut sql, file.modified_at);
+                sql.push(',');
+                push_int(&mut sql, file.indexed_at);
+                sql.push(',');
                 push_int(&mut sql, file.node_count as i64);
                 sql.push(')');
             }
@@ -330,7 +364,9 @@ impl Database {
                 node.unchecked_calls as i64,
                 node.assertions as i64,
                 node.updated_at as i64,
-            ]).await.map_err(|e| TokenSaveError::Database {
+            ])
+            .await
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert node: {e}"),
                 operation: "insert_nodes".to_string(),
             })?;
@@ -441,13 +477,22 @@ impl Database {
 
     /// Deletes all nodes (and cascading edges, unresolved refs, vectors) for a file.
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
-        debug_assert!(!file_path.is_empty(), "delete_nodes_by_file called with empty file_path");
-        debug_assert!(!file_path.starts_with('/'), "delete_nodes_by_file expects relative path, got absolute");
+        debug_assert!(
+            !file_path.is_empty(),
+            "delete_nodes_by_file called with empty file_path"
+        );
+        debug_assert!(
+            !file_path.starts_with('/'),
+            "delete_nodes_by_file expects relative path, got absolute"
+        );
         // Gather node IDs for the file first.
         let node_ids: Vec<String> = {
             let mut rows = self
                 .conn()
-                .query("SELECT id FROM nodes WHERE file_path = ?1", params![file_path])
+                .query(
+                    "SELECT id FROM nodes WHERE file_path = ?1",
+                    params![file_path],
+                )
                 .await
                 .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query node ids: {e}"),
@@ -501,23 +546,23 @@ impl Database {
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
-            tx.execute("DELETE FROM vectors WHERE node_id = ?1", params![id.as_str()])
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to delete vectors: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?;
+            tx.execute(
+                "DELETE FROM vectors WHERE node_id = ?1",
+                params![id.as_str()],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to delete vectors: {e}"),
+                operation: "delete_nodes_by_file".to_string(),
+            })?;
         }
 
-        tx.execute(
-            "DELETE FROM nodes WHERE file_path = ?1",
-            params![file_path],
-        )
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to delete nodes: {e}"),
-            operation: "delete_nodes_by_file".to_string(),
-        })?;
+        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to delete nodes: {e}"),
+                operation: "delete_nodes_by_file".to_string(),
+            })?;
 
         tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
@@ -565,7 +610,8 @@ impl Database {
                 operation: "insert_edges".to_string(),
             })?;
 
-        let stmt = self.conn()
+        let stmt = self
+            .conn()
             .prepare("INSERT OR IGNORE INTO edges (source,target,kind,line) VALUES (?1,?2,?3,?4)")
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -579,7 +625,9 @@ impl Database {
                 edge.target.as_str(),
                 edge.kind.as_str(),
                 edge.line.map(|l| l as i64),
-            ]).await.map_err(|e| TokenSaveError::Database {
+            ])
+            .await
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert edge: {e}"),
                 operation: "insert_edges".to_string(),
             })?;
@@ -717,8 +765,14 @@ impl Database {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        debug_assert!(limit > 0, "get_ranked_nodes_by_edge_kind limit must be positive");
-        debug_assert!(!edge_kind.as_str().is_empty(), "edge_kind must not be empty");
+        debug_assert!(
+            limit > 0,
+            "get_ranked_nodes_by_edge_kind limit must be positive"
+        );
+        debug_assert!(
+            !edge_kind.as_str().is_empty(),
+            "edge_kind must not be empty"
+        );
         let (join_col, group_col) = if incoming {
             ("e.target", "e.target")
         } else {
@@ -726,9 +780,8 @@ impl Database {
         };
 
         let mut conditions = vec!["e.kind = ?1".to_string()];
-        let mut param_values: Vec<libsql::Value> = vec![
-            libsql::Value::Text(edge_kind.as_str().to_string()),
-        ];
+        let mut param_values: Vec<libsql::Value> =
+            vec![libsql::Value::Text(edge_kind.as_str().to_string())];
         let mut param_idx = 2;
 
         if let Some(nk) = node_kind {
@@ -1310,10 +1363,7 @@ impl Database {
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
         let mut rows = self
             .conn()
-            .query(
-                "SELECT source, target, kind, line FROM edges",
-                (),
-            )
+            .query("SELECT source, target, kind, line FROM edges", ())
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query all edges: {e}"),
@@ -1326,10 +1376,7 @@ impl Database {
     /// Deletes all edges originating from a given source node.
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
         self.conn()
-            .execute(
-                "DELETE FROM edges WHERE source = ?1",
-                params![source_id],
-            )
+            .execute("DELETE FROM edges WHERE source = ?1", params![source_id])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to delete edges by source: {e}"),
@@ -1351,10 +1398,13 @@ impl Database {
             return Ok(());
         }
 
-        self.conn().execute("BEGIN", ()).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to begin: {e}"),
-            operation: "upsert_files".to_string(),
-        })?;
+        self.conn()
+            .execute("BEGIN", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin: {e}"),
+                operation: "upsert_files".to_string(),
+            })?;
 
         let stmt = self.conn()
             .prepare("INSERT OR REPLACE INTO files (path,content_hash,size,modified_at,indexed_at,node_count) VALUES (?1,?2,?3,?4,?5,?6)")
@@ -1372,17 +1422,22 @@ impl Database {
                 file.modified_at,
                 file.indexed_at,
                 file.node_count as i64,
-            ]).await.map_err(|e| TokenSaveError::Database {
+            ])
+            .await
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to upsert file: {e}"),
                 operation: "upsert_files".to_string(),
             })?;
             stmt.reset();
         }
 
-        self.conn().execute("COMMIT", ()).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit: {e}"),
-            operation: "upsert_files".to_string(),
-        })?;
+        self.conn()
+            .execute("COMMIT", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to commit: {e}"),
+                operation: "upsert_files".to_string(),
+            })?;
         Ok(())
     }
 
@@ -1505,10 +1560,13 @@ impl Database {
             return Ok(());
         }
 
-        self.conn().execute("BEGIN", ()).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to begin: {e}"),
-            operation: "insert_unresolved_refs".to_string(),
-        })?;
+        self.conn()
+            .execute("BEGIN", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin: {e}"),
+                operation: "insert_unresolved_refs".to_string(),
+            })?;
 
         let stmt = self.conn()
             .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)")
@@ -1526,17 +1584,22 @@ impl Database {
                 uref.line as i64,
                 uref.column as i64,
                 uref.file_path.as_str(),
-            ]).await.map_err(|e| TokenSaveError::Database {
+            ])
+            .await
+            .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert unresolved ref: {e}"),
                 operation: "insert_unresolved_refs".to_string(),
             })?;
             stmt.reset();
         }
 
-        self.conn().execute("COMMIT", ()).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit: {e}"),
-            operation: "insert_unresolved_refs".to_string(),
-        })?;
+        self.conn()
+            .execute("COMMIT", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to commit: {e}"),
+                operation: "insert_unresolved_refs".to_string(),
+            })?;
         Ok(())
     }
 
@@ -1687,10 +1750,7 @@ impl Database {
                 message: format!("failed to read rank: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
-            results.push(SearchResult {
-                node,
-                score: -rank,
-            });
+            results.push(SearchResult { node, score: -rank });
         }
         Ok(results)
     }
@@ -1705,8 +1765,7 @@ impl Database {
         if node_ids.is_empty() {
             return Ok(counts);
         }
-        let placeholders: Vec<String> =
-            (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({}) AND kind = 'calls' GROUP BY target",
             placeholders.join(", ")
@@ -1745,8 +1804,7 @@ impl Database {
         if names.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> =
-            (1..=names.len()).map(|i| format!("?{i}")).collect();
+        let placeholders: Vec<String> = (1..=names.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
@@ -1814,10 +1872,13 @@ impl Database {
                 message: format!("failed to query counts: {e}"),
                 operation: "get_stats".to_string(),
             })?;
-        let counts_row = counts_rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read counts row: {e}"),
-            operation: "get_stats".to_string(),
-        })?;
+        let counts_row = counts_rows
+            .next()
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read counts row: {e}"),
+                operation: "get_stats".to_string(),
+            })?;
         let (node_count, edge_count, file_count, last_updated, total_source_bytes) =
             match counts_row {
                 Some(r) => {
@@ -1934,10 +1995,7 @@ impl Database {
     pub async fn get_metadata(&self, key: &str) -> Result<Option<String>> {
         let mut rows = self
             .conn()
-            .query(
-                "SELECT value FROM metadata WHERE key = ?1",
-                params![key],
-            )
+            .query("SELECT value FROM metadata WHERE key = ?1", params![key])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query metadata: {e}"),
@@ -2027,8 +2085,7 @@ impl Database {
 
         // Build a set of IDs for filtering targets in memory, then query
         // edges from each batch of sources.
-        let id_set: std::collections::HashSet<&str> =
-            node_ids.iter().map(|s| s.as_str()).collect();
+        let id_set: std::collections::HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
         let mut all_edges = Vec::new();
 
         const BATCH_SIZE: usize = 500;
@@ -2139,15 +2196,15 @@ async fn collect_rows<T>(
 
 /// Executes a `SELECT label, COUNT(*) ... GROUP BY` query and returns
 /// the results as a `HashMap<String, u64>`.
-async fn query_kind_counts(
-    conn: &libsql::Connection,
-    sql: &str,
-) -> Result<HashMap<String, u64>> {
+async fn query_kind_counts(conn: &libsql::Connection, sql: &str) -> Result<HashMap<String, u64>> {
     let mut map = HashMap::new();
-    let mut rows = conn.query(sql, ()).await.map_err(|e| TokenSaveError::Database {
-        message: format!("failed to query kind counts: {e}"),
-        operation: "get_stats".to_string(),
-    })?;
+    let mut rows = conn
+        .query(sql, ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to query kind counts: {e}"),
+            operation: "get_stats".to_string(),
+        })?;
     while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
         message: format!("failed to read kind count row: {e}"),
         operation: "get_stats".to_string(),
@@ -2168,11 +2225,7 @@ async fn query_kind_counts(
 }
 
 /// Executes a scalar query returning a single `i64` value.
-async fn query_scalar_i64(
-    conn: &libsql::Connection,
-    sql: &str,
-    operation: &str,
-) -> Result<i64> {
+async fn query_scalar_i64(conn: &libsql::Connection, sql: &str, operation: &str) -> Result<i64> {
     let mut rows = conn
         .query(sql, ())
         .await

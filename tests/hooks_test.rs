@@ -136,7 +136,15 @@ fn test_block_response_uses_correct_hook_schema() {
     let input = r#"{"subagent_type": "Explore"}"#;
     let result = evaluate_hook_decision(input);
     let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(v["hookSpecificOutput"]["hookEventName"].as_str(), Some("PreToolUse"));
-    assert_eq!(v["hookSpecificOutput"]["permissionDecision"].as_str(), Some("deny"));
-    assert!(v["hookSpecificOutput"]["permissionDecisionReason"].as_str().is_some());
+    assert_eq!(
+        v["hookSpecificOutput"]["hookEventName"].as_str(),
+        Some("PreToolUse")
+    );
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecision"].as_str(),
+        Some("deny")
+    );
+    assert!(v["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .is_some());
 }

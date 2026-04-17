@@ -55,7 +55,10 @@ fn sample_node(id: &str, name: &str) -> Node {
 #[tokio::test]
 async fn quick_check_passes_on_healthy_db() {
     let (db, _dir, _path) = setup_db().await;
-    assert!(db.quick_check().await.unwrap(), "fresh database should pass quick_check");
+    assert!(
+        db.quick_check().await.unwrap(),
+        "fresh database should pass quick_check"
+    );
 }
 
 #[tokio::test]
@@ -65,7 +68,10 @@ async fn quick_check_passes_after_inserts() {
         .map(|i| sample_node(&format!("n{i}"), &format!("func_{i}")))
         .collect();
     db.insert_nodes(&nodes).await.unwrap();
-    assert!(db.quick_check().await.unwrap(), "database with data should pass quick_check");
+    assert!(
+        db.quick_check().await.unwrap(),
+        "database with data should pass quick_check"
+    );
 }
 
 #[tokio::test]
@@ -97,7 +103,9 @@ async fn quick_check_detects_page_level_corruption() {
     }
 
     // Reopen — quick_check should detect the corruption
-    let (db2, _) = Database::open(&db_path).await.expect("open should succeed even with corruption");
+    let (db2, _) = Database::open(&db_path)
+        .await
+        .expect("open should succeed even with corruption");
     let intact = db2.quick_check().await.unwrap();
     assert!(!intact, "quick_check should detect page-level corruption");
 }
@@ -129,9 +137,7 @@ async fn rebuild_fts_restores_search_after_fts_damage() {
     // This simulates what happens when begin_bulk_load clears FTS but
     // end_bulk_load never runs (crash during indexing).
     db.conn()
-        .execute_batch(
-            "DELETE FROM nodes_fts;",
-        )
+        .execute_batch("DELETE FROM nodes_fts;")
         .await
         .unwrap();
 
@@ -178,15 +184,14 @@ async fn bulk_load_preserves_synchronous_normal() {
     db.begin_bulk_load().await.unwrap();
 
     // Check that synchronous is still NORMAL (1) not OFF (0)
-    let mut rows = db
-        .conn()
-        .query("PRAGMA synchronous", ())
-        .await
-        .unwrap();
+    let mut rows = db.conn().query("PRAGMA synchronous", ()).await.unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let sync_value: i64 = row.get(0).unwrap();
     // NORMAL = 1, OFF = 0, FULL = 2
-    assert_eq!(sync_value, 1, "synchronous should be NORMAL (1) during bulk load, not OFF (0)");
+    assert_eq!(
+        sync_value, 1,
+        "synchronous should be NORMAL (1) during bulk load, not OFF (0)"
+    );
 
     db.end_bulk_load().await.unwrap();
 }
@@ -197,10 +202,7 @@ async fn bulk_load_round_trip_preserves_data() {
 
     db.begin_bulk_load().await.unwrap();
 
-    let nodes = vec![
-        sample_node("c1", "alpha"),
-        sample_node("c2", "beta"),
-    ];
+    let nodes = vec![sample_node("c1", "alpha"), sample_node("c2", "beta")];
     db.insert_nodes(&nodes).await.unwrap();
 
     db.end_bulk_load().await.unwrap();
@@ -216,7 +218,8 @@ async fn bulk_load_round_trip_preserves_data() {
 #[test]
 fn is_corruption_error_matches_malformed() {
     let e = tokensave::errors::TokenSaveError::Database {
-        message: "failed to read search result: SQLite failure: `database disk image is malformed`".to_string(),
+        message: "failed to read search result: SQLite failure: `database disk image is malformed`"
+            .to_string(),
         operation: "search_nodes".to_string(),
     };
     assert!(Database::is_corruption_error(&e));
@@ -259,7 +262,11 @@ fn dirty_sentinel_lifecycle() {
     assert!(!dirty_path.exists());
 
     // Write sentinel
-    std::fs::write(&dirty_path, format!("pid={}\nversion=test", std::process::id())).unwrap();
+    std::fs::write(
+        &dirty_path,
+        format!("pid={}\nversion=test", std::process::id()),
+    )
+    .unwrap();
     assert!(dirty_path.exists());
 
     // Read contents
@@ -347,7 +354,10 @@ async fn corrupt_db_detected_and_repaired_on_reopen() {
     std::fs::remove_file(&wal).ok();
 
     let (db3, _) = Database::initialize(&db_path).await.unwrap();
-    assert!(db3.quick_check().await.unwrap(), "fresh db after recovery should be healthy");
+    assert!(
+        db3.quick_check().await.unwrap(),
+        "fresh db after recovery should be healthy"
+    );
 }
 
 #[tokio::test]

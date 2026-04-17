@@ -8,7 +8,11 @@ fn extract(source: &str) -> tokensave::types::ExtractionResult {
 #[test]
 fn test_scala_file_node_is_root() {
     let result = extract("object Main");
-    let file_nodes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let file_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(file_nodes.len(), 1);
     assert_eq!(file_nodes[0].name, "test.scala");
 }
@@ -28,7 +32,11 @@ fn test_scala_extract_package() {
 #[test]
 fn test_scala_extract_import() {
     let result = extract("import scala.collection.mutable.ListBuffer\nimport java.io._");
-    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    let imports: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
     assert_eq!(imports.len(), 2);
     assert!(imports.iter().any(|n| n.name.contains("ListBuffer")));
 }
@@ -36,7 +44,11 @@ fn test_scala_extract_import() {
 #[test]
 fn test_scala_extract_class() {
     let result = extract("class MyClass(val x: Int) {\n  def hello(): String = \"hi\"\n}");
-    let classes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
+    let classes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Class)
+        .collect();
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "MyClass");
 }
@@ -56,7 +68,11 @@ fn test_scala_extract_case_class() {
 #[test]
 fn test_scala_extract_trait() {
     let result = extract("trait Greeter {\n  def greet(name: String): String\n}");
-    let traits: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Trait).collect();
+    let traits: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Trait)
+        .collect();
     assert_eq!(traits.len(), 1);
     assert_eq!(traits[0].name, "Greeter");
 }
@@ -75,7 +91,8 @@ fn test_scala_extract_abstract_method_in_trait() {
 
 #[test]
 fn test_scala_extract_object() {
-    let result = extract("object Main {\n  def main(args: Array[String]): Unit = println(\"hi\")\n}");
+    let result =
+        extract("object Main {\n  def main(args: Array[String]): Unit = println(\"hi\")\n}");
     let objects: Vec<_> = result
         .nodes
         .iter()
@@ -88,7 +105,11 @@ fn test_scala_extract_object() {
 #[test]
 fn test_scala_extract_method() {
     let result = extract("object Main {\n  def hello(name: String): String = s\"Hello $name\"\n}");
-    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    let methods: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Method)
+        .collect();
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].name, "hello");
 }
@@ -108,7 +129,11 @@ fn test_scala_extract_function() {
 #[test]
 fn test_scala_extract_val() {
     let result = extract("object Config {\n  val name: String = \"app\"\n}");
-    let vals: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::ValField).collect();
+    let vals: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::ValField)
+        .collect();
     assert_eq!(vals.len(), 1);
     assert_eq!(vals[0].name, "name");
 }
@@ -116,7 +141,11 @@ fn test_scala_extract_val() {
 #[test]
 fn test_scala_extract_var() {
     let result = extract("object State {\n  var count: Int = 0\n}");
-    let vars: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::VarField).collect();
+    let vars: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::VarField)
+        .collect();
     assert_eq!(vars.len(), 1);
     assert_eq!(vars[0].name, "count");
 }
@@ -136,7 +165,11 @@ fn test_scala_extract_type_alias() {
 #[test]
 fn test_scala_extract_class_params_as_fields() {
     let result = extract("class Point(val x: Int, val y: Int, z: Int)");
-    let vals: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::ValField).collect();
+    let vals: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::ValField)
+        .collect();
     // x and y are val params, z is a plain param (also extracted as ValField but private)
     assert!(vals.len() >= 2);
     assert!(vals.iter().any(|n| n.name == "x"));
@@ -157,9 +190,8 @@ fn test_scala_contains_edges() {
 
 #[test]
 fn test_scala_extract_call_sites() {
-    let result = extract(
-        "object Main {\n  def run(): Unit = {\n    println(\"hello\")\n    foo()\n  }\n}",
-    );
+    let result =
+        extract("object Main {\n  def run(): Unit = {\n    println(\"hello\")\n    foo()\n  }\n}");
     let calls: Vec<_> = result
         .unresolved_refs
         .iter()
@@ -173,7 +205,11 @@ fn test_scala_extract_call_sites() {
 #[test]
 fn test_scala_visibility_private() {
     let result = extract("class Foo {\n  private def secret(): Unit = ()\n}");
-    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    let methods: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Method)
+        .collect();
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].visibility, tokensave::types::Visibility::Private);
 }
@@ -181,7 +217,11 @@ fn test_scala_visibility_private() {
 #[test]
 fn test_scala_visibility_default_is_public() {
     let result = extract("class Foo {\n  def open(): Unit = ()\n}");
-    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    let methods: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Method)
+        .collect();
     assert_eq!(methods.len(), 1);
     assert_eq!(methods[0].visibility, tokensave::types::Visibility::Pub);
 }
@@ -217,7 +257,12 @@ class MyClass {
         .iter()
         .filter(|n| n.kind == NodeKind::AnnotationUsage)
         .collect();
-    assert_eq!(annots.len(), 3, "expected 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert_eq!(
+        annots.len(),
+        3,
+        "expected 3 annotations, got: {:?}",
+        annots.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
     assert!(annots.iter().any(|a| a.name == "deprecated"));
     assert!(annots.iter().any(|a| a.name == "throws"));
     assert!(annots.iter().any(|a| a.name == "tailrec"));

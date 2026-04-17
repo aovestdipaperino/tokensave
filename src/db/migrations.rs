@@ -11,7 +11,7 @@
 
 use libsql::Connection;
 
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
@@ -19,12 +19,13 @@ const LATEST_VERSION: u32 = 6;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
-    let mut rows = conn.query("PRAGMA user_version", ()).await.map_err(|e| {
-        TokenSaveError::Database {
-            message: format!("failed to read user_version: {e}"),
-            operation: "get_version".to_string(),
-        }
-    })?;
+    let mut rows =
+        conn.query("PRAGMA user_version", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read user_version: {e}"),
+                operation: "get_version".to_string(),
+            })?;
     let row = rows.next().await.map_err(|e| TokenSaveError::Database {
         message: format!("failed to read user_version row: {e}"),
         operation: "get_version".to_string(),
@@ -185,14 +186,17 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 pub async fn migrate(conn: &Connection) -> Result<bool> {
     debug_assert!(LATEST_VERSION > 0, "LATEST_VERSION must be positive");
     let current = get_version(conn).await?;
-    debug_assert!(current <= LATEST_VERSION, "database version {} is ahead of code version {}", current, LATEST_VERSION);
+    debug_assert!(
+        current <= LATEST_VERSION,
+        "database version {} is ahead of code version {}",
+        current,
+        LATEST_VERSION
+    );
     if current >= LATEST_VERSION {
         return Ok(false);
     }
 
-    eprintln!(
-        "[tokensave] migrating database schema v{current} → v{LATEST_VERSION}…"
-    );
+    eprintln!("[tokensave] migrating database schema v{current} → v{LATEST_VERSION}…");
 
     // BEGIN EXCLUSIVE blocks other writers (including other MCP servers or
     // post-commit hooks) until we COMMIT. Readers using WAL mode are not
@@ -229,7 +233,10 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
 
 /// Applies migrations sequentially from `current` up to `LATEST_VERSION`.
 async fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
-    debug_assert!(current < LATEST_VERSION, "run_migrations called when already at latest version");
+    debug_assert!(
+        current < LATEST_VERSION,
+        "run_migrations called when already at latest version"
+    );
     for version in (current + 1)..=LATEST_VERSION {
         run_migration(conn, version).await?;
         set_version(conn, version).await?;

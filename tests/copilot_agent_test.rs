@@ -204,7 +204,10 @@ fn test_install_idempotent_cli() {
     let config = read_json(&cli_config_path(home));
     let servers = config["mcpServers"].as_object().unwrap();
     let ts_count = servers.keys().filter(|k| *k == "tokensave").count();
-    assert_eq!(ts_count, 1, "tokensave should appear exactly once in CLI config");
+    assert_eq!(
+        ts_count, 1,
+        "tokensave should appear exactly once in CLI config"
+    );
 }
 
 // ===========================================================================
@@ -222,7 +225,10 @@ fn test_uninstall_removes_vscode_mcp_entry() {
 
     let settings_path = vscode_settings_path(home);
     // settings.json is always written back (never deleted)
-    assert!(settings_path.exists(), "settings.json should still exist after uninstall");
+    assert!(
+        settings_path.exists(),
+        "settings.json should still exist after uninstall"
+    );
     let settings = read_json(&settings_path);
     let has_tokensave = settings
         .get("mcp")
@@ -249,10 +255,7 @@ fn test_uninstall_cleans_empty_mcp_objects() {
     // After removing tokensave (the only server), both "servers" and "mcp"
     // should be cleaned up.
     assert!(
-        settings.get("mcp").is_none()
-            || settings["mcp"]
-                .as_object()
-                .is_some_and(|o| o.is_empty()),
+        settings.get("mcp").is_none() || settings["mcp"].as_object().is_some_and(|o| o.is_empty()),
         "empty mcp object should be cleaned up"
     );
 }
@@ -299,7 +302,10 @@ fn test_uninstall_preserves_other_cli_servers() {
     CopilotIntegration.install(&ctx).unwrap();
     CopilotIntegration.uninstall(&ctx).unwrap();
 
-    assert!(cli_path.exists(), "CLI config should still exist when other servers remain");
+    assert!(
+        cli_path.exists(),
+        "CLI config should still exist when other servers remain"
+    );
     let config = read_json(&cli_path);
     assert!(
         config["mcpServers"]["other-tool"].is_object(),
@@ -320,11 +326,7 @@ fn test_uninstall_preserves_other_vscode_settings() {
     // Pre-populate VS Code settings
     let settings_path = vscode_settings_path(home);
     std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &settings_path,
-        r#"{"editor.fontSize": 14}"#,
-    )
-    .unwrap();
+    std::fs::write(&settings_path, r#"{"editor.fontSize": 14}"#).unwrap();
 
     let ctx = make_ctx(home);
     CopilotIntegration.install(&ctx).unwrap();

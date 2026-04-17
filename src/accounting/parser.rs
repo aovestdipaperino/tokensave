@@ -240,10 +240,7 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
             .unwrap_or(0);
 
         // Check if we've already parsed this file up to this mtime
-        let (prev_offset, prev_mtime) = gdb
-            .get_parse_offset(&path_str)
-            .await
-            .unwrap_or((0, 0));
+        let (prev_offset, prev_mtime) = gdb.get_parse_offset(&path_str).await.unwrap_or((0, 0));
 
         if mtime == prev_mtime && prev_offset > 0 {
             // File hasn't changed since last parse
@@ -334,9 +331,8 @@ mod tests {
 
     #[test]
     fn test_extract_path_parts() {
-        let path = PathBuf::from(
-            "/Users/test/.claude/projects/-Users-test-Code/abc123-session.jsonl",
-        );
+        let path =
+            PathBuf::from("/Users/test/.claude/projects/-Users-test-Code/abc123-session.jsonl");
         let (project, session) = extract_path_parts(&path);
         assert_eq!(project, "-Users-test-Code");
         assert_eq!(session, "abc123-session");

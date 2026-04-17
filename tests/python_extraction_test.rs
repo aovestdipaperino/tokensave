@@ -62,7 +62,10 @@ async def fetch_data(url):
         .collect();
     assert_eq!(fns.len(), 1);
     assert_eq!(fns[0].name, "fetch_data");
-    assert!(fns[0].is_async, "async function should have is_async = true");
+    assert!(
+        fns[0].is_async,
+        "async function should have is_async = true"
+    );
 }
 
 #[test]
@@ -206,7 +209,12 @@ from collections import defaultdict
         .collect();
     // from os.path import join, exists → 2 Use nodes
     // from collections import defaultdict → 1 Use node
-    assert_eq!(uses.len(), 3, "uses: {:?}", uses.iter().map(|u| &u.name).collect::<Vec<_>>());
+    assert_eq!(
+        uses.len(),
+        3,
+        "uses: {:?}",
+        uses.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -331,7 +339,11 @@ class MyClass:
         .filter(|n| n.kind == NodeKind::Method)
         .collect();
     let init = methods.iter().find(|m| m.name == "__init__").unwrap();
-    assert_eq!(init.visibility, Visibility::Pub, "__init__ should be Pub (dunder)");
+    assert_eq!(
+        init.visibility,
+        Visibility::Pub,
+        "__init__ should be Pub (dunder)"
+    );
     let mangled = methods.iter().find(|m| m.name == "__mangled").unwrap();
     assert_eq!(
         mangled.visibility,
@@ -357,7 +369,12 @@ some_var = "hello"
         .iter()
         .filter(|n| n.kind == NodeKind::Const)
         .collect();
-    assert_eq!(consts.len(), 2, "should detect UPPER_CASE assignments as consts: {:?}", consts.iter().map(|c| &c.name).collect::<Vec<_>>());
+    assert_eq!(
+        consts.len(),
+        2,
+        "should detect UPPER_CASE assignments as consts: {:?}",
+        consts.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
     assert!(consts.iter().any(|c| c.name == "MAX_SIZE"));
     assert!(consts.iter().any(|c| c.name == "MIN_VALUE"));
 }

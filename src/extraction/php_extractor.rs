@@ -112,9 +112,7 @@ impl PhpExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -688,11 +686,7 @@ impl PhpExtractor {
     }
 
     /// Extract a single use clause (e.g., `Foo\Bar as Baz`).
-    fn visit_use_clause(
-        state: &mut ExtractionState,
-        clause: TsNode<'_>,
-        use_node: TsNode<'_>,
-    ) {
+    fn visit_use_clause(state: &mut ExtractionState, clause: TsNode<'_>, use_node: TsNode<'_>) {
         let name = Self::find_child_by_kind(clause, "qualified_name")
             .or_else(|| Self::find_child_by_kind(clause, "name"))
             .map(|n| state.node_text(n))
@@ -701,11 +695,7 @@ impl PhpExtractor {
     }
 
     /// Extract a grouped use declaration (e.g., `use Foo\{Bar, Baz}`).
-    fn visit_use_group(
-        state: &mut ExtractionState,
-        group: TsNode<'_>,
-        use_node: TsNode<'_>,
-    ) {
+    fn visit_use_group(state: &mut ExtractionState, group: TsNode<'_>, use_node: TsNode<'_>) {
         // The group has a prefix and individual clauses.
         let prefix = Self::find_child_by_kind(group, "namespace_name")
             .map(|n| state.node_text(n))
@@ -897,13 +887,13 @@ impl PhpExtractor {
                         visibility: visibility.clone(),
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -989,11 +979,7 @@ impl PhpExtractor {
     }
 
     /// Extract implemented interfaces from a class declaration (implements clause).
-    fn extract_class_implements(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        class_id: &str,
-    ) {
+    fn extract_class_implements(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         if let Some(impl_list) = Self::find_child_by_kind(node, "class_implements") {
             let mut cursor = impl_list.walk();
             if cursor.goto_first_child() {
@@ -1237,9 +1223,10 @@ impl PhpExtractor {
                                     end_line,
                                     start_column,
                                     end_column,
-                                    signature: Some(
-                                        format!("#[{}]", state.node_text(child).trim()),
-                                    ),
+                                    signature: Some(format!(
+                                        "#[{}]",
+                                        state.node_text(child).trim()
+                                    )),
                                     docstring: None,
                                     visibility: Visibility::Private,
                                     is_async: false,

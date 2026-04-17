@@ -112,9 +112,7 @@ impl PerlExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -410,7 +408,9 @@ impl PerlExtractor {
                     // Only treat ALL_CAPS variables as constants.
                     let bare_name = var_name.trim_start_matches('$');
                     if !bare_name.is_empty()
-                        && bare_name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                        && bare_name
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c == '_')
                     {
                         let name = bare_name.to_string();
                         let start_line = node.start_position().row as u32;
@@ -418,14 +418,9 @@ impl PerlExtractor {
                         let start_column = node.start_position().column as u32;
                         let end_column = node.end_position().column as u32;
                         let text = state.node_text(node);
-                        let qualified_name =
-                            format!("{}::{}", state.qualified_prefix(), name);
-                        let id = generate_node_id(
-                            &state.file_path,
-                            &NodeKind::Const,
-                            &name,
-                            start_line,
-                        );
+                        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+                        let id =
+                            generate_node_id(&state.file_path, &NodeKind::Const, &name, start_line);
                         let docstring = Self::extract_docstring(state, node);
 
                         let graph_node = Node {
@@ -576,7 +571,7 @@ impl PerlExtractor {
                                 .map(|n| state.node_text(n));
 
                             if let Some(obj) = obj_name {
-                                let qualified = format!("{}->{}",  obj, name);
+                                let qualified = format!("{}->{}", obj, name);
                                 state.unresolved_refs.push(UnresolvedRef {
                                     from_node_id: fn_node_id.to_string(),
                                     reference_name: qualified,

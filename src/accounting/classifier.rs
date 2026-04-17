@@ -140,7 +140,16 @@ pub fn classify(tool_names: &[&str], bash_commands: &[&str]) -> TaskCategory {
     }
 
     // Debugging: error/fix keywords in bash output context
-    if any_bash(&["fix", "debug", "error", "bug", "issue", "stacktrace", "panic"]) && has_edit {
+    if any_bash(&[
+        "fix",
+        "debug",
+        "error",
+        "bug",
+        "issue",
+        "stacktrace",
+        "panic",
+    ]) && has_edit
+    {
         return TaskCategory::Debugging;
     }
 
@@ -183,18 +192,12 @@ mod tests {
 
     #[test]
     fn test_agent_is_delegation() {
-        assert_eq!(
-            classify(&["Agent", "Edit"], &[]),
-            TaskCategory::Delegation
-        );
+        assert_eq!(classify(&["Agent", "Edit"], &[]), TaskCategory::Delegation);
     }
 
     #[test]
     fn test_git_bash_is_gitops() {
-        assert_eq!(
-            classify(&["Bash"], &["git status"]),
-            TaskCategory::GitOps
-        );
+        assert_eq!(classify(&["Bash"], &["git status"]), TaskCategory::GitOps);
     }
 
     #[test]
@@ -207,18 +210,12 @@ mod tests {
 
     #[test]
     fn test_read_only_is_exploration() {
-        assert_eq!(
-            classify(&["Read", "Grep"], &[]),
-            TaskCategory::Exploration
-        );
+        assert_eq!(classify(&["Read", "Grep"], &[]), TaskCategory::Exploration);
     }
 
     #[test]
     fn test_plan_mode_is_planning() {
-        assert_eq!(
-            classify(&["EnterPlanMode"], &[]),
-            TaskCategory::Planning
-        );
+        assert_eq!(classify(&["EnterPlanMode"], &[]), TaskCategory::Planning);
     }
 
     #[test]

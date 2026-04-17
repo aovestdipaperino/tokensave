@@ -114,19 +114,24 @@ fn uninstall_mcp_server(mcp_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!("  No tokensave MCP server in {}, skipping", mcp_path.display());
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            mcp_path.display()
+        );
         return;
     };
 
     if servers.remove("tokensave").is_none() {
-        eprintln!("  No tokensave MCP server in {}, skipping", mcp_path.display());
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            mcp_path.display()
+        );
         return;
     }
 
     let is_empty = settings.as_object().is_some_and(|o| {
-        o.iter().all(|(k, v)| {
-            k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty())
-        })
+        o.iter()
+            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty()))
     });
 
     if is_empty {
@@ -162,15 +167,10 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 
     let settings = load_json_file(&mcp_path);
-    let server = settings
-        .get("mcpServers")
-        .and_then(|v| v.get("tokensave"));
+    let server = settings.get("mcpServers").and_then(|v| v.get("tokensave"));
 
     if server.and_then(|v| v.as_object()).is_some() {
-        dc.pass(&format!(
-            "MCP server registered in {}",
-            mcp_path.display()
-        ));
+        dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
     } else {
         dc.fail(&format!(
             "MCP server NOT registered in {} — run `tokensave install --agent cursor`",

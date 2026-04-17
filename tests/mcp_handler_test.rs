@@ -109,7 +109,10 @@ async fn test_search() {
     .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
-    assert!(text.contains("helper"), "search results should contain 'helper'");
+    assert!(
+        text.contains("helper"),
+        "search results should contain 'helper'"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -139,14 +142,9 @@ async fn test_context() {
 async fn test_callers() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_callers",
-        json!({"node_id": node_id}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_callers", json!({"node_id": node_id}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -159,14 +157,9 @@ async fn test_callers() {
 async fn test_callees() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_callees",
-        json!({"node_id": node_id}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_callees", json!({"node_id": node_id}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -179,14 +172,9 @@ async fn test_callees() {
 async fn test_impact() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_impact",
-        json!({"node_id": node_id}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_impact", json!({"node_id": node_id}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("node_count"));
 }
@@ -199,19 +187,26 @@ async fn test_impact() {
 async fn test_node_existing() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_node",
-        json!({"node_id": node_id}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_node", json!({"node_id": node_id}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("helper"), "node detail should contain the name");
-    assert!(text.contains("start_line"), "node detail should contain start_line");
-    assert!(text.contains("signature"), "node detail should contain signature");
-    assert!(text.contains("visibility"), "node detail should contain visibility");
+    assert!(
+        text.contains("helper"),
+        "node detail should contain the name"
+    );
+    assert!(
+        text.contains("start_line"),
+        "node detail should contain start_line"
+    );
+    assert!(
+        text.contains("signature"),
+        "node detail should contain signature"
+    );
+    assert!(
+        text.contains("visibility"),
+        "node detail should contain visibility"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,8 +248,14 @@ async fn test_status() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("node_count"), "status should include node_count");
-    assert!(text.contains("server"), "status should include server stats");
+    assert!(
+        text.contains("node_count"),
+        "status should include node_count"
+    );
+    assert!(
+        text.contains("server"),
+        "status should include server stats"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +270,10 @@ async fn test_files_no_filter() {
         .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty(), "files listing should not be empty");
-    assert!(text.contains("indexed files"), "should have 'indexed files' header");
+    assert!(
+        text.contains("indexed files"),
+        "should have 'indexed files' header"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -279,14 +283,9 @@ async fn test_files_no_filter() {
 #[tokio::test]
 async fn test_files_path_filter() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({"path": "src"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({"path": "src"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     // The test file lives under tests/, so if path filter works it should
@@ -304,14 +303,9 @@ async fn test_files_path_filter() {
 #[tokio::test]
 async fn test_files_pattern_filter() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({"pattern": "*.rs"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({"pattern": "*.rs"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -323,14 +317,9 @@ async fn test_files_pattern_filter() {
 #[tokio::test]
 async fn test_files_flat_format() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({"format": "flat"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({"format": "flat"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     // Flat format includes "bytes" per entry
@@ -353,7 +342,10 @@ async fn test_affected() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("affected_tests"), "should have affected_tests key");
+    assert!(
+        text.contains("affected_tests"),
+        "should have affected_tests key"
+    );
     assert!(text.contains("count"), "should have count key");
 }
 
@@ -368,7 +360,10 @@ async fn test_dead_code() {
         .await
         .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("dead_code_count"), "should have dead_code_count key");
+    assert!(
+        text.contains("dead_code_count"),
+        "should have dead_code_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -387,8 +382,14 @@ async fn test_diff_context() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("changed_files"), "should have changed_files key");
-    assert!(text.contains("modified_symbols"), "should have modified_symbols key");
+    assert!(
+        text.contains("changed_files"),
+        "should have changed_files key"
+    );
+    assert!(
+        text.contains("modified_symbols"),
+        "should have modified_symbols key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -398,18 +399,19 @@ async fn test_diff_context() {
 #[tokio::test]
 async fn test_module_api() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_module_api",
-        json!({"path": "src"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_module_api", json!({"path": "src"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("public_symbol_count"), "should have public_symbol_count key");
+    assert!(
+        text.contains("public_symbol_count"),
+        "should have public_symbol_count key"
+    );
     // helper is pub so it should appear
-    assert!(text.contains("helper"), "pub fn helper should appear in module API");
+    assert!(
+        text.contains("helper"),
+        "pub fn helper should appear in module API"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -433,16 +435,14 @@ async fn test_circular() {
 #[tokio::test]
 async fn test_hotspots() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_hotspots",
-        json!({"limit": 5}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_hotspots", json!({"limit": 5}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("hotspot_count"), "should have hotspot_count key");
+    assert!(
+        text.contains("hotspot_count"),
+        "should have hotspot_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -452,17 +452,15 @@ async fn test_hotspots() {
 #[tokio::test]
 async fn test_similar() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_similar",
-        json!({"symbol": "helper"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_similar", json!({"symbol": "helper"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
-    assert!(text.contains("helper"), "similar results should include 'helper'");
+    assert!(
+        text.contains("helper"),
+        "similar results should include 'helper'"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -482,7 +480,10 @@ async fn test_rename_preview() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("reference_count"), "should have reference_count key");
+    assert!(
+        text.contains("reference_count"),
+        "should have reference_count key"
+    );
     assert!(text.contains("node"), "should have node key");
 }
 
@@ -497,7 +498,10 @@ async fn test_unused_imports() {
         .await
         .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("unused_import_count"), "should have unused_import_count key");
+    assert!(
+        text.contains("unused_import_count"),
+        "should have unused_import_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +521,10 @@ async fn test_rank() {
     .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("ranking"), "should have ranking key");
-    assert!(text.contains("result_count"), "should have result_count key");
+    assert!(
+        text.contains("result_count"),
+        "should have result_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -554,17 +561,15 @@ async fn test_rank_invalid_direction() {
 #[tokio::test]
 async fn test_largest() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_largest",
-        json!({"limit": 5}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_largest", json!({"limit": 5}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("ranking"), "should have ranking key");
-    assert!(text.contains("result_count"), "should have result_count key");
+    assert!(
+        text.contains("result_count"),
+        "should have result_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +607,10 @@ async fn test_inheritance_depth() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("result_count"), "should have result_count key");
+    assert!(
+        text.contains("result_count"),
+        "should have result_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -631,8 +639,14 @@ async fn test_distribution_summary() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("summary"), "summary mode should report 'summary'");
-    assert!(text.contains("distribution"), "should have distribution key");
+    assert!(
+        text.contains("summary"),
+        "summary mode should report 'summary'"
+    );
+    assert!(
+        text.contains("distribution"),
+        "should have distribution key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +689,10 @@ async fn test_doc_coverage() {
         .await
         .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("total_undocumented"), "should have total_undocumented key");
+    assert!(
+        text.contains("total_undocumented"),
+        "should have total_undocumented key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -685,16 +702,14 @@ async fn test_doc_coverage() {
 #[tokio::test]
 async fn test_god_class() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_god_class",
-        json!({"limit": 5}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_god_class", json!({"limit": 5}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("result_count"), "should have result_count key");
+    assert!(
+        text.contains("result_count"),
+        "should have result_count key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +753,10 @@ async fn test_port_status() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("coverage_percent"), "should have coverage_percent key");
+    assert!(
+        text.contains("coverage_percent"),
+        "should have coverage_percent key"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -757,7 +775,10 @@ async fn test_port_order() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("total_symbols"), "should have total_symbols key");
+    assert!(
+        text.contains("total_symbols"),
+        "should have total_symbols key"
+    );
     assert!(text.contains("levels"), "should have levels key");
 }
 
@@ -810,14 +831,9 @@ async fn test_node_id_alias() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     // Use "id" instead of "node_id"
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_node",
-        json!({"id": node_id}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_node", json!({"id": node_id}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(
         text.contains("helper"),
@@ -836,7 +852,10 @@ async fn test_status_without_server_stats() {
         .await
         .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("node_count"), "status should include node_count");
+    assert!(
+        text.contains("node_count"),
+        "status should include node_count"
+    );
     // Should NOT contain "server" key when None is passed
     assert!(
         !text.contains("\"server\""),
@@ -851,14 +870,9 @@ async fn test_status_without_server_stats() {
 #[tokio::test]
 async fn test_search_populates_touched_files() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_search",
-        json!({"query": "helper"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_search", json!({"query": "helper"}), None)
+        .await
+        .unwrap();
     assert!(
         !result.touched_files.is_empty(),
         "search results should populate touched_files"
@@ -923,7 +937,10 @@ async fn test_rank_outgoing() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("outgoing"), "should reflect outgoing direction");
+    assert!(
+        text.contains("outgoing"),
+        "should reflect outgoing direction"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -996,14 +1013,20 @@ async fn test_changelog_missing_refs() {
 async fn test_port_status_missing_dirs() {
     let (cg, _dir) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_port_status", json!({}), None).await;
-    assert!(result.is_err(), "port_status without source_dir should error");
+    assert!(
+        result.is_err(),
+        "port_status without source_dir should error"
+    );
 }
 
 #[tokio::test]
 async fn test_port_order_missing_source_dir() {
     let (cg, _dir) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_port_order", json!({}), None).await;
-    assert!(result.is_err(), "port_order without source_dir should error");
+    assert!(
+        result.is_err(),
+        "port_order without source_dir should error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1095,14 +1118,9 @@ async fn test_changelog_with_real_git() {
 #[tokio::test]
 async fn test_distribution_with_path_filter() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_distribution",
-        json!({"path": "src/"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_distribution", json!({"path": "src/"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("per_file"), "default mode should be per_file");
     // Should only contain src/ files, not tests/
@@ -1119,14 +1137,9 @@ async fn test_distribution_with_path_filter() {
 #[tokio::test]
 async fn test_files_grouped_format() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({"format": "grouped"}),
-        None,
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({"format": "grouped"}), None)
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     // Grouped format shows directory headers like "src/ (N files)"
@@ -1157,7 +1170,10 @@ async fn test_dead_code_custom_kinds() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("dead_code_count"), "should have dead_code_count key");
+    assert!(
+        text.contains("dead_code_count"),
+        "should have dead_code_count key"
+    );
     // Parse and verify any returned items are structs
     let parsed: Value = serde_json::from_str(text).unwrap_or(json!({}));
     if let Some(items) = parsed["dead_code"].as_array() {
@@ -1187,7 +1203,10 @@ async fn test_affected_with_custom_filter() {
     .await
     .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("affected_tests"), "should have affected_tests key");
+    assert!(
+        text.contains("affected_tests"),
+        "should have affected_tests key"
+    );
     assert!(text.contains("count"), "should have count key");
 }
 
@@ -1248,20 +1267,20 @@ async fn test_doc_coverage_response_structure() {
         parsed.get("total_undocumented").is_some(),
         "should have total_undocumented"
     );
-    assert!(
-        parsed.get("file_count").is_some(),
-        "should have file_count"
-    );
-    assert!(
-        parsed.get("files").is_some(),
-        "should have files array"
-    );
+    assert!(parsed.get("file_count").is_some(), "should have file_count");
+    assert!(parsed.get("files").is_some(), "should have files array");
     // If there are files, check their structure
     if let Some(files) = parsed["files"].as_array() {
         if let Some(first) = files.first() {
             assert!(first.get("file").is_some(), "file entry should have 'file'");
-            assert!(first.get("count").is_some(), "file entry should have 'count'");
-            assert!(first.get("symbols").is_some(), "file entry should have 'symbols'");
+            assert!(
+                first.get("count").is_some(),
+                "file entry should have 'count'"
+            );
+            assert!(
+                first.get("symbols").is_some(),
+                "file entry should have 'symbols'"
+            );
         }
     }
 }

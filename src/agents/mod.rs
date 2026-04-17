@@ -400,9 +400,7 @@ pub fn which_tokensave() -> Option<String> {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("tokensave"))
         {
-            return Some(normalize_path_separators(
-                &exe.to_string_lossy(),
-            ));
+            return Some(normalize_path_separators(&exe.to_string_lossy()));
         }
     }
     // Fall back to PATH lookup

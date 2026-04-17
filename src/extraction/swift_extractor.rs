@@ -112,9 +112,7 @@ impl SwiftExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -1186,7 +1184,9 @@ impl SwiftExtractor {
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
                     // Skip nested definitions to avoid polluting call sites.
-                    "function_declaration" | "init_declaration" | "class_declaration"
+                    "function_declaration"
+                    | "init_declaration"
+                    | "class_declaration"
                     | "protocol_declaration" => {}
                     _ => {
                         Self::extract_call_sites(state, child, fn_node_id);

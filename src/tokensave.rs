@@ -11,7 +11,7 @@ use crate::branch_meta::{self, BranchMeta};
 use crate::config::{get_tokensave_dir, is_excluded, load_config, save_config, TokenSaveConfig};
 use crate::context::ContextBuilder;
 use crate::db::Database;
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
 use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::ReferenceResolver;
@@ -97,8 +97,8 @@ impl TokenSave {
 
         // Bootstrap branch metadata if we can detect a default branch
         let active_branch = branch::current_branch(project_root);
-        let default_branch = branch::detect_default_branch(project_root)
-            .or_else(|| active_branch.clone());
+        let default_branch =
+            branch::detect_default_branch(project_root).or_else(|| active_branch.clone());
         if let Some(ref default) = default_branch {
             let meta = BranchMeta::new(default);
             let _ = branch_meta::save_branch_meta(&get_tokensave_dir(project_root), &meta);
@@ -221,7 +221,8 @@ impl TokenSave {
             eprintln!("[tokensave] schema changed — performing full re-index…");
             ts.index_all_with_progress(|current, total, file| {
                 eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
-            }).await?;
+            })
+            .await?;
             eprintln!("[tokensave] re-index complete.");
         }
 
@@ -247,7 +248,11 @@ impl TokenSave {
 
         let Some(branch) = branch else {
             // Detached HEAD — use default branch DB
-            return (default_db, Some(meta.default_branch.clone()), Some("detached HEAD — using default branch index".to_string()));
+            return (
+                default_db,
+                Some(meta.default_branch.clone()),
+                Some("detached HEAD — using default branch index".to_string()),
+            );
         };
 
         // Exact match: branch is tracked
@@ -258,8 +263,7 @@ impl TokenSave {
         }
 
         // Fallback: find nearest tracked ancestor
-        if let Some(ancestor) = branch::find_nearest_tracked_ancestor(project_root, branch, &meta)
-        {
+        if let Some(ancestor) = branch::find_nearest_tracked_ancestor(project_root, branch, &meta) {
             if let Some(path) = branch::resolve_branch_db_path(tokensave_dir, &ancestor, &meta) {
                 if path.exists() {
                     return (
@@ -301,12 +305,10 @@ impl TokenSave {
             }
         })?;
 
-        let db_path =
-            branch::resolve_branch_db_path(&tokensave_dir, branch_name, &meta).ok_or_else(
-                || TokenSaveError::Config {
-                    message: format!("branch '{branch_name}' is not tracked"),
-                },
-            )?;
+        let db_path = branch::resolve_branch_db_path(&tokensave_dir, branch_name, &meta)
+            .ok_or_else(|| TokenSaveError::Config {
+                message: format!("branch '{branch_name}' is not tracked"),
+            })?;
 
         if !db_path.exists() {
             return Err(TokenSaveError::Config {
@@ -522,7 +524,10 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
     {
         debug_assert!(self.project_root.exists(), "project root does not exist");
-        debug_assert!(self.project_root.is_dir(), "project root is not a directory");
+        debug_assert!(
+            self.project_root.is_dir(),
+            "project root is not a directory"
+        );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -549,8 +554,7 @@ impl TokenSave {
                 result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
-                let mtime = sync::file_stat(&abs_path)
-                    .map_or_else(current_timestamp, |(m, _)| m);
+                let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
                 Some((file_path.clone(), result, hash, size, mtime))
             })
             .collect();
@@ -589,8 +593,12 @@ impl TokenSave {
         // 6. Sort by PK order + dedup edges
         all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         all_edges.sort_unstable_by(|a, b| {
-            (&a.source, &a.target, a.kind.as_str(), &a.line)
-                .cmp(&(&b.source, &b.target, b.kind.as_str(), &b.line))
+            (&a.source, &a.target, a.kind.as_str(), &a.line).cmp(&(
+                &b.source,
+                &b.target,
+                b.kind.as_str(),
+                &b.line,
+            ))
         });
         all_edges.dedup_by(|a, b| {
             a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
@@ -616,10 +624,14 @@ impl TokenSave {
             edge_count: total_edges,
             duration_ms: start.elapsed().as_millis() as u64,
         };
-        debug_assert!(result.node_count >= result.file_count || result.file_count == 0,
-            "fewer nodes than files is unexpected");
-        debug_assert!(result.duration_ms > 0 || result.file_count == 0,
-            "non-empty index completed in zero milliseconds");
+        debug_assert!(
+            result.node_count >= result.file_count || result.file_count == 0,
+            "fewer nodes than files is unexpected"
+        );
+        debug_assert!(
+            result.duration_ms > 0 || result.file_count == 0,
+            "non-empty index completed in zero milliseconds"
+        );
         clear_dirty_sentinel(&self.project_root);
         Ok(result)
     }
@@ -642,8 +654,14 @@ impl TokenSave {
     where
         F: Fn(usize, usize, &str),
     {
-        debug_assert!(self.project_root.exists(), "sync: project root does not exist");
-        debug_assert!(self.project_root.is_dir(), "sync: project root is not a directory");
+        debug_assert!(
+            self.project_root.exists(),
+            "sync: project root does not exist"
+        );
+        debug_assert!(
+            self.project_root.is_dir(),
+            "sync: project root is not a directory"
+        );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -665,18 +683,15 @@ impl TokenSave {
 
         // Load all DB file records into a map for O(1) lookups
         let db_files = self.db.get_all_files().await?;
-        let db_map: HashMap<String, FileRecord> = db_files
-            .into_iter()
-            .map(|f| (f.path.clone(), f))
-            .collect();
+        let db_map: HashMap<String, FileRecord> =
+            db_files.into_iter().map(|f| (f.path.clone(), f)).collect();
 
         // Partition files by comparing (mtime, size) against stored values
         let mut new_files: Vec<String> = Vec::new();
         let mut stat_changed: Vec<String> = Vec::new();
         let mut current_set: std::collections::HashSet<&str> =
             std::collections::HashSet::with_capacity(file_stats.len());
-        let mut stat_map: HashMap<String, (i64, u64)> =
-            HashMap::with_capacity(file_stats.len());
+        let mut stat_map: HashMap<String, (i64, u64)> = HashMap::with_capacity(file_stats.len());
 
         for (path, mtime, size) in &file_stats {
             current_set.insert(path.as_str());
@@ -745,9 +760,7 @@ impl TokenSave {
 
         // Update mtime for false-positive files so future syncs skip them
         for path in &mtime_only_changed {
-            if let (Some(record), Some(&(mtime, size))) =
-                (db_map.get(path), stat_map.get(path))
-            {
+            if let (Some(record), Some(&(mtime, size))) = (db_map.get(path), stat_map.get(path)) {
                 let updated = FileRecord {
                     modified_at: mtime,
                     size,
@@ -777,25 +790,24 @@ impl TokenSave {
                 result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
-                let mtime = stat_map.get(file_path).map_or_else(
-                    || current_timestamp(),
-                    |&(m, _)| m,
-                );
+                let mtime = stat_map
+                    .get(file_path)
+                    .map_or_else(|| current_timestamp(), |&(m, _)| m);
                 Some((file_path.clone(), result, hash, size, mtime))
             })
             .collect();
 
         let total = sync_extractions.len();
-        for (idx, (file_path, result, hash, size, mtime)) in
-            sync_extractions.iter().enumerate()
-        {
+        for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
             on_progress(idx + 1, total, file_path);
 
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
             self.db.insert_edges(&result.edges).await?;
             if !result.unresolved_refs.is_empty() {
-                self.db.insert_unresolved_refs(&result.unresolved_refs).await?;
+                self.db
+                    .insert_unresolved_refs(&result.unresolved_refs)
+                    .await?;
             }
 
             let file_record = FileRecord {
@@ -852,9 +864,15 @@ impl TokenSave {
     /// Supported extensions are derived from the `LanguageRegistry` so that
     /// adding a new extractor automatically picks up its files.
     fn scan_files(&self) -> Result<Vec<String>> {
-        debug_assert!(self.project_root.is_dir(), "scan_files: project_root is not a directory");
+        debug_assert!(
+            self.project_root.is_dir(),
+            "scan_files: project_root is not a directory"
+        );
         let supported_exts = self.registry.supported_extensions();
-        debug_assert!(!supported_exts.is_empty(), "scan_files: no supported extensions registered");
+        debug_assert!(
+            !supported_exts.is_empty(),
+            "scan_files: no supported extensions registered"
+        );
 
         if self.config.git_ignore {
             let files = self.scan_files_with_gitignore(&supported_exts)?;
@@ -885,10 +903,7 @@ impl TokenSave {
     }
 
     /// Walk using `walkdir`, skipping hidden directories and `target/`.
-    fn scan_files_walkdir(
-        &self,
-        supported_exts: &[&str],
-    ) -> Result<Vec<String>> {
+    fn scan_files_walkdir(&self, supported_exts: &[&str]) -> Result<Vec<String>> {
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
             .follow_links(false)
@@ -917,10 +932,7 @@ impl TokenSave {
 
     /// Walk using the `ignore` crate, which respects `.gitignore` rules,
     /// `.git/info/exclude`, and the user's global gitignore.
-    fn scan_files_with_gitignore(
-        &self,
-        supported_exts: &[&str],
-    ) -> Result<Vec<String>> {
+    fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Result<Vec<String>> {
         let mut files = Vec::new();
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(false)
@@ -950,11 +962,7 @@ impl TokenSave {
 
     /// Checks whether a file should be included: correct extension, not
     /// excluded by config globs, and within the max file size.
-    fn accept_file(
-        &self,
-        path: &Path,
-        supported_exts: &[&str],
-    ) -> Option<String> {
+    fn accept_file(&self, path: &Path, supported_exts: &[&str]) -> Option<String> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !supported_exts.contains(&ext) {
             return None;
@@ -1072,7 +1080,9 @@ impl TokenSave {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u32)>> {
-        self.db.get_largest_nodes(node_kind, path_prefix, limit).await
+        self.db
+            .get_largest_nodes(node_kind, path_prefix, limit)
+            .await
     }
 
     /// Returns files ranked by coupling (fan-in or fan-out).
@@ -1114,7 +1124,9 @@ impl TokenSave {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u32, u64, u64, u64)>> {
-        self.db.get_complexity_ranked(node_kind, path_prefix, limit).await
+        self.db
+            .get_complexity_ranked(node_kind, path_prefix, limit)
+            .await
     }
 
     /// Returns public symbols missing docstrings.
@@ -1144,7 +1156,11 @@ impl TokenSave {
     }
 
     /// Builds an AI-ready context for a given task description.
-    pub async fn build_context(&self, task: &str, options: &BuildContextOptions) -> Result<TaskContext> {
+    pub async fn build_context(
+        &self,
+        task: &str,
+        options: &BuildContextOptions,
+    ) -> Result<TaskContext> {
         let builder = ContextBuilder::new(&self.db, &self.project_root);
         builder.build_context(task, options).await
     }
@@ -1319,8 +1335,15 @@ impl TokenSave {
 /// Returns `true` if the file path looks like a test file.
 pub fn is_test_file(path: &str) -> bool {
     let test_segments = [
-        "test/", "tests/", "__tests__/", "spec/", "e2e/",
-        ".test.", ".spec.", "_test.", "_spec.",
+        "test/",
+        "tests/",
+        "__tests__/",
+        "spec/",
+        "e2e/",
+        ".test.",
+        ".spec.",
+        "_test.",
+        "_spec.",
     ];
     let lower = path.to_ascii_lowercase();
     test_segments.iter().any(|s| lower.contains(s))

@@ -188,7 +188,12 @@ impl KotlinExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(&state.file_path, &NodeKind::KotlinPackage, &name, start_line);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::KotlinPackage,
+            &name,
+            start_line,
+        );
 
         let graph_node = Node {
             id: id.clone(),
@@ -200,7 +205,14 @@ impl KotlinExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -722,8 +734,7 @@ impl KotlinExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id =
-            generate_node_id(&state.file_path, &NodeKind::KotlinObject, &name, start_line);
+        let id = generate_node_id(&state.file_path, &NodeKind::KotlinObject, &name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
@@ -802,7 +813,15 @@ impl KotlinExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").trim().to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            ),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -954,9 +973,21 @@ impl KotlinExtractor {
 
         let sig_text = state.node_text(node);
         let sig = if is_var {
-            format!("var {}", sig_text.trim().strip_prefix("var ").unwrap_or(sig_text.trim()))
+            format!(
+                "var {}",
+                sig_text
+                    .trim()
+                    .strip_prefix("var ")
+                    .unwrap_or(sig_text.trim())
+            )
         } else {
-            format!("val {}", sig_text.trim().strip_prefix("val ").unwrap_or(sig_text.trim()))
+            format!(
+                "val {}",
+                sig_text
+                    .trim()
+                    .strip_prefix("val ")
+                    .unwrap_or(sig_text.trim())
+            )
         };
         // Truncate at '=' for the signature
         let sig = sig.split('=').next().unwrap_or(&sig).trim().to_string();
@@ -1277,7 +1308,11 @@ impl KotlinExtractor {
     }
 
     /// Extract delegation specifiers (superclass/interface) and create Extends unresolved refs.
-    fn extract_delegation_specifiers(state: &mut ExtractionState, node: TsNode<'_>, owner_id: &str) {
+    fn extract_delegation_specifiers(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        owner_id: &str,
+    ) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -1293,11 +1328,7 @@ impl KotlinExtractor {
     }
 
     /// Extract a single delegation specifier (e.g. `: Foo()` or `: Bar`).
-    fn extract_single_delegation(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        owner_id: &str,
-    ) {
+    fn extract_single_delegation(state: &mut ExtractionState, node: TsNode<'_>, owner_id: &str) {
         // delegation_specifier can contain constructor_invocation or user_type.
         let type_name = Self::find_child_by_kind(node, "constructor_invocation")
             .and_then(|ci| Self::find_child_by_kind(ci, "user_type"))
@@ -1361,8 +1392,7 @@ impl KotlinExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), annot_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), annot_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -1385,13 +1415,13 @@ impl KotlinExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1455,9 +1485,25 @@ impl KotlinExtractor {
     /// Parameters are `parameter` nodes with `: Type` syntax.
     fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let kotlin_builtins: &[&str] = &[
-            "Unit", "Int", "Long", "Short", "Byte", "Char", "Float", "Double",
-            "Boolean", "String", "Any", "Nothing", "Array", "List", "Map", "Set",
-            "MutableList", "MutableMap", "MutableSet",
+            "Unit",
+            "Int",
+            "Long",
+            "Short",
+            "Byte",
+            "Char",
+            "Float",
+            "Double",
+            "Boolean",
+            "String",
+            "Any",
+            "Nothing",
+            "Array",
+            "List",
+            "Map",
+            "Set",
+            "MutableList",
+            "MutableMap",
+            "MutableSet",
         ];
 
         let mut cursor = node.walk();

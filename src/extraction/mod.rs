@@ -1,19 +1,21 @@
 // Lite — always available (no cfg needed)
-mod rust_extractor;
-mod go_extractor;
-mod java_extractor;
-mod scala_extractor;
-mod typescript_extractor;
-mod python_extractor;
 mod c_extractor;
 mod cpp_extractor;
-mod kotlin_extractor;
 mod csharp_extractor;
+mod go_extractor;
+mod java_extractor;
+mod kotlin_extractor;
+mod python_extractor;
+mod rust_extractor;
+mod scala_extractor;
 mod swift_extractor;
+mod typescript_extractor;
 
 pub mod complexity;
 pub mod ts_provider;
 
+#[cfg(feature = "lang-bash")]
+mod bash_extractor;
 /// Tree-sitter based source code extraction module.
 ///
 /// This module provides extractors that parse source files using tree-sitter
@@ -22,107 +24,105 @@ pub mod ts_provider;
 // Medium
 #[cfg(feature = "lang-dart")]
 mod dart_extractor;
+#[cfg(feature = "lang-nix")]
+mod nix_extractor;
 #[cfg(feature = "lang-pascal")]
 mod pascal_extractor;
 #[cfg(feature = "lang-php")]
 mod php_extractor;
-#[cfg(feature = "lang-ruby")]
-mod ruby_extractor;
-#[cfg(feature = "lang-bash")]
-mod bash_extractor;
-#[cfg(feature = "lang-protobuf")]
-mod proto_extractor;
 #[cfg(feature = "lang-powershell")]
 mod powershell_extractor;
-#[cfg(feature = "lang-nix")]
-mod nix_extractor;
+#[cfg(feature = "lang-protobuf")]
+mod proto_extractor;
+#[cfg(feature = "lang-ruby")]
+mod ruby_extractor;
 #[cfg(feature = "lang-vbnet")]
 mod vbnet_extractor;
 
 // Full
+#[cfg(feature = "lang-batch")]
+mod batch_extractor;
+#[cfg(feature = "lang-cobol")]
+mod cobol_extractor;
+#[cfg(feature = "lang-dockerfile")]
+mod dockerfile_extractor;
+#[cfg(feature = "lang-fortran")]
+mod fortran_extractor;
+#[cfg(feature = "lang-gwbasic")]
+mod gwbasic_extractor;
 #[cfg(feature = "lang-lua")]
 mod lua_extractor;
-#[cfg(feature = "lang-zig")]
-mod zig_extractor;
+#[cfg(feature = "lang-msbasic2")]
+mod msbasic2_extractor;
 #[cfg(feature = "lang-objc")]
 mod objc_extractor;
 #[cfg(feature = "lang-perl")]
 mod perl_extractor;
-#[cfg(feature = "lang-batch")]
-mod batch_extractor;
-#[cfg(feature = "lang-fortran")]
-mod fortran_extractor;
-#[cfg(feature = "lang-cobol")]
-mod cobol_extractor;
-#[cfg(feature = "lang-msbasic2")]
-mod msbasic2_extractor;
-#[cfg(feature = "lang-gwbasic")]
-mod gwbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
 pub(crate) mod qbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
 mod quickbasic_extractor;
-#[cfg(feature = "lang-dockerfile")]
-mod dockerfile_extractor;
+#[cfg(feature = "lang-zig")]
+mod zig_extractor;
 
 // Lite — always available (no cfg needed)
-pub use rust_extractor::RustExtractor;
-pub use go_extractor::GoExtractor;
-pub use java_extractor::JavaExtractor;
-pub use scala_extractor::ScalaExtractor;
-pub use typescript_extractor::TypeScriptExtractor;
-pub use python_extractor::PythonExtractor;
 pub use c_extractor::CExtractor;
 pub use cpp_extractor::CppExtractor;
-pub use kotlin_extractor::KotlinExtractor;
 pub use csharp_extractor::CSharpExtractor;
+pub use go_extractor::GoExtractor;
+pub use java_extractor::JavaExtractor;
+pub use kotlin_extractor::KotlinExtractor;
+pub use python_extractor::PythonExtractor;
+pub use rust_extractor::RustExtractor;
+pub use scala_extractor::ScalaExtractor;
 pub use swift_extractor::SwiftExtractor;
+pub use typescript_extractor::TypeScriptExtractor;
 
 // Medium
+#[cfg(feature = "lang-bash")]
+pub use bash_extractor::BashExtractor;
 #[cfg(feature = "lang-dart")]
 pub use dart_extractor::DartExtractor;
+#[cfg(feature = "lang-nix")]
+pub use nix_extractor::NixExtractor;
 #[cfg(feature = "lang-pascal")]
 pub use pascal_extractor::PascalExtractor;
 #[cfg(feature = "lang-php")]
 pub use php_extractor::PhpExtractor;
-#[cfg(feature = "lang-ruby")]
-pub use ruby_extractor::RubyExtractor;
-#[cfg(feature = "lang-bash")]
-pub use bash_extractor::BashExtractor;
-#[cfg(feature = "lang-protobuf")]
-pub use proto_extractor::ProtoExtractor;
 #[cfg(feature = "lang-powershell")]
 pub use powershell_extractor::PowerShellExtractor;
-#[cfg(feature = "lang-nix")]
-pub use nix_extractor::NixExtractor;
+#[cfg(feature = "lang-protobuf")]
+pub use proto_extractor::ProtoExtractor;
+#[cfg(feature = "lang-ruby")]
+pub use ruby_extractor::RubyExtractor;
 #[cfg(feature = "lang-vbnet")]
 pub use vbnet_extractor::VbNetExtractor;
 
 // Full
+#[cfg(feature = "lang-batch")]
+pub use batch_extractor::BatchExtractor;
+#[cfg(feature = "lang-cobol")]
+pub use cobol_extractor::CobolExtractor;
+#[cfg(feature = "lang-dockerfile")]
+pub use dockerfile_extractor::DockerfileExtractor;
+#[cfg(feature = "lang-fortran")]
+pub use fortran_extractor::FortranExtractor;
+#[cfg(feature = "lang-gwbasic")]
+pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-lua")]
 pub use lua_extractor::LuaExtractor;
-#[cfg(feature = "lang-zig")]
-pub use zig_extractor::ZigExtractor;
+#[cfg(feature = "lang-msbasic2")]
+pub use msbasic2_extractor::MsBasic2Extractor;
 #[cfg(feature = "lang-objc")]
 pub use objc_extractor::ObjcExtractor;
 #[cfg(feature = "lang-perl")]
 pub use perl_extractor::PerlExtractor;
-#[cfg(feature = "lang-batch")]
-pub use batch_extractor::BatchExtractor;
-#[cfg(feature = "lang-fortran")]
-pub use fortran_extractor::FortranExtractor;
-#[cfg(feature = "lang-cobol")]
-pub use cobol_extractor::CobolExtractor;
-#[cfg(feature = "lang-msbasic2")]
-pub use msbasic2_extractor::MsBasic2Extractor;
-#[cfg(feature = "lang-gwbasic")]
-pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use qbasic_extractor::QBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use quickbasic_extractor::QuickBasicExtractor;
-#[cfg(feature = "lang-dockerfile")]
-pub use dockerfile_extractor::DockerfileExtractor;
+#[cfg(feature = "lang-zig")]
+pub use zig_extractor::ZigExtractor;
 
 use crate::types::ExtractionResult;
 

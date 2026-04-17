@@ -103,9 +103,7 @@ impl ProtoExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -168,7 +166,13 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Package, &name, start_line);
-        let signature = Some(state.node_text(node).trim_end_matches(';').trim().to_string());
+        let signature = Some(
+            state
+                .node_text(node)
+                .trim_end_matches(';')
+                .trim()
+                .to_string(),
+        );
 
         let graph_node = Node {
             id: id.clone(),
@@ -222,7 +226,13 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Use, &name, start_line);
-        let signature = Some(state.node_text(node).trim_end_matches(';').trim().to_string());
+        let signature = Some(
+            state
+                .node_text(node)
+                .trim_end_matches(';')
+                .trim()
+                .to_string(),
+        );
 
         let graph_node = Node {
             id: id.clone(),

@@ -488,11 +488,7 @@ int add(int a, int b) {
         .collect();
     assert_eq!(fns.len(), 1);
     let doc = fns[0].docstring.as_ref().expect("should have docstring");
-    assert!(
-        doc.contains("Adds two integers"),
-        "docstring: {:?}",
-        doc
-    );
+    assert!(doc.contains("Adds two integers"), "docstring: {:?}", doc);
 }
 
 #[test]
@@ -790,7 +786,11 @@ class [[nodiscard]] Result {
         .iter()
         .filter(|n| n.kind == NodeKind::AnnotationUsage)
         .collect();
-    assert!(annots.len() >= 3, "expected at least 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert!(
+        annots.len() >= 3,
+        "expected at least 3 annotations, got: {:?}",
+        annots.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
     assert!(annots.iter().any(|a| a.name == "nodiscard"));
     assert!(annots.iter().any(|a| a.name == "deprecated"));
 
@@ -800,7 +800,10 @@ class [[nodiscard]] Result {
         .iter()
         .filter(|e| e.kind == EdgeKind::Annotates)
         .collect();
-    assert!(annotates_edges.len() >= 3, "expected at least 3 Annotates edges");
+    assert!(
+        annotates_edges.len() >= 3,
+        "expected at least 3 Annotates edges"
+    );
 
     // Should have Annotates unresolved refs.
     let annot_refs: Vec<_> = result

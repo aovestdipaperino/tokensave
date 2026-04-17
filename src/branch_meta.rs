@@ -124,8 +124,7 @@ pub fn load_branch_meta(tokensave_dir: &Path) -> Option<BranchMeta> {
 /// Saves branch metadata to `.tokensave/branch-meta.json`.
 pub fn save_branch_meta(tokensave_dir: &Path, meta: &BranchMeta) -> std::io::Result<()> {
     let path = tokensave_dir.join(BRANCH_META_FILENAME);
-    let json = serde_json::to_string_pretty(meta)
-        .map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(meta).map_err(std::io::Error::other)?;
     std::fs::write(path, json)
 }
 
@@ -183,10 +182,7 @@ mod tests {
         let mut meta = BranchMeta::new("main");
         meta.add_branch("feature/foo", "branches/feature_foo.db", "main");
         assert!(meta.is_tracked("feature/foo"));
-        assert_eq!(
-            meta.branches["feature/foo"].parent.as_deref(),
-            Some("main")
-        );
+        assert_eq!(meta.branches["feature/foo"].parent.as_deref(), Some("main"));
 
         let removed = meta.remove_branch("feature/foo");
         assert!(removed.is_some());

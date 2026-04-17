@@ -190,10 +190,15 @@ mod tests {
 /// Implementations are monomorphized at each call site — no dyn dispatch.
 pub trait McpTransport {
     /// Read the next line from the transport. Returns `None` on EOF.
-    fn read_line(&mut self) -> impl std::future::Future<Output = std::io::Result<Option<String>>> + Send;
+    fn read_line(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::io::Result<Option<String>>> + Send;
 
     /// Write a complete line (including trailing newline) to the transport.
-    fn write_line(&mut self, line: &str) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
+    fn write_line(
+        &mut self,
+        line: &str,
+    ) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
 
     /// Flush any buffered output.
     fn flush(&mut self) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
@@ -251,7 +256,10 @@ impl ChannelTransport {
         let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         (
-            Self { rx: input_rx, tx: output_tx },
+            Self {
+                rx: input_rx,
+                tx: output_tx,
+            },
             input_tx,
             output_rx,
         )
@@ -265,9 +273,9 @@ impl McpTransport for ChannelTransport {
     }
 
     async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
-        self.tx.send(line.to_string()).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())
-        })
+        self.tx
+            .send(line.to_string())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
     }
 
     async fn flush(&mut self) -> std::io::Result<()> {

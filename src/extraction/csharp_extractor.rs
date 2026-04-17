@@ -164,9 +164,7 @@ impl CSharpExtractor {
             "constructor_declaration" => Self::visit_constructor(state, node),
             "property_declaration" => Self::visit_property(state, node),
             "field_declaration" => Self::visit_field(state, node),
-            "record_declaration" | "record_struct_declaration" => {
-                Self::visit_record(state, node)
-            }
+            "record_declaration" | "record_struct_declaration" => Self::visit_record(state, node),
             "delegate_declaration" => Self::visit_delegate(state, node),
             "event_declaration" | "event_field_declaration" => Self::visit_event(state, node),
             "attribute_list" => Self::visit_attribute_list(state, node),
@@ -768,8 +766,12 @@ impl CSharpExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id =
-            generate_node_id(&state.file_path, &NodeKind::CSharpProperty, &name, start_line);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::CSharpProperty,
+            &name,
+            start_line,
+        );
 
         // Extract the type from the type field
         let type_str = node
@@ -825,9 +827,7 @@ impl CSharpExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "variable_declaration" {
-                    Self::extract_variable_declarators(
-                        state, child, &visibility, node,
-                    );
+                    Self::extract_variable_declarators(state, child, &visibility, node);
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -897,13 +897,13 @@ impl CSharpExtractor {
                         visibility: visibility.clone(),
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1106,8 +1106,7 @@ impl CSharpExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), attr_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -1130,13 +1129,13 @@ impl CSharpExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1173,8 +1172,7 @@ impl CSharpExtractor {
 
     /// Extract the name of a node by looking for a "name" field child.
     fn extract_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        node.child_by_field_name("name")
-            .map(|n| state.node_text(n))
+        node.child_by_field_name("name").map(|n| state.node_text(n))
     }
 
     /// Try to extract a qualified_name child for namespace declarations.
@@ -1458,8 +1456,7 @@ impl CSharpExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), attr_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -1482,13 +1479,13 @@ impl CSharpExtractor {
                         visibility: Visibility::Pub,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 

@@ -215,10 +215,7 @@ fn test_fortran_call_sites() {
     assert!(
         calls.iter().any(|r| r.reference_name == "log_message"),
         "expected call to log_message, got: {:?}",
-        calls
-            .iter()
-            .map(|r| &r.reference_name)
-            .collect::<Vec<_>>()
+        calls.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
     );
     // program calls create_endpoint, connect_endpoint, disconnect_endpoint
     assert!(
@@ -281,10 +278,7 @@ fn test_fortran_contains_edges() {
         .iter()
         .filter(|e| e.kind == EdgeKind::Contains)
         .collect();
-    assert!(
-        !contains.is_empty(),
-        "expected Contains edges"
-    );
+    assert!(!contains.is_empty(), "expected Contains edges");
     // Module should contain subroutines, functions, types, constants, interface
     assert!(
         contains.len() >= 5,

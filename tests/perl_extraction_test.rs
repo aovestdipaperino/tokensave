@@ -148,7 +148,10 @@ fn test_perl_call_sites() {
             .iter()
             .any(|r| r.reference_name == "main::log_message"),
         "should find main::log_message call, got: {:?}",
-        call_refs.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
+        call_refs
+            .iter()
+            .map(|r| &r.reference_name)
+            .collect::<Vec<_>>()
     );
 
     // acquire calls Connection->new
@@ -157,7 +160,10 @@ fn test_perl_call_sites() {
             .iter()
             .any(|r| r.reference_name == "Connection->new"),
         "should find Connection->new call, got: {:?}",
-        call_refs.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
+        call_refs
+            .iter()
+            .map(|r| &r.reference_name)
+            .collect::<Vec<_>>()
     );
 
     // acquire calls $conn->connect
@@ -166,14 +172,20 @@ fn test_perl_call_sites() {
             .iter()
             .any(|r| r.reference_name == "$conn->connect"),
         "should find $conn->connect call, got: {:?}",
-        call_refs.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
+        call_refs
+            .iter()
+            .map(|r| &r.reference_name)
+            .collect::<Vec<_>>()
     );
 
     // validate_config calls croak
     assert!(
         call_refs.iter().any(|r| r.reference_name == "croak"),
         "should find croak call, got: {:?}",
-        call_refs.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
+        call_refs
+            .iter()
+            .map(|r| &r.reference_name)
+            .collect::<Vec<_>>()
     );
 }
 

@@ -14,7 +14,13 @@ fn test_powershell_extract_functions() {
         .iter()
         .filter(|n| n.kind == NodeKind::Function)
         .collect();
-    assert_eq!(fns.len(), 5, "expected 5 functions, got {}: {:?}", fns.len(), fns.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(
+        fns.len(),
+        5,
+        "expected 5 functions, got {}: {:?}",
+        fns.len(),
+        fns.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(fns.iter().any(|n| n.name == "Write-Log"));
     assert!(fns.iter().any(|n| n.name == "Test-Config"));
     assert!(fns.iter().any(|n| n.name == "Connect-Server"));
@@ -34,7 +40,13 @@ fn test_powershell_extract_consts() {
         .iter()
         .filter(|n| n.kind == NodeKind::Const)
         .collect();
-    assert_eq!(consts.len(), 2, "expected 2 consts, got {}: {:?}", consts.len(), consts.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(
+        consts.len(),
+        2,
+        "expected 2 consts, got {}: {:?}",
+        consts.len(),
+        consts.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(consts.iter().any(|n| n.name == "MaxRetries"));
     assert!(consts.iter().any(|n| n.name == "DefaultPort"));
 }
@@ -51,7 +63,13 @@ fn test_powershell_extract_imports() {
         .iter()
         .filter(|n| n.kind == NodeKind::Use)
         .collect();
-    assert_eq!(uses.len(), 2, "expected 2 Use nodes, got {}: {:?}", uses.len(), uses.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(
+        uses.len(),
+        2,
+        "expected 2 Use nodes, got {}: {:?}",
+        uses.len(),
+        uses.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(uses.iter().any(|n| n.name == "ActiveDirectory"));
     assert!(uses.iter().any(|n| n.name.contains("Utils.ps1")));
 }
@@ -81,7 +99,9 @@ fn test_powershell_call_sites() {
     );
     // Connect-Server calls Test-Connection
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "Test-Connection"),
+        call_refs
+            .iter()
+            .any(|r| r.reference_name == "Test-Connection"),
         "should find Test-Connection call"
     );
     // Main calls Test-Config
@@ -105,7 +125,11 @@ fn test_powershell_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "Write-Log")
         .expect("Write-Log function not found");
     assert!(
-        write_log.docstring.as_ref().unwrap().contains("Logs a message"),
+        write_log
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Logs a message"),
         "docstring: {:?}",
         write_log.docstring
     );
@@ -117,7 +141,11 @@ fn test_powershell_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "Test-Config")
         .expect("Test-Config function not found");
     assert!(
-        test_config.docstring.as_ref().unwrap().contains("Validates the configuration"),
+        test_config
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Validates the configuration"),
         "docstring: {:?}",
         test_config.docstring
     );
@@ -129,7 +157,11 @@ fn test_powershell_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "Main")
         .expect("Main function not found");
     assert!(
-        main_fn.docstring.as_ref().unwrap().contains("Main entry point"),
+        main_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Main entry point"),
         "docstring: {:?}",
         main_fn.docstring
     );

@@ -409,12 +409,15 @@ impl ExtractionResult {
         }
 
         self.nodes.retain(|n| !n.name.is_empty());
-        self.edges.retain(|e| !bad_ids.contains(&e.source) && !bad_ids.contains(&e.target));
-        self.unresolved_refs.retain(|r| !bad_ids.contains(&r.from_node_id));
+        self.edges
+            .retain(|e| !bad_ids.contains(&e.source) && !bad_ids.contains(&e.target));
+        self.unresolved_refs
+            .retain(|r| !bad_ids.contains(&r.from_node_id));
 
         let removed = before - self.nodes.len();
         if removed > 0 {
-            self.errors.push(format!("stripped {removed} node(s) with empty names"));
+            self.errors
+                .push(format!("stripped {removed} node(s) with empty names"));
         }
     }
 }
@@ -565,7 +568,10 @@ pub struct CodeBlock {
 /// The ID format is `"kind:32hexchars"` where the hex portion is the first 32
 /// characters of the SHA-256 hash of the input components.
 pub fn generate_node_id(file_path: &str, kind: &NodeKind, name: &str, line: u32) -> String {
-    debug_assert!(!name.is_empty(), "generate_node_id called with empty name for {file_path}:{line}");
+    debug_assert!(
+        !name.is_empty(),
+        "generate_node_id called with empty name for {file_path}:{line}"
+    );
     let input = format!("{}:{}:{}:{}", file_path, kind.as_str(), name, line);
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());

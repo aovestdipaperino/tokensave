@@ -204,7 +204,14 @@ impl ScalaExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -791,7 +798,15 @@ impl ScalaExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").trim().to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            ),
             docstring: Self::extract_scaladoc(state, node),
             visibility,
             is_async: false,
@@ -844,7 +859,15 @@ impl ScalaExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").trim().to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            ),
             docstring: Self::extract_scaladoc(state, node),
             visibility,
             is_async: false,
@@ -1074,9 +1097,9 @@ impl ScalaExtractor {
             .lines()
             .map(|line| {
                 let stripped = line.trim();
-                stripped.strip_prefix("* ").unwrap_or(
-                    stripped.strip_prefix('*').unwrap_or(stripped),
-                )
+                stripped
+                    .strip_prefix("* ")
+                    .unwrap_or(stripped.strip_prefix('*').unwrap_or(stripped))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -1156,13 +1179,13 @@ impl ScalaExtractor {
                             visibility: Visibility::Private,
                             is_async: false,
                             branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
+                            updated_at: state.timestamp,
                         });
                         state.edges.push(Edge {
                             source: owner_id.to_string(),
@@ -1215,12 +1238,7 @@ impl ScalaExtractor {
                         };
 
                         let start_line = child.start_position().row as u32;
-                        let id = generate_node_id(
-                            &state.file_path,
-                            &kind,
-                            &param_name,
-                            start_line,
-                        );
+                        let id = generate_node_id(&state.file_path, &kind, &param_name, start_line);
 
                         state.nodes.push(Node {
                             id: id.clone(),
@@ -1237,13 +1255,13 @@ impl ScalaExtractor {
                             visibility,
                             is_async: false,
                             branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
+                            updated_at: state.timestamp,
                         });
                         state.edges.push(Edge {
                             source: owner_id.to_string(),
@@ -1374,8 +1392,7 @@ impl ScalaExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), annot_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), annot_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,

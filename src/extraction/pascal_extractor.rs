@@ -185,7 +185,12 @@ impl PascalExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(&state.file_path, &NodeKind::PascalProgram, &name, start_line);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::PascalProgram,
+            &name,
+            start_line,
+        );
 
         let graph_node = Node {
             id: id.clone(),
@@ -1117,12 +1122,7 @@ impl PascalExtractor {
             };
 
             let qualified_name = format!("{}::{}", state.qualified_prefix(), display_name);
-            let id = generate_node_id(
-                &state.file_path,
-                &actual_kind,
-                &display_name,
-                start_line,
-            );
+            let id = generate_node_id(&state.file_path, &actual_kind, &display_name, start_line);
 
             let visibility = if state.in_implementation {
                 Visibility::Private
@@ -1146,13 +1146,13 @@ impl PascalExtractor {
                 visibility,
                 is_async: false,
                 branches: metrics.branches,
-            loops: metrics.loops,
-            returns: metrics.returns,
-            max_nesting: metrics.max_nesting,
-            unsafe_blocks: metrics.unsafe_blocks,
-            unchecked_calls: metrics.unchecked_calls,
-            assertions: metrics.assertions,
-            updated_at: state.timestamp,
+                loops: metrics.loops,
+                returns: metrics.returns,
+                max_nesting: metrics.max_nesting,
+                unsafe_blocks: metrics.unsafe_blocks,
+                unchecked_calls: metrics.unchecked_calls,
+                assertions: metrics.assertions,
+                updated_at: state.timestamp,
             };
             state.nodes.push(graph_node);
 
@@ -1231,10 +1231,7 @@ impl PascalExtractor {
 
     /// Parse a dotted name from a declProc node.
     /// Returns (is_method, class_name, method_name).
-    fn parse_dotted_name(
-        state: &ExtractionState,
-        decl_node: TsNode<'_>,
-    ) -> (bool, String, String) {
+    fn parse_dotted_name(state: &ExtractionState, decl_node: TsNode<'_>) -> (bool, String, String) {
         if let Some(dot_node) = Self::find_child_by_kind(decl_node, "genericDot") {
             // genericDot has identifiers separated by kDot.
             let mut identifiers = Vec::new();

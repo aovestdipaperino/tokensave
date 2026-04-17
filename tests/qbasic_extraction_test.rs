@@ -84,10 +84,7 @@ fn test_qbasic_type_fields() {
     let fields: Vec<_> = result
         .nodes
         .iter()
-        .filter(|n| {
-            n.kind == NodeKind::Field
-                && n.qualified_name.contains("Endpoint")
-        })
+        .filter(|n| n.kind == NodeKind::Field && n.qualified_name.contains("Endpoint"))
         .collect();
     assert!(
         fields.len() >= 3,
@@ -95,8 +92,14 @@ fn test_qbasic_type_fields() {
         fields.len(),
         fields.iter().map(|n| &n.name).collect::<Vec<_>>()
     );
-    assert!(fields.iter().any(|n| n.name == "host"), "host field not found");
-    assert!(fields.iter().any(|n| n.name == "port"), "port field not found");
+    assert!(
+        fields.iter().any(|n| n.name == "host"),
+        "host field not found"
+    );
+    assert!(
+        fields.iter().any(|n| n.name == "port"),
+        "port field not found"
+    );
     assert!(
         fields.iter().any(|n| n.name == "connected"),
         "connected field not found"
@@ -113,10 +116,7 @@ fn test_qbasic_const_nodes() {
         .collect();
     // CONST MAX_RETRIES = 3 and CONST DEFAULT_PORT = 8080
     // Note: the grammar may have trouble with underscored names; at least some should parse.
-    assert!(
-        !consts.is_empty(),
-        "expected at least 1 CONST node, got 0"
-    );
+    assert!(!consts.is_empty(), "expected at least 1 CONST node, got 0");
 }
 
 #[test]
@@ -268,7 +268,10 @@ fn test_qbasic_extensions() {
     let exts = extractor.extensions();
     assert!(exts.contains(&"qb"), "extensions should contain 'qb'");
     // Should NOT contain 'bas' to avoid conflict with msbasic2
-    assert!(!exts.contains(&"bas"), "extensions should NOT contain 'bas'");
+    assert!(
+        !exts.contains(&"bas"),
+        "extensions should NOT contain 'bas'"
+    );
 }
 
 #[test]
@@ -298,7 +301,11 @@ fn test_qbasic_signatures() {
         .find(|n| n.kind == NodeKind::Function && n.name == "IsConnected")
         .expect("IsConnected function not found");
     assert!(
-        is_connected_fn.signature.as_ref().unwrap().contains("FUNCTION"),
+        is_connected_fn
+            .signature
+            .as_ref()
+            .unwrap()
+            .contains("FUNCTION"),
         "IsConnected signature should contain FUNCTION: {:?}",
         is_connected_fn.signature
     );
@@ -310,10 +317,7 @@ fn test_qbasic_dim_shared_fields() {
     let dim_fields: Vec<_> = result
         .nodes
         .iter()
-        .filter(|n| {
-            n.kind == NodeKind::Field
-                && !n.qualified_name.contains("Endpoint")
-        })
+        .filter(|n| n.kind == NodeKind::Field && !n.qualified_name.contains("Endpoint"))
         .collect();
     // DIM SHARED conn, logLevel, logMsg
     assert!(

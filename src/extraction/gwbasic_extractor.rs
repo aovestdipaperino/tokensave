@@ -124,9 +124,7 @@ impl GwBasicExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Collect all lines from the AST.
         let root = tree.root_node();
@@ -251,12 +249,7 @@ impl GwBasicExtractor {
             let start_column = basic_line.node.start_position().column as u32;
             let end_column = basic_line.node.end_position().column as u32;
             let qualified_name = format!("{}::{}", state.qualified_prefix(), fn_name);
-            let id = generate_node_id(
-                &state.file_path,
-                &NodeKind::Function,
-                &fn_name,
-                start_line,
-            );
+            let id = generate_node_id(&state.file_path, &NodeKind::Function, &fn_name, start_line);
             let text = state.node_text(basic_line.node);
 
             let graph_node = Node {
@@ -464,7 +457,12 @@ impl GwBasicExtractor {
                     let mut loops: u32 = 0;
                     let mut returns: u32 = 0;
                     for line in &lines[body_start..body_end] {
-                        Self::count_line_complexity(line.node, &mut branches, &mut loops, &mut returns);
+                        Self::count_line_complexity(
+                            line.node,
+                            &mut branches,
+                            &mut loops,
+                            &mut returns,
+                        );
                     }
 
                     // Use the line number of the first code line (after REMs) as the
@@ -681,7 +679,13 @@ impl GwBasicExtractor {
         // Replace spaces with underscores and keep alphanumeric + underscore.
         let name: String = first
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         // Collapse multiple underscores and trim.
         let mut collapsed = String::new();

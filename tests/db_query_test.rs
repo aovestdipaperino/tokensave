@@ -1,6 +1,6 @@
+use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::types::*;
-use tempfile::TempDir;
 
 /// Helper: create a temp database and return (Database, TempDir).
 /// The TempDir is returned so that it stays alive for the duration of the test.
@@ -172,9 +172,7 @@ async fn test_insert_edges_batch() {
         sample_edge("be-1", "be-2", EdgeKind::Uses),
         sample_edge("be-2", "be-3", EdgeKind::Contains),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
     assert_eq!(all.len(), 3);
@@ -244,9 +242,7 @@ async fn test_delete_edges_by_source() {
         sample_edge("ds-a", "ds-c", EdgeKind::Uses),
         sample_edge("ds-b", "ds-c", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     db.delete_edges_by_source("ds-a")
         .await
@@ -284,9 +280,7 @@ async fn test_get_ranked_nodes_by_edge_kind_incoming() {
         sample_edge("rt-c3", "rt-a", EdgeKind::Calls),
         sample_edge("rt-c1", "rt-b", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let ranked = db
         .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, true, None, 10)
@@ -316,9 +310,7 @@ async fn test_get_ranked_nodes_by_edge_kind_outgoing() {
         sample_edge("ro-caller", "ro-t1", EdgeKind::Calls),
         sample_edge("ro-caller", "ro-t2", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let ranked = db
         .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, false, None, 10)
@@ -350,19 +342,11 @@ async fn test_get_ranked_nodes_by_edge_kind_with_node_filter() {
         sample_edge("rnf-c", "rnf-1", EdgeKind::Calls),
         sample_edge("rnf-c", "rnf-2", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     // Filter to only Function nodes
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(
-            &EdgeKind::Calls,
-            Some(&NodeKind::Function),
-            true,
-            None,
-            10,
-        )
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, Some(&NodeKind::Function), true, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -480,9 +464,7 @@ async fn test_get_file_coupling_fan_in() {
         sample_edge("fc-2", "fc-1", EdgeKind::Calls),
         sample_edge("fc-3", "fc-4", EdgeKind::Uses),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let coupling = db
         .get_file_coupling(true, None, 10)
@@ -511,9 +493,7 @@ async fn test_get_file_coupling_fan_out() {
         sample_edge("fco-1", "fco-2", EdgeKind::Calls),
         sample_edge("fco-1", "fco-3", EdgeKind::Uses),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let coupling = db
         .get_file_coupling(false, None, 10)
@@ -561,9 +541,7 @@ async fn test_get_inheritance_depth() {
             line: None,
         },
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let depths = db
         .get_inheritance_depth(None, 10)
@@ -655,11 +633,12 @@ async fn test_get_call_edges() {
         sample_edge("ce-2", "ce-3", EdgeKind::Calls),
         sample_edge("ce-1", "ce-3", EdgeKind::Uses), // not a call edge
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let call_edges = db.get_call_edges(None).await.expect("get_call_edges failed");
+    let call_edges = db
+        .get_call_edges(None)
+        .await
+        .expect("get_call_edges failed");
 
     assert_eq!(call_edges.len(), 2);
     // Should only return calls edges
@@ -697,9 +676,7 @@ async fn test_get_complexity_ranked_no_filter() {
 
     // cx-1 calls cx-t (fan_out = 1)
     let edges = vec![sample_edge("cx-1", "cx-t", EdgeKind::Calls)];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     // No node_kind filter -> defaults to function + method
     let ranked = db
@@ -881,9 +858,7 @@ async fn test_get_god_classes() {
             line: None,
         },
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let god_classes = db
         .get_god_classes(None, 10)
@@ -915,9 +890,7 @@ async fn test_upsert_files_batch() {
         sample_file("src/c.rs"),
     ];
 
-    db.upsert_files(&files)
-        .await
-        .expect("upsert_files failed");
+    db.upsert_files(&files).await.expect("upsert_files failed");
 
     let all = db.get_all_files().await.expect("get_all_files failed");
     assert_eq!(all.len(), 3);
@@ -969,10 +942,7 @@ async fn test_delete_file() {
     db.insert_node(&node).await.expect("insert_node failed");
 
     // Verify file exists before delete
-    let before = db
-        .get_file("src/target.rs")
-        .await
-        .expect("get_file failed");
+    let before = db.get_file("src/target.rs").await.expect("get_file failed");
     assert!(before.is_some());
 
     db.delete_file("src/target.rs")
@@ -980,10 +950,7 @@ async fn test_delete_file() {
         .expect("delete_file failed");
 
     // File record should be gone
-    let after = db
-        .get_file("src/target.rs")
-        .await
-        .expect("get_file failed");
+    let after = db.get_file("src/target.rs").await.expect("get_file failed");
     assert!(after.is_none());
 
     // Associated nodes should also be gone
@@ -1002,13 +969,8 @@ async fn test_delete_file() {
 async fn test_get_all_files() {
     let (db, _dir) = setup_db().await;
 
-    let files = vec![
-        sample_file("src/a.rs"),
-        sample_file("src/b.rs"),
-    ];
-    db.upsert_files(&files)
-        .await
-        .expect("upsert_files failed");
+    let files = vec![sample_file("src/a.rs"), sample_file("src/b.rs")];
+    db.upsert_files(&files).await.expect("upsert_files failed");
 
     let all = db.get_all_files().await.expect("get_all_files failed");
     assert_eq!(all.len(), 2);
@@ -1214,15 +1176,9 @@ async fn test_get_internal_edges() {
         sample_edge("ie-1", "ie-4", EdgeKind::Calls), // external (target not in subset)
         sample_edge("ie-4", "ie-1", EdgeKind::Calls), // external (source not in subset)
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let subset = vec![
-        "ie-1".to_string(),
-        "ie-2".to_string(),
-        "ie-3".to_string(),
-    ];
+    let subset = vec!["ie-1".to_string(), "ie-2".to_string(), "ie-3".to_string()];
 
     let internal = db
         .get_internal_edges(&subset)
@@ -1544,16 +1500,49 @@ async fn test_get_god_classes_multiple_classes() {
         .expect("insert_nodes failed");
 
     let edges = vec![
-        Edge { source: "gcm-big".into(), target: "gcm-m1".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-m2".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-m3".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-f1".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-f2".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-small".into(), target: "gcm-sm1".into(), kind: EdgeKind::Contains, line: None },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m2".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m3".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-f1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-f2".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
+        Edge {
+            source: "gcm-small".into(),
+            target: "gcm-sm1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+        },
     ];
     db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let god = db.get_god_classes(None, 10).await.expect("get_god_classes failed");
+    let god = db
+        .get_god_classes(None, 10)
+        .await
+        .expect("get_god_classes failed");
 
     // BigClass should be first (5 total), SmallClass second (1 total)
     assert_eq!(god.len(), 2);
@@ -1579,7 +1568,9 @@ async fn test_edge_line_none_and_some() {
 
     let n1 = sample_node("eln-1", "f1", "src/lib.rs");
     let n2 = sample_node("eln-2", "f2", "src/lib.rs");
-    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+    db.insert_nodes(&[n1, n2])
+        .await
+        .expect("insert_nodes failed");
 
     // Insert edge with line = None
     let edge_no_line = Edge {
@@ -1588,7 +1579,9 @@ async fn test_edge_line_none_and_some() {
         kind: EdgeKind::Calls,
         line: None,
     };
-    db.insert_edge(&edge_no_line).await.expect("insert_edge failed");
+    db.insert_edge(&edge_no_line)
+        .await
+        .expect("insert_edge failed");
 
     // Insert edge with line = Some(42)
     let edge_with_line = Edge {
@@ -1597,7 +1590,9 @@ async fn test_edge_line_none_and_some() {
         kind: EdgeKind::Calls,
         line: Some(42),
     };
-    db.insert_edge(&edge_with_line).await.expect("insert_edge failed");
+    db.insert_edge(&edge_with_line)
+        .await
+        .expect("insert_edge failed");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
     // Both should exist (unique constraint includes line)
@@ -1614,7 +1609,9 @@ async fn test_edge_unique_constraint_dedup() {
 
     let n1 = sample_node("euc-1", "f1", "src/lib.rs");
     let n2 = sample_node("euc-2", "f2", "src/lib.rs");
-    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+    db.insert_nodes(&[n1, n2])
+        .await
+        .expect("insert_nodes failed");
 
     // Insert the exact same edge twice — should be deduplicated by INSERT OR IGNORE
     let edge = Edge {
@@ -1624,7 +1621,9 @@ async fn test_edge_unique_constraint_dedup() {
         line: Some(10),
     };
     db.insert_edge(&edge).await.expect("insert_edge failed");
-    db.insert_edge(&edge).await.expect("second insert should not fail");
+    db.insert_edge(&edge)
+        .await
+        .expect("second insert should not fail");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
     assert_eq!(all.len(), 1, "duplicate edge should be ignored");
@@ -1666,7 +1665,10 @@ async fn test_get_internal_edges_larger_set() {
 
     // Edge 4->5 should NOT be in internal because 5 is not in subset
     let has_external = internal.iter().any(|e| e.target == "iel-5");
-    assert!(!has_external, "edge to node outside subset should be excluded");
+    assert!(
+        !has_external,
+        "edge to node outside subset should be excluded"
+    );
 }
 
 #[tokio::test]
@@ -1783,11 +1785,7 @@ async fn test_batch_incoming_call_counts() {
     }
 
     let counts = db
-        .batch_incoming_call_counts(&[
-            "fn:a".to_string(),
-            "fn:b".to_string(),
-            "fn:c".to_string(),
-        ])
+        .batch_incoming_call_counts(&["fn:a".to_string(), "fn:b".to_string(), "fn:c".to_string()])
         .await
         .unwrap();
     assert_eq!(*counts.get("fn:a").unwrap_or(&0), 2);
@@ -1823,14 +1821,24 @@ async fn test_non_utf8_signature_does_not_crash() {
                 "render",
                 "src/view.cpp::render",
                 "src/view.cpp",
-                1i64, 10i64, 0i64, 50i64,
+                1i64,
+                10i64,
+                0i64,
+                50i64,
                 // docstring with a Latin-1 copyright symbol (0xA9) — invalid UTF-8
                 libsql::Value::Blob(b"Renders the sc\xe8ne with \xa9 effects".to_vec()),
                 // signature with 0xFF byte
                 libsql::Value::Blob(b"void render(const std::string& sc\xe8ne)".to_vec()),
                 "public",
                 0i64,
-                0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
             ],
         )
         .await
@@ -1838,7 +1846,11 @@ async fn test_non_utf8_signature_does_not_crash() {
 
     // This used to fail with "invalid utf-8 sequence of 1 bytes from index N"
     let node = db.get_node_by_id("function:bad_utf8").await;
-    assert!(node.is_ok(), "get_node_by_id should not fail on non-UTF-8: {:?}", node.err());
+    assert!(
+        node.is_ok(),
+        "get_node_by_id should not fail on non-UTF-8: {:?}",
+        node.err()
+    );
     let node = node.unwrap();
     assert!(node.is_some(), "node should exist");
     let node = node.unwrap();

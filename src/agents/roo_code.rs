@@ -19,8 +19,7 @@ pub struct RooCodeIntegration;
 
 /// Returns the Roo Code VS Code extension global storage directory.
 fn roo_ext_dir(home: &Path) -> PathBuf {
-    super::vscode_data_dir(home)
-        .join("User/globalStorage/rooveterinaryinc.roo-cline")
+    super::vscode_data_dir(home).join("User/globalStorage/rooveterinaryinc.roo-cline")
 }
 
 impl AgentIntegration for RooCodeIntegration {
@@ -121,7 +120,10 @@ fn uninstall_mcp_server(settings_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!("  No tokensave MCP server in {}, skipping", settings_path.display());
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            settings_path.display()
+        );
         return;
     };
 
@@ -134,9 +136,8 @@ fn uninstall_mcp_server(settings_path: &Path) {
     }
 
     let is_empty = settings.as_object().is_some_and(|o| {
-        o.iter().all(|(k, v)| {
-            k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty())
-        })
+        o.iter()
+            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty()))
     });
 
     if is_empty {
@@ -172,9 +173,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 
     let settings = load_json_file(&settings_path);
-    let server = settings
-        .get("mcpServers")
-        .and_then(|v| v.get("tokensave"));
+    let server = settings.get("mcpServers").and_then(|v| v.get("tokensave"));
 
     if server.and_then(|v| v.as_object()).is_some() {
         dc.pass(&format!(

@@ -236,7 +236,11 @@ End Class
         .iter()
         .filter(|n| n.kind == NodeKind::Method)
         .collect();
-    assert!(methods.len() >= 2, "expected >= 2 methods, got {}", methods.len());
+    assert!(
+        methods.len() >= 2,
+        "expected >= 2 methods, got {}",
+        methods.len()
+    );
     assert!(methods.iter().any(|m| m.name == "GetValue"));
     assert!(methods.iter().any(|m| m.name == "DoWork"));
 }
@@ -278,7 +282,11 @@ End Class
         .iter()
         .filter(|n| n.kind == NodeKind::Property)
         .collect();
-    assert!(props.len() >= 2, "expected >= 2 properties, got {}", props.len());
+    assert!(
+        props.len() >= 2,
+        "expected >= 2 properties, got {}",
+        props.len()
+    );
     assert!(props.iter().any(|p| p.name == "Name"));
     assert!(props.iter().any(|p| p.name == "Id"));
 }
@@ -382,7 +390,11 @@ End Class
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert!(fields.iter().any(|f| f.name == "_value"), "Expected _value field, got: {:?}", fields.iter().map(|f| &f.name).collect::<Vec<_>>());
+    assert!(
+        fields.iter().any(|f| f.name == "_value"),
+        "Expected _value field, got: {:?}",
+        fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -405,7 +417,12 @@ End Class
         .iter()
         .filter(|n| n.kind == NodeKind::AnnotationUsage)
         .collect();
-    assert_eq!(annots.len(), 3, "expected 3 annotations, got: {:?}", annots.iter().map(|a| &a.name).collect::<Vec<_>>());
+    assert_eq!(
+        annots.len(),
+        3,
+        "expected 3 annotations, got: {:?}",
+        annots.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
     assert!(annots.iter().any(|a| a.name == "Serializable"));
     assert!(annots.iter().any(|a| a.name == "Obsolete"));
     assert!(annots.iter().any(|a| a.name == "TestMethod"));

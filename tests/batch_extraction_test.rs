@@ -71,7 +71,9 @@ fn test_batch_call_sites() {
     );
     // Main calls ValidateConfig
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "ValidateConfig"),
+        call_refs
+            .iter()
+            .any(|r| r.reference_name == "ValidateConfig"),
         "should find ValidateConfig call"
     );
     // Main calls Connect
@@ -99,12 +101,13 @@ fn test_batch_docstrings() {
         .iter()
         .find(|n| n.kind == NodeKind::Function && n.name == "Log")
         .expect("Log function not found");
+    assert!(log_fn.docstring.is_some(), "Log should have docstring");
     assert!(
-        log_fn.docstring.is_some(),
-        "Log should have docstring"
-    );
-    assert!(
-        log_fn.docstring.as_ref().unwrap().contains("Logs a message"),
+        log_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Logs a message"),
         "docstring: {:?}",
         log_fn.docstring
     );
@@ -116,7 +119,11 @@ fn test_batch_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "ValidateConfig")
         .expect("ValidateConfig function not found");
     assert!(
-        vc_fn.docstring.as_ref().unwrap().contains("Validates the configuration"),
+        vc_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Validates the configuration"),
         "docstring: {:?}",
         vc_fn.docstring
     );
@@ -128,7 +135,11 @@ fn test_batch_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "Main")
         .expect("Main function not found");
     assert!(
-        main_fn.docstring.as_ref().unwrap().contains("Main entry point"),
+        main_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Main entry point"),
         "docstring: {:?}",
         main_fn.docstring
     );

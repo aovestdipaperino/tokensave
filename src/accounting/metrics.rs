@@ -9,8 +9,8 @@ pub struct CostSummary {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_cache_read_tokens: u64,
-    pub by_model: Vec<(String, f64, u64)>,    // (model, cost, total_tokens)
-    pub by_category: Vec<(String, f64, u64)>,  // (category, cost, turn_count)
+    pub by_model: Vec<(String, f64, u64)>, // (model, cost, total_tokens)
+    pub by_category: Vec<(String, f64, u64)>, // (category, cost, turn_count)
     pub tokens_saved: u64,
     pub efficiency_ratio: f64,
 }
@@ -50,11 +50,7 @@ pub async fn quick_cost_summary(
 }
 
 /// Build a full cost summary for a given time range.
-pub async fn cost_summary(
-    gdb: &GlobalDb,
-    since: u64,
-    tokens_saved: u64,
-) -> Option<CostSummary> {
+pub async fn cost_summary(gdb: &GlobalDb, since: u64, tokens_saved: u64) -> Option<CostSummary> {
     let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read) =
         gdb.token_breakdown_since(since).await.unwrap_or((0, 0, 0));

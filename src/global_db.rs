@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use libsql::{Builder, Connection, Database as LibsqlDatabase, params};
+use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
 
 /// User-level database tracking all TokenSave projects.
 pub struct GlobalDb {

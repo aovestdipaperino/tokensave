@@ -72,7 +72,13 @@ fn format_cell(label: &str, value: &str, width: usize) -> String {
 }
 
 /// Builds a horizontal separator line (e.g. ├──┬──┤).
-fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_cols: usize) -> String {
+fn table_separator(
+    left: char,
+    mid: char,
+    right: char,
+    cell_width: usize,
+    num_cols: usize,
+) -> String {
     let mut line = String::from(left);
     for i in 0..num_cols {
         line.push_str(&"─".repeat(cell_width));
@@ -136,10 +142,14 @@ pub fn print_status_table(
     details: bool,
 ) {
     let num_cols = 3;
-    debug_assert!(stats.file_count > 0 || stats.node_count == 0,
-        "print_status_table: node_count should be 0 when file_count is 0");
-    debug_assert!(stats.node_count >= stats.file_count || stats.file_count == 0,
-        "print_status_table: node_count should be >= file_count");
+    debug_assert!(
+        stats.file_count > 0 || stats.node_count == 0,
+        "print_status_table: node_count should be 0 when file_count is 0"
+    );
+    debug_assert!(
+        stats.node_count >= stats.file_count || stats.file_count == 0,
+        "print_status_table: node_count should be >= file_count"
+    );
 
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
     sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
@@ -181,8 +191,16 @@ const MAX_DISPLAY_FLAGS: usize = 25;
 
 /// Compute cell width from the widest node-kind entry, capped at MAX_CELL_WIDTH.
 fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
-    let max_kind_len = sorted_kinds.iter().map(|(k, _)| k.len()).max().unwrap_or(10);
-    let max_count_len = sorted_kinds.iter().map(|(_, c)| format_number(**c).len()).max().unwrap_or(5);
+    let max_kind_len = sorted_kinds
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(10);
+    let max_count_len = sorted_kinds
+        .iter()
+        .map(|(_, c)| format_number(**c).len())
+        .max()
+        .unwrap_or(5);
     (max_kind_len + max_count_len + 3).clamp(22, MAX_CELL_WIDTH)
 }
 
@@ -198,7 +216,11 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     // "😈 " is 3 display columns (2-wide emoji + space) but 6 bytes;
     // "   " is 3 display columns and 3 bytes.
     // Display width = byte len minus the overhead of the emoji bytes.
-    let title_display_width = if daemon_running { title.len() - 2 } else { title.len() };
+    let title_display_width = if daemon_running {
+        title.len() - 2
+    } else {
+        title.len()
+    };
     let available = inner_width.saturating_sub(2);
 
     if country_flags.is_empty() {
@@ -213,7 +235,7 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let mut flags_str = String::new();
     let mut display_width = 0;
     let flag_width = 2; // emoji flags are 2 columns wide
-    // Reserve space for title + at least 2 spaces gap
+                        // Reserve space for title + at least 2 spaces gap
     let max_flags_width = available.saturating_sub(title_display_width + 2);
     for (i, flag) in capped.iter().enumerate() {
         let needed = if i == 0 { flag_width } else { 1 + flag_width };
@@ -252,7 +274,10 @@ fn print_tokens_row(
         match global_tokens_saved {
             Some(global) => {
                 parts.push(format!("Project ~{}", format_token_count(tokens_saved)));
-                parts.push(format!("All projects ~{}", format_token_count(tokens_saved + global)));
+                parts.push(format!(
+                    "All projects ~{}",
+                    format_token_count(tokens_saved + global)
+                ));
             }
             None => {
                 parts.push(format!("Saved ~{}", format_token_count(tokens_saved)));
@@ -265,11 +290,7 @@ fn print_tokens_row(
     };
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(tokens_text.len());
-    println!(
-        "│ {}\x1b[32m{}\x1b[0m │",
-        " ".repeat(pad),
-        tokens_text
-    );
+    println!("│ {}\x1b[32m{}\x1b[0m │", " ".repeat(pad), tokens_text);
 }
 
 /// Print the third title row: last sync and full sync timestamps, right-aligned in dim.
@@ -281,11 +302,7 @@ fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, inner_width: usize)
     );
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(sync_text.len());
-    println!(
-        "│ {}\x1b[2m{}\x1b[0m │",
-        " ".repeat(pad),
-        sync_text,
-    );
+    println!("│ {}\x1b[2m{}\x1b[0m │", " ".repeat(pad), sync_text,);
 }
 
 fn print_branch_row(info: &BranchInfo, inner_width: usize) {
@@ -321,18 +338,11 @@ fn print_cost_row(cost_info: &CostRow, inner_width: usize) {
     let text = parts.join("  ");
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(text.len());
-    println!(
-        "│ {}\x1b[36m{}\x1b[0m │",
-        " ".repeat(pad),
-        text,
-    );
+    println!("│ {}\x1b[36m{}\x1b[0m │", " ".repeat(pad), text,);
 }
 
 /// Build the stats rows (files/nodes/edges, DB size, languages).
-fn build_stats_rows<'a>(
-    stats: &'a GraphStats,
-    num_cols: usize,
-) -> Vec<Vec<(&'a str, String)>> {
+fn build_stats_rows<'a>(stats: &'a GraphStats, num_cols: usize) -> Vec<Vec<(&'a str, String)>> {
     let mut sorted_langs: Vec<_> = stats.files_by_language.iter().collect();
     sorted_langs.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -389,7 +399,12 @@ fn print_table_rows(rows: &[Vec<(&str, String)>], cell_width: usize, num_cols: u
 }
 
 /// Print node kinds in column-major order.
-fn print_kind_rows(sorted_kinds: &[(&String, &u64)], num_kind_rows: usize, num_cols: usize, cell_width: usize) {
+fn print_kind_rows(
+    sorted_kinds: &[(&String, &u64)],
+    num_kind_rows: usize,
+    num_cols: usize,
+    cell_width: usize,
+) {
     for r in 0..num_kind_rows {
         print!("│");
         for c in 0..num_cols {

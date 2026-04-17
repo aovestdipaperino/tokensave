@@ -65,7 +65,11 @@ pub fn apply_connectivity_boost(
         let boost = 1.0 + (count as f64 + 1.0).log2().min(4.0) / 4.0;
         candidate.score *= boost;
     }
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Re-ranks search result candidates using structural signals.
@@ -76,7 +80,11 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
             * path_boost(&candidate.node.file_path);
         candidate.score *= boost;
     }
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 #[cfg(test)]

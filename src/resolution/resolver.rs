@@ -38,7 +38,11 @@ fn lang_from_path(path: &str) -> &'static str {
 fn path_proximity(a: &str, b: &str) -> i64 {
     let seg_a: Vec<&str> = a.split('/').collect();
     let seg_b: Vec<&str> = b.split('/').collect();
-    let shared = seg_a.iter().zip(seg_b.iter()).take_while(|(x, y)| x == y).count();
+    let shared = seg_a
+        .iter()
+        .zip(seg_b.iter())
+        .take_while(|(x, y)| x == y)
+        .count();
     // +5 per shared segment, capped at +40
     (shared as i64 * 5).min(40)
 }
@@ -257,7 +261,10 @@ impl<'a> ReferenceResolver<'a> {
             // Reduce confidence for cross-language single matches.
             let ref_lang = lang_from_path(&uref.file_path);
             let candidate_lang = lang_from_path(&candidates[0].file_path);
-            let confidence = if ref_lang != "unknown" && candidate_lang != "unknown" && ref_lang != candidate_lang {
+            let confidence = if ref_lang != "unknown"
+                && candidate_lang != "unknown"
+                && ref_lang != candidate_lang
+            {
                 0.5
             } else {
                 0.9

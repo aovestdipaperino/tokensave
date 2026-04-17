@@ -73,7 +73,9 @@ impl AgentIntegration for GeminiIntegration {
 
     fn has_tokensave(&self, home: &Path) -> bool {
         let settings = home.join(".gemini").join("settings.json");
-        if !settings.exists() { return false; }
+        if !settings.exists() {
+            return false;
+        }
         let json = super::load_json_file(&settings);
         json.get("mcpServers")
             .and_then(|v| v.get("tokensave"))
@@ -265,9 +267,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 
     let settings = load_json_file(&settings_path);
-    let server = settings
-        .get("mcpServers")
-        .and_then(|v| v.get("tokensave"));
+    let server = settings.get("mcpServers").and_then(|v| v.get("tokensave"));
 
     let Some(server) = server.and_then(|v| v.as_object()) else {
         dc.fail(&format!(

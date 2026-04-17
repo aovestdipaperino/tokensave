@@ -207,8 +207,8 @@ impl CppExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let signature = Self::extract_function_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -299,8 +299,8 @@ impl CppExtractor {
 
     /// Visit a constructor definition.
     fn visit_constructor(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let signature = Self::extract_function_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -502,8 +502,8 @@ impl CppExtractor {
     fn visit_class_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let is_pure_virtual = Self::is_pure_virtual(state, node);
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         // Check if constructor
         if let Some((class_name, _)) = state.node_stack.last() {
@@ -516,12 +516,8 @@ impl CppExtractor {
                 let start_column = node.start_position().column as u32;
                 let end_column = node.end_position().column as u32;
                 let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-                let id = generate_node_id(
-                    &state.file_path,
-                    &NodeKind::Constructor,
-                    &name,
-                    start_line,
-                );
+                let id =
+                    generate_node_id(&state.file_path, &NodeKind::Constructor, &name, start_line);
 
                 let metrics = count_complexity(node, &CPP_COMPLEXITY, &state.source);
                 let graph_node = Node {
@@ -673,8 +669,8 @@ impl CppExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
         let docstring = Self::extract_docstring(state, node);
@@ -1531,9 +1527,7 @@ impl CppExtractor {
                 if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
-                if let Some(ident) =
-                    Self::find_descendant_by_kind(paren_decl, "type_identifier")
-                {
+                if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "type_identifier") {
                     return Some(state.node_text(ident));
                 }
             }
@@ -1543,8 +1537,8 @@ impl CppExtractor {
 
     /// Simple typedef.
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_typedef_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -1961,12 +1955,7 @@ impl CppExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(
-            &state.file_path,
-            &NodeKind::EnumVariant,
-            &name,
-            start_line,
-        );
+        let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, &name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
@@ -2246,8 +2235,7 @@ impl CppExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), attr_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -2265,9 +2253,7 @@ impl CppExtractor {
                         end_line,
                         start_column,
                         end_column,
-                        signature: Some(
-                            format!("[[{}]]", state.node_text(child).trim()),
-                        ),
+                        signature: Some(format!("[[{}]]", state.node_text(child).trim())),
                         docstring: None,
                         visibility: Visibility::Private,
                         is_async: false,

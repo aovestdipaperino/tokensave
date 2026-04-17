@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
-use crate::tokensave::TokenSave;
 use crate::context::format_context_as_markdown;
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
 use crate::types::{BuildContextOptions, NodeKind, Visibility};
 
 use super::{ToolResult, MAX_RESPONSE_CHARS};
@@ -38,8 +38,14 @@ pub async fn handle_tool_call(
     args: Value,
     server_stats: Option<Value>,
 ) -> Result<ToolResult> {
-    debug_assert!(!tool_name.is_empty(), "handle_tool_call called with empty tool_name");
-    debug_assert!(tool_name.starts_with("tokensave_"), "tool_name must start with 'tokensave_' prefix");
+    debug_assert!(
+        !tool_name.is_empty(),
+        "handle_tool_call called with empty tool_name"
+    );
+    debug_assert!(
+        tool_name.starts_with("tokensave_"),
+        "tool_name must start with 'tokensave_' prefix"
+    );
     match tool_name {
         "tokensave_search" => handle_search(cg, args).await,
         "tokensave_context" => handle_context(cg, args).await,
@@ -199,7 +205,11 @@ async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let exclude_node_ids: std::collections::HashSet<String> = args
         .get("exclude_node_ids")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let merge_adjacent = args
@@ -516,11 +526,7 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<To
 
     // File-level staleness summary (sample up to 100 files for efficiency)
     let all_files = cg.get_all_files().await.unwrap_or_default();
-    let sample_paths: Vec<String> = all_files
-        .iter()
-        .take(100)
-        .map(|f| f.path.clone())
-        .collect();
+    let sample_paths: Vec<String> = all_files.iter().take(100).map(|f| f.path.clone()).collect();
     let stale_files = cg.check_file_staleness(&sample_paths).await;
     if !stale_files.is_empty() {
         output["stale_files"] = json!(stale_files.len());
@@ -738,7 +744,10 @@ async fn handle_dead_code(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_diff_context` tool calls.
 async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_diff_context expects an object argument");
+    debug_assert!(
+        args.is_object(),
+        "handle_diff_context expects an object argument"
+    );
     let files: Vec<String> = args
         .get("files")
         .and_then(|v| v.as_array())
@@ -825,7 +834,10 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
     tests_sorted.sort();
 
     let touched_files = unique_file_paths(
-        all_touched_files.iter().map(|s| s.as_str()).chain(files.iter().map(|s| s.as_str())),
+        all_touched_files
+            .iter()
+            .map(|s| s.as_str())
+            .chain(files.iter().map(|s| s.as_str())),
     );
 
     let output = json!({
@@ -912,10 +924,7 @@ async fn handle_module_api(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 async fn handle_circular(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
     let cycles = cg.find_circular_dependencies().await?;
 
-    let items: Vec<Value> = cycles
-        .iter()
-        .map(|cycle| json!(cycle))
-        .collect();
+    let items: Vec<Value> = cycles.iter().map(|cycle| json!(cycle)).collect();
 
     let output = json!({
         "cycle_count": cycles.len(),
@@ -945,14 +954,8 @@ async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     // Count incoming + outgoing edges per node
     let mut connectivity: HashMap<String, (usize, usize)> = HashMap::new();
     for edge in &all_edges {
-        connectivity
-            .entry(edge.source.clone())
-            .or_insert((0, 0))
-            .1 += 1; // outgoing
-        connectivity
-            .entry(edge.target.clone())
-            .or_insert((0, 0))
-            .0 += 1; // incoming
+        connectivity.entry(edge.source.clone()).or_insert((0, 0)).1 += 1; // outgoing
+        connectivity.entry(edge.target.clone()).or_insert((0, 0)).0 += 1; // incoming
     }
 
     // Sort by total connectivity descending
@@ -1000,13 +1003,16 @@ async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_similar` tool calls.
 async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_similar expects an object argument");
-    let symbol = args
-        .get("symbol")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: symbol".to_string(),
-        })?;
+    debug_assert!(
+        args.is_object(),
+        "handle_similar expects an object argument"
+    );
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
 
     let limit = args
         .get("limit")
@@ -1028,9 +1034,14 @@ async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             .filter(|n| {
                 !existing_ids.contains(&n.id)
                     && (n.name.to_ascii_lowercase().contains(&lower_symbol)
-                        || n.qualified_name.to_ascii_lowercase().contains(&lower_symbol))
+                        || n.qualified_name
+                            .to_ascii_lowercase()
+                            .contains(&lower_symbol))
             })
-            .map(|n| crate::types::SearchResult { node: n, score: 0.5 })
+            .map(|n| crate::types::SearchResult {
+                node: n,
+                score: 0.5,
+            })
             .collect();
 
         substring_matches.truncate(limit.saturating_sub(results.len()));
@@ -1170,9 +1181,9 @@ async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResul
 
         // A use node is "unused" if nothing references it (no incoming edges)
         // and it doesn't create any connections (no outgoing edges beyond contains)
-        let has_meaningful_outgoing = outgoing.iter().any(|e| {
-            e.kind != crate::types::EdgeKind::Contains
-        });
+        let has_meaningful_outgoing = outgoing
+            .iter()
+            .any(|e| e.kind != crate::types::EdgeKind::Contains);
 
         if incoming.is_empty() && !has_meaningful_outgoing {
             touched.push(use_node.file_path.clone());
@@ -1206,12 +1217,12 @@ async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     debug_assert!(args.is_object(), "handle_rank expects an object argument");
     use crate::types::EdgeKind;
 
-    let edge_kind_str =
-        args.get("edge_kind")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "missing required parameter: edge_kind".to_string(),
-            })?;
+    let edge_kind_str = args
+        .get("edge_kind")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: edge_kind".to_string(),
+        })?;
 
     let edge_kind = EdgeKind::from_str(edge_kind_str).ok_or_else(|| TokenSaveError::Config {
         message: format!(
@@ -1230,7 +1241,10 @@ async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         "outgoing" => false,
         _ => {
             return Err(TokenSaveError::Config {
-                message: format!("invalid direction '{}'. Valid values: incoming, outgoing", direction),
+                message: format!(
+                    "invalid direction '{}'. Valid values: incoming, outgoing",
+                    direction
+                ),
             });
         }
     };
@@ -1300,7 +1314,9 @@ async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let path_prefix = args.get("path").and_then(|v| v.as_str());
 
-    let results = cg.get_largest_nodes(node_kind.as_ref(), path_prefix, limit).await?;
+    let results = cg
+        .get_largest_nodes(node_kind.as_ref(), path_prefix, limit)
+        .await?;
 
     let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
 
@@ -1433,7 +1449,10 @@ async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolRes
 
 /// Handles `tokensave_distribution` tool calls.
 async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_distribution expects an object argument");
+    debug_assert!(
+        args.is_object(),
+        "handle_distribution expects an object argument"
+    );
     let path_prefix = args.get("path").and_then(|v| v.as_str());
     let summary = args
         .get("summary")
@@ -1729,9 +1748,7 @@ async fn handle_doc_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> 
             })
         })
         .collect();
-    file_items.sort_by(|a, b| {
-        b["count"].as_u64().cmp(&a["count"].as_u64())
-    });
+    file_items.sort_by(|a, b| b["count"].as_u64().cmp(&a["count"].as_u64()));
 
     let output = json!({
         "path_filter": path_prefix,
@@ -1761,8 +1778,7 @@ async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let results = cg.get_god_classes(path_prefix, limit).await?;
 
-    let touched_files =
-        unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));
+    let touched_files = unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));
 
     let items: Vec<Value> = results
         .iter()
@@ -1796,7 +1812,10 @@ async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_changelog` tool calls.
 async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_changelog expects an object argument");
+    debug_assert!(
+        args.is_object(),
+        "handle_changelog expects an object argument"
+    );
     let from_ref = args
         .get("from_ref")
         .and_then(|v| v.as_str())
@@ -1804,12 +1823,12 @@ async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             message: "missing required parameter: from_ref".to_string(),
         })?;
 
-    let to_ref = args
-        .get("to_ref")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: to_ref".to_string(),
-        })?;
+    let to_ref =
+        args.get("to_ref")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: to_ref".to_string(),
+            })?;
 
     // Use gix to diff the two trees
     let changed_files: Vec<String> = match git_diff_files(cg.project_root(), from_ref, to_ref) {
@@ -1881,7 +1900,14 @@ async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Default node kinds for port comparisons.
 const PORT_DEFAULT_KINDS: &[&str] = &[
-    "function", "method", "class", "struct", "interface", "trait", "enum", "module",
+    "function",
+    "method",
+    "class",
+    "struct",
+    "interface",
+    "trait",
+    "enum",
+    "module",
 ];
 
 /// Returns the compatibility group for a node kind string used in port matching.
@@ -1907,7 +1933,10 @@ fn kind_compat_group(kind: &str) -> u8 {
 
 /// Handles `tokensave_port_status` tool calls.
 async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_port_status expects an object argument");
+    debug_assert!(
+        args.is_object(),
+        "handle_port_status expects an object argument"
+    );
 
     let source_dir = args
         .get("source_dir")
@@ -1953,7 +1982,10 @@ async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     // Build target lookup: (lowercase_name, compat_group) -> Vec<&Node>
     let mut target_map: HashMap<(String, u8), Vec<&crate::types::Node>> = HashMap::new();
     for node in &target_nodes {
-        let key = (node.name.to_lowercase(), kind_compat_group(node.kind.as_str()));
+        let key = (
+            node.name.to_lowercase(),
+            kind_compat_group(node.kind.as_str()),
+        );
         target_map.entry(key).or_default().push(node);
     }
 
@@ -2044,7 +2076,10 @@ async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 /// Handles `tokensave_port_order` tool calls.
 async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_port_order expects an object argument");
+    debug_assert!(
+        args.is_object(),
+        "handle_port_order expects an object argument"
+    );
 
     let source_dir = args
         .get("source_dir")
@@ -2258,9 +2293,7 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                         .get(id)
                         .map(|d| {
                             d.iter()
-                                .filter_map(|dep_id| {
-                                    node_map.get(dep_id).map(|n| n.name.as_str())
-                                })
+                                .filter_map(|dep_id| node_map.get(dep_id).map(|n| n.name.as_str()))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -2311,8 +2344,7 @@ fn git_diff_files(
     from_ref: &str,
     to_ref: &str,
 ) -> std::result::Result<Vec<String>, String> {
-    let repo =
-        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
 
     let from_tree = repo
         .rev_parse_single(from_ref)
@@ -2363,8 +2395,7 @@ fn git_changed_files(
     project_root: &std::path::Path,
     staged_only: bool,
 ) -> std::result::Result<Vec<String>, String> {
-    let repo =
-        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
 
     let head_tree = repo
         .head()
@@ -2444,8 +2475,7 @@ fn git_recent_commits(
     project_root: &std::path::Path,
     count: usize,
 ) -> std::result::Result<Vec<String>, String> {
-    let repo =
-        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
 
     let mut commits = Vec::new();
     let head = repo
@@ -2489,8 +2519,7 @@ fn git_commit_log(
     base_ref: &str,
     head_ref: &str,
 ) -> std::result::Result<Vec<Value>, String> {
-    let repo =
-        gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
 
     let base_id = repo
         .rev_parse_single(base_ref)
@@ -2638,8 +2667,14 @@ async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult
 
 /// Handles `tokensave_pr_context` tool calls.
 async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let base = args.get("base_ref").and_then(|v| v.as_str()).unwrap_or("main");
-    let head = args.get("head_ref").and_then(|v| v.as_str()).unwrap_or("HEAD");
+    let base = args
+        .get("base_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
+    let head = args
+        .get("head_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or("HEAD");
 
     let changed_files = match git_diff_files(cg.project_root(), base, head) {
         Ok(files) => files,
@@ -2746,7 +2781,11 @@ async fn handle_simplify_scan(cg: &TokenSave, args: Value) -> Result<ToolResult>
     let files: Vec<String> = args
         .get("files")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: files (array of strings)".to_string(),
         })?;
@@ -2765,13 +2804,17 @@ async fn handle_simplify_scan(cg: &TokenSave, args: Value) -> Result<ToolResult>
                 let similar = cg.search(&node.name, 5).await.unwrap_or_default();
                 let dupes: Vec<Value> = similar
                     .iter()
-                    .filter(|s| s.node.id != node.id && s.score > 0.8 && s.node.file_path != node.file_path)
-                    .map(|d| json!({
-                        "name": d.node.name,
-                        "file": d.node.file_path,
-                        "line": d.node.start_line,
-                        "score": d.score,
-                    }))
+                    .filter(|s| {
+                        s.node.id != node.id && s.score > 0.8 && s.node.file_path != node.file_path
+                    })
+                    .map(|d| {
+                        json!({
+                            "name": d.node.name,
+                            "file": d.node.file_path,
+                            "line": d.node.start_line,
+                            "score": d.score,
+                        })
+                    })
                     .collect();
                 if !dupes.is_empty() {
                     duplications.push(json!({
@@ -3046,18 +3089,18 @@ async fn handle_branch_list(cg: &TokenSave) -> Result<ToolResult> {
 
 /// Handles `tokensave_branch_search` tool calls.
 async fn handle_branch_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let branch = args
-        .get("branch")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: branch".to_string(),
-        })?;
-    let query = args
-        .get("query")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: query".to_string(),
-        })?;
+    let branch =
+        args.get("branch")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: branch".to_string(),
+            })?;
+    let query =
+        args.get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: query".to_string(),
+            })?;
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -3158,8 +3201,14 @@ async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             }
         }
 
-        let base_nodes = base_cg.get_nodes_by_file(file_path).await.unwrap_or_default();
-        let head_nodes = head_ref.get_nodes_by_file(file_path).await.unwrap_or_default();
+        let base_nodes = base_cg
+            .get_nodes_by_file(file_path)
+            .await
+            .unwrap_or_default();
+        let head_nodes = head_ref
+            .get_nodes_by_file(file_path)
+            .await
+            .unwrap_or_default();
 
         // Index by qualified_name for matching
         let base_map: HashMap<&str, &crate::types::Node> = base_nodes
@@ -3260,8 +3309,8 @@ async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::get_tool_definitions;
+    use super::*;
 
     #[test]
     fn test_tool_definitions_complete() {
@@ -3323,27 +3372,55 @@ mod tests {
     fn test_tool_definitions_have_annotations() {
         let tools = get_tool_definitions();
         for tool in &tools {
-            let ann = tool.annotations.as_ref()
+            let ann = tool
+                .annotations
+                .as_ref()
                 .unwrap_or_else(|| panic!("{} missing annotations", tool.name));
-            assert_eq!(ann["readOnlyHint"], true, "{} missing readOnlyHint", tool.name);
-            assert!(ann["title"].is_string(), "{} missing title annotation", tool.name);
+            assert_eq!(
+                ann["readOnlyHint"], true,
+                "{} missing readOnlyHint",
+                tool.name
+            );
+            assert!(
+                ann["title"].is_string(),
+                "{} missing title annotation",
+                tool.name
+            );
         }
     }
 
     #[test]
     fn test_always_load_tools() {
         let tools = get_tool_definitions();
-        let always_load: Vec<&str> = tools.iter()
-            .filter(|t| t.meta.as_ref()
-                .and_then(|m| m.get("anthropic/alwaysLoad"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false))
+        let always_load: Vec<&str> = tools
+            .iter()
+            .filter(|t| {
+                t.meta
+                    .as_ref()
+                    .and_then(|m| m.get("anthropic/alwaysLoad"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            })
             .map(|t| t.name.as_str())
             .collect();
-        assert!(always_load.contains(&"tokensave_context"), "tokensave_context must be alwaysLoad");
-        assert!(always_load.contains(&"tokensave_search"), "tokensave_search must be alwaysLoad");
-        assert!(always_load.contains(&"tokensave_status"), "tokensave_status must be alwaysLoad");
-        assert_eq!(always_load.len(), 3, "exactly 3 tools should be alwaysLoad, got {:?}", always_load);
+        assert!(
+            always_load.contains(&"tokensave_context"),
+            "tokensave_context must be alwaysLoad"
+        );
+        assert!(
+            always_load.contains(&"tokensave_search"),
+            "tokensave_search must be alwaysLoad"
+        );
+        assert!(
+            always_load.contains(&"tokensave_status"),
+            "tokensave_status must be alwaysLoad"
+        );
+        assert_eq!(
+            always_load.len(),
+            3,
+            "exactly 3 tools should be alwaysLoad, got {:?}",
+            always_load
+        );
     }
 
     #[test]

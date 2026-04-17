@@ -784,13 +784,13 @@ impl JavaExtractor {
                         visibility: visibility.clone(),
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1132,13 +1132,13 @@ impl JavaExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1217,13 +1217,13 @@ impl JavaExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1281,9 +1281,26 @@ impl JavaExtractor {
     /// `type_identifier` direct child.
     fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let java_builtins: &[&str] = &[
-            "void", "int", "long", "short", "byte", "char", "float", "double",
-            "boolean", "String", "Object", "Integer", "Long", "Short", "Byte",
-            "Character", "Float", "Double", "Boolean", "Void",
+            "void",
+            "int",
+            "long",
+            "short",
+            "byte",
+            "char",
+            "float",
+            "double",
+            "boolean",
+            "String",
+            "Object",
+            "Integer",
+            "Long",
+            "Short",
+            "Byte",
+            "Character",
+            "Float",
+            "Double",
+            "Boolean",
+            "Void",
         ];
 
         let mut cursor = node.walk();

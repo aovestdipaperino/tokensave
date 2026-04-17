@@ -11,8 +11,8 @@ use std::path::Path;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    load_toml_file, write_toml_file, TOOL_NAMES,
+    load_toml_file, write_toml_file, AgentIntegration, DoctorCounters, HealthcheckContext,
+    InstallContext, TOOL_NAMES,
 };
 
 /// OpenAI Codex CLI agent.
@@ -73,7 +73,9 @@ impl AgentIntegration for CodexIntegration {
 
     fn has_tokensave(&self, home: &Path) -> bool {
         let config = home.join(".codex").join("config.toml");
-        if !config.exists() { return false; }
+        if !config.exists() {
+            return false;
+        }
         let toml = super::load_toml_file(&config);
         toml.get("mcp_servers")
             .and_then(|v| v.get("tokensave"))
@@ -90,9 +92,11 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     let mut config = load_toml_file(config_path);
 
     // Ensure [mcp_servers.tokensave] exists
-    let table = config.as_table_mut().ok_or_else(|| TokenSaveError::Config {
-        message: "config.toml is not a TOML table".to_string(),
-    })?;
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "config.toml is not a TOML table".to_string(),
+        })?;
 
     let servers = table
         .entry("mcp_servers")
@@ -196,7 +200,10 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
         return Ok(());
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!("  No tokensave MCP server in {}, skipping", config_path.display());
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            config_path.display()
+        );
         return Ok(());
     }
     if servers.is_empty() {
@@ -304,16 +311,15 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
 
     let auto_count = tools.map_or(0, |t| {
         t.values()
-            .filter(|v| {
-                v.get("approval_mode")
-                    .and_then(|m| m.as_str())
-                    == Some("auto")
-            })
+            .filter(|v| v.get("approval_mode").and_then(|m| m.as_str()) == Some("auto"))
             .count()
     });
 
     if auto_count >= TOOL_NAMES.len() {
-        dc.pass(&format!("All {} tools set to auto-approve", TOOL_NAMES.len()));
+        dc.pass(&format!(
+            "All {} tools set to auto-approve",
+            TOOL_NAMES.len()
+        ));
     } else if auto_count > 0 {
         dc.warn(&format!(
             "{}/{} tools auto-approved — run `tokensave install --agent codex` to update",

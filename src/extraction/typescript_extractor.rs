@@ -208,8 +208,7 @@ impl TypeScriptExtractor {
                     "export_clause" => {
                         let text = state.node_text(node);
                         let name = "export";
-                        let qualified_name =
-                            format!("{}::{}", state.qualified_prefix(), name);
+                        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
                         let id = generate_node_id(
                             &state.file_path,
                             &NodeKind::Export,
@@ -231,13 +230,13 @@ impl TypeScriptExtractor {
                             visibility: Visibility::Pub,
                             is_async: false,
                             branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
+                            updated_at: state.timestamp,
                         };
                         state.nodes.push(graph_node);
                         if let Some(parent_id) = state.parent_node_id() {
@@ -379,8 +378,12 @@ impl TypeScriptExtractor {
         let start_column = declarator.start_position().column as u32;
         let end_column = arrow_node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id =
-            generate_node_id(&state.file_path, &NodeKind::ArrowFunction, &name, start_line);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::ArrowFunction,
+            &name,
+            start_line,
+        );
         let metrics = count_complexity(arrow_node, &TYPESCRIPT_COMPLEXITY, &state.source);
 
         let graph_node = Node {
@@ -1141,12 +1144,8 @@ impl TypeScriptExtractor {
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
                     let qualified_name = format!("{}::@{}", state.qualified_prefix(), name);
-                    let id = generate_node_id(
-                        &state.file_path,
-                        &NodeKind::Decorator,
-                        &name,
-                        start_line,
-                    );
+                    let id =
+                        generate_node_id(&state.file_path, &NodeKind::Decorator, &name, start_line);
 
                     let graph_node = Node {
                         id: id.clone(),
@@ -1163,13 +1162,13 @@ impl TypeScriptExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -1251,11 +1250,7 @@ impl TypeScriptExtractor {
         if let Some(string_node) = Self::find_child_by_kind(node, "string") {
             let text = state.node_text(string_node);
             // Strip quotes.
-            let path = text
-                .trim()
-                .trim_matches('\'')
-                .trim_matches('"')
-                .to_string();
+            let path = text.trim().trim_matches('\'').trim_matches('"').to_string();
             if !path.is_empty() {
                 return Some(path);
             }
@@ -1347,9 +1342,18 @@ impl TypeScriptExtractor {
                 // Skip built-in types
                 if !matches!(
                     type_name.as_str(),
-                    "string" | "number" | "boolean" | "void" | "null"
-                        | "undefined" | "any" | "never" | "unknown" | "object"
-                        | "symbol" | "bigint"
+                    "string"
+                        | "number"
+                        | "boolean"
+                        | "void"
+                        | "null"
+                        | "undefined"
+                        | "any"
+                        | "never"
+                        | "unknown"
+                        | "object"
+                        | "symbol"
+                        | "bigint"
                 ) {
                     state.unresolved_refs.push(UnresolvedRef {
                         from_node_id: fn_node_id.to_string(),

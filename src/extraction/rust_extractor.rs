@@ -1262,12 +1262,7 @@ impl RustExtractor {
             .unwrap_or(trimmed)
             .strip_suffix(']')
             .unwrap_or(trimmed);
-        inner
-            .split('(')
-            .next()
-            .unwrap_or(inner)
-            .trim()
-            .to_string()
+        inner.split('(').next().unwrap_or(inner).trim().to_string()
     }
 
     /// Build the final ExtractionResult from the accumulated state.

@@ -481,10 +481,7 @@ export class Child extends Base implements Printable {
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Extends)
         .collect();
-    assert!(
-        !extends_refs.is_empty(),
-        "should have Extends ref for Base"
-    );
+    assert!(!extends_refs.is_empty(), "should have Extends ref for Base");
     assert!(extends_refs.iter().any(|r| r.reference_name == "Base"));
 
     // Check for Implements unresolved ref

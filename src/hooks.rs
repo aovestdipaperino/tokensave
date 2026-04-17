@@ -48,10 +48,23 @@ pub fn evaluate_hook_decision(tool_input: &str) -> String {
     if let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) {
         let lower = prompt.to_ascii_lowercase();
         let exploration_patterns = [
-            "explore", "codebase structure", "codebase architecture", "codebase overview",
-            "source files contents", "read every", "full contents", "entire codebase",
-            "architecture and structure", "call graph", "call path", "call chain",
-            "symbol relat", "symbol lookup", "who calls", "callers of", "callees of",
+            "explore",
+            "codebase structure",
+            "codebase architecture",
+            "codebase overview",
+            "source files contents",
+            "read every",
+            "full contents",
+            "entire codebase",
+            "architecture and structure",
+            "call graph",
+            "call path",
+            "call chain",
+            "symbol relat",
+            "symbol lookup",
+            "who calls",
+            "callers of",
+            "callees of",
         ];
         if exploration_patterns.iter().any(|pat| lower.contains(pat)) {
             return block_msg.to_string();

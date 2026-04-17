@@ -65,7 +65,12 @@ fn test_objc_extract_ns_enum() {
         .iter()
         .filter(|n| n.kind == NodeKind::EnumVariant)
         .collect();
-    assert_eq!(variants.len(), 4, "expected 4 enum variants, got {}", variants.len());
+    assert_eq!(
+        variants.len(),
+        4,
+        "expected 4 enum variants, got {}",
+        variants.len()
+    );
     assert!(variants.iter().any(|n| n.name == "LogLevelDebug"));
     assert!(variants.iter().any(|n| n.name == "LogLevelInfo"));
     assert!(variants.iter().any(|n| n.name == "LogLevelWarning"));
@@ -101,7 +106,11 @@ fn test_objc_extract_protocol() {
     assert_eq!(protocols.len(), 1);
     assert_eq!(protocols[0].name, "Serializable");
     assert!(
-        protocols[0].docstring.as_ref().unwrap().contains("serializable"),
+        protocols[0]
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("serializable"),
         "docstring: {:?}",
         protocols[0].docstring
     );
@@ -147,7 +156,11 @@ fn test_objc_extract_class_interface() {
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "Base");
     assert!(
-        classes[0].docstring.as_ref().unwrap().contains("Base class"),
+        classes[0]
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Base class"),
         "docstring: {:?}",
         classes[0].docstring
     );
@@ -205,9 +218,10 @@ fn test_objc_extract_class_with_protocol_conformance() {
     assert_eq!(classes[0].name, "Connection");
 
     // Extends Base
-    assert!(result.unresolved_refs.iter().any(|r| {
-        r.reference_kind == EdgeKind::Extends && r.reference_name == "Base"
-    }));
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|r| { r.reference_kind == EdgeKind::Extends && r.reference_name == "Base" }));
 
     // Implements Serializable
     assert!(result.unresolved_refs.iter().any(|r| {
@@ -230,7 +244,12 @@ fn test_objc_extract_class_with_protocol_conformance() {
         .iter()
         .filter(|n| n.kind == NodeKind::Method)
         .collect();
-    assert_eq!(methods.len(), 4, "expected 4 method declarations: {:?}", methods.iter().map(|m| &m.name).collect::<Vec<_>>());
+    assert_eq!(
+        methods.len(),
+        4,
+        "expected 4 method declarations: {:?}",
+        methods.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
     assert!(methods.iter().any(|n| n.name == "initWithHost"));
     assert!(methods.iter().any(|n| n.name == "connect"));
     assert!(methods.iter().any(|n| n.name == "disconnect"));
@@ -280,7 +299,12 @@ fn test_objc_extract_implementation() {
         .iter()
         .filter(|n| n.kind == NodeKind::Method)
         .collect();
-    assert_eq!(methods.len(), 3, "expected 3 methods: {:?}", methods.iter().map(|m| &m.name).collect::<Vec<_>>());
+    assert_eq!(
+        methods.len(),
+        3,
+        "expected 3 methods: {:?}",
+        methods.iter().map(|m| &m.name).collect::<Vec<_>>()
+    );
     assert!(methods.iter().any(|n| n.name == "initWithName"));
     assert!(methods.iter().any(|n| n.name == "description"));
     assert!(methods.iter().any(|n| n.name == "validate"));
@@ -288,7 +312,11 @@ fn test_objc_extract_implementation() {
     // Docstring on validate
     let validate = methods.iter().find(|m| m.name == "validate").unwrap();
     assert!(
-        validate.docstring.as_ref().unwrap().contains("Private validation"),
+        validate
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Private validation"),
         "validate docstring: {:?}",
         validate.docstring
     );
@@ -329,7 +357,11 @@ void logMessage(LogLevel level, NSString *message) {
     assert_eq!(fns.len(), 1);
     assert_eq!(fns[0].name, "logMessage");
     assert!(
-        fns[0].docstring.as_ref().unwrap().contains("Top-level C function"),
+        fns[0]
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Top-level C function"),
         "docstring: {:?}",
         fns[0].docstring
     );
@@ -365,10 +397,18 @@ fn test_objc_message_expression_calls() {
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .collect();
-    assert!(calls.len() >= 3, "expected >= 3 call refs, got {}", calls.len());
+    assert!(
+        calls.len() >= 3,
+        "expected >= 3 call refs, got {}",
+        calls.len()
+    );
     // Message sends create receiver.method format
-    assert!(calls.iter().any(|r| r.reference_name.contains("doSomething")));
-    assert!(calls.iter().any(|r| r.reference_name.contains("stringWithFormat")));
+    assert!(calls
+        .iter()
+        .any(|r| r.reference_name.contains("doSomething")));
+    assert!(calls
+        .iter()
+        .any(|r| r.reference_name.contains("stringWithFormat")));
     // NSLog is a C function call
     assert!(calls.iter().any(|r| r.reference_name == "NSLog"));
 }
@@ -399,7 +439,11 @@ fn test_objc_contains_edges() {
         .filter(|e| e.kind == EdgeKind::Contains)
         .collect();
     // File -> Class, Class -> Property, Class -> Method
-    assert!(contains.len() >= 3, "expected >= 3 Contains edges, got {}", contains.len());
+    assert!(
+        contains.len() >= 3,
+        "expected >= 3 Contains edges, got {}",
+        contains.len()
+    );
 }
 
 #[test]
@@ -425,8 +469,8 @@ fn test_objc_class_method_vs_instance_method() {
 
 #[test]
 fn test_objc_full_sample_file() {
-    let source = std::fs::read_to_string("tests/fixtures/sample.m")
-        .expect("Failed to read sample.m");
+    let source =
+        std::fs::read_to_string("tests/fixtures/sample.m").expect("Failed to read sample.m");
     let extractor = ObjcExtractor;
     let result = extractor.extract("sample.m", &source);
 
@@ -502,23 +546,32 @@ fn test_objc_full_sample_file() {
     assert!(props.len() >= 3, "expected >= 3 properties");
 
     // C Function
-    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Function && n.name == "logMessage"));
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::Function && n.name == "logMessage"));
 
     // Extends refs
-    assert!(result.unresolved_refs.iter().any(|r| {
-        r.reference_kind == EdgeKind::Extends && r.reference_name == "NSObject"
-    }));
-    assert!(result.unresolved_refs.iter().any(|r| {
-        r.reference_kind == EdgeKind::Extends && r.reference_name == "Base"
-    }));
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|r| { r.reference_kind == EdgeKind::Extends && r.reference_name == "NSObject" }));
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|r| { r.reference_kind == EdgeKind::Extends && r.reference_name == "Base" }));
 
     // Implements refs
-    assert!(result.unresolved_refs.iter().any(|r| {
-        r.reference_kind == EdgeKind::Implements
-    }));
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|r| { r.reference_kind == EdgeKind::Implements }));
 
     // Call sites
-    assert!(result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls));
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|r| r.reference_kind == EdgeKind::Calls));
 
     // Contains edges
     let contains: Vec<_> = result
@@ -526,5 +579,9 @@ fn test_objc_full_sample_file() {
         .iter()
         .filter(|e| e.kind == EdgeKind::Contains)
         .collect();
-    assert!(contains.len() >= 15, "expected >= 15 Contains edges, got {}", contains.len());
+    assert!(
+        contains.len() >= 15,
+        "expected >= 15 Contains edges, got {}",
+        contains.len()
+    );
 }

@@ -205,9 +205,7 @@ pub fn lookup(model: &str) -> Option<&'static ModelPricing> {
     // Fall back to longest prefix match
     let mut best: Option<(&str, &ModelPricing)> = None;
     for (key, pricing) in table {
-        if model.starts_with(key.as_str())
-            && best.is_none_or(|(bp, _)| key.len() > bp.len())
-        {
+        if model.starts_with(key.as_str()) && best.is_none_or(|(bp, _)| key.len() > bp.len()) {
             best = Some((key.as_str(), pricing));
         }
     }
@@ -340,8 +338,7 @@ mod tests {
         let table = embedded_table();
         let p = table.get("claude-opus-4").unwrap();
         let mtok = 1_000_000.0;
-        let cost = (1_000_000.0 / mtok) * p.input_per_mtok
-            + (100_000.0 / mtok) * p.output_per_mtok;
+        let cost = (1_000_000.0 / mtok) * p.input_per_mtok + (100_000.0 / mtok) * p.output_per_mtok;
         // 1M input * 5/MTok + 100k output * 25/MTok = 5.0 + 2.5 = 7.5
         assert!((cost - 7.5).abs() < 0.001);
     }

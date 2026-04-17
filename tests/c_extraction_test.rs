@@ -316,11 +316,7 @@ int add(int a, int b) {
         .collect();
     assert_eq!(fns.len(), 1);
     let doc = fns[0].docstring.as_ref().expect("should have docstring");
-    assert!(
-        doc.contains("Adds two integers"),
-        "docstring: {:?}",
-        doc
-    );
+    assert!(doc.contains("Adds two integers"), "docstring: {:?}", doc);
 }
 
 #[test]
@@ -525,11 +521,7 @@ int global_counter = 0;
         .docstring
         .as_ref()
         .expect("global variable should have docstring");
-    assert!(
-        doc.contains("global counter"),
-        "docstring: {:?}",
-        doc
-    );
+    assert!(doc.contains("global counter"), "docstring: {:?}", doc);
 }
 
 #[test]

@@ -7,8 +7,14 @@ use crate::types::TaskContext;
 /// The output includes sections for the query, entry points, related symbols
 /// grouped by file, and extracted code blocks.
 pub fn format_context_as_markdown(context: &TaskContext) -> String {
-    debug_assert!(!context.query.is_empty(), "format_context_as_markdown called with empty query");
-    debug_assert!(!context.summary.is_empty(), "format_context_as_markdown called with empty summary");
+    debug_assert!(
+        !context.query.is_empty(),
+        "format_context_as_markdown called with empty query"
+    );
+    debug_assert!(
+        !context.summary.is_empty(),
+        "format_context_as_markdown called with empty summary"
+    );
     let mut out = String::new();
 
     out.push_str("## Code Context\n");
@@ -94,8 +100,14 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         }
     }
 
-    debug_assert!(!out.is_empty(), "format_context_as_markdown produced empty output");
-    debug_assert!(out.contains("## Code Context"), "output missing required header");
+    debug_assert!(
+        !out.is_empty(),
+        "format_context_as_markdown produced empty output"
+    );
+    debug_assert!(
+        out.contains("## Code Context"),
+        "output missing required header"
+    );
     out
 }
 
@@ -158,13 +170,13 @@ mod tests {
                 visibility: Visibility::Pub,
                 is_async: false,
                 branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: 0,
+                loops: 0,
+                returns: 0,
+                max_nesting: 0,
+                unsafe_blocks: 0,
+                unchecked_calls: 0,
+                assertions: 0,
+                updated_at: 0,
             }],
             code_blocks: vec![],
             related_files: vec!["src/lib.rs".to_string()],
@@ -199,13 +211,13 @@ mod tests {
                 visibility: Visibility::Pub,
                 is_async: false,
                 branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: 0,
+                loops: 0,
+                returns: 0,
+                max_nesting: 0,
+                unsafe_blocks: 0,
+                unchecked_calls: 0,
+                assertions: 0,
+                updated_at: 0,
             }],
             code_blocks: vec![CodeBlock {
                 content: "fn my_fn() {\n    println!(\"hello\");\n}".to_string(),

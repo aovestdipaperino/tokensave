@@ -1083,13 +1083,13 @@ impl GoExtractor {
                                 visibility: Visibility::Private,
                                 is_async: false,
                                 branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                                loops: 0,
+                                returns: 0,
+                                max_nesting: 0,
+                                unsafe_blocks: 0,
+                                unchecked_calls: 0,
+                                assertions: 0,
+                                updated_at: state.timestamp,
                             };
                             state.nodes.push(graph_node);
 

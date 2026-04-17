@@ -8,8 +8,8 @@
 use serde_json::{json, Value};
 use std::fs;
 use tempfile::TempDir;
-use tokensave::mcp::McpServer;
 use tokensave::mcp::transport::ChannelTransport;
+use tokensave::mcp::McpServer;
 use tokensave::tokensave::TokenSave;
 
 // ---------------------------------------------------------------------------
@@ -89,9 +89,10 @@ fn parse_response(s: &str) -> Value {
 #[tokio::test]
 async fn test_initialize() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(1), "initialize", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(1), "initialize", json!({}))],
+    )
     .await;
 
     assert!(!responses.is_empty(), "should have at least one response");
@@ -111,10 +112,13 @@ async fn test_initialize() {
 async fn test_initialized_notification() {
     let (server, _dir) = setup_server().await;
     // Send "initialized" notification (no id), then a ping to verify server is alive.
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_notification("initialized"),
-        jsonrpc_request(json!(2), "ping", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("initialized"),
+            jsonrpc_request(json!(2), "ping", json!({})),
+        ],
+    )
     .await;
 
     // The notification should produce no response; we should only get the ping response.
@@ -126,7 +130,11 @@ async fn test_initialized_notification() {
             v["id"] == 2
         })
         .collect();
-    assert_eq!(ping_responses.len(), 1, "should get exactly one ping response");
+    assert_eq!(
+        ping_responses.len(),
+        1,
+        "should get exactly one ping response"
+    );
     let resp = parse_response(ping_responses[0]);
     assert!(resp["error"].is_null(), "ping should succeed");
 }
@@ -139,10 +147,13 @@ async fn test_initialized_notification() {
 async fn test_notifications_initialized() {
     let (server, _dir) = setup_server().await;
     // Send "notifications/initialized" notification, then ping.
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_notification("notifications/initialized"),
-        jsonrpc_request(json!(3), "ping", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("notifications/initialized"),
+            jsonrpc_request(json!(3), "ping", json!({})),
+        ],
+    )
     .await;
 
     let ping_responses: Vec<&String> = responses
@@ -152,7 +163,11 @@ async fn test_notifications_initialized() {
             v["id"] == 3
         })
         .collect();
-    assert_eq!(ping_responses.len(), 1, "should get exactly one ping response");
+    assert_eq!(
+        ping_responses.len(),
+        1,
+        "should get exactly one ping response"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -162,15 +177,16 @@ async fn test_notifications_initialized() {
 #[tokio::test]
 async fn test_ping() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(10), "ping", json!({})),
-    ])
-    .await;
+    let responses =
+        run_server_with_messages(server, vec![jsonrpc_request(json!(10), "ping", json!({}))]).await;
 
     assert!(!responses.is_empty());
     let resp = parse_response(&responses[0]);
     assert_eq!(resp["id"], 10);
-    assert!(resp["result"].is_object(), "ping result should be an object");
+    assert!(
+        resp["result"].is_object(),
+        "ping result should be an object"
+    );
     assert!(resp["error"].is_null(), "ping should not have an error");
 }
 
@@ -181,9 +197,10 @@ async fn test_ping() {
 #[tokio::test]
 async fn test_tools_list() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(20), "tools/list", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(20), "tools/list", json!({}))],
+    )
     .await;
 
     assert!(!responses.is_empty());
@@ -192,13 +209,19 @@ async fn test_tools_list() {
     let tools = resp["result"]["tools"].as_array().unwrap();
     assert!(!tools.is_empty(), "tools list should not be empty");
     // Verify at least some well-known tools are present.
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    assert!(tool_names.contains(&"tokensave_search"), "should have tokensave_search");
-    assert!(tool_names.contains(&"tokensave_status"), "should have tokensave_status");
-    assert!(tool_names.contains(&"tokensave_context"), "should have tokensave_context");
+    let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(
+        tool_names.contains(&"tokensave_search"),
+        "should have tokensave_search"
+    );
+    assert!(
+        tool_names.contains(&"tokensave_status"),
+        "should have tokensave_status"
+    );
+    assert!(
+        tool_names.contains(&"tokensave_context"),
+        "should have tokensave_context"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -208,12 +231,17 @@ async fn test_tools_list() {
 #[tokio::test]
 async fn test_tools_call_search() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(30), "tools/call", json!({
-            "name": "tokensave_search",
-            "arguments": { "query": "helper" }
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(30),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "helper" }
+            }),
+        )],
+    )
     .await;
 
     // Find the response with id=30 (skip any notifications).
@@ -244,12 +272,17 @@ async fn test_tools_call_search() {
 #[tokio::test]
 async fn test_tools_call_status() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(40), "tools/call", json!({
-            "name": "tokensave_status",
-            "arguments": {}
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(40),
+            "tools/call",
+            json!({
+                "name": "tokensave_status",
+                "arguments": {}
+            }),
+        )],
+    )
     .await;
 
     let resp_str = responses
@@ -282,21 +315,25 @@ async fn test_tools_call_status() {
 async fn test_tools_call_missing_params() {
     let (server, _dir) = setup_server().await;
     // Send tools/call with no params at all.
-    let responses = run_server_with_messages(server, vec![
-        serde_json::to_string(&json!({
+    let responses = run_server_with_messages(
+        server,
+        vec![serde_json::to_string(&json!({
             "jsonrpc": "2.0",
             "id": 50,
             "method": "tools/call"
         }))
-        .unwrap(),
-    ])
+        .unwrap()],
+    )
     .await;
 
     assert!(!responses.is_empty());
     let resp = parse_response(&responses[0]);
     assert_eq!(resp["id"], 50);
     assert!(resp["error"].is_object(), "should have an error");
-    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "should be InvalidParams error"
+    );
     assert!(
         resp["error"]["message"]
             .as_str()
@@ -314,11 +351,16 @@ async fn test_tools_call_missing_params() {
 async fn test_tools_call_missing_name() {
     let (server, _dir) = setup_server().await;
     // Send tools/call with params but no "name" key.
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(60), "tools/call", json!({
-            "arguments": { "query": "test" }
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(60),
+            "tools/call",
+            json!({
+                "arguments": { "query": "test" }
+            }),
+        )],
+    )
     .await;
 
     let resp_str = responses
@@ -330,7 +372,10 @@ async fn test_tools_call_missing_name() {
         .expect("should have a response for id=60");
     let resp = parse_response(resp_str);
     assert!(resp["error"].is_object(), "should have an error");
-    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "should be InvalidParams error"
+    );
     assert!(
         resp["error"]["message"]
             .as_str()
@@ -347,16 +392,20 @@ async fn test_tools_call_missing_name() {
 #[tokio::test]
 async fn test_unknown_method() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(70), "some/unknown/method", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(70), "some/unknown/method", json!({}))],
+    )
     .await;
 
     assert!(!responses.is_empty());
     let resp = parse_response(&responses[0]);
     assert_eq!(resp["id"], 70);
     assert!(resp["error"].is_object(), "should have an error");
-    assert_eq!(resp["error"]["code"], -32601, "should be MethodNotFound error");
+    assert_eq!(
+        resp["error"]["code"], -32601,
+        "should be MethodNotFound error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +416,13 @@ async fn test_unknown_method() {
 async fn test_malformed_json() {
     let (server, _dir) = setup_server().await;
     // Send invalid JSON, then a valid ping to verify server continues.
-    let responses = run_server_with_messages(server, vec![
-        "this is not json {{{".to_string(),
-        jsonrpc_request(json!(80), "ping", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            "this is not json {{{".to_string(),
+            jsonrpc_request(json!(80), "ping", json!({})),
+        ],
+    )
     .await;
 
     // Should have at least 2 responses: parse error + ping response.
@@ -382,8 +434,14 @@ async fn test_malformed_json() {
 
     // First response should be a parse error.
     let error_resp = parse_response(&responses[0]);
-    assert!(error_resp["error"].is_object(), "first response should be an error");
-    assert_eq!(error_resp["error"]["code"], -32700, "should be ParseError (-32700)");
+    assert!(
+        error_resp["error"].is_object(),
+        "first response should be an error"
+    );
+    assert_eq!(
+        error_resp["error"]["code"], -32700,
+        "should be ParseError (-32700)"
+    );
 
     // Second (or later) should be the ping response.
     let ping_resp = responses
@@ -394,7 +452,10 @@ async fn test_malformed_json() {
         })
         .expect("should have a ping response after malformed JSON");
     let ping = parse_response(ping_resp);
-    assert!(ping["error"].is_null(), "ping after malformed JSON should succeed");
+    assert!(
+        ping["error"].is_null(),
+        "ping after malformed JSON should succeed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -405,12 +466,15 @@ async fn test_malformed_json() {
 async fn test_blank_lines_skipped() {
     let (server, _dir) = setup_server().await;
     // Send blank/whitespace lines, then a ping.
-    let responses = run_server_with_messages(server, vec![
-        "".to_string(),
-        "   ".to_string(),
-        "\t".to_string(),
-        jsonrpc_request(json!(90), "ping", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            "".to_string(),
+            "   ".to_string(),
+            "\t".to_string(),
+            jsonrpc_request(json!(90), "ping", json!({})),
+        ],
+    )
     .await;
 
     // Only the ping response should come through.
@@ -436,15 +500,22 @@ async fn test_blank_lines_skipped() {
 #[tokio::test]
 async fn test_multiple_tool_calls() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(100), "initialize", json!({})),
-        jsonrpc_request(json!(101), "ping", json!({})),
-        jsonrpc_request(json!(102), "tools/list", json!({})),
-        jsonrpc_request(json!(103), "tools/call", json!({
-            "name": "tokensave_search",
-            "arguments": { "query": "main" }
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(100), "initialize", json!({})),
+            jsonrpc_request(json!(101), "ping", json!({})),
+            jsonrpc_request(json!(102), "tools/list", json!({})),
+            jsonrpc_request(
+                json!(103),
+                "tools/call",
+                json!({
+                    "name": "tokensave_search",
+                    "arguments": { "query": "main" }
+                }),
+            ),
+        ],
+    )
     .await;
 
     // Collect response IDs (filtering out notifications which have no "id" or null id).
@@ -456,10 +527,22 @@ async fn test_multiple_tool_calls() {
         })
         .collect();
 
-    assert!(response_ids.contains(&100), "should have response for id=100 (initialize)");
-    assert!(response_ids.contains(&101), "should have response for id=101 (ping)");
-    assert!(response_ids.contains(&102), "should have response for id=102 (tools/list)");
-    assert!(response_ids.contains(&103), "should have response for id=103 (tools/call)");
+    assert!(
+        response_ids.contains(&100),
+        "should have response for id=100 (initialize)"
+    );
+    assert!(
+        response_ids.contains(&101),
+        "should have response for id=101 (ping)"
+    );
+    assert!(
+        response_ids.contains(&102),
+        "should have response for id=102 (tools/list)"
+    );
+    assert!(
+        response_ids.contains(&103),
+        "should have response for id=103 (tools/call)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +554,10 @@ async fn test_server_stats_initial() {
     let (server, _dir) = setup_server().await;
     let stats = server.server_stats_json().await;
     assert!(stats["uptime_secs"].is_number(), "should have uptime_secs");
-    assert_eq!(stats["total_requests"], 0, "initial total_requests should be 0");
+    assert_eq!(
+        stats["total_requests"], 0,
+        "initial total_requests should be 0"
+    );
     assert_eq!(stats["tool_calls"], 0, "initial tool_calls should be 0");
     assert_eq!(stats["errors"], 0, "initial errors should be 0");
 }
@@ -484,14 +570,21 @@ async fn test_server_stats_initial() {
 async fn test_server_stats_after_run() {
     let (server, _dir) = setup_server().await;
     // Send several requests then a tokensave_status to check stats are embedded.
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(200), "initialize", json!({})),
-        jsonrpc_request(json!(201), "ping", json!({})),
-        jsonrpc_request(json!(202), "tools/call", json!({
-            "name": "tokensave_status",
-            "arguments": {}
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(200), "initialize", json!({})),
+            jsonrpc_request(json!(201), "ping", json!({})),
+            jsonrpc_request(
+                json!(202),
+                "tools/call",
+                json!({
+                    "name": "tokensave_status",
+                    "arguments": {}
+                }),
+            ),
+        ],
+    )
     .await;
 
     let status_resp_str = responses
@@ -526,13 +619,20 @@ async fn test_server_stats_after_run() {
 async fn test_error_tracking() {
     let (server, _dir) = setup_server().await;
     // Send an unknown method (which produces an error), then check status.
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(300), "unknown/method", json!({})),
-        jsonrpc_request(json!(301), "tools/call", json!({
-            "name": "tokensave_status",
-            "arguments": {}
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(300), "unknown/method", json!({})),
+            jsonrpc_request(
+                json!(301),
+                "tools/call",
+                json!({
+                    "name": "tokensave_status",
+                    "arguments": {}
+                }),
+            ),
+        ],
+    )
     .await;
 
     // Verify the unknown method produced an error.
@@ -544,7 +644,10 @@ async fn test_error_tracking() {
         })
         .expect("should have a response for id=300");
     let error_resp = parse_response(error_resp_str);
-    assert!(error_resp["error"].is_object(), "unknown method should produce error");
+    assert!(
+        error_resp["error"].is_object(),
+        "unknown method should produce error"
+    );
 
     // Check status to verify errors count increased.
     let status_resp_str = responses
@@ -587,9 +690,10 @@ async fn test_error_tracking() {
 #[tokio::test]
 async fn test_initialize_has_resources_capability() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(1), "initialize", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(1), "initialize", json!({}))],
+    )
     .await;
 
     let resp = parse_response(&responses[0]);
@@ -606,13 +710,15 @@ async fn test_initialize_has_resources_capability() {
 #[tokio::test]
 async fn test_initialize_has_instructions() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(1), "initialize", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(1), "initialize", json!({}))],
+    )
     .await;
 
     let resp = parse_response(&responses[0]);
-    let instructions = resp["result"]["instructions"].as_str()
+    let instructions = resp["result"]["instructions"]
+        .as_str()
         .expect("initialize should have instructions string");
     assert!(
         instructions.contains("tokensave_context"),
@@ -627,30 +733,45 @@ async fn test_initialize_has_instructions() {
 #[tokio::test]
 async fn test_resources_list() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(400), "resources/list", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(400), "resources/list", json!({}))],
+    )
     .await;
 
     let resp = parse_response(&responses[0]);
     assert_eq!(resp["id"], 400);
     assert!(resp["error"].is_null(), "resources/list should not error");
-    let resources = resp["result"]["resources"].as_array()
+    let resources = resp["result"]["resources"]
+        .as_array()
         .expect("should have resources array");
     assert_eq!(resources.len(), 3, "should expose 3 resources");
 
-    let uris: Vec<&str> = resources.iter()
-        .filter_map(|r| r["uri"].as_str())
-        .collect();
-    assert!(uris.contains(&"tokensave://status"), "should have status resource");
-    assert!(uris.contains(&"tokensave://files"), "should have files resource");
-    assert!(uris.contains(&"tokensave://overview"), "should have overview resource");
+    let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+    assert!(
+        uris.contains(&"tokensave://status"),
+        "should have status resource"
+    );
+    assert!(
+        uris.contains(&"tokensave://files"),
+        "should have files resource"
+    );
+    assert!(
+        uris.contains(&"tokensave://overview"),
+        "should have overview resource"
+    );
 
     // All resources should have name, description, and mimeType.
     for resource in resources {
         assert!(resource["name"].is_string(), "resource should have name");
-        assert!(resource["description"].is_string(), "resource should have description");
-        assert!(resource["mimeType"].is_string(), "resource should have mimeType");
+        assert!(
+            resource["description"].is_string(),
+            "resource should have description"
+        );
+        assert!(
+            resource["mimeType"].is_string(),
+            "resource should have mimeType"
+        );
     }
 }
 
@@ -661,28 +782,44 @@ async fn test_resources_list() {
 #[tokio::test]
 async fn test_resources_read_status() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(410), "resources/read", json!({
-            "uri": "tokensave://status"
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(410),
+            "resources/read",
+            json!({
+                "uri": "tokensave://status"
+            }),
+        )],
+    )
     .await;
 
-    let resp_str = responses.iter()
+    let resp_str = responses
+        .iter()
         .find(|r| parse_response(r)["id"] == 410)
         .expect("should have response for id=410");
     let resp = parse_response(resp_str);
-    assert!(resp["error"].is_null(), "resources/read status should not error");
+    assert!(
+        resp["error"].is_null(),
+        "resources/read status should not error"
+    );
 
-    let contents = resp["result"]["contents"].as_array()
+    let contents = resp["result"]["contents"]
+        .as_array()
         .expect("should have contents array");
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["uri"], "tokensave://status");
     assert_eq!(contents[0]["mimeType"], "application/json");
 
     let text = contents[0]["text"].as_str().unwrap();
-    assert!(text.contains("node_count"), "status resource should contain node_count");
-    assert!(text.contains("file_count"), "status resource should contain file_count");
+    assert!(
+        text.contains("node_count"),
+        "status resource should contain node_count"
+    );
+    assert!(
+        text.contains("file_count"),
+        "status resource should contain file_count"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -692,28 +829,44 @@ async fn test_resources_read_status() {
 #[tokio::test]
 async fn test_resources_read_files() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(420), "resources/read", json!({
-            "uri": "tokensave://files"
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(420),
+            "resources/read",
+            json!({
+                "uri": "tokensave://files"
+            }),
+        )],
+    )
     .await;
 
-    let resp_str = responses.iter()
+    let resp_str = responses
+        .iter()
         .find(|r| parse_response(r)["id"] == 420)
         .expect("should have response for id=420");
     let resp = parse_response(resp_str);
-    assert!(resp["error"].is_null(), "resources/read files should not error");
+    assert!(
+        resp["error"].is_null(),
+        "resources/read files should not error"
+    );
 
-    let contents = resp["result"]["contents"].as_array()
+    let contents = resp["result"]["contents"]
+        .as_array()
         .expect("should have contents array");
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["uri"], "tokensave://files");
     assert_eq!(contents[0]["mimeType"], "text/plain");
 
     let text = contents[0]["text"].as_str().unwrap();
-    assert!(text.contains("indexed files"), "files resource should contain file count summary");
-    assert!(text.contains("main.rs"), "files resource should list main.rs");
+    assert!(
+        text.contains("indexed files"),
+        "files resource should contain file count summary"
+    );
+    assert!(
+        text.contains("main.rs"),
+        "files resource should list main.rs"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -723,28 +876,44 @@ async fn test_resources_read_files() {
 #[tokio::test]
 async fn test_resources_read_overview() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(430), "resources/read", json!({
-            "uri": "tokensave://overview"
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(430),
+            "resources/read",
+            json!({
+                "uri": "tokensave://overview"
+            }),
+        )],
+    )
     .await;
 
-    let resp_str = responses.iter()
+    let resp_str = responses
+        .iter()
         .find(|r| parse_response(r)["id"] == 430)
         .expect("should have response for id=430");
     let resp = parse_response(resp_str);
-    assert!(resp["error"].is_null(), "resources/read overview should not error");
+    assert!(
+        resp["error"].is_null(),
+        "resources/read overview should not error"
+    );
 
-    let contents = resp["result"]["contents"].as_array()
+    let contents = resp["result"]["contents"]
+        .as_array()
         .expect("should have contents array");
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["uri"], "tokensave://overview");
     assert_eq!(contents[0]["mimeType"], "text/plain");
 
     let text = contents[0]["text"].as_str().unwrap();
-    assert!(text.contains("Project:"), "overview should start with Project:");
-    assert!(text.contains("Graph:"), "overview should contain Graph summary");
+    assert!(
+        text.contains("Project:"),
+        "overview should start with Project:"
+    );
+    assert!(
+        text.contains("Graph:"),
+        "overview should contain Graph summary"
+    );
     assert!(text.contains("nodes"), "overview should mention nodes");
 }
 
@@ -755,19 +924,31 @@ async fn test_resources_read_overview() {
 #[tokio::test]
 async fn test_resources_read_unknown_uri() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(440), "resources/read", json!({
-            "uri": "tokensave://nonexistent"
-        })),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(440),
+            "resources/read",
+            json!({
+                "uri": "tokensave://nonexistent"
+            }),
+        )],
+    )
     .await;
 
-    let resp_str = responses.iter()
+    let resp_str = responses
+        .iter()
         .find(|r| parse_response(r)["id"] == 440)
         .expect("should have response for id=440");
     let resp = parse_response(resp_str);
-    assert!(resp["error"].is_object(), "unknown URI should produce error");
-    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+    assert!(
+        resp["error"].is_object(),
+        "unknown URI should produce error"
+    );
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "should be InvalidParams error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -777,15 +958,23 @@ async fn test_resources_read_unknown_uri() {
 #[tokio::test]
 async fn test_resources_read_missing_uri() {
     let (server, _dir) = setup_server().await;
-    let responses = run_server_with_messages(server, vec![
-        jsonrpc_request(json!(450), "resources/read", json!({})),
-    ])
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(450), "resources/read", json!({}))],
+    )
     .await;
 
-    let resp_str = responses.iter()
+    let resp_str = responses
+        .iter()
         .find(|r| parse_response(r)["id"] == 450)
         .expect("should have response for id=450");
     let resp = parse_response(resp_str);
-    assert!(resp["error"].is_object(), "missing URI should produce error");
-    assert_eq!(resp["error"]["code"], -32602, "should be InvalidParams error");
+    assert!(
+        resp["error"].is_object(),
+        "missing URI should produce error"
+    );
+    assert_eq!(
+        resp["error"]["code"], -32602,
+        "should be InvalidParams error"
+    );
 }

@@ -313,7 +313,16 @@ fn test_print_status_table_with_flags() {
 #[test]
 fn test_print_status_table_with_worldwide() {
     let stats = sample_stats();
-    print_status_table(&stats, 50_000, None, Some(10_000_000), &[], None, None, true);
+    print_status_table(
+        &stats,
+        50_000,
+        None,
+        Some(10_000_000),
+        &[],
+        None,
+        None,
+        true,
+    );
 }
 
 #[test]
@@ -330,7 +339,16 @@ fn test_print_status_table_with_all_options() {
         "\u{1f1e9}\u{1f1ea}".to_string(),
         "\u{1f1ef}\u{1f1f5}".to_string(),
     ];
-    print_status_table(&stats, 100_000, Some(500_000), Some(50_000_000), &flags, None, None, true);
+    print_status_table(
+        &stats,
+        100_000,
+        Some(500_000),
+        Some(50_000_000),
+        &flags,
+        None,
+        None,
+        true,
+    );
 }
 
 #[test]
@@ -344,7 +362,16 @@ fn test_print_status_table_empty_stats() {
 fn test_print_status_table_many_node_kinds() {
     let stats = many_kinds_stats();
     // 16 node kinds should exercise column wrapping
-    print_status_table(&stats, 1_000_000, Some(5_000_000), Some(100_000_000), &[], None, None, true);
+    print_status_table(
+        &stats,
+        1_000_000,
+        Some(5_000_000),
+        Some(100_000_000),
+        &[],
+        None,
+        None,
+        true,
+    );
 }
 
 #[test]
@@ -386,9 +413,7 @@ fn test_print_status_table_no_languages() {
 fn test_print_status_table_many_flags() {
     let stats = sample_stats();
     // 30 flags — exceeds MAX_DISPLAY_FLAGS (25), should trigger truncation with "..."
-    let flags: Vec<String> = (0..30)
-        .map(|_| "\u{1f1fa}\u{1f1f8}".to_string())
-        .collect();
+    let flags: Vec<String> = (0..30).map(|_| "\u{1f1fa}\u{1f1f8}".to_string()).collect();
     print_status_table(&stats, 50_000, None, None, &flags, None, None, true);
 }
 
@@ -447,7 +472,15 @@ fn test_print_status_header_with_all_options() {
         "\u{1f1e9}\u{1f1ea}".to_string(),
         "\u{1f1ef}\u{1f1f5}".to_string(),
     ];
-    print_status_header(&stats, 100_000, Some(500_000), Some(50_000_000), &flags, None, None);
+    print_status_header(
+        &stats,
+        100_000,
+        Some(500_000),
+        Some(50_000_000),
+        &flags,
+        None,
+        None,
+    );
 }
 
 #[test]
@@ -459,15 +492,21 @@ fn test_print_status_header_empty_stats() {
 #[test]
 fn test_print_status_header_many_node_kinds() {
     let stats = many_kinds_stats();
-    print_status_header(&stats, 1_000_000, Some(5_000_000), Some(100_000_000), &[], None, None);
+    print_status_header(
+        &stats,
+        1_000_000,
+        Some(5_000_000),
+        Some(100_000_000),
+        &[],
+        None,
+        None,
+    );
 }
 
 #[test]
 fn test_print_status_header_many_flags() {
     let stats = sample_stats();
-    let flags: Vec<String> = (0..30)
-        .map(|_| "\u{1f1fa}\u{1f1f8}".to_string())
-        .collect();
+    let flags: Vec<String> = (0..30).map(|_| "\u{1f1fa}\u{1f1f8}".to_string()).collect();
     print_status_header(&stats, 50_000, None, None, &flags, None, None);
 }
 

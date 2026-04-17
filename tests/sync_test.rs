@@ -1,8 +1,8 @@
 use std::io::Write;
+use tempfile::{NamedTempFile, TempDir};
 use tokensave::db::Database;
 use tokensave::sync::*;
 use tokensave::types::FileRecord;
-use tempfile::{NamedTempFile, TempDir};
 
 #[test]
 fn test_content_hash_deterministic() {
@@ -21,7 +21,9 @@ fn test_content_hash_different() {
 #[tokio::test]
 async fn test_find_stale_files() {
     let dir = TempDir::new().unwrap();
-    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
     db.upsert_file(&FileRecord {
         path: "src/main.rs".to_string(),
         content_hash: "old_hash".to_string(),
@@ -41,7 +43,9 @@ async fn test_find_stale_files() {
 #[tokio::test]
 async fn test_find_new_files() {
     let dir = TempDir::new().unwrap();
-    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
     let current = vec!["src/new_file.rs".to_string()];
     let new = find_new_files(&db, &current).await.unwrap();
     assert_eq!(new, vec!["src/new_file.rs"]);
@@ -50,7 +54,9 @@ async fn test_find_new_files() {
 #[tokio::test]
 async fn test_find_removed_files() {
     let dir = TempDir::new().unwrap();
-    let (db, _) = Database::initialize(&dir.path().join("test.db")).await.unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
     db.upsert_file(&FileRecord {
         path: "src/deleted.rs".to_string(),
         content_hash: "hash".to_string(),

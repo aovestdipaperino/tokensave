@@ -5,8 +5,8 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process;
 
-use tokensave::tokensave::TokenSave;
 use tokensave::context::{format_context_as_json, format_context_as_markdown};
+use tokensave::tokensave::TokenSave;
 use tokensave::types::*;
 
 /// Alias for the shared timestamp utility.
@@ -65,8 +65,7 @@ impl Spinner {
     }
 
     fn done(self, message: &str) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = self.handle {
             let _ = h.join();
         }
@@ -80,7 +79,11 @@ impl Spinner {
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
-#[command(name = "tokensave", about = "Code intelligence for 15 languages — semantic graph queries instead of file reads", version)]
+#[command(
+    name = "tokensave",
+    about = "Code intelligence for 15 languages — semantic graph queries instead of file reads",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -373,7 +376,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // Silent reinstall: if the running version is newer than the one that last
     // installed agents, re-run the install for every tracked agent so that
     // permissions, hooks, and MCP config stay in sync with the new binary.
-    if !matches!(command, Commands::Install { .. } | Commands::Reinstall | Commands::Uninstall { .. }) {
+    if !matches!(
+        command,
+        Commands::Install { .. } | Commands::Reinstall | Commands::Uninstall { .. }
+    ) {
         let running = env!("CARGO_PKG_VERSION");
         if !user_config.installed_agents.is_empty()
             && !running.is_empty()
@@ -406,7 +412,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Sync { path, force, skip_folders, doctor } => {
+        Commands::Sync {
+            path,
+            force,
+            skip_folders,
+            doctor,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -448,7 +459,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             } else {
                                 String::new()
                             };
-                            spinner.set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                            spinner
+                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
                         }
                     })
                     .await?;
@@ -500,7 +512,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json, short, details } => {
+        Commands::Status {
+            path,
+            json,
+            short,
+            details,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
@@ -511,12 +528,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
                 io::stderr().flush().ok();
                 let mut answer = String::new();
-                io::stdin()
-                    .lock()
-                    .read_line(&mut answer)
-                    .map_err(|e| tokensave::errors::TokenSaveError::Config {
+                io::stdin().lock().read_line(&mut answer).map_err(|e| {
+                    tokensave::errors::TokenSaveError::Config {
                         message: format!("failed to read stdin: {e}"),
-                    })?;
+                    }
+                })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
                     init_and_index(&project_path, &[]).await?
@@ -538,7 +554,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let global_tokens_saved = match &gdb {
                     Some(db) => {
                         db.upsert(&project_path, tokens_saved).await;
-                        db.global_tokens_saved().await
+                        db.global_tokens_saved()
+                            .await
                             .map(|total| total.saturating_sub(tokens_saved))
                             .filter(|&other| other > 0)
                     }
@@ -592,7 +609,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     } else {
                         "[single-db]".to_string()
                     };
-                    let parent = meta.and_then(|m| m.branches.get(cg.serving_branch()?)?.parent.clone());
+                    let parent =
+                        meta.and_then(|m| m.branches.get(cg.serving_branch()?)?.parent.clone());
                     tokensave::display::BranchInfo {
                         branch: display_branch,
                         parent,
@@ -605,15 +623,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
-                    Some(db) => tokensave::accounting::quick_cost_summary(
-                        db, tokens_saved, global_tokens_saved.unwrap_or(0),
-                    ).await,
+                    Some(db) => {
+                        tokensave::accounting::quick_cost_summary(
+                            db,
+                            tokens_saved,
+                            global_tokens_saved.unwrap_or(0),
+                        )
+                        .await
+                    }
                     None => None,
                 };
                 if short {
-                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref(), cost_info.as_ref());
+                    tokensave::display::print_status_header(
+                        &stats,
+                        tokens_saved,
+                        global_tokens_saved,
+                        worldwide,
+                        &country_flags,
+                        branch_info.as_ref(),
+                        cost_info.as_ref(),
+                    );
                 } else {
-                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref(), cost_info.as_ref(), details);
+                    tokensave::display::print_status_table(
+                        &stats,
+                        tokens_saved,
+                        global_tokens_saved,
+                        worldwide,
+                        &country_flags,
+                        branch_info.as_ref(),
+                        cost_info.as_ref(),
+                        details,
+                    );
                 }
 
                 // Warn if .tokensave is not in .gitignore
@@ -729,10 +769,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 println!("{} indexed files", files.len());
                 for f in &files {
-                    println!(
-                        "  {} ({} bytes, {} symbols)",
-                        f.path, f.size, f.node_count
-                    );
+                    println!("  {} ({} bytes, {} symbols)", f.path, f.size, f.node_count);
                 }
             }
         }
@@ -795,13 +832,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Install { agent } => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "could not determine home directory".to_string(),
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
+                }
             })?;
-            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "tokensave not found on PATH. Install it first:\n  \
+            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "tokensave not found on PATH. Install it first:\n  \
                           cargo install tokensave\n  \
-                          brew install aovestdipaperino/tap/tokensave".to_string(),
+                          brew install aovestdipaperino/tap/tokensave"
+                        .to_string(),
+                }
             })?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
@@ -824,8 +866,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 user_cfg.save();
             } else {
-                let (to_install, to_uninstall) =
-                    tokensave::agents::pick_integrations_interactive(&home, &user_cfg.installed_agents)?;
+                let (to_install, to_uninstall) = tokensave::agents::pick_integrations_interactive(
+                    &home,
+                    &user_cfg.installed_agents,
+                )?;
 
                 for id in &to_uninstall {
                     let ag = tokensave::agents::get_integration(id)?;
@@ -873,11 +917,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::daemon::offer_daemon_autostart();
         }
         Commands::Reinstall => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "could not determine home directory".to_string(),
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
+                }
             })?;
-            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "tokensave not found on PATH".to_string(),
+            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "tokensave not found on PATH".to_string(),
+                }
             })?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
@@ -886,7 +934,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("No installed agents found. Run `tokensave install` first.");
             } else {
                 let agents = user_cfg.installed_agents.clone();
-                eprintln!("Reinstalling {} agent(s): {}", agents.len(), agents.join(", "));
+                eprintln!(
+                    "Reinstalling {} agent(s): {}",
+                    agents.len(),
+                    agents.join(", ")
+                );
                 for id in &agents {
                     let ag = tokensave::agents::get_integration(id)?;
                     let ctx = tokensave::agents::InstallContext {
@@ -902,8 +954,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Uninstall { agent } => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "could not determine home directory".to_string(),
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
+                }
             })?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
@@ -952,10 +1006,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let config = tokensave::user_config::UserConfig::load();
                 let debounce = tokensave::daemon::parse_duration(&config.daemon_debounce)
                     .unwrap_or(std::time::Duration::from_secs(15));
-                if let Some(pw) = tokensave::project_watcher::ProjectWatcher::new(
-                    project_path.clone(),
-                    debounce,
-                ) {
+                if let Some(pw) =
+                    tokensave::project_watcher::ProjectWatcher::new(project_path.clone(), debounce)
+                {
                     let token = tokio_util::sync::CancellationToken::new();
                     tokio::spawn(pw.run(token.clone()));
                     Some(token)
@@ -978,12 +1031,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Upgrade => {
             tokensave::upgrade::run_upgrade()?;
         }
-        Commands::Channel { channel } => {
-            match channel {
-                Some(target) => { tokensave::upgrade::switch_channel(&target)?; }
-                None => tokensave::upgrade::show_channel(),
+        Commands::Channel { channel } => match channel {
+            Some(target) => {
+                tokensave::upgrade::switch_channel(&target)?;
             }
-        }
+            None => tokensave::upgrade::show_channel(),
+        },
         Commands::CurrentCounter { path } => {
             let project_path = tokensave::config::resolve_path(path);
             let cg = ensure_initialized(&project_path).await?;
@@ -1016,13 +1069,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 Some("on") => {
                     config.git_ignore = true;
                     tokensave::config::save_config(&project_path, &config)?;
-                    eprintln!("gitignore enabled — .gitignore rules will be respected during indexing.");
+                    eprintln!(
+                        "gitignore enabled — .gitignore rules will be respected during indexing."
+                    );
                     eprintln!("Run `tokensave sync` to re-index with the new setting.");
                 }
                 Some("off") => {
                     config.git_ignore = false;
                     tokensave::config::save_config(&project_path, &config)?;
-                    eprintln!("gitignore disabled — .gitignore rules will be ignored during indexing.");
+                    eprintln!(
+                        "gitignore disabled — .gitignore rules will be ignored during indexing."
+                    );
                     eprintln!("Run `tokensave sync` to re-index with the new setting.");
                 }
                 Some(other) => {
@@ -1039,7 +1096,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Doctor { agent } => {
             tokensave::doctor::run_doctor(agent.as_deref()).await;
         }
-        Commands::Daemon { foreground, stop, status, enable_autostart, disable_autostart } => {
+        Commands::Daemon {
+            foreground,
+            stop,
+            status,
+            enable_autostart,
+            disable_autostart,
+        } => {
             if stop {
                 tokensave::daemon::stop()?;
             } else if status {
@@ -1059,7 +1122,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Cost { range, by_model, by_task, export } => {
+        Commands::Cost {
+            range,
+            by_model,
+            by_task,
+            export,
+        } => {
             // Refresh LiteLLM pricing if cache is older than 24h
             tokensave::accounting::pricing::refresh_if_stale();
 
@@ -1074,14 +1142,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // Ingest new session data before querying
             let ingest_stats = tokensave::accounting::parser::ingest(&gdb).await;
             if ingest_stats.turns_inserted > 0 {
-                eprintln!("Ingested {} new turns from Claude Code sessions.", ingest_stats.turns_inserted);
+                eprintln!(
+                    "Ingested {} new turns from Claude Code sessions.",
+                    ingest_stats.turns_inserted
+                );
             }
 
             let since = tokensave::accounting::metrics::parse_range(&range);
             let tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
-            let summary = tokensave::accounting::metrics::cost_summary(
-                &gdb, since, tokens_saved,
-            ).await;
+            let summary =
+                tokensave::accounting::metrics::cost_summary(&gdb, since, tokens_saved).await;
 
             let Some(s) = summary else {
                 println!("No session data found. Use Claude Code and then run `tokensave cost` to see spending.");
@@ -1115,19 +1185,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                                 println!("{cat},{cost:.4},{turns}");
                             }
                         } else {
-                            println!("total_cost_usd,input_tokens,output_tokens,tokens_saved,efficiency");
-                            println!("{:.4},{},{},{},{:.4}", s.total_cost, s.total_input_tokens, s.total_output_tokens, s.tokens_saved, s.efficiency_ratio);
+                            println!(
+                                "total_cost_usd,input_tokens,output_tokens,tokens_saved,efficiency"
+                            );
+                            println!(
+                                "{:.4},{},{},{},{:.4}",
+                                s.total_cost,
+                                s.total_input_tokens,
+                                s.total_output_tokens,
+                                s.tokens_saved,
+                                s.efficiency_ratio
+                            );
                         }
                     }
                     _ => eprintln!("Unknown export format '{fmt}'. Use 'json' or 'csv'."),
                 }
             } else if by_model {
                 let total = s.total_cost.max(0.001);
-                println!("  {:<24} {:>10} {:>10} {:>6}", "Model", "Cost", "Tokens", "Share");
+                println!(
+                    "  {:<24} {:>10} {:>10} {:>6}",
+                    "Model", "Cost", "Tokens", "Share"
+                );
                 for (model, cost, tokens) in &s.by_model {
                     let share = cost / total * 100.0;
                     let tok_str = tokensave::display::format_token_count(*tokens);
-                    println!("  {:<24} {:>9} {:>10} {:>5.0}%", model, format!("${cost:.2}"), tok_str, share);
+                    println!(
+                        "  {:<24} {:>9} {:>10} {:>5.0}%",
+                        model,
+                        format!("${cost:.2}"),
+                        tok_str,
+                        share
+                    );
                 }
             } else if by_task {
                 println!("  {:<16} {:>10} {:>6}", "Category", "Cost", "Turns");
@@ -1138,7 +1226,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // Default summary
                 let today_since = tokensave::accounting::metrics::parse_range("today");
                 let today_cost = gdb.total_cost_since(today_since).await.unwrap_or(0.0);
-                let today_breakdown = gdb.token_breakdown_since(today_since).await.unwrap_or((0, 0, 0));
+                let today_breakdown = gdb
+                    .token_breakdown_since(today_since)
+                    .await
+                    .unwrap_or((0, 0, 0));
 
                 let fmt_row = |label: &str, cost: f64, input: u64, output: u64, cache_read: u64| {
                     let input_s = tokensave::display::format_token_count(input);
@@ -1148,18 +1239,43 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     } else {
                         0.0
                     };
-                    println!("  {:<10} {:>9} {:>10} {:>10} {:>9.0}%",
-                        label, format!("${cost:.2}"), input_s, output_s, cache_pct);
+                    println!(
+                        "  {:<10} {:>9} {:>10} {:>10} {:>9.0}%",
+                        label,
+                        format!("${cost:.2}"),
+                        input_s,
+                        output_s,
+                        cache_pct
+                    );
                 };
 
-                println!("  {:<10} {:>10} {:>10} {:>10} {:>10}", "Period", "Cost", "Input", "Output", "Cache-hit");
-                fmt_row("Today", today_cost, today_breakdown.0, today_breakdown.1, today_breakdown.2);
-                fmt_row(&range, s.total_cost, s.total_input_tokens, s.total_output_tokens, s.total_cache_read_tokens);
+                println!(
+                    "  {:<10} {:>10} {:>10} {:>10} {:>10}",
+                    "Period", "Cost", "Input", "Output", "Cache-hit"
+                );
+                fmt_row(
+                    "Today",
+                    today_cost,
+                    today_breakdown.0,
+                    today_breakdown.1,
+                    today_breakdown.2,
+                );
+                fmt_row(
+                    &range,
+                    s.total_cost,
+                    s.total_input_tokens,
+                    s.total_output_tokens,
+                    s.total_cache_read_tokens,
+                );
 
                 if s.tokens_saved > 0 {
                     let saved_str = tokensave::display::format_token_count(s.tokens_saved);
                     println!();
-                    println!("  Savings  {} tokens ({:.0}% efficiency)", saved_str, s.efficiency_ratio * 100.0);
+                    println!(
+                        "  Savings  {} tokens ({:.0}% efficiency)",
+                        saved_str,
+                        s.efficiency_ratio * 100.0
+                    );
                 }
             }
         }
@@ -1222,7 +1338,9 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
                 Some(n) => n,
                 None => branch::current_branch(&project_path).ok_or_else(|| {
                     tokensave::errors::TokenSaveError::Config {
-                        message: "cannot detect current branch (detached HEAD?). Specify a branch name.".to_string(),
+                        message:
+                            "cannot detect current branch (detached HEAD?). Specify a branch name."
+                                .to_string(),
                     }
                 })?,
             };
@@ -1391,7 +1509,10 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
                     }
                 }
                 branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
-                eprintln!("\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).", stale.len());
+                eprintln!(
+                    "\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).",
+                    stale.len()
+                );
             }
         }
     }
@@ -1425,12 +1546,11 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
     );
     io::stderr().flush().ok();
     let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| tokensave::errors::TokenSaveError::Config {
+    io::stdin().lock().read_line(&mut answer).map_err(|e| {
+        tokensave::errors::TokenSaveError::Config {
             message: format!("failed to read stdin: {}", e),
-        })?;
+        }
+    })?;
     let answer = answer.trim();
     if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
         init_and_index(&project_path, &[]).await?;
@@ -1438,11 +1558,19 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
     Ok(())
 }
 
-
 /// Initializes a new project (if needed) and runs a full index.
-async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensave::errors::Result<TokenSave> {
-    debug_assert!(project_path.is_dir(), "init_and_index: project_path is not a directory");
-    debug_assert!(project_path.is_absolute(), "init_and_index: project_path must be absolute");
+async fn init_and_index(
+    project_path: &Path,
+    skip_folders: &[String],
+) -> tokensave::errors::Result<TokenSave> {
+    debug_assert!(
+        project_path.is_dir(),
+        "init_and_index: project_path is not a directory"
+    );
+    debug_assert!(
+        project_path.is_absolute(),
+        "init_and_index: project_path must be absolute"
+    );
     let mut cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open(project_path).await?
     } else {
@@ -1466,21 +1594,23 @@ async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensa
     cg.add_skip_folders(skip_folders);
     let spinner = Spinner::new();
     let index_start = std::time::Instant::now();
-    let result = cg.index_all_with_progress(|current, total, file| {
-        let elapsed = index_start.elapsed().as_secs_f64();
-        let eta = if current > 1 {
-            let per_file = elapsed / (current - 1) as f64;
-            let remaining = per_file * (total - current) as f64;
-            if remaining >= 1.0 {
-                format!(" (ETA: {remaining:.0}s)")
+    let result = cg
+        .index_all_with_progress(|current, total, file| {
+            let elapsed = index_start.elapsed().as_secs_f64();
+            let eta = if current > 1 {
+                let per_file = elapsed / (current - 1) as f64;
+                let remaining = per_file * (total - current) as f64;
+                if remaining >= 1.0 {
+                    format!(" (ETA: {remaining:.0}s)")
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
-            }
-        } else {
-            String::new()
-        };
-        spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
-    }).await?;
+            };
+            spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
+        })
+        .await?;
     spinner.done(&format!(
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
@@ -1583,7 +1713,11 @@ fn try_flush(config: &mut tokensave::user_config::UserConfig, force: bool) {
 /// true, always fetches from GitHub (used during sync where the call runs in
 /// parallel). If `skip_suppression` is false, the warning is suppressed for 15
 /// minutes after it was last shown; if true it is always shown (used for status).
-fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache: bool, skip_suppression: bool) {
+fn check_for_update(
+    config: &mut tokensave::user_config::UserConfig,
+    skip_cache: bool,
+    skip_suppression: bool,
+) {
     let current_version = env!("CARGO_PKG_VERSION");
     let now = current_unix_timestamp();
 
@@ -1610,8 +1744,7 @@ fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache:
         tokensave::cloud::is_newer_minor_version(current_version, &latest)
     };
 
-    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900)
-    {
+    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900) {
         eprintln!(
             "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
             current_version, latest
@@ -1628,9 +1761,6 @@ fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache:
 // - src/doctor.rs (health checks)
 // - src/tokensave.rs (is_test_file)
 
-
-
-
 /// BFS through file dependents to find test files affected by changes.
 async fn find_affected_tests(
     cg: &TokenSave,
@@ -1638,8 +1768,14 @@ async fn find_affected_tests(
     max_depth: usize,
     custom_filter: Option<&str>,
 ) -> tokensave::errors::Result<Vec<String>> {
-    debug_assert!(!changed_files.is_empty(), "find_affected_tests called with no changed files");
-    debug_assert!(max_depth > 0, "find_affected_tests max_depth must be positive");
+    debug_assert!(
+        !changed_files.is_empty(),
+        "find_affected_tests called with no changed files"
+    );
+    debug_assert!(
+        max_depth > 0,
+        "find_affected_tests max_depth must be positive"
+    );
     use std::collections::{HashSet, VecDeque};
 
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());

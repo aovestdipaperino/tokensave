@@ -47,7 +47,11 @@ class Base {
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "Base");
     assert!(
-        classes[0].docstring.as_ref().unwrap().contains("Base class"),
+        classes[0]
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Base class"),
         "docstring: {:?}",
         classes[0].docstring
     );
@@ -131,7 +135,11 @@ fn test_swift_struct_with_fields_and_methods() {
         .iter()
         .filter(|n| n.kind == NodeKind::Property)
         .collect();
-    assert!(props.len() >= 2, "expected >= 2 properties, got {}", props.len());
+    assert!(
+        props.len() >= 2,
+        "expected >= 2 properties, got {}",
+        props.len()
+    );
 
     let methods: Vec<_> = result
         .nodes

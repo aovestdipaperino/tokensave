@@ -219,7 +219,8 @@ impl VbNetExtractor {
         let trimmed = text.trim();
 
         // Check if this looks like a Const declaration: "Const NAME As TYPE = VALUE"
-        if trimmed.starts_with("Const ") || trimmed.starts_with("Public Const ")
+        if trimmed.starts_with("Const ")
+            || trimmed.starts_with("Public Const ")
             || trimmed.starts_with("Private Const ")
         {
             // Extract the constant name
@@ -359,7 +360,8 @@ impl VbNetExtractor {
 
     /// Extract a class_block declaration.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
-        let name = Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -428,7 +430,8 @@ impl VbNetExtractor {
 
     /// Extract a structure_block declaration.
     fn visit_struct(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
-        let name = Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -482,7 +485,8 @@ impl VbNetExtractor {
 
     /// Extract an interface_block declaration.
     fn visit_interface(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
-        let name = Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -536,7 +540,8 @@ impl VbNetExtractor {
 
     /// Extract an enum_block declaration with its members.
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
-        let name = Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -587,7 +592,8 @@ impl VbNetExtractor {
 
     /// Extract a module_block declaration.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
-        let name = Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -736,10 +742,7 @@ impl VbNetExtractor {
         let metrics = count_complexity(node, &VBNET_COMPLEXITY, &state.source);
 
         let sig_text = state.node_text(node);
-        let signature = sig_text
-            .lines()
-            .next()
-            .map(|l| l.trim().to_string());
+        let signature = sig_text.lines().next().map(|l| l.trim().to_string());
 
         let graph_node = Node {
             id: id.clone(),
@@ -841,7 +844,8 @@ impl VbNetExtractor {
         let trimmed = text.trim();
 
         // Skip Inherits/Implements lines that the grammar mis-parses as field_declaration.
-        if trimmed.starts_with("Inherits") || trimmed.starts_with("erializable")
+        if trimmed.starts_with("Inherits")
+            || trimmed.starts_with("erializable")
             || trimmed.starts_with("Implements")
         {
             return;
@@ -1062,12 +1066,20 @@ impl VbNetExtractor {
     }
 
     /// Extract a simple block signature like "Class Foo" or "Module Bar".
-    fn extract_block_signature(state: &ExtractionState, node: TsNode<'_>, keyword: &str) -> Option<String> {
+    fn extract_block_signature(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        keyword: &str,
+    ) -> Option<String> {
         let text = state.node_text(node);
         // Take the first line which contains the declaration keyword and name.
         let first_line = text.lines().next().unwrap_or("").trim();
         if first_line.is_empty() {
-            Some(format!("{} {}", keyword, Self::extract_block_name(state, node).unwrap_or_default()))
+            Some(format!(
+                "{} {}",
+                keyword,
+                Self::extract_block_name(state, node).unwrap_or_default()
+            ))
         } else {
             Some(first_line.to_string())
         }
@@ -1152,11 +1164,7 @@ impl VbNetExtractor {
     /// Extract Inherits and Implements references from the text of a class block.
     /// The VB.NET tree-sitter grammar mis-parses these as field_declaration/ERROR,
     /// so we do text-based extraction from the full block text.
-    fn extract_inherits_implements(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        class_id: &str,
-    ) {
+    fn extract_inherits_implements(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         let text = state.node_text(node);
         let base_line = node.start_position().row as u32;
 
@@ -1371,8 +1379,7 @@ impl VbNetExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), attr_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -1390,9 +1397,7 @@ impl VbNetExtractor {
                         end_line,
                         start_column,
                         end_column,
-                        signature: Some(
-                            format!("<{}>", state.node_text(child).trim()),
-                        ),
+                        signature: Some(format!("<{}>", state.node_text(child).trim())),
                         docstring: None,
                         visibility: Visibility::Private,
                         is_async: false,

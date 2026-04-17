@@ -23,7 +23,10 @@ fn test_lua_extract_functions() {
         fns.iter().map(|n| &n.name).collect::<Vec<_>>()
     );
     assert!(fns.iter().any(|n| n.name == "log"));
-    assert!(fns.iter().any(|n| n.name == "new"), "Connection.new or Pool.new not found");
+    assert!(
+        fns.iter().any(|n| n.name == "new"),
+        "Connection.new or Pool.new not found"
+    );
 }
 
 #[test]
@@ -114,7 +117,9 @@ fn test_lua_call_sites() {
         "should find print call"
     );
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "string.format"),
+        call_refs
+            .iter()
+            .any(|r| r.reference_name == "string.format"),
         "should find string.format call"
     );
 
@@ -132,7 +137,9 @@ fn test_lua_call_sites() {
 
     // Pool:acquire calls Connection.new
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "Connection.new"),
+        call_refs
+            .iter()
+            .any(|r| r.reference_name == "Connection.new"),
         "should find Connection.new call"
     );
     // Pool:acquire calls conn:connect
@@ -160,10 +167,7 @@ fn test_lua_docstrings() {
         .iter()
         .find(|n| n.kind == NodeKind::Function && n.name == "log")
         .expect("log function not found");
-    assert!(
-        log_fn.docstring.is_some(),
-        "log should have docstring"
-    );
+    assert!(log_fn.docstring.is_some(), "log should have docstring");
     let doc = log_fn.docstring.as_ref().unwrap();
     assert!(
         doc.contains("Logs a message"),
@@ -177,7 +181,11 @@ fn test_lua_docstrings() {
         .find(|n| n.kind == NodeKind::Method && n.name == "connect")
         .expect("connect method not found");
     assert!(
-        connect_method.docstring.as_ref().unwrap().contains("Connects to the remote host"),
+        connect_method
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Connects to the remote host"),
         "docstring: {:?}",
         connect_method.docstring
     );
@@ -189,7 +197,11 @@ fn test_lua_docstrings() {
         .find(|n| n.kind == NodeKind::Const && n.name == "MAX_RETRIES")
         .expect("MAX_RETRIES not found");
     assert!(
-        max_retries.docstring.as_ref().unwrap().contains("Maximum number of retries"),
+        max_retries
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Maximum number of retries"),
         "docstring: {:?}",
         max_retries.docstring
     );
@@ -260,9 +272,14 @@ fn test_lua_dot_function_qualified_name() {
         .filter(|n| n.kind == NodeKind::Function && n.name == "new")
         .collect();
     assert!(
-        conn_new_fns.iter().any(|n| n.qualified_name.contains("Connection")),
+        conn_new_fns
+            .iter()
+            .any(|n| n.qualified_name.contains("Connection")),
         "Connection.new should have Connection in qualified name, got: {:?}",
-        conn_new_fns.iter().map(|n| &n.qualified_name).collect::<Vec<_>>()
+        conn_new_fns
+            .iter()
+            .map(|n| &n.qualified_name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -280,7 +297,10 @@ fn test_lua_signatures() {
         .expect("log function not found");
     let sig = log_fn.signature.as_ref().unwrap();
     assert!(
-        sig.contains("function") && sig.contains("log") && sig.contains("level") && sig.contains("message"),
+        sig.contains("function")
+            && sig.contains("log")
+            && sig.contains("level")
+            && sig.contains("message"),
         "log signature should contain function name and params, got: {}",
         sig
     );

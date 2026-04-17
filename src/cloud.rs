@@ -79,10 +79,7 @@ struct CountriesResponse {
 /// Returns a list of emoji flags, or an empty vec on failure.
 pub fn fetch_country_flags() -> Vec<String> {
     let agent = agent_with_timeout(Duration::from_millis(500));
-    let mut resp = match agent
-        .get(&format!("{WORKER_URL}/countries"))
-        .call()
-    {
+    let mut resp = match agent.get(&format!("{WORKER_URL}/countries")).call() {
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };

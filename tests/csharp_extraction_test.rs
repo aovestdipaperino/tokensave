@@ -262,7 +262,12 @@ public class Config
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert_eq!(fields.len(), 3, "fields: {:?}", fields.iter().map(|f| &f.name).collect::<Vec<_>>());
+    assert_eq!(
+        fields.len(),
+        3,
+        "fields: {:?}",
+        fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
     let max_size = fields.iter().find(|f| f.name == "MaxSize").unwrap();
     assert_eq!(max_size.visibility, Visibility::Pub);
     let name_field = fields.iter().find(|f| f.name == "_name").unwrap();
@@ -323,7 +328,16 @@ public class Button
         .iter()
         .filter(|n| n.kind == NodeKind::Event)
         .collect();
-    assert_eq!(events.len(), 1, "events: {:?}", result.nodes.iter().map(|n| (&n.kind, &n.name)).collect::<Vec<_>>());
+    assert_eq!(
+        events.len(),
+        1,
+        "events: {:?}",
+        result
+            .nodes
+            .iter()
+            .map(|n| (&n.kind, &n.name))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(events[0].name, "Click");
     assert_eq!(events[0].visibility, Visibility::Pub);
 }
@@ -421,7 +435,10 @@ public class Foo
     assert_eq!(priv_m.visibility, Visibility::Private);
     let internal_m = methods.iter().find(|m| m.name == "InternalMethod").unwrap();
     assert_eq!(internal_m.visibility, Visibility::PubCrate);
-    let protected_m = methods.iter().find(|m| m.name == "ProtectedMethod").unwrap();
+    let protected_m = methods
+        .iter()
+        .find(|m| m.name == "ProtectedMethod")
+        .unwrap();
     assert_eq!(protected_m.visibility, Visibility::PubSuper);
 }
 

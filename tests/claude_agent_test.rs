@@ -197,7 +197,11 @@ fn test_uninstall_removes_explore_agent_paragraph() {
     // Pre-populate CLAUDE.md with existing content
     let claude_dir = home.join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
-    std::fs::write(claude_dir.join("CLAUDE.md"), "# My Rules\n\nKeep it clean.\n").unwrap();
+    std::fs::write(
+        claude_dir.join("CLAUDE.md"),
+        "# My Rules\n\nKeep it clean.\n",
+    )
+    .unwrap();
 
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
@@ -244,11 +248,7 @@ fn test_install_preserves_existing_claude_json() {
     let home = dir.path();
 
     // Pre-populate .claude.json with an extra key
-    std::fs::write(
-        home.join(".claude.json"),
-        r#"{"foo": "bar"}"#,
-    )
-    .unwrap();
+    std::fs::write(home.join(".claude.json"), r#"{"foo": "bar"}"#).unwrap();
 
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
@@ -476,9 +476,7 @@ fn test_uninstall_preserves_other_permissions() {
     // Now add a non-tokensave permission to settings.json
     let settings_path = home.join(".claude/settings.json");
     let mut settings = read_json(&settings_path);
-    let allow = settings["permissions"]["allow"]
-        .as_array_mut()
-        .unwrap();
+    let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
     allow.push(serde_json::json!("Bash(*)"));
     let pretty = serde_json::to_string_pretty(&settings).unwrap();
     std::fs::write(&settings_path, format!("{pretty}\n")).unwrap();

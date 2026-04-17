@@ -109,9 +109,7 @@ impl NixExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -357,7 +355,9 @@ impl NixExtractor {
                     state.node_stack.push((name.clone(), id.clone()));
                     if expr_node.kind() == "attrset_expression" {
                         Self::visit_attrset_bindings(state, expr_node);
-                    } else if let Some((_callee, attrset_node)) = Self::is_builder_call(state, expr_node) {
+                    } else if let Some((_callee, attrset_node)) =
+                        Self::is_builder_call(state, expr_node)
+                    {
                         // Forced-Module binding with a builder call: extract derivation fields.
                         Self::extract_derivation_fields(state, attrset_node, &id);
                     }
@@ -412,9 +412,15 @@ impl NixExtractor {
                 // Enhancement 1: If this is a builder call, extract derivation fields.
                 if is_builder {
                     if let Some(expr_node) = expr {
-                        if let Some((_callee, attrset_node)) = Self::is_builder_call(state, expr_node) {
+                        if let Some((_callee, attrset_node)) =
+                            Self::is_builder_call(state, expr_node)
+                        {
                             let parent_id_for_fields = id;
-                            Self::extract_derivation_fields(state, attrset_node, &parent_id_for_fields);
+                            Self::extract_derivation_fields(
+                                state,
+                                attrset_node,
+                                &parent_id_for_fields,
+                            );
                         }
                     }
                 } else {
@@ -443,9 +449,7 @@ impl NixExtractor {
                                 let item = inner.node();
                                 match item.kind() {
                                     "binding" => Self::visit_binding(state, item),
-                                    "inherit" | "inherit_from" => {
-                                        Self::visit_inherit(state, item)
-                                    }
+                                    "inherit" | "inherit_from" => Self::visit_inherit(state, item),
                                     _ => {}
                                 }
                                 if !inner.goto_next_sibling() {
@@ -653,7 +657,10 @@ impl NixExtractor {
 
     /// Check if an expression node is a builder call (e.g., `pkgs.stdenv.mkDerivation { ... }`).
     /// Returns the last segment of the callee name if it matches a builder function.
-    fn is_builder_call<'a>(state: &ExtractionState, node: TsNode<'a>) -> Option<(String, TsNode<'a>)> {
+    fn is_builder_call<'a>(
+        state: &ExtractionState,
+        node: TsNode<'a>,
+    ) -> Option<(String, TsNode<'a>)> {
         if node.kind() != "apply_expression" {
             return None;
         }
@@ -842,10 +849,9 @@ impl NixExtractor {
                     "apply_expression" => {
                         // In Nix, apply_expression has `function` and `argument` fields.
                         // The function field can be a variable_expression or a select_expression.
-                        let callee_name =
-                            child.child_by_field_name("function").and_then(|func_node| {
-                                Self::extract_callee_name(state, func_node)
-                            });
+                        let callee_name = child
+                            .child_by_field_name("function")
+                            .and_then(|func_node| Self::extract_callee_name(state, func_node));
 
                         if let Some(ref name) = callee_name {
                             state.unresolved_refs.push(UnresolvedRef {
@@ -972,8 +978,7 @@ impl NixExtractor {
         match node.kind() {
             "variable_expression" => {
                 // variable_expression has a `name` field (identifier)
-                node.child_by_field_name("name")
-                    .map(|n| state.node_text(n))
+                node.child_by_field_name("name").map(|n| state.node_text(n))
             }
             "select_expression" => {
                 // select_expression: expression.attrpath

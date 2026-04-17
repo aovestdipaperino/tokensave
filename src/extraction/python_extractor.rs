@@ -112,9 +112,7 @@ impl PythonExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -349,23 +347,14 @@ impl PythonExtractor {
                     let text = state.node_text(child);
                     // Get the decorator name (strip @ and potential arguments).
                     let raw = text.trim_start_matches('@');
-                    let name = raw
-                        .split('(')
-                        .next()
-                        .unwrap_or(raw)
-                        .trim()
-                        .to_string();
+                    let name = raw.split('(').next().unwrap_or(raw).trim().to_string();
                     let start_line = child.start_position().row as u32;
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
                     let qualified_name = format!("{}::@{}", state.qualified_prefix(), name);
-                    let dec_id = generate_node_id(
-                        &state.file_path,
-                        &NodeKind::Decorator,
-                        &name,
-                        start_line,
-                    );
+                    let dec_id =
+                        generate_node_id(&state.file_path, &NodeKind::Decorator, &name, start_line);
 
                     let graph_node = Node {
                         id: dec_id.clone(),
@@ -382,13 +371,13 @@ impl PythonExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        updated_at: state.timestamp,
                     };
                     state.nodes.push(graph_node);
 
@@ -505,11 +494,7 @@ impl PythonExtractor {
     }
 
     /// Extract individual import names from a from-import statement.
-    fn extract_from_import_names(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        module_name: &str,
-    ) {
+    fn extract_from_import_names(state: &mut ExtractionState, node: TsNode<'_>, module_name: &str) {
         // In tree-sitter-python, `from X import a, b` has children:
         // "from", dotted_name, "import", dotted_name, ",", dotted_name
         // We need to skip past the "import" keyword to find the imported names.
@@ -637,13 +622,13 @@ impl PythonExtractor {
                     visibility: Visibility::Pub,
                     is_async: false,
                     branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                    loops: 0,
+                    returns: 0,
+                    max_nesting: 0,
+                    unsafe_blocks: 0,
+                    unchecked_calls: 0,
+                    assertions: 0,
+                    updated_at: state.timestamp,
                 };
                 state.nodes.push(graph_node);
 

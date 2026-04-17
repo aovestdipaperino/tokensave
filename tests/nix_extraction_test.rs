@@ -122,15 +122,9 @@ fn test_nix_docstrings() {
         .iter()
         .find(|n| n.name == "defaultPort")
         .unwrap();
+    assert!(dp.docstring.is_some(), "defaultPort should have docstring");
     assert!(
-        dp.docstring.is_some(),
-        "defaultPort should have docstring"
-    );
-    assert!(
-        dp.docstring
-            .as_ref()
-            .unwrap()
-            .contains("Default port"),
+        dp.docstring.as_ref().unwrap().contains("Default port"),
         "docstring: {:?}",
         dp.docstring
     );
@@ -161,10 +155,7 @@ fn test_nix_docstrings() {
         .iter()
         .find(|n| n.kind == NodeKind::Module && n.name == "networking")
         .unwrap();
-    assert!(
-        net.docstring.is_some(),
-        "networking should have docstring"
-    );
+    assert!(net.docstring.is_some(), "networking should have docstring");
     assert!(
         net.docstring
             .as_ref()
@@ -183,15 +174,10 @@ fn test_nix_call_sites() {
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .collect();
-    assert!(
-        !call_refs.is_empty(),
-        "should have call site refs"
-    );
+    assert!(!call_refs.is_empty(), "should have call site refs");
     // mkConnection should be called (e.g., from mkPool)
     assert!(
-        call_refs
-            .iter()
-            .any(|r| r.reference_name == "mkConnection"),
+        call_refs.iter().any(|r| r.reference_name == "mkConnection"),
         "should find mkConnection call, got: {:?}",
         call_refs
             .iter()
@@ -443,10 +429,7 @@ fn test_nix_mkshell_fields() {
     let fields: Vec<_> = result
         .nodes
         .iter()
-        .filter(|n| {
-            n.kind == NodeKind::Field
-                && n.qualified_name.contains("devShells")
-        })
+        .filter(|n| n.kind == NodeKind::Field && n.qualified_name.contains("devShells"))
         .collect();
     let field_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
 

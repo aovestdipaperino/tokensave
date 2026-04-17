@@ -115,9 +115,7 @@ impl QBasicExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         let root = tree.root_node();
 
@@ -368,8 +366,7 @@ impl QBasicExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let struct_id =
-            generate_node_id(&state.file_path, &NodeKind::Struct, &name, start_line);
+        let struct_id = generate_node_id(&state.file_path, &NodeKind::Struct, &name, start_line);
         let text = state.node_text(node);
         let signature = text.lines().next().unwrap_or("").trim().to_string();
 
@@ -492,8 +489,7 @@ impl QBasicExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let fn_id =
-            generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
+        let fn_id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
         // Build signature from the first line of text.
         let text = state.node_text(node);
@@ -563,8 +559,7 @@ impl QBasicExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let fn_id =
-            generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
+        let fn_id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
         let text = state.node_text(node);
         let signature = text.lines().next().unwrap_or("").trim().to_string();

@@ -112,9 +112,7 @@ impl ZigExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -259,8 +257,8 @@ impl ZigExtractor {
         name: &str,
     ) {
         // Extract the module path from the string argument.
-        let module_name = Self::extract_import_module(state, builtin_node)
-            .unwrap_or_else(|| name.to_string());
+        let module_name =
+            Self::extract_import_module(state, builtin_node).unwrap_or_else(|| name.to_string());
 
         let start_line = decl_node.start_position().row as u32;
         let end_line = decl_node.end_position().row as u32;
@@ -739,7 +737,15 @@ impl ZigExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(state.node_text(node).lines().next().unwrap_or("").trim().to_string()),
+            signature: Some(
+                state
+                    .node_text(node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            ),
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
@@ -860,13 +866,12 @@ impl ZigExtractor {
                 match child.kind() {
                     "call_expression" => {
                         // Extract the callee name from the function field.
-                        let callee_name = if let Some(fn_node) =
-                            child.child_by_field_name("function")
-                        {
-                            Some(Self::extract_callee_name(state, fn_node))
-                        } else {
-                            child.named_child(0).map(|n| state.node_text(n))
-                        };
+                        let callee_name =
+                            if let Some(fn_node) = child.child_by_field_name("function") {
+                                Some(Self::extract_callee_name(state, fn_node))
+                            } else {
+                                child.named_child(0).map(|n| state.node_text(n))
+                            };
 
                         if let Some(name) = callee_name {
                             state.unresolved_refs.push(UnresolvedRef {

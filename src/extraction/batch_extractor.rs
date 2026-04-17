@@ -109,9 +109,7 @@ impl BatchExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -146,7 +144,10 @@ impl BatchExtractor {
         while i < child_count {
             let child = match root.child(i as u32) {
                 Some(c) => c,
-                None => { i += 1; continue; }
+                None => {
+                    i += 1;
+                    continue;
+                }
             };
 
             match child.kind() {
@@ -260,8 +261,11 @@ impl BatchExtractor {
             .unwrap_or(&text);
 
         // Handle /a, /p options
-        let after_opts = if after_set.starts_with("/a ") || after_set.starts_with("/A ") ||
-                            after_set.starts_with("/p ") || after_set.starts_with("/P ") {
+        let after_opts = if after_set.starts_with("/a ")
+            || after_set.starts_with("/A ")
+            || after_set.starts_with("/p ")
+            || after_set.starts_with("/P ")
+        {
             &after_set[3..]
         } else {
             after_set

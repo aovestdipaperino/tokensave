@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use crate::context::ranking::{rerank_candidates, apply_connectivity_boost};
+use crate::context::ranking::{apply_connectivity_boost, rerank_candidates};
 use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
@@ -29,7 +29,11 @@ impl<'a> ContextBuilder<'a> {
     /// 3. Expand graph around entry points using BFS traversal
     /// 4. Extract code blocks by reading source files
     /// 5. Build and return `TaskContext`
-    pub async fn build_context(&self, query: &str, options: &BuildContextOptions) -> Result<TaskContext> {
+    pub async fn build_context(
+        &self,
+        query: &str,
+        options: &BuildContextOptions,
+    ) -> Result<TaskContext> {
         debug_assert!(!query.is_empty(), "build_context called with empty query");
         debug_assert!(options.max_nodes > 0, "max_nodes must be positive");
         // Step 1-3: find relevant subgraph and entry points
@@ -86,11 +90,16 @@ impl<'a> ContextBuilder<'a> {
     ///
     /// Returns `None` if the file cannot be read or the line range is invalid.
     pub async fn get_code(&self, node: &Node) -> Result<Option<String>> {
-        debug_assert!(!node.file_path.is_empty(), "get_code called with empty file_path");
+        debug_assert!(
+            !node.file_path.is_empty(),
+            "get_code called with empty file_path"
+        );
         debug_assert!(!node.id.is_empty(), "get_code called with empty node id");
         let file_path = self.project_root.join(&node.file_path);
         // Prevent path traversal: ensure the resolved path stays within the project root.
-        if let (Ok(canonical), Ok(root)) = (file_path.canonicalize(), self.project_root.canonicalize()) {
+        if let (Ok(canonical), Ok(root)) =
+            (file_path.canonicalize(), self.project_root.canonicalize())
+        {
             if !canonical.starts_with(&root) {
                 return Ok(None);
             }
@@ -144,7 +153,10 @@ impl<'a> ContextBuilder<'a> {
         symbols: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<Node>> {
-        debug_assert!(!query.is_empty(), "find_entry_points called with empty query");
+        debug_assert!(
+            !query.is_empty(),
+            "find_entry_points called with empty query"
+        );
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
         let mut seen_ids: HashSet<String> = options.exclude_node_ids.clone();
         let mut candidates: Vec<SearchResult> = Vec::new();
@@ -161,7 +173,9 @@ impl<'a> ContextBuilder<'a> {
 
         // --- FTS search: each extracted symbol ---
         for symbol in symbols {
-            if candidates.len() >= cap { break; }
+            if candidates.len() >= cap {
+                break;
+            }
             let results = self.db.search_nodes(symbol, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
@@ -175,7 +189,9 @@ impl<'a> ContextBuilder<'a> {
         // --- FTS search: stem variants ---
         let stems = generate_stem_variants(symbols);
         for stem in &stems {
-            if candidates.len() >= cap { break; }
+            if candidates.len() >= cap {
+                break;
+            }
             let results = self.db.search_nodes(stem, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
@@ -188,7 +204,9 @@ impl<'a> ContextBuilder<'a> {
 
         // --- FTS search: agent-provided extra keywords (synonym expansion) ---
         for keyword in &options.extra_keywords {
-            if candidates.len() >= cap { break; }
+            if candidates.len() >= cap {
+                break;
+            }
             let results = self.db.search_nodes(keyword, options.search_limit).await?;
             for sr in results {
                 if self.score_passes(sr.score, options.min_score)
@@ -201,14 +219,16 @@ impl<'a> ContextBuilder<'a> {
 
         // --- Exact name supplement ---
         // Ensures perfect name matches aren't buried by BM25 noise.
-        let exact_names: Vec<String> = symbols.iter()
+        let exact_names: Vec<String> = symbols
+            .iter()
             .filter(|s| !s.contains("::") && s.len() >= 3)
             .cloned()
             .collect();
         if !exact_names.is_empty() {
-            let exact_nodes = self.db.search_nodes_by_exact_name(
-                &exact_names, options.search_limit,
-            ).await?;
+            let exact_nodes = self
+                .db
+                .search_nodes_by_exact_name(&exact_names, options.search_limit)
+                .await?;
             for node in exact_nodes {
                 if seen_ids.insert(node.id.clone()) {
                     // Give exact matches a high base score so they compete well.
@@ -240,7 +260,10 @@ impl<'a> ContextBuilder<'a> {
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
         let entry_points = apply_per_file_cap(candidates, options.max_nodes, max_per_file);
 
-        debug_assert!(entry_points.len() <= options.max_nodes, "entry_points exceeds max_nodes");
+        debug_assert!(
+            entry_points.len() <= options.max_nodes,
+            "entry_points exceeds max_nodes"
+        );
         Ok(entry_points)
     }
 
@@ -250,8 +273,14 @@ impl<'a> ContextBuilder<'a> {
         entry_points: &[Node],
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
-        debug_assert!(options.traversal_depth > 0, "traversal_depth must be positive");
-        debug_assert!(options.max_nodes > 0, "max_nodes must be positive for expand_subgraph");
+        debug_assert!(
+            options.traversal_depth > 0,
+            "traversal_depth must be positive"
+        );
+        debug_assert!(
+            options.max_nodes > 0,
+            "max_nodes must be positive for expand_subgraph"
+        );
         let traverser = GraphTraverser::new(self.db);
         let mut all_nodes: Vec<Node> = Vec::new();
         let mut all_edges: Vec<Edge> = Vec::new();
@@ -309,7 +338,9 @@ impl<'a> ContextBuilder<'a> {
         } else {
             all_nodes.iter().map(|n| n.id.as_str()).collect()
         };
-        all_edges.retain(|e| surviving.contains(e.source.as_str()) && surviving.contains(e.target.as_str()));
+        all_edges.retain(|e| {
+            surviving.contains(e.source.as_str()) && surviving.contains(e.target.as_str())
+        });
 
         Ok(Subgraph {
             nodes: all_nodes,
@@ -324,8 +355,14 @@ impl<'a> ContextBuilder<'a> {
         entry_points: &[Node],
         options: &BuildContextOptions,
     ) -> Result<Vec<CodeBlock>> {
-        debug_assert!(options.max_code_blocks > 0, "max_code_blocks must be positive");
-        debug_assert!(options.max_code_block_size > 0, "max_code_block_size must be positive");
+        debug_assert!(
+            options.max_code_blocks > 0,
+            "max_code_blocks must be positive"
+        );
+        debug_assert!(
+            options.max_code_block_size > 0,
+            "max_code_block_size must be positive"
+        );
         let mut blocks: Vec<CodeBlock> = Vec::new();
 
         for node in entry_points {
@@ -482,7 +519,10 @@ impl<'a> ContextBuilder<'a> {
 ///
 /// Common English stop words are filtered out.
 pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
-    debug_assert!(!query.is_empty(), "extract_symbols_from_query called with empty query");
+    debug_assert!(
+        !query.is_empty(),
+        "extract_symbols_from_query called with empty query"
+    );
     let stop_words: HashSet<&str> = SYMBOL_STOP_WORDS.iter().copied().collect();
 
     let mut symbols: Vec<String> = Vec::new();
@@ -498,22 +538,115 @@ pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
 
 /// Stop words filtered out during symbol extraction from natural language.
 const SYMBOL_STOP_WORDS: &[&str] = &[
-    "the", "is", "in", "for", "to", "a", "an", "of", "and", "or", "not",
-    "this", "that", "it", "with", "on", "at", "by", "from", "as", "be",
-    "was", "are", "been", "being", "have", "has", "had", "do", "does", "did",
-    "will", "would", "could", "should", "may", "might", "can", "shall",
-    "how", "what", "where", "when", "who", "which", "why",
-    "if", "then", "else", "but", "so", "up", "out", "no", "yes",
-    "all", "any", "each", "every",
-    "fix", "look", "update", "add", "remove", "delete", "change", "check",
-    "find", "get", "set", "use", "make", "call",
-    "function", "method", "class", "struct", "type", "module", "file",
-    "handler", "implement", "create", "about",
+    "the",
+    "is",
+    "in",
+    "for",
+    "to",
+    "a",
+    "an",
+    "of",
+    "and",
+    "or",
+    "not",
+    "this",
+    "that",
+    "it",
+    "with",
+    "on",
+    "at",
+    "by",
+    "from",
+    "as",
+    "be",
+    "was",
+    "are",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "can",
+    "shall",
+    "how",
+    "what",
+    "where",
+    "when",
+    "who",
+    "which",
+    "why",
+    "if",
+    "then",
+    "else",
+    "but",
+    "so",
+    "up",
+    "out",
+    "no",
+    "yes",
+    "all",
+    "any",
+    "each",
+    "every",
+    "fix",
+    "look",
+    "update",
+    "add",
+    "remove",
+    "delete",
+    "change",
+    "check",
+    "find",
+    "get",
+    "set",
+    "use",
+    "make",
+    "call",
+    "function",
+    "method",
+    "class",
+    "struct",
+    "type",
+    "module",
+    "file",
+    "handler",
+    "implement",
+    "create",
+    "about",
     // Code-specific noise words (ported from codegraph)
-    "interface", "trait", "enum", "variable", "import", "export",
-    "return", "error", "test", "spec", "helper", "util",
-    "config", "service", "model", "view", "controller",
-    "code", "new", "init", "default", "value", "data", "result",
+    "interface",
+    "trait",
+    "enum",
+    "variable",
+    "import",
+    "export",
+    "return",
+    "error",
+    "test",
+    "spec",
+    "helper",
+    "util",
+    "config",
+    "service",
+    "model",
+    "view",
+    "controller",
+    "code",
+    "new",
+    "init",
+    "default",
+    "value",
+    "data",
+    "result",
 ];
 
 /// Classify a single cleaned token and push any symbols it yields.
@@ -523,7 +656,9 @@ fn classify_token(
     symbols: &mut Vec<String>,
     seen: &mut HashSet<String>,
 ) {
-    if clean.is_empty() { return; }
+    if clean.is_empty() {
+        return;
+    }
 
     if clean.contains("::") {
         // Qualified path: extract last segment and full path
@@ -663,11 +798,15 @@ fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
 
     for symbol in symbols {
         let lower = symbol.to_lowercase();
-        if lower.len() < 4 { continue; }
+        if lower.len() < 4 {
+            continue;
+        }
 
         for &(suffix, replacements) in SUFFIX_PAIRS {
             if let Some(stem) = lower.strip_suffix(suffix) {
-                if stem.len() < 2 { continue; }
+                if stem.len() < 2 {
+                    continue;
+                }
                 for &replacement in replacements {
                     let variant = format!("{stem}{replacement}");
                     if variant.len() >= 3
@@ -698,7 +837,8 @@ fn apply_cooccurrence_boost(candidates: &mut [SearchResult], query_terms: &[Stri
             candidate.node.qualified_name.to_lowercase(),
             candidate.node.file_path.to_lowercase(),
         );
-        let hits: usize = query_terms.iter()
+        let hits: usize = query_terms
+            .iter()
             .filter(|term| haystack.contains(term.as_str()))
             .count();
         if hits >= 2 {
@@ -706,7 +846,11 @@ fn apply_cooccurrence_boost(candidates: &mut [SearchResult], query_terms: &[Stri
             candidate.score *= 1.0 + (hits as f64 - 1.0) * 0.3;
         }
     }
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Applies a per-file cap to search results, keeping the top `max_total`
@@ -732,12 +876,16 @@ fn apply_per_file_cap(
         } else {
             spillover.push(sr.node);
         }
-        if accepted.len() >= max_total { break; }
+        if accepted.len() >= max_total {
+            break;
+        }
     }
 
     // Fill remaining slots from spillover
     for node in spillover {
-        if accepted.len() >= max_total { break; }
+        if accepted.len() >= max_total {
+            break;
+        }
         accepted.push(node);
     }
 
@@ -875,9 +1023,7 @@ mod tests {
 
     #[test]
     fn test_cooccurrence_no_boost_single_term() {
-        let mut candidates = vec![
-            make_search_result("auth", "src/auth.rs", 10.0),
-        ];
+        let mut candidates = vec![make_search_result("auth", "src/auth.rs", 10.0)];
         let terms = vec!["auth".to_string(), "handler".to_string()];
         apply_cooccurrence_boost(&mut candidates, &terms);
         // Only 1 term matches — no boost
@@ -896,7 +1042,10 @@ mod tests {
         ];
         let result = apply_per_file_cap(candidates, 10, 2);
         // Only 2 from big.rs, then other.rs, then spillover
-        let big_count = result.iter().filter(|n| n.file_path == "src/big.rs").count();
+        let big_count = result
+            .iter()
+            .filter(|n| n.file_path == "src/big.rs")
+            .count();
         assert!(big_count <= 3); // 2 accepted + possibly 1 spillover
         assert!(result.len() == 4);
         // First 2 slots for big.rs, 3rd for other.rs

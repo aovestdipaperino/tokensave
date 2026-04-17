@@ -11,20 +11,32 @@ use crate::tokensave::TokenSave;
 
 /// Runs a comprehensive health check of the tokensave installation.
 pub async fn run_doctor(agent_filter: Option<&str>) {
-    debug_assert!(!env!("CARGO_PKG_VERSION").is_empty(), "CARGO_PKG_VERSION must not be empty");
+    debug_assert!(
+        !env!("CARGO_PKG_VERSION").is_empty(),
+        "CARGO_PKG_VERSION must not be empty"
+    );
     let mut dc = DoctorCounters::new();
 
-    eprintln!("\n\x1b[1mtokensave doctor v{}\x1b[0m\n", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "\n\x1b[1mtokensave doctor v{}\x1b[0m\n",
+        env!("CARGO_PKG_VERSION")
+    );
 
     check_binary(&mut dc);
 
     eprintln!("\n\x1b[1mCurrent project\x1b[0m");
     let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if TokenSave::is_initialized(&project_path) {
-        dc.pass(&format!("Index found: {}/.tokensave/", project_path.display()));
+        dc.pass(&format!(
+            "Index found: {}/.tokensave/",
+            project_path.display()
+        ));
         check_database(&mut dc, &project_path).await;
     } else {
-        dc.warn(&format!("No index at {}/.tokensave/ — run `tokensave sync`", project_path.display()));
+        dc.warn(&format!(
+            "No index at {}/.tokensave/ — run `tokensave sync`",
+            project_path.display()
+        ));
     }
 
     check_global_db(&mut dc);
@@ -76,7 +88,9 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     eprintln!("    Compacting database (VACUUM)…");
     match ts.optimize().await {
         Ok(()) => {
-            let size_after = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(size_before);
+            let size_after = std::fs::metadata(&db_path)
+                .map(|m| m.len())
+                .unwrap_or(size_before);
             if size_before > size_after {
                 let reclaimed = size_before - size_after;
                 dc.pass(&format!(
@@ -178,7 +192,10 @@ fn check_daemon(dc: &mut DoctorCounters) {
 fn check_network(dc: &mut DoctorCounters) {
     eprintln!("\n\x1b[1mNetwork\x1b[0m");
     if let Some(total) = crate::cloud::fetch_worldwide_total() {
-        dc.pass(&format!("Worldwide counter reachable (total: {})", format_token_count(total)));
+        dc.pass(&format!(
+            "Worldwide counter reachable (total: {})",
+            format_token_count(total)
+        ));
     } else {
         dc.warn("Worldwide counter unreachable (offline or timeout)");
     }
@@ -197,7 +214,10 @@ fn print_summary(dc: &DoctorCounters) {
     } else if dc.issues == 0 {
         eprintln!("\x1b[33m{} warning(s), no issues.\x1b[0m", dc.warnings);
     } else {
-        eprintln!("\x1b[31m{} issue(s), {} warning(s).\x1b[0m", dc.issues, dc.warnings);
+        eprintln!(
+            "\x1b[31m{} issue(s), {} warning(s).\x1b[0m",
+            dc.issues, dc.warnings
+        );
         eprintln!("Run \x1b[1mtokensave install\x1b[0m to fix most issues.");
     }
     eprintln!();

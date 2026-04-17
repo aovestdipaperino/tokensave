@@ -161,10 +161,7 @@ async fn test_get_file_dependents() {
 #[tokio::test]
 async fn test_find_dead_code_functions() {
     let (cg, _dir) = setup().await;
-    let dead = cg
-        .find_dead_code(&[NodeKind::Function])
-        .await
-        .unwrap();
+    let dead = cg.find_dead_code(&[NodeKind::Function]).await.unwrap();
     // The method should return successfully. Private functions without
     // incoming call edges appear as dead code. The exact results depend
     // on the extractor's edge generation (e.g., contains edges may give
@@ -229,9 +226,7 @@ async fn test_get_file_coupling_fan_out() {
 async fn test_check_file_staleness_not_stale() {
     let (cg, _dir) = setup().await;
     // Right after indexing, files should not be stale
-    let stale = cg
-        .check_file_staleness(&["src/lib.rs".to_string()])
-        .await;
+    let stale = cg.check_file_staleness(&["src/lib.rs".to_string()]).await;
     // Immediately after indexing, the file should not be stale
     // (mtime <= indexed_at in most cases)
     assert!(
@@ -253,9 +248,7 @@ async fn test_check_file_staleness_after_modification() {
     )
     .unwrap();
 
-    let stale = cg
-        .check_file_staleness(&["src/lib.rs".to_string()])
-        .await;
+    let stale = cg.check_file_staleness(&["src/lib.rs".to_string()]).await;
     assert!(
         stale.contains(&"src/lib.rs".to_string()),
         "src/lib.rs should be stale after modification"
@@ -312,10 +305,7 @@ async fn test_get_complexity_ranked() {
 #[tokio::test]
 async fn test_get_undocumented_public_symbols_no_filter() {
     let (cg, _dir) = setup().await;
-    let undoc = cg
-        .get_undocumented_public_symbols(None, 50)
-        .await
-        .unwrap();
+    let undoc = cg.get_undocumented_public_symbols(None, 50).await.unwrap();
     // foo is pub and has no docstring
     let names: Vec<&str> = undoc.iter().map(|n| n.name.as_str()).collect();
     assert!(

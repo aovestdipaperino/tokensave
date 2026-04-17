@@ -109,9 +109,7 @@ impl LuaExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -170,15 +168,21 @@ impl LuaExtractor {
             None => return,
         };
 
-        let is_local = node
-            .child(0)
-            .map(|c| c.kind() == "local")
-            .unwrap_or(false);
+        let is_local = node.child(0).map(|c| c.kind() == "local").unwrap_or(false);
 
         let (name, kind, visibility, class_context) = match name_node.kind() {
             "identifier" => {
                 let name = state.node_text(name_node);
-                (name, NodeKind::Function, if is_local { Visibility::Private } else { Visibility::Pub }, None)
+                (
+                    name,
+                    NodeKind::Function,
+                    if is_local {
+                        Visibility::Private
+                    } else {
+                        Visibility::Pub
+                    },
+                    None,
+                )
             }
             "dot_index_expression" => {
                 // e.g. Connection.new
@@ -273,7 +277,8 @@ impl LuaExtractor {
         };
 
         // Get the variable name from the variable_list.
-        let var_list = assignment.child_by_field_name("variable_list")
+        let var_list = assignment
+            .child_by_field_name("variable_list")
             .or_else(|| Self::find_child_by_kind(assignment, "variable_list"));
         let name_node = var_list.and_then(|vl| {
             // The first named child of variable_list should be the identifier.
@@ -285,7 +290,8 @@ impl LuaExtractor {
         };
 
         // Get the value from the expression_list.
-        let expr_list = assignment.child_by_field_name("expression_list")
+        let expr_list = assignment
+            .child_by_field_name("expression_list")
             .or_else(|| Self::find_child_by_kind(assignment, "expression_list"));
         let value_node = expr_list.and_then(|el| el.named_child(0));
 
@@ -296,12 +302,13 @@ impl LuaExtractor {
 
         // Check if this is a require call → Use node.
         if value_node.kind() == "function_call" {
-            let call_name = value_node.child_by_field_name("name")
+            let call_name = value_node
+                .child_by_field_name("name")
                 .map(|n| state.node_text(n));
             if call_name.as_deref() == Some("require") {
                 // Extract the module name from the arguments.
-                let mod_name = Self::extract_require_module(state, value_node)
-                    .unwrap_or(name.clone());
+                let mod_name =
+                    Self::extract_require_module(state, value_node).unwrap_or(name.clone());
                 Self::emit_use_node(state, node, &mod_name);
                 return;
             }
@@ -421,7 +428,8 @@ impl LuaExtractor {
     ///
     /// Looks for the first string argument inside the arguments node.
     fn extract_require_module(state: &ExtractionState, call_node: TsNode<'_>) -> Option<String> {
-        let args = call_node.child_by_field_name("arguments")
+        let args = call_node
+            .child_by_field_name("arguments")
             .or_else(|| Self::find_child_by_kind(call_node, "arguments"))?;
         // Look for a string node inside arguments.
         let mut cursor = args.walk();
@@ -471,10 +479,7 @@ impl LuaExtractor {
             if prev_node.kind() == "comment" {
                 let text = state.node_text(prev_node);
                 // Strip leading dashes and whitespace: "--- foo" → "foo", "-- bar" → "bar"
-                let stripped = text
-                    .trim_start_matches('-')
-                    .trim()
-                    .to_string();
+                let stripped = text.trim_start_matches('-').trim().to_string();
                 comments.push(stripped);
                 prev = prev_node.prev_named_sibling();
             } else {

@@ -16,7 +16,14 @@ fn test_write_and_read_entry() {
     let dir = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
 
-    write(dir.path(), project.path(), "tokensave", "tokensave_context", 63_102, 290_000);
+    write(
+        dir.path(),
+        project.path(),
+        "tokensave",
+        "tokensave_context",
+        63_102,
+        290_000,
+    );
 
     let r = reader(dir.path());
     assert_eq!(r.write_idx(), 1);
@@ -36,7 +43,14 @@ fn test_ring_buffer_wraps() {
     let project = TempDir::new().unwrap();
 
     for i in 0..260u64 {
-        write(dir.path(), project.path(), "tokensave", "tokensave_search", i + 1, i * 10);
+        write(
+            dir.path(),
+            project.path(),
+            "tokensave",
+            "tokensave_search",
+            i + 1,
+            i * 10,
+        );
     }
 
     let r = reader(dir.path());
@@ -56,8 +70,22 @@ fn test_write_entry_accumulates() {
     let dir = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
 
-    write(dir.path(), project.path(), "tokensave", "tokensave_context", 100, 500);
-    write(dir.path(), project.path(), "tokensave", "tokensave_search", 50, 200);
+    write(
+        dir.path(),
+        project.path(),
+        "tokensave",
+        "tokensave_context",
+        100,
+        500,
+    );
+    write(
+        dir.path(),
+        project.path(),
+        "tokensave",
+        "tokensave_search",
+        50,
+        200,
+    );
 
     let r = reader(dir.path());
     assert_eq!(r.write_idx(), 2);
@@ -72,7 +100,14 @@ fn test_entry_label_format() {
     let dir = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
 
-    write(dir.path(), project.path(), "tokensave", "tokensave_context", 42, 100);
+    write(
+        dir.path(),
+        project.path(),
+        "tokensave",
+        "tokensave_context",
+        42,
+        100,
+    );
 
     let r = reader(dir.path());
     let entry = r.entry(0).unwrap();
@@ -101,8 +136,22 @@ fn test_multiple_projects() {
     let project_a = TempDir::with_prefix("alpha").unwrap();
     let project_b = TempDir::with_prefix("bravo").unwrap();
 
-    write(dir.path(), project_a.path(), "tokensave", "tokensave_context", 100, 500);
-    write(dir.path(), project_b.path(), "tokensave", "tokensave_search", 200, 600);
+    write(
+        dir.path(),
+        project_a.path(),
+        "tokensave",
+        "tokensave_context",
+        100,
+        500,
+    );
+    write(
+        dir.path(),
+        project_b.path(),
+        "tokensave",
+        "tokensave_search",
+        200,
+        600,
+    );
 
     let r = reader(dir.path());
     assert_eq!(r.write_idx(), 2);
@@ -117,8 +166,22 @@ fn test_different_prefixes() {
     let dir = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
 
-    write(dir.path(), project.path(), "tokensave", "tokensave_context", 100, 500);
-    write(dir.path(), project.path(), "othertool", "do_stuff", 200, 600);
+    write(
+        dir.path(),
+        project.path(),
+        "tokensave",
+        "tokensave_context",
+        100,
+        500,
+    );
+    write(
+        dir.path(),
+        project.path(),
+        "othertool",
+        "do_stuff",
+        200,
+        600,
+    );
 
     let r = reader(dir.path());
     let e0 = r.entry(0).unwrap();

@@ -155,9 +155,9 @@ impl DartExtractor {
                 "type_alias" => Self::visit_type_alias(state, child),
                 "function_signature" => {
                     // Top-level function: function_signature followed by function_body sibling.
-                    let body = child.next_named_sibling().filter(|s| {
-                        s.kind() == "function_body"
-                    });
+                    let body = child
+                        .next_named_sibling()
+                        .filter(|s| s.kind() == "function_body");
                     Self::visit_top_level_function(state, child, body);
                 }
                 "declaration" => Self::visit_declaration(state, child),
@@ -333,7 +333,9 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
-        let metrics = body.map_or(Default::default(), |b| count_complexity(b, &DART_COMPLEXITY, &state.source));
+        let metrics = body.map_or(Default::default(), |b| {
+            count_complexity(b, &DART_COMPLEXITY, &state.source)
+        });
 
         let graph_node = Node {
             id: id.clone(),
@@ -806,9 +808,9 @@ impl DartExtractor {
                 "method_signature" => Self::visit_method_signature(state, child),
                 "function_signature" => {
                     // Function signature followed by function_body sibling in body context.
-                    let body_node = child.next_named_sibling().filter(|s| {
-                        s.kind() == "function_body"
-                    });
+                    let body_node = child
+                        .next_named_sibling()
+                        .filter(|s| s.kind() == "function_body");
                     Self::visit_method_from_sig(state, child, body_node);
                 }
                 _ => {}
@@ -828,13 +830,14 @@ impl DartExtractor {
                 match child.kind() {
                     "function_signature" => {
                         // Check for function_body as next sibling of the method_signature node.
-                        let body = node.next_named_sibling().filter(|s| {
-                            s.kind() == "function_body"
-                        });
+                        let body = node
+                            .next_named_sibling()
+                            .filter(|s| s.kind() == "function_body");
                         Self::visit_method_from_sig(state, child, body);
                         return;
                     }
-                    "constructor_signature" | "constant_constructor_signature"
+                    "constructor_signature"
+                    | "constant_constructor_signature"
                     | "factory_constructor_signature"
                     | "redirecting_factory_constructor_signature" => {
                         Self::visit_constructor(state, node, child);
@@ -882,7 +885,8 @@ impl DartExtractor {
                 "function_signature" => func_sig = Some(child),
                 "function_body" | "block" => func_body = Some(child),
                 "static" => has_static = true,
-                "constructor_signature" | "constant_constructor_signature"
+                "constructor_signature"
+                | "constant_constructor_signature"
                 | "factory_constructor_signature"
                 | "redirecting_factory_constructor_signature" => {
                     Self::visit_constructor(state, node, child);
@@ -961,7 +965,9 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
-        let metrics = body.map_or(Default::default(), |b| count_complexity(b, &DART_COMPLEXITY, &state.source));
+        let metrics = body.map_or(Default::default(), |b| {
+            count_complexity(b, &DART_COMPLEXITY, &state.source)
+        });
 
         let graph_node = Node {
             id: id.clone(),
@@ -1013,11 +1019,7 @@ impl DartExtractor {
     // Constructor
     // ----------------------------------
 
-    fn visit_constructor(
-        state: &mut ExtractionState,
-        decl_node: TsNode<'_>,
-        sig_node: TsNode<'_>,
-    ) {
+    fn visit_constructor(state: &mut ExtractionState, decl_node: TsNode<'_>, sig_node: TsNode<'_>) {
         let name = Self::extract_constructor_name(state, sig_node);
         let docstring = Self::extract_docstring(state, decl_node);
         let text = state.node_text(decl_node);
@@ -1163,11 +1165,7 @@ impl DartExtractor {
     // Operator
     // ----------------------------------
 
-    fn visit_operator(
-        state: &mut ExtractionState,
-        decl_node: TsNode<'_>,
-        _sig_node: TsNode<'_>,
-    ) {
+    fn visit_operator(state: &mut ExtractionState, decl_node: TsNode<'_>, _sig_node: TsNode<'_>) {
         let text = state.node_text(decl_node);
         let name = text
             .find("operator")
@@ -1367,20 +1365,47 @@ impl DartExtractor {
         loop {
             let child = cursor.node();
             match child.kind() {
-                "expression_statement" | "block" | "if_statement" | "for_statement"
-                | "while_statement" | "do_statement" | "switch_statement" | "try_statement"
-                | "return_statement" | "unary_expression" | "await_expression"
-                | "conditional_expression" | "argument" | "named_argument"
-                | "arguments" | "parenthesized_expression" | "assignment_expression"
-                | "assignment_expression_without_cascade" | "local_variable_declaration"
-                | "initialized_variable_definition" | "catch_clause" | "finally_clause"
-                | "yield_statement" | "yield_each_statement" | "throw_expression"
-                | "throw_expression_without_cascade" | "spread_element" | "for_element"
-                | "if_element" | "list_literal" | "set_or_map_literal"
-                | "cascade_section" | "switch_expression" | "switch_expression_case"
-                | "switch_statement_case" | "switch_statement_default"
-                | "pattern_assignment" | "pattern_variable_declaration"
-                | "assert_statement" | "assert_builtin" | "assertion" => {
+                "expression_statement"
+                | "block"
+                | "if_statement"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+                | "switch_statement"
+                | "try_statement"
+                | "return_statement"
+                | "unary_expression"
+                | "await_expression"
+                | "conditional_expression"
+                | "argument"
+                | "named_argument"
+                | "arguments"
+                | "parenthesized_expression"
+                | "assignment_expression"
+                | "assignment_expression_without_cascade"
+                | "local_variable_declaration"
+                | "initialized_variable_definition"
+                | "catch_clause"
+                | "finally_clause"
+                | "yield_statement"
+                | "yield_each_statement"
+                | "throw_expression"
+                | "throw_expression_without_cascade"
+                | "spread_element"
+                | "for_element"
+                | "if_element"
+                | "list_literal"
+                | "set_or_map_literal"
+                | "cascade_section"
+                | "switch_expression"
+                | "switch_expression_case"
+                | "switch_statement_case"
+                | "switch_statement_default"
+                | "pattern_assignment"
+                | "pattern_variable_declaration"
+                | "assert_statement"
+                | "assert_builtin"
+                | "assertion" => {
                     // Recurse into these container nodes.
                     Self::extract_call_sites(state, child, fn_node_id);
                 }
@@ -1487,7 +1512,10 @@ impl DartExtractor {
             return None;
         }
         comments.reverse();
-        let cleaned: Vec<String> = comments.iter().map(|c| Self::clean_doc_comment(c)).collect();
+        let cleaned: Vec<String> = comments
+            .iter()
+            .map(|c| Self::clean_doc_comment(c))
+            .collect();
         let result = cleaned.join("\n").trim().to_string();
         if result.is_empty() {
             None

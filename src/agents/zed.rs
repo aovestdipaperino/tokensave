@@ -20,9 +20,13 @@ pub struct ZedIntegration;
 /// Returns the Zed config directory, platform-specific.
 fn zed_config_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
-    { home.join("Library/Application Support/Zed") }
+    {
+        home.join("Library/Application Support/Zed")
+    }
     #[cfg(not(target_os = "macos"))]
-    { home.join(".config/zed") }
+    {
+        home.join(".config/zed")
+    }
 }
 
 impl AgentIntegration for ZedIntegration {
@@ -137,7 +141,9 @@ fn uninstall_context_server(settings_path: &Path) {
         .and_then(|v| v.as_object())
         .is_some_and(|o| o.is_empty());
     if cs_empty {
-        settings.as_object_mut().map(|o| o.remove("context_servers"));
+        settings
+            .as_object_mut()
+            .map(|o| o.remove("context_servers"));
     }
 
     // Always write back (never delete settings.json — it has other Zed settings)

@@ -26,8 +26,14 @@ impl<'a> GraphTraverser<'a> {
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
     pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
-        debug_assert!(!start_id.is_empty(), "traverse_bfs called with empty start_id");
-        debug_assert!(opts.max_depth > 0, "traverse_bfs max_depth must be positive");
+        debug_assert!(
+            !start_id.is_empty(),
+            "traverse_bfs called with empty start_id"
+        );
+        debug_assert!(
+            opts.max_depth > 0,
+            "traverse_bfs max_depth must be positive"
+        );
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -63,7 +69,9 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
+            let edges = self
+                .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
+                .await?;
 
             for edge in edges {
                 let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
@@ -131,8 +139,14 @@ impl<'a> GraphTraverser<'a> {
     /// Uses an iterative approach with an explicit stack to avoid async
     /// recursion issues.
     pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
-        debug_assert!(!start_id.is_empty(), "traverse_dfs called with empty start_id");
-        debug_assert!(opts.max_depth > 0, "traverse_dfs max_depth must be positive");
+        debug_assert!(
+            !start_id.is_empty(),
+            "traverse_dfs called with empty start_id"
+        );
+        debug_assert!(
+            opts.max_depth > 0,
+            "traverse_dfs max_depth must be positive"
+        );
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -166,7 +180,9 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
+            let edges = self
+                .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
+                .await?;
 
             for edge in edges {
                 let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
@@ -282,8 +298,14 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Performs a BFS over incoming edges of all kinds up to `max_depth`.
     pub async fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_impact_radius called with empty node_id");
-        debug_assert!(max_depth > 0, "get_impact_radius max_depth must be positive");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_impact_radius called with empty node_id"
+        );
+        debug_assert!(
+            max_depth > 0,
+            "get_impact_radius max_depth must be positive"
+        );
         let opts = TraversalOptions {
             max_depth: max_depth as u32,
             edge_kinds: None,
@@ -300,7 +322,10 @@ impl<'a> GraphTraverser<'a> {
     /// Combines BFS over outgoing `Calls` edges (callees) and BFS over
     /// incoming `Calls` edges (callers) up to the specified `depth`.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_call_graph called with empty node_id");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_call_graph called with empty node_id"
+        );
         debug_assert!(depth > 0, "get_call_graph depth must be positive");
         // Outgoing (callees)
         let outgoing_opts = TraversalOptions {
@@ -370,7 +395,10 @@ impl<'a> GraphTraverser<'a> {
     /// Follows both outgoing (traits this node implements) and incoming
     /// (nodes that implement this trait) `Implements` edges.
     pub async fn get_type_hierarchy(&self, node_id: &str) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_type_hierarchy called with empty node_id");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_type_hierarchy called with empty node_id"
+        );
         let opts = TraversalOptions {
             max_depth: 10,
             edge_kinds: Some(vec![EdgeKind::Implements]),

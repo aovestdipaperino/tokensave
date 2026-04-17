@@ -64,13 +64,7 @@ impl MonitorEntry {
 /// `project_root` is used to derive the folder name. `prefix` identifies
 /// the tool suite (e.g. "tokensave"). Best-effort: silently returns on
 /// any failure.
-pub fn write_entry(
-    project_root: &Path,
-    prefix: &str,
-    tool_name: &str,
-    delta: u64,
-    before: u64,
-) {
+pub fn write_entry(project_root: &Path, prefix: &str, tool_name: &str, delta: u64, before: u64) {
     let Some(dir) = global_tokensave_dir() else {
         return;
     };
@@ -156,8 +150,7 @@ fn write_entry_inner(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    mmap[off + EOFF_TIMESTAMP..off + EOFF_TIMESTAMP + 8]
-        .copy_from_slice(&timestamp.to_le_bytes());
+    mmap[off + EOFF_TIMESTAMP..off + EOFF_TIMESTAMP + 8].copy_from_slice(&timestamp.to_le_bytes());
 
     // Increment write_idx (reader sees this last).
     let new_idx = write_idx + 1;
@@ -186,7 +179,10 @@ impl MmapReader {
     /// Open the global monitor mmap for reading.
     pub fn open() -> std::io::Result<Self> {
         let dir = global_tokensave_dir().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve home directory")
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve home directory",
+            )
         })?;
         Self::open_at(&dir)
     }
@@ -196,7 +192,10 @@ impl MmapReader {
         let mmap_path = dir.join(MMAP_FILENAME);
         let file = std::fs::OpenOptions::new().read(true).open(&mmap_path)?;
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(Self { mmap, dir: dir.to_path_buf() })
+        Ok(Self {
+            mmap,
+            dir: dir.to_path_buf(),
+        })
     }
 
     /// Current write index (number of entries ever written).
@@ -272,7 +271,10 @@ use std::io::Write;
 /// Run the monitor TUI. Blocks until Ctrl+C.
 pub fn run() -> std::io::Result<()> {
     let dir = global_tokensave_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve home directory")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "cannot resolve home directory",
+        )
     })?;
     std::fs::create_dir_all(&dir)?;
 
@@ -410,9 +412,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
     // a new runtime would panic. Use block_in_place + existing handle.
     #[cfg(windows)]
     {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(future)
-        })
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
     }
     // On Unix the function may be called outside any tokio runtime,
     // so create a single-threaded one.
@@ -504,8 +504,18 @@ fn monitor_loop(
                 cost_cache.efficiency_pct, cost_cache.top_model, cost_cache.top_model_cost
             );
 
-            write!(stdout, "\r\x1b[36m{}\x1b[0m{}\r\n", line1, " ".repeat(w.saturating_sub(line1.len())))?;
-            write!(stdout, "\r\x1b[36m{}\x1b[0m{}\r\n", line2, " ".repeat(w.saturating_sub(line2.len())))?;
+            write!(
+                stdout,
+                "\r\x1b[36m{}\x1b[0m{}\r\n",
+                line1,
+                " ".repeat(w.saturating_sub(line1.len()))
+            )?;
+            write!(
+                stdout,
+                "\r\x1b[36m{}\x1b[0m{}\r\n",
+                line2,
+                " ".repeat(w.saturating_sub(line2.len()))
+            )?;
             write!(stdout, "\r{}\r\n", sep)?;
         }
 
@@ -528,7 +538,13 @@ fn monitor_loop(
             let label = entry.label();
             let delta_str = format_number(entry.delta);
             let padding = w.saturating_sub(label.len() + delta_str.len() + 2);
-            write!(stdout, "\r{}{}{}\r\n", label, " ".repeat(padding), delta_str)?;
+            write!(
+                stdout,
+                "\r{}{}{}\r\n",
+                label,
+                " ".repeat(padding),
+                delta_str
+            )?;
         }
 
         // ── Footer ──

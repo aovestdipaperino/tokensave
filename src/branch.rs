@@ -21,9 +21,7 @@ fn current_branch_gix(project_root: &Path) -> Option<String> {
     let head = repo.head().ok()?;
     let name = head.name().as_bstr();
     let name_str = std::str::from_utf8(name).ok()?;
-    name_str
-        .strip_prefix("refs/heads/")
-        .map(|s| s.to_string())
+    name_str.strip_prefix("refs/heads/").map(|s| s.to_string())
 }
 
 fn current_branch_git(project_root: &Path) -> Option<String> {
@@ -52,7 +50,12 @@ pub fn detect_default_branch(project_root: &Path) -> Option<String> {
     // Try symbolic-ref first (refs/remotes/origin/HEAD -> refs/remotes/origin/<branch>)
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
         if let Some(Ok(target)) = reference.follow() {
-            if let Some(name) = target.name().as_bstr().to_string().strip_prefix("refs/remotes/origin/") {
+            if let Some(name) = target
+                .name()
+                .as_bstr()
+                .to_string()
+                .strip_prefix("refs/remotes/origin/")
+            {
                 return Some(name.to_string());
             }
         }
@@ -162,8 +165,14 @@ pub fn find_nearest_tracked_ancestor(
         let Ok(base_commit) = repo.find_commit(base_id) else {
             continue;
         };
-        let time = base_commit.time().ok().unwrap_or_else(|| gix::date::Time::new(0, 0));
-        if best.as_ref().is_none_or(|(_, best_time)| time.seconds > best_time.seconds) {
+        let time = base_commit
+            .time()
+            .ok()
+            .unwrap_or_else(|| gix::date::Time::new(0, 0));
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_time)| time.seconds > best_time.seconds)
+        {
             best = Some((tracked_name.clone(), time));
         }
     }

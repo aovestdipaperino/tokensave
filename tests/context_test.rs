@@ -3,9 +3,9 @@ use tokensave::types::*;
 
 #[tokio::test]
 async fn test_reranking_demotes_fixture_nodes() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -21,14 +21,21 @@ async fn test_reranking_demotes_fixture_nodes() {
         name: "debug".to_string(),
         qualified_name: "tests/fixtures/sample.dart::LogLevel::debug".to_string(),
         file_path: "tests/fixtures/sample.dart".to_string(),
-        start_line: 14, end_line: 14,
-        start_column: 0, end_column: 10,
+        start_line: 14,
+        end_line: 14,
+        start_column: 0,
+        end_column: 10,
         signature: Some("debug".to_string()),
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
-        branches: 0, loops: 0, returns: 0, max_nesting: 0,
-        unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&fixture_node).await.unwrap();
@@ -40,14 +47,21 @@ async fn test_reranking_demotes_fixture_nodes() {
         name: "debug_handler".to_string(),
         qualified_name: "src/debug.rs::debug_handler".to_string(),
         file_path: "src/debug.rs".to_string(),
-        start_line: 1, end_line: 10,
-        start_column: 0, end_column: 1,
+        start_line: 1,
+        end_line: 10,
+        start_column: 0,
+        end_column: 1,
         signature: Some("pub fn debug_handler()".to_string()),
         docstring: None,
         visibility: Visibility::Pub,
         is_async: false,
-        branches: 0, loops: 0, returns: 0, max_nesting: 0,
-        unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
         updated_at: 0,
     };
     db.insert_node(&source_node).await.unwrap();
@@ -129,10 +143,10 @@ fn test_format_context_json() {
 
 #[tokio::test]
 async fn test_build_context_with_db() {
-    use tokensave::context::ContextBuilder;
-    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -181,10 +195,10 @@ async fn test_build_context_with_db() {
 
 #[tokio::test]
 async fn test_get_code_reads_source_file() {
-    use tokensave::context::ContextBuilder;
-    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -234,9 +248,9 @@ async fn test_get_code_reads_source_file() {
 
 #[tokio::test]
 async fn test_get_code_returns_none_for_missing_file() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -276,9 +290,9 @@ async fn test_get_code_returns_none_for_missing_file() {
 
 #[tokio::test]
 async fn test_find_relevant_context() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -321,9 +335,9 @@ async fn test_find_relevant_context() {
 
 #[tokio::test]
 async fn test_exclude_node_ids_deduplication() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -339,16 +353,25 @@ async fn test_exclude_node_ids_deduplication() {
             name: name.to_string(),
             qualified_name: format!("src/lib.rs::{name}"),
             file_path: "src/lib.rs".to_string(),
-            start_line: 1, end_line: 5,
-            start_column: 0, end_column: 1,
+            start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
             signature: Some(format!("pub fn {name}()")),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: 0,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     let builder = ContextBuilder::new(&db, project);
@@ -372,10 +395,10 @@ async fn test_exclude_node_ids_deduplication() {
 
 #[tokio::test]
 async fn test_merge_adjacent_code_blocks() {
-    use tokensave::context::ContextBuilder;
-    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();

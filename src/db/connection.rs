@@ -3,7 +3,7 @@ use std::path::Path;
 
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
 
 use super::migrations;
 
@@ -49,13 +49,14 @@ impl Database {
             })?;
         }
 
-        let db = Builder::new_local(db_path)
-            .build()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to open database: {e}"),
-                operation: "initialize".to_string(),
-            })?;
+        let db =
+            Builder::new_local(db_path)
+                .build()
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to open database: {e}"),
+                    operation: "initialize".to_string(),
+                })?;
 
         let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
@@ -73,13 +74,14 @@ impl Database {
     /// Returns `(Self, migrated)` where `migrated` is `true` if schema
     /// migrations were applied during open.
     pub async fn open(db_path: &Path) -> Result<(Self, bool)> {
-        let db = Builder::new_local(db_path)
-            .build()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to open database: {e}"),
-                operation: "open".to_string(),
-            })?;
+        let db =
+            Builder::new_local(db_path)
+                .build()
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to open database: {e}"),
+                    operation: "open".to_string(),
+                })?;
 
         let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
@@ -233,8 +235,9 @@ impl Database {
     /// B-tree gets sequential appends. Call `end_bulk_load` afterwards to
     /// rebuild indexes in one optimized pass.
     pub async fn begin_bulk_load(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
+        self.conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
              DROP INDEX IF EXISTS idx_nodes_kind;
              DROP INDEX IF EXISTS idx_nodes_name;
              DROP INDEX IF EXISTS idx_nodes_qualified_name;
@@ -253,10 +256,12 @@ impl Database {
              DROP TRIGGER IF EXISTS nodes_fts_delete;
              DROP TRIGGER IF EXISTS nodes_fts_update;
              DELETE FROM nodes_fts;",
-        ).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to begin bulk load: {e}"),
-            operation: "begin_bulk_load".to_string(),
-        })?;
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin bulk load: {e}"),
+                operation: "begin_bulk_load".to_string(),
+            })?;
         Ok(())
     }
 

@@ -53,7 +53,11 @@ fn test_install_creates_opencode_json() {
     let config = read_json(&config_path);
     let ts = &config["mcp"]["tokensave"];
     assert!(ts.is_object(), "mcp.tokensave should be an object");
-    assert_eq!(ts["type"].as_str().unwrap(), "local", "type should be local");
+    assert_eq!(
+        ts["type"].as_str().unwrap(),
+        "local",
+        "type should be local"
+    );
 
     let command: Vec<&str> = ts["command"]
         .as_array()
@@ -201,10 +205,7 @@ fn test_uninstall_removes_mcp_from_config() {
     // When tokensave was the only content, file should be removed entirely
     if config_path.exists() {
         let config = read_json(&config_path);
-        let has_tokensave = config
-            .get("mcp")
-            .and_then(|v| v.get("tokensave"))
-            .is_some();
+        let has_tokensave = config.get("mcp").and_then(|v| v.get("tokensave")).is_some();
         assert!(!has_tokensave, "mcp.tokensave should be removed");
     }
 }
@@ -244,16 +245,16 @@ fn test_uninstall_preserves_other_mcp_servers() {
     OpenCodeIntegration.install(&ctx).unwrap();
     OpenCodeIntegration.uninstall(&ctx).unwrap();
 
-    assert!(config_path.exists(), "config should still exist with other servers");
+    assert!(
+        config_path.exists(),
+        "config should still exist with other servers"
+    );
     let config = read_json(&config_path);
     assert!(
         config["mcp"]["other-tool"].is_object(),
         "other server should be preserved"
     );
-    let has_tokensave = config
-        .get("mcp")
-        .and_then(|v| v.get("tokensave"))
-        .is_some();
+    let has_tokensave = config.get("mcp").and_then(|v| v.get("tokensave")).is_some();
     assert!(!has_tokensave, "tokensave should be removed");
 }
 
@@ -394,10 +395,7 @@ fn test_healthcheck_detects_missing_mcp_entry() {
         project_path: home.to_path_buf(),
     };
     OpenCodeIntegration.healthcheck(&mut dc, &hctx);
-    assert!(
-        dc.issues > 0,
-        "healthcheck should detect missing MCP entry"
-    );
+    assert!(dc.issues > 0, "healthcheck should detect missing MCP entry");
 }
 
 #[test]
@@ -416,7 +414,11 @@ fn test_healthcheck_detects_missing_serve_arg() {
 
     // Also create OPENCODE.md so the prompt check passes
     let prompt_path = opencode_prompt_path(home);
-    std::fs::write(&prompt_path, "## Prefer tokensave MCP tools\ntokensave rules here\n").unwrap();
+    std::fs::write(
+        &prompt_path,
+        "## Prefer tokensave MCP tools\ntokensave rules here\n",
+    )
+    .unwrap();
 
     let mut dc = DoctorCounters::new();
     let hctx = HealthcheckContext {
@@ -462,7 +464,11 @@ fn test_healthcheck_detects_missing_tokensave_rules_in_opencode_md() {
 
     // Overwrite OPENCODE.md without any mention of tokensave
     let prompt_path = opencode_prompt_path(home);
-    std::fs::write(&prompt_path, "## Some other content\n\nGeneric rules only.\n").unwrap();
+    std::fs::write(
+        &prompt_path,
+        "## Some other content\n\nGeneric rules only.\n",
+    )
+    .unwrap();
 
     let mut dc = DoctorCounters::new();
     let hctx = HealthcheckContext {

@@ -113,9 +113,7 @@ impl ObjcExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -374,9 +372,7 @@ impl ObjcExtractor {
         }
 
         // Extract enum variants: type_identifier children with field "declarator"
-        state
-            .node_stack
-            .push((enum_name.clone(), id.clone()));
+        state.node_stack.push((enum_name.clone(), id.clone()));
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -423,12 +419,7 @@ impl ObjcExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(
-            &state.file_path,
-            &NodeKind::EnumVariant,
-            name,
-            start_line,
-        );
+        let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
@@ -467,8 +458,8 @@ impl ObjcExtractor {
 
     /// Visit a simple typedef (not NS_ENUM).
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_typedef_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -785,8 +776,8 @@ impl ObjcExtractor {
     fn visit_property_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Property name is inside struct_declaration > struct_declarator > identifier
         // or struct_declaration > struct_declarator > pointer_declarator > identifier
-        let name = Self::extract_property_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_property_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -842,7 +833,9 @@ impl ObjcExtractor {
     /// Extract the property name from a property_declaration node.
     fn extract_property_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(struct_decl) = Self::find_child_by_kind(node, "struct_declaration") {
-            if let Some(struct_declarator) = Self::find_child_by_kind(struct_decl, "struct_declarator") {
+            if let Some(struct_declarator) =
+                Self::find_child_by_kind(struct_decl, "struct_declarator")
+            {
                 // Direct identifier
                 if let Some(ident) = Self::find_child_by_kind(struct_declarator, "identifier") {
                     return Some(state.node_text(ident));
@@ -888,8 +881,8 @@ impl ObjcExtractor {
 
     /// Extract a method declaration (no body).
     fn visit_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::extract_method_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_method_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let is_class_method = Self::is_class_method(state, node);
 
         let text = state.node_text(node);
@@ -1037,10 +1030,7 @@ impl ObjcExtractor {
 
     /// Extract docstring for an implementation_definition by looking at preceding
     /// sibling comments within the class_implementation.
-    fn extract_impl_method_docstring(
-        state: &ExtractionState,
-        node: TsNode<'_>,
-    ) -> Option<String> {
+    fn extract_impl_method_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut comments = Vec::new();
         let mut current = node.prev_named_sibling();
         while let Some(sibling) = current {
@@ -1075,8 +1065,8 @@ impl ObjcExtractor {
         node: TsNode<'_>,
         docstring: Option<String>,
     ) {
-        let name = Self::extract_method_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_method_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
@@ -1134,8 +1124,8 @@ impl ObjcExtractor {
 
     /// Extract a top-level C function definition.
     fn visit_function_definition(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let signature = Self::extract_function_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -1196,8 +1186,8 @@ impl ObjcExtractor {
 
     /// Extract a function prototype declaration.
     fn visit_function_prototype(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
         let docstring = Self::extract_docstring(state, node);
@@ -1430,11 +1420,7 @@ impl ObjcExtractor {
 
     /// Extract first line of text as a signature.
     fn extract_first_line(text: &str) -> String {
-        text.lines()
-            .next()
-            .unwrap_or(text)
-            .trim()
-            .to_string()
+        text.lines().next().unwrap_or(text).trim().to_string()
     }
 
     /// Find the first direct child of a node with a given kind.

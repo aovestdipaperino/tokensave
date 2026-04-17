@@ -106,9 +106,7 @@ impl FortranExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -607,8 +605,7 @@ impl FortranExtractor {
                 let end_column = node.end_position().column as u32;
                 let text = state.node_text(node);
                 let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-                let id =
-                    generate_node_id(&state.file_path, &NodeKind::Const, &name, start_line);
+                let id = generate_node_id(&state.file_path, &NodeKind::Const, &name, start_line);
 
                 let graph_node = Node {
                     id: id.clone(),
@@ -739,7 +736,10 @@ impl FortranExtractor {
 
     /// Find the derived type name and optional base type.
     /// Structure: derived_type_definition -> derived_type_statement -> type_name, optional base_type_specifier
-    fn find_derived_type_info(state: &ExtractionState, node: TsNode<'_>) -> (String, Option<String>) {
+    fn find_derived_type_info(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+    ) -> (String, Option<String>) {
         let stmt = Self::find_child_by_kind(node, "derived_type_statement");
         let name = stmt
             .and_then(|s| Self::find_child_by_kind(s, "type_name"))

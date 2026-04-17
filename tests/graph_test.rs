@@ -1,8 +1,8 @@
+use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::graph::queries::GraphQueryManager;
 use tokensave::graph::traversal::GraphTraverser;
 use tokensave::types::*;
-use tempfile::TempDir;
 
 /// Helper: create a temp database and return (Database, TempDir).
 async fn setup_db() -> (Database, TempDir) {
@@ -75,7 +75,9 @@ async fn setup_call_chain() -> (Database, TempDir) {
             line: Some(15),
         },
     ];
-    db.insert_edges(&edges).await.expect("failed to insert edges");
+    db.insert_edges(&edges)
+        .await
+        .expect("failed to insert edges");
 
     (db, dir)
 }
@@ -676,7 +678,10 @@ async fn test_node_metrics_depth() {
         "file should have 1 child (module)"
     );
 
-    let module_metrics = qm.get_node_metrics("n-module").await.expect("metrics failed");
+    let module_metrics = qm
+        .get_node_metrics("n-module")
+        .await
+        .expect("metrics failed");
     assert_eq!(module_metrics.depth, 1, "module should be at depth 1");
 
     let func_metrics = qm.get_node_metrics("n-func").await.expect("metrics failed");

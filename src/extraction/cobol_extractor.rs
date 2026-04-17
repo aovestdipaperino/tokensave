@@ -129,9 +129,7 @@ impl CobolExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -477,10 +475,7 @@ impl CobolExtractor {
         let header = children[start_idx];
         let header_text = state.node_text(header);
         // Strip trailing period from paragraph name: "MAIN-PROGRAM." -> "MAIN-PROGRAM"
-        let name = header_text
-            .trim()
-            .trim_end_matches('.')
-            .to_string();
+        let name = header_text.trim().trim_end_matches('.').to_string();
 
         let start_line = header.start_position().row as u32;
         // End line is the last statement in this paragraph.
@@ -550,7 +545,11 @@ impl CobolExtractor {
     }
 
     /// Recursively extract PERFORM and CALL references from a node.
-    fn extract_call_sites_from_node(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+    fn extract_call_sites_from_node(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
         match node.kind() {
             "perform_statement_call_proc" => {
                 // PERFORM paragraph-name: field "procedure" -> perform_procedure -> label -> qualified_word -> WORD

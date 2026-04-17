@@ -15,8 +15,16 @@ use tokio_util::sync::CancellationToken;
 
 /// Directories to ignore inside watched projects.
 pub const IGNORED_DIRS: &[&str] = &[
-    ".tokensave", ".git", "node_modules", "target", ".build",
-    "__pycache__", ".next", "dist", "build", ".cache",
+    ".tokensave",
+    ".git",
+    "node_modules",
+    "target",
+    ".build",
+    "__pycache__",
+    ".next",
+    "dist",
+    "build",
+    ".cache",
 ];
 
 /// Watches a single project directory for file changes, debounces them,
@@ -36,8 +44,8 @@ impl ProjectWatcher {
     pub fn new(project_root: PathBuf, debounce: Duration) -> Option<Self> {
         let (tx, rx) = mpsc::channel::<()>(64);
 
-        let mut watcher = notify::recommended_watcher(
-            move |res: std::result::Result<Event, notify::Error>| {
+        let mut watcher =
+            notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
                 let Ok(event) = res else { return };
                 if !matches!(
                     event.kind,
@@ -48,19 +56,19 @@ impl ProjectWatcher {
                     return;
                 }
                 let dominated_by_ignored = event.paths.iter().all(|p| {
-                    p.components().any(|c| {
-                        IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or(""))
-                    })
+                    p.components()
+                        .any(|c| IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or("")))
                 });
                 if dominated_by_ignored {
                     return;
                 }
                 let _ = tx.try_send(());
-            },
-        )
-        .ok()?;
+            })
+            .ok()?;
 
-        watcher.watch(&project_root, RecursiveMode::Recursive).ok()?;
+        watcher
+            .watch(&project_root, RecursiveMode::Recursive)
+            .ok()?;
 
         Some(Self {
             project_root,

@@ -125,9 +125,7 @@ impl MsBasic2Extractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Collect all lines from the AST.
         let root = tree.root_node();
@@ -380,8 +378,7 @@ impl MsBasic2Extractor {
                     let mut returns: u32 = 0;
                     for line in &lines[body_start..body_end] {
                         // Try count_complexity on each line node that has children.
-                        let stmt_list =
-                            Self::find_child_by_kind(line.node, "statement_list");
+                        let stmt_list = Self::find_child_by_kind(line.node, "statement_list");
                         if let Some(sl) = stmt_list {
                             let stmt = Self::find_child_by_kind(sl, "statement");
                             if let Some(s) = stmt {
@@ -468,7 +465,10 @@ impl MsBasic2Extractor {
 
         for (idx, line) in lines.iter().enumerate() {
             // Skip lines that are inside subroutines.
-            if subroutine_ranges.iter().any(|(start, end)| idx >= *start && idx < *end) {
+            if subroutine_ranges
+                .iter()
+                .any(|(start, end)| idx >= *start && idx < *end)
+            {
                 continue;
             }
             Self::extract_calls_from_line(state, line, &file_node_id);
@@ -563,7 +563,13 @@ impl MsBasic2Extractor {
         // Replace spaces with underscores and keep alphanumeric + underscore.
         let name: String = first
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         // Collapse multiple underscores and trim.
         let mut collapsed = String::new();

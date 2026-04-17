@@ -85,12 +85,11 @@ async fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         .query(&format!("PRAGMA table_info({table})"), ())
         .await
         .expect("failed to query table_info");
-    while let Some(row) = rows
-        .next()
-        .await
-        .expect("failed to read table_info row")
-    {
-        let name: String = row.get_str(1).expect("failed to read column name").to_string();
+    while let Some(row) = rows.next().await.expect("failed to read table_info row") {
+        let name: String = row
+            .get_str(1)
+            .expect("failed to read column name")
+            .to_string();
         if name == column {
             return true;
         }
@@ -282,9 +281,7 @@ async fn test_migrate_already_latest_returns_false() {
         .await
         .expect("create_schema should succeed");
 
-    let migrated = migrate(&conn)
-        .await
-        .expect("migrate should succeed");
+    let migrated = migrate(&conn).await.expect("migrate should succeed");
 
     assert!(!migrated, "migrate should return false when already at v6");
     assert_eq!(get_user_version(&conn).await, 6);
@@ -302,7 +299,10 @@ async fn test_migrate_from_v0() {
         .await
         .expect("migrate from v0 should succeed");
 
-    assert!(migrated, "migrate should return true when migrations were applied");
+    assert!(
+        migrated,
+        "migrate should return true when migrations were applied"
+    );
     assert_eq!(get_user_version(&conn).await, 6);
 
     // All expected tables should exist
@@ -493,9 +493,16 @@ async fn test_v5_deduplicates_edges() {
             .query("SELECT COUNT(*) FROM edges", ())
             .await
             .expect("failed to count edges");
-        let row = rows.next().await.expect("failed to read row").expect("should have row");
+        let row = rows
+            .next()
+            .await
+            .expect("failed to read row")
+            .expect("should have row");
         let count_before: i64 = row.get(0).expect("failed to read count");
-        assert_eq!(count_before, 8, "should have 8 rows (5 + 3 duplicates) before migration");
+        assert_eq!(
+            count_before, 8,
+            "should have 8 rows (5 + 3 duplicates) before migration"
+        );
     }
 
     // Run migration (v4 -> v5)
@@ -509,7 +516,11 @@ async fn test_v5_deduplicates_edges() {
         .query("SELECT COUNT(*) FROM edges", ())
         .await
         .expect("failed to count edges after migration");
-    let row = rows.next().await.expect("failed to read row").expect("should have row");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read row")
+        .expect("should have row");
     let count_after: i64 = row.get(0).expect("failed to read count");
     assert_eq!(
         count_after, 2,

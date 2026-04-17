@@ -1,7 +1,7 @@
+use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::resolution::ReferenceResolver;
 use tokensave::types::*;
-use tempfile::TempDir;
 
 /// Sets up a temporary database pre-populated with two nodes: a `helper`
 /// function in `src/utils.rs` and a `main` function in `src/main.rs`.
@@ -59,8 +59,12 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         updated_at: 0,
     };
 
-    db.insert_node(&callee).await.expect("failed to insert callee");
-    db.insert_node(&caller).await.expect("failed to insert caller");
+    db.insert_node(&callee)
+        .await
+        .expect("failed to insert callee");
+    db.insert_node(&caller)
+        .await
+        .expect("failed to insert caller");
     (dir, db)
 }
 
@@ -308,7 +312,9 @@ async fn test_multiple_candidates_best_match_scoring() {
     db.insert_node(&other_file_node)
         .await
         .expect("failed to insert other_file_node");
-    db.insert_node(&caller).await.expect("failed to insert caller");
+    db.insert_node(&caller)
+        .await
+        .expect("failed to insert caller");
 
     let resolver = ReferenceResolver::new(&db).await;
 

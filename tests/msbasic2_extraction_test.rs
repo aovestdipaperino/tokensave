@@ -111,11 +111,7 @@ fn test_msbasic2_docstrings() {
         "LOG_A_MESSAGE should have docstring"
     );
     assert!(
-        log_fn
-            .docstring
-            .as_ref()
-            .unwrap()
-            .contains("LOG A MESSAGE"),
+        log_fn.docstring.as_ref().unwrap().contains("LOG A MESSAGE"),
         "docstring: {:?}",
         log_fn.docstring
     );

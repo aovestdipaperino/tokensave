@@ -18,7 +18,11 @@ const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
 /// Stable: `tokensave-v{version}-{platform}.{ext}`
 /// Beta:   `tokensave-beta-v{version}-{platform}.{ext}`
 fn asset_name(version: &str, is_beta: bool) -> String {
-    let prefix = if is_beta { "tokensave-beta" } else { "tokensave" };
+    let prefix = if is_beta {
+        "tokensave-beta"
+    } else {
+        "tokensave"
+    };
     let platform = current_platform();
     let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
     format!("{prefix}-v{version}-{platform}.{ext}")
@@ -199,13 +203,8 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
-        if Path::new(file.name())
-            .file_name()
-            .and_then(|n| n.to_str())
-            == Some(bin_name)
-        {
-            let mut out =
-                std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
+        if Path::new(file.name()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+            let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
         }
@@ -247,7 +246,11 @@ fn classify_upgrade<'a>(current: &str, latest: &'a str) -> UpgradeStatus<'a> {
 fn perform_upgrade(version: &str, is_beta: bool) -> Result<()> {
     let tag = release_tag(version);
     let expected = asset_name(version, is_beta);
-    let bin_name = if cfg!(windows) { "tokensave.exe" } else { "tokensave" };
+    let bin_name = if cfg!(windows) {
+        "tokensave.exe"
+    } else {
+        "tokensave"
+    };
 
     eprintln!("  Asset: {expected}");
 
@@ -281,9 +284,7 @@ fn restart_daemon() {
         .spawn()
     {
         Ok(_) => eprintln!("  \x1b[32m✔\x1b[0m Daemon restarted"),
-        Err(e) => eprintln!(
-            "  \x1b[33mwarning:\x1b[0m failed to restart daemon: {e}"
-        ),
+        Err(e) => eprintln!("  \x1b[33mwarning:\x1b[0m failed to restart daemon: {e}"),
     }
 }
 
@@ -380,9 +381,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
         cloud::fetch_latest_stable_version()
     }
     .ok_or_else(|| TokenSaveError::Config {
-        message: format!(
-            "failed to find latest {target_channel} release — could not reach GitHub"
-        ),
+        message: format!("failed to find latest {target_channel} release — could not reach GitHub"),
     })?;
 
     eprintln!("  Target: v{latest}");
@@ -406,9 +405,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
         }
         Err(e) => {
             if daemon_was_running {
-                eprintln!(
-                    "  Restarting daemon (switch failed, old version still in place)..."
-                );
+                eprintln!("  Restarting daemon (switch failed, old version still in place)...");
                 restart_daemon();
             }
             Err(e)
@@ -468,7 +465,10 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.zip"));
         } else {
-            assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz"));
+            assert_eq!(
+                beta,
+                format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz")
+            );
         }
     }
 
@@ -529,11 +529,7 @@ mod tests {
             let bin_dir = tmp.path().join("bin");
             fs::create_dir_all(&bin_dir).unwrap();
             let link_path = bin_dir.join("tokensave");
-            symlink(
-                "../Cellar/tokensave/4.1.1-beta.1/bin/tokensave",
-                &link_path,
-            )
-            .unwrap();
+            symlink("../Cellar/tokensave/4.1.1-beta.1/bin/tokensave", &link_path).unwrap();
 
             (real_binary, link_path, tmp)
         }
@@ -708,7 +704,10 @@ mod tests {
             fs::write(&canonical, b"new-version").unwrap();
 
             // Symlink still works
-            assert!(link.exists(), "symlink must still resolve after replacement");
+            assert!(
+                link.exists(),
+                "symlink must still resolve after replacement"
+            );
             assert!(
                 fs::symlink_metadata(&link)
                     .unwrap()

@@ -96,11 +96,7 @@ const LogLevel = enum {
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].name, "LogLevel");
     assert!(
-        enums[0]
-            .docstring
-            .as_ref()
-            .unwrap()
-            .contains("log level"),
+        enums[0].docstring.as_ref().unwrap().contains("log level"),
         "docstring: {:?}",
         enums[0].docstring
     );
@@ -151,7 +147,11 @@ pub fn processConnections(connections: []u8) u32 {
     // Docstrings
     let log_fn = fns.iter().find(|f| f.name == "log").unwrap();
     assert!(
-        log_fn.docstring.as_ref().unwrap().contains("Logs a message"),
+        log_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Logs a message"),
         "docstring: {:?}",
         log_fn.docstring
     );
@@ -305,11 +305,12 @@ pub fn main() void {
         .collect();
     assert!(!call_refs.is_empty(), "should have call refs");
     assert!(
+        call_refs.iter().any(|r| r.reference_name.contains("print")),
+        "should find print call, got: {:?}",
         call_refs
             .iter()
-            .any(|r| r.reference_name.contains("print")),
-        "should find print call, got: {:?}",
-        call_refs.iter().map(|r| &r.reference_name).collect::<Vec<_>>()
+            .map(|r| &r.reference_name)
+            .collect::<Vec<_>>()
     );
     assert!(
         call_refs.iter().any(|r| r.reference_name == "greet"),

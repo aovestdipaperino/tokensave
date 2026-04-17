@@ -76,9 +76,8 @@ fn test_dart_function_extraction() {
 
 #[test]
 fn test_dart_class_extraction() {
-    let result = extract(
-        "class MyClass {\n  String name;\n  void hello() {\n    print('hi');\n  }\n}",
-    );
+    let result =
+        extract("class MyClass {\n  String name;\n  void hello() {\n    print('hi');\n  }\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let classes: Vec<_> = result
         .nodes
@@ -118,9 +117,8 @@ fn test_dart_mixin_extraction() {
 
 #[test]
 fn test_dart_extension_extraction() {
-    let result = extract(
-        "extension StringHelper on String {\n  bool get isBlank => trim().isEmpty;\n}",
-    );
+    let result =
+        extract("extension StringHelper on String {\n  bool get isBlank => trim().isEmpty;\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let exts: Vec<_> = result
         .nodes
@@ -189,7 +187,11 @@ fn test_dart_field_extraction() {
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert!(fields.len() >= 2, "Expected at least 2 fields, got {:?}", fields);
+    assert!(
+        fields.len() >= 2,
+        "Expected at least 2 fields, got {:?}",
+        fields
+    );
     assert!(fields.iter().any(|n| n.name == "name"));
     assert!(fields.iter().any(|n| n.name == "_count"));
 }
@@ -258,7 +260,9 @@ fn test_dart_visibility_public() {
 
 #[test]
 fn test_dart_async_function_detection() {
-    let result = extract("Future<void> fetchData() async {\n  await Future.delayed(Duration(seconds: 1));\n}");
+    let result = extract(
+        "Future<void> fetchData() async {\n  await Future.delayed(Duration(seconds: 1));\n}",
+    );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let fns: Vec<_> = result
         .nodes
@@ -272,9 +276,7 @@ fn test_dart_async_function_detection() {
 
 #[test]
 fn test_dart_call_site_tracking() {
-    let result = extract(
-        "void main() {\n  print('hello');\n  greet('world');\n}",
-    );
+    let result = extract("void main() {\n  print('hello');\n  greet('world');\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let calls: Vec<_> = result
         .unresolved_refs
@@ -330,9 +332,7 @@ fn test_dart_language_extractor_trait() {
 
 #[test]
 fn test_dart_mixin_with_methods() {
-    let result = extract(
-        "mixin Logging {\n  void log(String msg) {\n    print(msg);\n  }\n}",
-    );
+    let result = extract("mixin Logging {\n  void log(String msg) {\n    print(msg);\n  }\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let mixins: Vec<_> = result
         .nodes

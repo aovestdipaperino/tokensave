@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::errors::Result;
 use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
-use crate::errors::Result;
 
-use super::tools::{get_tool_definitions_with_budget, explore_call_budget, handle_tool_call};
+use super::tools::{explore_call_budget, get_tool_definitions_with_budget, handle_tool_call};
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
 /// Runtime statistics for the MCP server.
@@ -102,7 +102,10 @@ impl McpServer {
         if file_paths.is_empty() {
             return 0;
         }
-        debug_assert!(file_paths.iter().all(|p| !p.is_empty()), "accumulate_tokens_saved received empty file path");
+        debug_assert!(
+            file_paths.iter().all(|p| !p.is_empty()),
+            "accumulate_tokens_saved received empty file path"
+        );
         let delta = {
             let map = match self.file_token_map.lock() {
                 Ok(m) => m,
@@ -226,17 +229,18 @@ impl McpServer {
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
     pub async fn run(&self, transport: &mut impl super::transport::McpTransport) -> Result<()> {
-        debug_assert!(self.stats.total_requests.load(Ordering::Relaxed) == 0,
-            "server run() called on an already-used server");
+        debug_assert!(
+            self.stats.total_requests.load(Ordering::Relaxed) == 0,
+            "server run() called on an already-used server"
+        );
 
         loop {
             let line: String = {
                 #[cfg(unix)]
                 {
-                    let mut sigterm = tokio::signal::unix::signal(
-                        tokio::signal::unix::SignalKind::terminate(),
-                    )
-                    .expect("failed to register SIGTERM handler");
+                    let mut sigterm =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                            .expect("failed to register SIGTERM handler");
                     tokio::select! {
                         result = transport.read_line() => {
                             match result {
@@ -364,7 +368,9 @@ impl McpServer {
 
         eprintln!(
             "[tokensave] shutdown: {} tool calls, ~{} tokens saved, uptime {}s",
-            tool_calls, tokens_saved, uptime.as_secs()
+            tool_calls,
+            tokens_saved,
+            uptime.as_secs()
         );
     }
 
@@ -372,7 +378,10 @@ impl McpServer {
     ///
     /// Returns `None` for notifications (requests without an `id`).
     pub(crate) async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
-        debug_assert!(!request.method.is_empty(), "handle_request called with empty method");
+        debug_assert!(
+            !request.method.is_empty(),
+            "handle_request called with empty method"
+        );
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();
 
@@ -437,9 +446,7 @@ impl McpServer {
 
     /// Handles the `tools/list` method, returning all available tool definitions.
     async fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let node_count = self.cg.get_stats().await
-            .map(|s| s.node_count)
-            .unwrap_or(0);
+        let node_count = self.cg.get_stats().await.map(|s| s.node_count).unwrap_or(0);
         let budget = explore_call_budget(node_count);
         let tools = get_tool_definitions_with_budget(node_count, budget);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -447,34 +454,37 @@ impl McpServer {
 
     /// Handles the `resources/list` method, returning available resources.
     fn handle_resources_list(&self, id: Value) -> JsonRpcResponse {
-        JsonRpcResponse::success(id, json!({
-            "resources": [
-                {
-                    "uri": "tokensave://status",
-                    "name": "Graph Status",
-                    "description": "Code graph statistics: node/edge/file counts, languages, DB size, and index freshness.",
-                    "mimeType": "application/json"
-                },
-                {
-                    "uri": "tokensave://files",
-                    "name": "File List",
-                    "description": "All indexed project files grouped by directory with symbol counts.",
-                    "mimeType": "text/plain"
-                },
-                {
-                    "uri": "tokensave://overview",
-                    "name": "Project Overview",
-                    "description": "High-level project summary: language distribution, largest modules, and top entry points.",
-                    "mimeType": "text/plain"
-                },
-                {
-                    "uri": "tokensave://branches",
-                    "name": "Tracked Branches",
-                    "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
-                    "mimeType": "application/json"
-                }
-            ]
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "resources": [
+                    {
+                        "uri": "tokensave://status",
+                        "name": "Graph Status",
+                        "description": "Code graph statistics: node/edge/file counts, languages, DB size, and index freshness.",
+                        "mimeType": "application/json"
+                    },
+                    {
+                        "uri": "tokensave://files",
+                        "name": "File List",
+                        "description": "All indexed project files grouped by directory with symbol counts.",
+                        "mimeType": "text/plain"
+                    },
+                    {
+                        "uri": "tokensave://overview",
+                        "name": "Project Overview",
+                        "description": "High-level project summary: language distribution, largest modules, and top entry points.",
+                        "mimeType": "text/plain"
+                    },
+                    {
+                        "uri": "tokensave://branches",
+                        "name": "Tracked Branches",
+                        "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
+                        "mimeType": "application/json"
+                    }
+                ]
+            }),
+        )
     }
 
     /// Handles the `resources/read` method, returning resource contents.
@@ -513,13 +523,16 @@ impl McpServer {
         match self.cg.get_stats().await {
             Ok(stats) => {
                 let text = serde_json::to_string_pretty(&stats).unwrap_or_default();
-                JsonRpcResponse::success(id, json!({
-                    "contents": [{
-                        "uri": "tokensave://status",
-                        "mimeType": "application/json",
-                        "text": text
-                    }]
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "contents": [{
+                            "uri": "tokensave://status",
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    }),
+                )
             }
             Err(e) => JsonRpcResponse::error(
                 id,
@@ -537,14 +550,20 @@ impl McpServer {
                 let mut groups: std::collections::BTreeMap<String, Vec<String>> =
                     std::collections::BTreeMap::new();
                 for f in &files {
-                    let dir = f.path.rfind('/')
+                    let dir = f
+                        .path
+                        .rfind('/')
                         .map(|i| &f.path[..i])
                         .unwrap_or(".")
                         .to_string();
-                    let name = f.path.rfind('/')
+                    let name = f
+                        .path
+                        .rfind('/')
                         .map(|i| &f.path[i + 1..])
                         .unwrap_or(&f.path);
-                    groups.entry(dir).or_default()
+                    groups
+                        .entry(dir)
+                        .or_default()
                         .push(format!("{} ({} symbols)", name, f.node_count));
                 }
                 let mut lines = Vec::new();
@@ -556,13 +575,16 @@ impl McpServer {
                     }
                 }
                 let text = lines.join("\n");
-                JsonRpcResponse::success(id, json!({
-                    "contents": [{
-                        "uri": "tokensave://files",
-                        "mimeType": "text/plain",
-                        "text": text
-                    }]
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "contents": [{
+                            "uri": "tokensave://files",
+                            "mimeType": "text/plain",
+                            "text": text
+                        }]
+                    }),
+                )
             }
             Err(e) => JsonRpcResponse::error(
                 id,
@@ -613,13 +635,16 @@ impl McpServer {
         }
 
         let text = lines.join("\n");
-        JsonRpcResponse::success(id, json!({
-            "contents": [{
-                "uri": "tokensave://overview",
-                "mimeType": "text/plain",
-                "text": text
-            }]
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://overview",
+                    "mimeType": "text/plain",
+                    "text": text
+                }]
+            }),
+        )
     }
 
     fn read_resource_branches(&self, id: Value) -> JsonRpcResponse {
@@ -632,10 +657,7 @@ impl McpServer {
                 .iter()
                 .map(|(name, entry)| {
                     let db_path = tokensave_dir.join(&entry.db_file);
-                    let size_bytes = db_path
-                        .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
                     json!({
                         "name": name,
                         "db_file": entry.db_file,
@@ -655,18 +677,24 @@ impl McpServer {
             "branches": branches,
         });
         let text = serde_json::to_string_pretty(&output).unwrap_or_default();
-        JsonRpcResponse::success(id, json!({
-            "contents": [{
-                "uri": "tokensave://branches",
-                "mimeType": "application/json",
-                "text": text
-            }]
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://branches",
+                    "mimeType": "application/json",
+                    "text": text
+                }]
+            }),
+        )
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
     async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
-        debug_assert!(!id.is_null(), "handle_tools_call called with null request id");
+        debug_assert!(
+            !id.is_null(),
+            "handle_tools_call called with null request id"
+        );
         let params = match params {
             Some(p) => p,
             None => {
@@ -716,11 +744,13 @@ impl McpServer {
                 self.maybe_flush_worldwide().await;
 
                 // Estimate approximate token count of the graph response.
-                let response_tokens: u64 = result.value
+                let response_tokens: u64 = result
+                    .value
                     .get("content")
                     .and_then(|c| c.as_array())
                     .map(|arr| {
-                        let total_chars: usize = arr.iter()
+                        let total_chars: usize = arr
+                            .iter()
                             .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
                             .map(|text| text.len())
                             .sum();
@@ -730,7 +760,11 @@ impl McpServer {
 
                 // Append per-call token savings to the response content.
                 if raw_file_tokens > 0 {
-                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
                         content.push(json!({"type": "text", "text": format!(
                             "\ntokensave_metrics: before={raw_file_tokens} after={response_tokens}"
                         )}));
@@ -768,7 +802,11 @@ impl McpServer {
                             stale_files.len(),
                             stale_files.join(", ")
                         );
-                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        if let Some(content) = result
+                            .value
+                            .get_mut("content")
+                            .and_then(|c| c.as_array_mut())
+                        {
                             content.insert(0, json!({"type": "text", "text": &warning}));
                         }
                     }
@@ -777,7 +815,11 @@ impl McpServer {
                 // Warn if serving from a fallback (ancestor) branch DB.
                 if let Some(warning) = self.cg.fallback_warning() {
                     let warning = format!("WARNING: {warning}");
-                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
                         content.insert(0, json!({"type": "text", "text": &warning}));
                     }
                 }
@@ -803,7 +845,11 @@ impl McpServer {
                                 hours, mins
                             )
                         };
-                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        if let Some(content) = result
+                            .value
+                            .get_mut("content")
+                            .and_then(|c| c.as_array_mut())
+                        {
                             content.insert(0, json!({"type": "text", "text": &warning}));
                         }
                     }

@@ -1,5 +1,5 @@
-use tokensave::config::*;
 use tempfile::TempDir;
+use tokensave::config::*;
 
 #[test]
 fn test_default_config_has_exclude_patterns() {

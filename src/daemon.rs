@@ -34,7 +34,8 @@ pub fn query_daemon_info() -> Option<DaemonInfo> {
     let mut stream = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         Duration::from_secs(2),
-    ).ok()?;
+    )
+    .ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
 
     use std::io::{Read, Write};
@@ -83,7 +84,10 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     if let Some(secs) = s.strip_suffix('s') {
         secs.trim().parse::<u64>().ok().map(Duration::from_secs)
     } else if let Some(mins) = s.strip_suffix('m') {
-        mins.trim().parse::<u64>().ok().map(|m| Duration::from_secs(m * 60))
+        mins.trim()
+            .parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60))
     } else {
         s.parse::<u64>().ok().map(Duration::from_secs)
     }
@@ -118,13 +122,23 @@ pub fn running_daemon_pid() -> Option<u32> {
 
 /// Returns true if an autostart service is installed.
 pub fn is_autostart_enabled() -> bool {
-    build_daemon().ok().is_some_and(|d| d.is_service_installed())
+    build_daemon()
+        .ok()
+        .is_some_and(|d| d.is_service_installed())
 }
 
 /// Directories to ignore inside watched projects.
 const IGNORED_DIRS: &[&str] = &[
-    ".tokensave", ".git", "node_modules", "target", ".build",
-    "__pycache__", ".next", "dist", "build", ".cache",
+    ".tokensave",
+    ".git",
+    "node_modules",
+    "target",
+    ".build",
+    "__pycache__",
+    ".next",
+    "dist",
+    "build",
+    ".cache",
 ];
 
 /// The core daemon event loop. Watches projects, debounces changes, syncs.
@@ -155,7 +169,6 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
 
     // Start the status API listener.
     let api_handle = start_status_api(project_count.clone(), start_time);
-
 
     daemon_log(&format!(
         "v{} started, watching {} projects",
@@ -322,27 +335,27 @@ async fn discover_projects() -> Vec<PathBuf> {
 /// Create a notify watcher for a project root.
 fn create_watcher(project_root: &Path, tx: mpsc::Sender<PathBuf>) -> Option<RecommendedWatcher> {
     let root = project_root.to_path_buf();
-    let mut watcher = notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
-        let Ok(event) = res else { return };
-        if !matches!(
-            event.kind,
-            notify::EventKind::Create(_)
-                | notify::EventKind::Modify(_)
-                | notify::EventKind::Remove(_)
-        ) {
-            return;
-        }
-        let dominated_by_ignored = event.paths.iter().all(|p| {
-            p.components().any(|c| {
-                IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or(""))
-            })
-        });
-        if dominated_by_ignored {
-            return;
-        }
-        let _ = tx.blocking_send(root.clone());
-    })
-    .ok()?;
+    let mut watcher =
+        notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
+            let Ok(event) = res else { return };
+            if !matches!(
+                event.kind,
+                notify::EventKind::Create(_)
+                    | notify::EventKind::Modify(_)
+                    | notify::EventKind::Remove(_)
+            ) {
+                return;
+            }
+            let dominated_by_ignored = event.paths.iter().all(|p| {
+                p.components()
+                    .any(|c| IGNORED_DIRS.contains(&c.as_os_str().to_str().unwrap_or("")))
+            });
+            if dominated_by_ignored {
+                return;
+            }
+            let _ = tx.blocking_send(root.clone());
+        })
+        .ok()?;
     watcher.watch(project_root, RecursiveMode::Recursive).ok()?;
     Some(watcher)
 }
@@ -439,20 +452,19 @@ pub async fn run(foreground: bool) -> Result<bool> {
     let daemon = build_daemon()?;
 
     let config = crate::user_config::UserConfig::load();
-    let debounce = parse_duration(&config.daemon_debounce)
-        .unwrap_or(Duration::from_secs(15));
+    let debounce = parse_duration(&config.daemon_debounce).unwrap_or(Duration::from_secs(15));
 
     if foreground {
         // Already inside a tokio runtime — call run_loop directly.
         // daemon.start(foreground=true) would invoke a FnOnce closure
         // that creates a nested runtime, which panics.
-        let pid_file = daemon_kit::PidFile::new(
-            daemon_pid_dir().join("tokensave-daemon.pid"),
-        );
+        let pid_file = daemon_kit::PidFile::new(daemon_pid_dir().join("tokensave-daemon.pid"));
         pid_file.write().ok();
-        let result = run_loop(debounce).await.map_err(|e| TokenSaveError::Config {
-            message: format!("daemon error: {e}"),
-        });
+        let result = run_loop(debounce)
+            .await
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("daemon error: {e}"),
+            });
         pid_file.remove();
         result
     } else {
@@ -589,9 +601,11 @@ pub fn enable_autostart() -> Result<()> {
     }
 
     let daemon = build_daemon()?;
-    daemon.install_service().map_err(|e| TokenSaveError::Config {
-        message: format!("{e}"),
-    })?;
+    daemon
+        .install_service()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("{e}"),
+        })?;
     eprintln!("\x1b[32m✔\x1b[0m Autostart service installed");
     Ok(())
 }
@@ -642,7 +656,7 @@ mod win_elevated {
             GetExitCodeProcess, WaitForSingleObject, INFINITE,
         };
         use windows_sys::Win32::UI::Shell::{
-            ShellExecuteExW, SHELLEXECUTEINFOW, SEE_MASK_NOCLOSEPROCESS,
+            ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -678,9 +692,7 @@ mod win_elevated {
 
             if exit_code != 0 {
                 return Err(TokenSaveError::Config {
-                    message: format!(
-                        "elevated process exited with code {exit_code}"
-                    ),
+                    message: format!("elevated process exited with code {exit_code}"),
                 });
             }
         }
@@ -716,9 +728,11 @@ pub fn disable_autostart() -> Result<()> {
     }
 
     let daemon = build_daemon()?;
-    daemon.uninstall_service().map_err(|e| TokenSaveError::Config {
-        message: format!("{e}"),
-    })?;
+    daemon
+        .uninstall_service()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("{e}"),
+        })?;
     eprintln!("\x1b[32m✔\x1b[0m Autostart service removed");
     Ok(())
 }
@@ -807,7 +821,10 @@ mod tests {
     #[test]
     fn binary_snapshot_unchanged() {
         let snapshot = BinarySnapshot::capture().unwrap();
-        assert!(!snapshot.has_changed(), "binary should not have changed immediately");
+        assert!(
+            !snapshot.has_changed(),
+            "binary should not have changed immediately"
+        );
     }
 
     #[test]
@@ -817,7 +834,10 @@ mod tests {
             modified: std::time::UNIX_EPOCH,
             size: 100,
         };
-        assert!(snapshot.has_changed(), "missing file should count as changed");
+        assert!(
+            snapshot.has_changed(),
+            "missing file should count as changed"
+        );
     }
 
     #[test]
@@ -828,7 +848,10 @@ mod tests {
             modified: snapshot.modified,
             size: snapshot.size + 1, // fake a size difference
         };
-        assert!(tampered.has_changed(), "different size should count as changed");
+        assert!(
+            tampered.has_changed(),
+            "different size should count as changed"
+        );
     }
 
     #[test]
@@ -839,7 +862,10 @@ mod tests {
             modified: std::time::UNIX_EPOCH, // fake a different mtime
             size: snapshot.size,
         };
-        assert!(tampered.has_changed(), "different mtime should count as changed");
+        assert!(
+            tampered.has_changed(),
+            "different mtime should count as changed"
+        );
     }
 
     /// Regression test for the Windows daemon nested-runtime panic.

@@ -98,7 +98,10 @@ fn test_claude_install_creates_config() {
 
     // Check ~/.claude.json exists and has mcpServers.tokensave
     let claude_json = home.join(".claude.json");
-    assert!(claude_json.exists(), "~/.claude.json should exist after install");
+    assert!(
+        claude_json.exists(),
+        "~/.claude.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
     assert!(
@@ -110,12 +113,17 @@ fn test_claude_install_creates_config() {
         "mcpServers.tokensave should be an object"
     );
     // Verify args contain "serve"
-    let args = content["mcpServers"]["tokensave"]["args"].as_array().unwrap();
+    let args = content["mcpServers"]["tokensave"]["args"]
+        .as_array()
+        .unwrap();
     assert!(args.iter().any(|v| v.as_str() == Some("serve")));
 
     // Check ~/.claude/settings.json exists with hook and permissions
     let settings_path = home.join(".claude/settings.json");
-    assert!(settings_path.exists(), "settings.json should exist after install");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     // Check hook
@@ -133,7 +141,10 @@ fn test_claude_install_creates_config() {
     let claude_md = home.join(".claude/CLAUDE.md");
     assert!(claude_md.exists(), "CLAUDE.md should exist after install");
     let md_content = std::fs::read_to_string(&claude_md).unwrap();
-    assert!(md_content.contains("tokensave"), "CLAUDE.md should mention tokensave");
+    assert!(
+        md_content.contains("tokensave"),
+        "CLAUDE.md should mention tokensave"
+    );
 }
 
 #[test]
@@ -145,7 +156,10 @@ fn test_gemini_install_creates_config() {
 
     // Check ~/.gemini/settings.json
     let settings_path = home.join(".gemini/settings.json");
-    assert!(settings_path.exists(), "settings.json should exist after install");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(
@@ -175,7 +189,10 @@ fn test_codex_install_creates_config() {
 
     // Check ~/.codex/config.toml
     let config_path = home.join(".codex/config.toml");
-    assert!(config_path.exists(), "config.toml should exist after install");
+    assert!(
+        config_path.exists(),
+        "config.toml should exist after install"
+    );
     // Verify the file contains the expected content as text (the TOML output from
     // toml::to_string_pretty uses dotted headers which may not round-trip through
     // toml::Value::parse in all crate versions)
@@ -220,7 +237,10 @@ fn test_opencode_install_creates_config() {
     OpenCodeIntegration.install(&ctx).unwrap();
 
     let config_path = home.join(".config/opencode/opencode.json");
-    assert!(config_path.exists(), "opencode.json should exist after install");
+    assert!(
+        config_path.exists(),
+        "opencode.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     assert!(content["mcp"]["tokensave"].is_object());
@@ -240,7 +260,10 @@ fn test_zed_install_creates_config() {
     #[cfg(not(target_os = "macos"))]
     let settings_path = home.join(".config/zed/settings.json");
 
-    assert!(settings_path.exists(), "Zed settings.json should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Zed settings.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["context_servers"]["tokensave"].is_object());
@@ -257,13 +280,20 @@ fn test_cline_install_creates_config() {
     #[cfg(target_os = "macos")]
     let settings_path = home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
     #[cfg(target_os = "linux")]
-    let settings_path = home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
     #[cfg(target_os = "windows")]
     let settings_path = home.join("AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let settings_path = home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
 
-    assert!(settings_path.exists(), "Cline settings should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Cline settings should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
@@ -285,7 +315,10 @@ fn test_roo_code_install_creates_config() {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let settings_path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
 
-    assert!(settings_path.exists(), "Roo Code settings should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Roo Code settings should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
@@ -308,7 +341,10 @@ fn test_copilot_install_creates_config() {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let vscode_settings = home.join(".config/Code/User/settings.json");
 
-    assert!(vscode_settings.exists(), "VS Code settings.json should exist");
+    assert!(
+        vscode_settings.exists(),
+        "VS Code settings.json should exist"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&vscode_settings).unwrap()).unwrap();
     assert!(content["mcp"]["servers"]["tokensave"].is_object());
@@ -341,16 +377,18 @@ fn test_claude_install_then_uninstall() {
     // ~/.claude.json should be removed (was only tokensave)
     // It may be removed entirely or have mcpServers removed
     if home.join(".claude.json").exists() {
-        let content: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".claude.json")).unwrap(),
-        )
-        .unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
+                .unwrap();
         // Should not have tokensave anymore
         let has_tokensave = content
             .get("mcpServers")
             .and_then(|v| v.get("tokensave"))
             .is_some();
-        assert!(!has_tokensave, "tokensave should be removed from .claude.json after uninstall");
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from .claude.json after uninstall"
+        );
     }
 }
 
@@ -374,7 +412,10 @@ fn test_gemini_install_then_uninstall() {
             .get("mcpServers")
             .and_then(|v| v.get("tokensave"))
             .is_some();
-        assert!(!has_tokensave, "tokensave should be removed from settings.json");
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from settings.json"
+        );
     }
 
     // GEMINI.md should be removed (was only tokensave rules)
@@ -1040,10 +1081,8 @@ fn test_claude_install_idempotent() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Config should still be valid
-    let claude_json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert!(claude_json["mcpServers"]["tokensave"].is_object());
 }
 
@@ -1056,10 +1095,9 @@ fn test_gemini_install_idempotent() {
     GeminiIntegration.install(&ctx).unwrap();
     GeminiIntegration.install(&ctx).unwrap();
 
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap(),
-    )
-    .unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap())
+            .unwrap();
     assert!(settings["mcpServers"]["tokensave"].is_object());
 }
 
@@ -1142,7 +1180,10 @@ fn test_gemini_install_preserves_existing_settings() {
 fn test_tool_names_not_empty() {
     assert!(!TOOL_NAMES.is_empty());
     for name in TOOL_NAMES {
-        assert!(name.starts_with("tokensave_"), "tool name should start with tokensave_: {name}");
+        assert!(
+            name.starts_with("tokensave_"),
+            "tool name should start with tokensave_: {name}"
+        );
     }
 }
 
@@ -1196,8 +1237,7 @@ fn test_restore_config_backup_restores_content() {
 
     let restored = std::fs::read_to_string(&original_path).unwrap();
     assert_eq!(
-        restored,
-        r#"{"version": 1}"#,
+        restored, r#"{"version": 1}"#,
         "restored content should match the backup"
     );
 }
@@ -1213,7 +1253,10 @@ fn test_restore_config_backup_to_missing_original() {
 
     restore_config_backup(&original_path, &backup_path);
 
-    assert!(original_path.exists(), "original should be created from backup");
+    assert!(
+        original_path.exists(),
+        "original should be created from backup"
+    );
     let content = std::fs::read_to_string(&original_path).unwrap();
     assert_eq!(content, r#"{"saved": true}"#);
 }
@@ -1356,7 +1399,10 @@ fn test_pick_integrations_interactive_single_uninstalled_agent() {
 
     // Single detected agent that is NOT installed => fast path returns it directly
     let result = pick_integrations_interactive(home, &[]);
-    assert!(result.is_ok(), "should succeed with single uninstalled agent");
+    assert!(
+        result.is_ok(),
+        "should succeed with single uninstalled agent"
+    );
     let (to_install, to_uninstall) = result.unwrap();
     assert_eq!(to_install, vec!["copilot".to_string()]);
     assert!(to_uninstall.is_empty());

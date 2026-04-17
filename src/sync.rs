@@ -18,9 +18,8 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        return String::from_utf16(&u16s).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        });
+        return String::from_utf16(&u16s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // UTF-16 BE BOM: FE FF
@@ -29,29 +28,27 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
             .chunks_exact(2)
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect();
-        return String::from_utf16(&u16s).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        });
+        return String::from_utf16(&u16s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // Strip UTF-8 BOM if present, then validate
-    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
-    String::from_utf8(bytes[start..].to_vec()).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })
+    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    String::from_utf8(bytes[start..].to_vec())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// Get filesystem mtime (seconds since epoch) and size for pre-filter.
 pub fn file_stat(path: &Path) -> Option<(i64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
-    let secs = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let secs = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
     Some((secs, meta.len()))
 }
-
 
 /// Compute SHA-256 content hash of file content.
 pub fn content_hash(content: &str) -> String {
@@ -62,7 +59,10 @@ pub fn content_hash(content: &str) -> String {
 }
 
 /// Find files whose stored content hash differs from the current hash.
-pub async fn find_stale_files(db: &Database, current_hashes: &[(String, String)]) -> Result<Vec<String>> {
+pub async fn find_stale_files(
+    db: &Database,
+    current_hashes: &[(String, String)],
+) -> Result<Vec<String>> {
     let mut stale = Vec::new();
     for (path, current_hash) in current_hashes {
         if let Some(file_record) = db.get_file(path).await? {

@@ -134,7 +134,9 @@ fn test_cobol_perform_calls() {
         "expected call to CONNECT-SERVER"
     );
     assert!(
-        calls.iter().any(|r| r.reference_name == "DISCONNECT-SERVER"),
+        calls
+            .iter()
+            .any(|r| r.reference_name == "DISCONNECT-SERVER"),
         "expected call to DISCONNECT-SERVER"
     );
     // VALIDATE-CONFIG and CONNECT-SERVER call LOG-MESSAGE
@@ -189,10 +191,7 @@ fn test_cobol_docstrings() {
     );
 
     // Data items should also have docstrings.
-    let max_retries = result
-        .nodes
-        .iter()
-        .find(|n| n.name == "WS-MAX-RETRIES");
+    let max_retries = result.nodes.iter().find(|n| n.name == "WS-MAX-RETRIES");
     assert!(max_retries.is_some(), "WS-MAX-RETRIES not found");
     assert!(
         max_retries.unwrap().docstring.is_some(),
@@ -208,10 +207,7 @@ fn test_cobol_contains_edges() {
         .iter()
         .filter(|e| e.kind == EdgeKind::Contains)
         .collect();
-    assert!(
-        !contains.is_empty(),
-        "expected Contains edges"
-    );
+    assert!(!contains.is_empty(), "expected Contains edges");
     // File -> Module, Module -> data items + paragraphs
     // 1 module + 8 data items + 5 paragraphs = 14 Contains edges
     assert!(

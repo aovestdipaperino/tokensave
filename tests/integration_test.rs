@@ -1,7 +1,7 @@
-use tokensave::tokensave::TokenSave;
-use tokensave::types::EdgeKind;
 use std::fs;
 use tempfile::TempDir;
+use tokensave::tokensave::TokenSave;
+use tokensave::types::EdgeKind;
 
 #[tokio::test]
 async fn test_full_pipeline() {
@@ -156,7 +156,10 @@ pub fn process_data(input: &str) -> String {
     cg.index_all().await.unwrap();
 
     let options = tokensave::types::BuildContextOptions::default();
-    let context = cg.build_context("process_data function", &options).await.unwrap();
+    let context = cg
+        .build_context("process_data function", &options)
+        .await
+        .unwrap();
     assert!(
         !context.entry_points.is_empty(),
         "should find entry points for 'process_data'"
@@ -509,9 +512,7 @@ pub fn top_fn() -> u32 { middle_fn() }
     // top_fn -> middle_fn
     let middle_callers = cg.get_callers(&middle_id, 1).await.unwrap();
     assert!(
-        middle_callers
-            .iter()
-            .any(|(node, _)| node.name == "top_fn"),
+        middle_callers.iter().any(|(node, _)| node.name == "top_fn"),
         "sync should resolve top_fn -> middle_fn call edge after modification"
     );
 
@@ -564,9 +565,7 @@ pub fn run_engine() -> u32 {
 
     let callers = cg.get_callers(&entry_id, 3).await.unwrap();
     assert!(
-        callers
-            .iter()
-            .any(|(node, _)| node.name == "run_engine"),
+        callers.iter().any(|(node, _)| node.name == "run_engine"),
         "sync should resolve cross-file call edges when a new file is added"
     );
 }

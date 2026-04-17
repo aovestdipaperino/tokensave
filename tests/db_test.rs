@@ -1,6 +1,6 @@
+use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::types::*;
-use tempfile::TempDir;
 
 /// Helper: create an in-memory-style temp database and return (Database, TempDir).
 /// The TempDir is returned so that it stays alive for the duration of the test.

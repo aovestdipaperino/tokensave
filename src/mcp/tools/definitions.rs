@@ -28,7 +28,12 @@ fn def(name: &str, title: &str, description: &str, input_schema: Value) -> ToolD
 }
 
 /// Build a `ToolDefinition` with `readOnlyHint` AND `anthropic/alwaysLoad`.
-fn def_always_load(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+fn def_always_load(
+    name: &str,
+    title: &str,
+    description: &str,
+    input_schema: Value,
+) -> ToolDefinition {
     ToolDefinition {
         name: name.to_string(),
         description: description.to_string(),
@@ -114,9 +119,14 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_branch_diff(),
         def_branch_list(),
     ];
-    debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
-    debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
-        "all tool definitions must have 'tokensave_' prefix");
+    debug_assert!(
+        !definitions.is_empty(),
+        "get_tool_definitions returned empty list"
+    );
+    debug_assert!(
+        definitions.iter().all(|d| d.name.starts_with("tokensave_")),
+        "all tool definitions must have 'tokensave_' prefix"
+    );
     definitions
 }
 
@@ -973,8 +983,14 @@ mod tests {
     #[test]
     fn test_context_description_contains_budget() {
         let desc = context_description(5000, 4);
-        assert!(desc.contains("4 calls maximum"), "description should contain budget: {desc}");
-        assert!(desc.contains("5000 nodes"), "description should contain node count: {desc}");
+        assert!(
+            desc.contains("4 calls maximum"),
+            "description should contain budget: {desc}"
+        );
+        assert!(
+            desc.contains("5000 nodes"),
+            "description should contain node count: {desc}"
+        );
     }
 
     #[test]
