@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.5] - 2026-04-17
+
 ### Changed
 - **Separate `tokensave init` from `tokensave sync`** — previously, `tokensave sync` silently created a new database if none existed. This was a problem because the global git post-commit hook runs `tokensave sync` in every repo after each commit, causing phantom `.tokensave/` databases to appear in projects that never opted in. Now `tokensave init` handles first-time project setup (creates DB + full index) and errors if already initialized, while `tokensave sync` only performs incremental updates and errors if the project was never initialized. The git hook (`tokensave sync >/dev/null 2>&1 &`) now safely exits with an error in non-enrolled repos — no database created. All agent setup messages and documentation updated to reference `tokensave init` for first-time use.
 
