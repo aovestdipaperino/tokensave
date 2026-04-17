@@ -880,6 +880,7 @@ impl TokenSave {
                 // causing the ignore-aware walker to skip everything. Fall
                 // back to plain walkdir if source files clearly exist.
                 let has_source = WalkDir::new(&self.project_root)
+                    .follow_links(true)
                     .max_depth(2)
                     .into_iter()
                     .filter_map(|e| e.ok())
@@ -905,7 +906,7 @@ impl TokenSave {
     fn scan_files_walkdir(&self, supported_exts: &[&str]) -> Result<Vec<String>> {
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.project_root)
-            .follow_links(false)
+            .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
                 if e.depth() == 0 {
@@ -934,7 +935,7 @@ impl TokenSave {
     fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Result<Vec<String>> {
         let mut files = Vec::new();
         let walker = ignore::WalkBuilder::new(&self.project_root)
-            .follow_links(false)
+            .follow_links(true)
             .hidden(true) // skip hidden files/dirs
             .git_ignore(true)
             .git_global(true)
