@@ -379,7 +379,7 @@ The system uses `tokio` for async I/O but most work is CPU-bound (tree-sitter pa
 or SQLite-bound. Key concurrency points:
 
 - The MCP server processes one JSON-RPC request at a time (single stdio stream)
-- The git post-commit hook runs `tokensave sync` in the background (`&`)
+- The git post-commit hook runs `tokensave sync` in the background (`&`). `sync` requires an existing database -- it will not create one. This prevents the hook from silently bootstrapping indexes in repos that were never initialized with `tokensave init`.
 - SQLite WAL mode + busy timeout handles concurrent access gracefully
 - Version checks and counter uploads run on background threads during `sync`
 

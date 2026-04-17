@@ -88,6 +88,16 @@ tokensave status --short
 
 For machine-readable output, use `--json`.
 
+### Why `init` and `sync` are separate
+
+Initialization (`tokensave init`) and incremental updates (`tokensave sync`) are deliberately separate commands.
+
+Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. If `sync` were allowed to create a new database when none existed, it would silently bootstrap a `.tokensave/` directory in every git repository on your machine -- even ones you never intended to index. By requiring an explicit `init`, only projects you opt into get a database. The hook runs harmlessly (exits with a non-zero status, output suppressed) in all other repos.
+
+In short:
+- **`tokensave init`** -- one-time setup. Creates the database and performs a full index. Errors if already initialized.
+- **`tokensave sync`** -- ongoing updates. Requires an existing database. Errors if the project was never initialized.
+
 ### Incremental syncs
 
 After the initial full index, every subsequent `tokensave sync` is incremental. It detects which files changed since the last sync (via content hashing) and only re-indexes those files. On a typical commit-sized change, this takes under a second.

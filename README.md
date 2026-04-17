@@ -141,7 +141,7 @@ cd /path/to/your/project
 tokensave init
 ```
 
-This creates a `.tokensave/` directory with the knowledge graph database. After the initial index, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
+This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git post-commit hook from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
 
 <details>
 <summary><strong>What install writes for Claude Code</strong></summary>
