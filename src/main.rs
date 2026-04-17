@@ -806,8 +806,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
+            let mut installed_names: Vec<String> = Vec::new();
+            let mut removed_names: Vec<String> = Vec::new();
+
             if let Some(id) = agent {
                 let ag = tokensave::agents::get_integration(&id)?;
+                let name = ag.name().to_string();
                 let ctx = tokensave::agents::InstallContext {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
@@ -816,6 +820,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 ag.install(&ctx)?;
                 if !user_cfg.installed_agents.contains(&id) {
                     user_cfg.installed_agents.push(id);
+                    installed_names.push(name);
                 }
                 user_cfg.save();
             } else {
@@ -830,6 +835,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
                     };
                     ag.uninstall(&ctx)?;
+                    removed_names.push(ag.name().to_string());
                     user_cfg.installed_agents.retain(|a| a != id);
                 }
                 for id in &to_install {
@@ -840,11 +846,24 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
                     };
                     ag.install(&ctx)?;
+                    installed_names.push(ag.name().to_string());
                     if !user_cfg.installed_agents.contains(id) {
                         user_cfg.installed_agents.push(id.clone());
                     }
                 }
                 user_cfg.save();
+            }
+
+            eprintln!();
+            if installed_names.is_empty() && removed_names.is_empty() {
+                eprintln!("No changes.");
+            } else {
+                for name in &installed_names {
+                    eprintln!("\x1b[32m+\x1b[0m {name}");
+                }
+                for name in &removed_names {
+                    eprintln!("\x1b[31m-\x1b[0m {name}");
+                }
             }
 
             user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();

@@ -625,9 +625,8 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
 /// Interactively pick which agents to install/uninstall.
 ///
 /// - 0 detected agents → returns an error.
-/// - 1 detected and not already installed → returns it directly (no UI).
-/// - Otherwise → shows a `dialoguer::MultiSelect` with detected agents,
-///   pre-checked if already in `installed`.
+/// - 1 detected and not already installed → returns it directly (no prompt).
+/// - Otherwise → asks a Y/n question for each detected agent.
 ///
 /// Returns `(to_install, to_uninstall)`.
 pub fn pick_integrations_interactive(
@@ -651,41 +650,33 @@ pub fn pick_integrations_interactive(
         return Ok((vec![id], vec![]));
     }
 
-    // Build item labels and pre-check state.
-    let items: Vec<String> = detected.iter().map(|ag| ag.name().to_string()).collect();
-    let defaults: Vec<bool> = detected
-        .iter()
-        .map(|ag| installed.contains(&ag.id().to_string()))
-        .collect();
+    let mut to_install = Vec::new();
+    let mut to_uninstall = Vec::new();
 
-    let selections =
-        dialoguer::MultiSelect::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt("Select agents to configure with tokensave MCP")
-            .items(&items)
-            .defaults(&defaults)
-            .interact()
+    for ag in &detected {
+        let id = ag.id().to_string();
+        let already = installed.contains(&id);
+        if already {
+            eprint!("Keep tokensave for {}? [Y/n] ", ag.name());
+        } else {
+            eprint!("Install tokensave for {}? [Y/n] ", ag.name());
+        }
+
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
             .map_err(|e| TokenSaveError::Config {
-                message: format!("interactive selection failed: {e}"),
+                message: format!("failed to read input: {e}"),
             })?;
+        let answer = input.trim().to_lowercase();
+        let yes = answer.is_empty() || answer == "y" || answer == "yes";
 
-    let selected_ids: Vec<String> = selections
-        .iter()
-        .map(|&idx| detected[idx].id().to_string())
-        .collect();
-
-    let to_install: Vec<String> = selected_ids
-        .iter()
-        .filter(|id| !installed.contains(id))
-        .cloned()
-        .collect();
-
-    let to_uninstall: Vec<String> = detected
-        .iter()
-        .filter(|ag| {
-            installed.contains(&ag.id().to_string()) && !selected_ids.contains(&ag.id().to_string())
-        })
-        .map(|ag| ag.id().to_string())
-        .collect();
+        if yes && !already {
+            to_install.push(id);
+        } else if !yes && already {
+            to_uninstall.push(id);
+        }
+    }
 
     Ok((to_install, to_uninstall))
 }
