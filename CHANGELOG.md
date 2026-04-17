@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Windows monitor nested runtime panic** — `tokensave monitor` cost cache refresh panicked on Windows because `refresh_cost_cache` created a new tokio runtime inside the existing `#[tokio::main]` runtime. Now uses `block_in_place` + `Handle::current()` on Windows while keeping a single-threaded runtime on Unix, matching the daemon.rs pattern from #23.
+
 ## [4.0.3] - 2026-04-16
 
 ### Fixed

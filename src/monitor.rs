@@ -373,15 +373,7 @@ impl CostCache {
 /// Refresh cost data from the global DB. Best-effort, non-blocking.
 /// Uses a tokio runtime because GlobalDb is async.
 fn refresh_cost_cache(cache: &mut CostCache) {
-    // Build a single-threaded runtime for the async DB call.
-    // This runs ~2 fast SQL queries, well under 10ms.
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
-        return;
-    };
-    rt.block_on(async {
+    let future = async {
         let Some(gdb) = crate::global_db::GlobalDb::open().await else {
             return;
         };
@@ -413,7 +405,27 @@ fn refresh_cost_cache(cache: &mut CostCache) {
             cache.top_model = model.clone();
             cache.top_model_cost = *cost;
         }
-    });
+    };
+    // On Windows the monitor TUI runs inside #[tokio::main], so creating
+    // a new runtime would panic. Use block_in_place + existing handle.
+    #[cfg(windows)]
+    {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(future)
+        })
+    }
+    // On Unix the function may be called outside any tokio runtime,
+    // so create a single-threaded one.
+    #[cfg(not(windows))]
+    {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(future)
+    }
     cache.last_refresh = std::time::Instant::now();
 }
 
