@@ -787,13 +787,7 @@ impl ObjcExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Property, &name, start_line);
 
-        // Check if readonly
-        let is_readonly = Self::is_property_readonly(state, node);
-        let visibility = if is_readonly {
-            Visibility::Pub // readonly properties are still public
-        } else {
-            Visibility::Pub
-        };
+        let visibility = Visibility::Pub;
 
         let graph_node = Node {
             id: id.clone(),
@@ -894,11 +888,7 @@ impl ObjcExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
 
-        let kind = if is_class_method {
-            NodeKind::Method
-        } else {
-            NodeKind::Method
-        };
+        let kind = NodeKind::Method;
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
 

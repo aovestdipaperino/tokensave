@@ -1064,10 +1064,10 @@ fn clean_orphaned_local_mcp_keys(local_val: &mut serde_json::Value) {
         .get("enabledMcpjsonServers")
         .and_then(|v| v.as_array())
         .is_some_and(|a| a.is_empty())
-        && !local_val
+        && local_val
             .get("mcpServers")
             .and_then(|v| v.as_object())
-            .is_some_and(|o| !o.is_empty());
+            .is_none_or(|o| o.is_empty());
     if no_local_servers {
         local_val
             .as_object_mut()
@@ -1157,6 +1157,7 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;

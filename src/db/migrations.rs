@@ -184,7 +184,6 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 /// is bumped inside the same transaction.
 /// Returns `true` if any migrations were applied, `false` if already up-to-date.
 pub async fn migrate(conn: &Connection) -> Result<bool> {
-    debug_assert!(LATEST_VERSION > 0, "LATEST_VERSION must be positive");
     let current = get_version(conn).await?;
     debug_assert!(
         current <= LATEST_VERSION,

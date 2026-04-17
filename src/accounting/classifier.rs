@@ -172,6 +172,7 @@ pub fn classify(tool_names: &[&str], bash_commands: &[&str]) -> TaskCategory {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

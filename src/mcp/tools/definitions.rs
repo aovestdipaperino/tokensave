@@ -964,6 +964,7 @@ fn def_branch_list() -> ToolDefinition {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

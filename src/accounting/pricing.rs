@@ -281,6 +281,7 @@ pub fn refresh_if_stale() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

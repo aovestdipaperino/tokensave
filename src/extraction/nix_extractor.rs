@@ -440,25 +440,22 @@ impl NixExtractor {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                match child.kind() {
-                    "binding_set" => {
-                        // Visit bindings and inherits inside the binding_set
-                        let mut inner = child.walk();
-                        if inner.goto_first_child() {
-                            loop {
-                                let item = inner.node();
-                                match item.kind() {
-                                    "binding" => Self::visit_binding(state, item),
-                                    "inherit" | "inherit_from" => Self::visit_inherit(state, item),
-                                    _ => {}
-                                }
-                                if !inner.goto_next_sibling() {
-                                    break;
-                                }
+                if child.kind() == "binding_set" {
+                    // Visit bindings and inherits inside the binding_set
+                    let mut inner = child.walk();
+                    if inner.goto_first_child() {
+                        loop {
+                            let item = inner.node();
+                            match item.kind() {
+                                "binding" => Self::visit_binding(state, item),
+                                "inherit" | "inherit_from" => Self::visit_inherit(state, item),
+                                _ => {}
+                            }
+                            if !inner.goto_next_sibling() {
+                                break;
                             }
                         }
                     }
-                    _ => {}
                 }
                 if !cursor.goto_next_sibling() {
                     break;

@@ -309,6 +309,7 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -130,6 +130,7 @@ pub fn available_integrations() -> Vec<&'static str> {
 // ---------------------------------------------------------------------------
 
 /// Diagnostic counters for doctor checks.
+#[derive(Default)]
 pub struct DoctorCounters {
     pub issues: u32,
     pub warnings: u32,
@@ -137,10 +138,7 @@ pub struct DoctorCounters {
 
 impl DoctorCounters {
     pub fn new() -> Self {
-        Self {
-            issues: 0,
-            warnings: 0,
-        }
+        Self::default()
     }
     pub fn pass(&self, msg: &str) {
         eprintln!("  \x1b[32m✔\x1b[0m {msg}");
@@ -1020,6 +1018,7 @@ fn atty_stdin() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod git_hook_tests {
     use super::*;
     use std::path::Path;
@@ -1223,6 +1222,7 @@ pub const EXPECTED_TOOL_PERMS: &[&str] = &[
 ];
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod jsonc_tests {
     use super::*;
 
@@ -1303,6 +1303,7 @@ mod jsonc_tests {
 // Regression tests for safe config backup / load / write
 // ---------------------------------------------------------------------------
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod safe_config_tests {
     use super::*;
     use std::fs;
@@ -1623,6 +1624,7 @@ mod safe_config_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod path_normalize_tests {
     use super::*;
 

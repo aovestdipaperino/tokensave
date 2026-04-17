@@ -131,6 +131,7 @@ pub fn print_status_header(
 }
 
 /// Prints the status output as a compact bordered table.
+#[allow(clippy::too_many_arguments)]
 pub fn print_status_table(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -342,7 +343,7 @@ fn print_cost_row(cost_info: &CostRow, inner_width: usize) {
 }
 
 /// Build the stats rows (files/nodes/edges, DB size, languages).
-fn build_stats_rows<'a>(stats: &'a GraphStats, num_cols: usize) -> Vec<Vec<(&'a str, String)>> {
+fn build_stats_rows(stats: &GraphStats, num_cols: usize) -> Vec<Vec<(&str, String)>> {
     let mut sorted_langs: Vec<_> = stats.files_by_language.iter().collect();
     sorted_langs.sort_by(|a, b| b.1.cmp(a.1));
 

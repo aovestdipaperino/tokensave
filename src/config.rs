@@ -196,47 +196,6 @@ fn is_in_local_gitignore(project_path: &Path) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_ignored_by_git;
-    use std::fs;
-    use std::process::Command;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_is_in_gitignore_respects_global_excludes_file() {
-        let sandbox = TempDir::new().unwrap();
-        let repo = sandbox.path().join("repo");
-        fs::create_dir(&repo).unwrap();
-
-        Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .arg("init")
-            .arg("-q")
-            .status()
-            .unwrap();
-
-        let excludes = sandbox.path().join("global_ignore");
-        fs::write(&excludes, ".tokensave\n").unwrap();
-
-        let git_config = sandbox.path().join("gitconfig");
-        let status = Command::new("git")
-            .env("GIT_CONFIG_GLOBAL", &git_config)
-            .arg("config")
-            .arg("--global")
-            .arg("core.excludesFile")
-            .arg(&excludes)
-            .status()
-            .unwrap();
-        assert!(status.success());
-
-        let ignored = is_ignored_by_git(&repo, Some(&git_config));
-
-        assert_eq!(ignored, Some(true));
-    }
-}
-
 /// Appends `.tokensave` to the project's `.gitignore`, creating the file if
 /// needed. Ensures the entry starts on its own line (adds a trailing newline
 /// to existing content if missing).
@@ -280,4 +239,46 @@ pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::is_ignored_by_git;
+    use std::fs;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_is_in_gitignore_respects_global_excludes_file() {
+        let sandbox = TempDir::new().unwrap();
+        let repo = sandbox.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("init")
+            .arg("-q")
+            .status()
+            .unwrap();
+
+        let excludes = sandbox.path().join("global_ignore");
+        fs::write(&excludes, ".tokensave\n").unwrap();
+
+        let git_config = sandbox.path().join("gitconfig");
+        let status = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", &git_config)
+            .arg("config")
+            .arg("--global")
+            .arg("core.excludesFile")
+            .arg(&excludes)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let ignored = is_ignored_by_git(&repo, Some(&git_config));
+
+        assert_eq!(ignored, Some(true));
+    }
 }

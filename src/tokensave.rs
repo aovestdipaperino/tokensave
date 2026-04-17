@@ -565,7 +565,6 @@ impl TokenSave {
         let mut all_unresolved = Vec::new();
         let mut file_records = Vec::new();
         let mut total_nodes = 0;
-        let total_edges;
 
         for (idx, (file_path, result, hash, size, mtime)) in extractions.iter().enumerate() {
             on_file(idx + 1, total, file_path);
@@ -604,7 +603,7 @@ impl TokenSave {
             a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
         });
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
-        total_edges = all_edges.len();
+        let total_edges = all_edges.len();
 
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         self.db.insert_nodes(&all_nodes).await?;
@@ -699,7 +698,7 @@ impl TokenSave {
             match db_map.get(path) {
                 None => new_files.push(path.clone()),
                 Some(record) => {
-                    if record.modified_at != *mtime || record.size != *size as u64 {
+                    if record.modified_at != *mtime || record.size != *size {
                         stat_changed.push(path.clone());
                     }
                 }
@@ -792,7 +791,7 @@ impl TokenSave {
                 let size = source.len() as u64;
                 let mtime = stat_map
                     .get(file_path)
-                    .map_or_else(|| current_timestamp(), |&(m, _)| m);
+                    .map_or_else(current_timestamp, |&(m, _)| m);
                 Some((file_path.clone(), result, hash, size, mtime))
             })
             .collect();

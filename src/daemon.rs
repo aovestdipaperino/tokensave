@@ -781,6 +781,7 @@ pub fn offer_daemon_autostart() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

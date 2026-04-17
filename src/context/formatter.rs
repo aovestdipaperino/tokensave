@@ -117,6 +117,7 @@ pub fn format_context_as_json(context: &TaskContext) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::*;

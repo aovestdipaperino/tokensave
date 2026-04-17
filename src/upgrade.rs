@@ -320,7 +320,7 @@ pub fn run_upgrade() -> Result<String> {
         daemon::stop().ok();
     }
 
-    let result = perform_upgrade(&latest, is_beta);
+    let result = perform_upgrade(latest, is_beta);
 
     match result {
         Ok(()) => {
@@ -414,6 +414,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

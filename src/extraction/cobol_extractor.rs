@@ -168,9 +168,8 @@ impl CobolExtractor {
 
     /// Visit a single AST node, dispatching on its type.
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
-        match node.kind() {
-            "program_definition" => Self::visit_program_definition(state, node),
-            _ => {}
+        if node.kind() == "program_definition" {
+            Self::visit_program_definition(state, node);
         }
     }
 

@@ -88,6 +88,7 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::Node;

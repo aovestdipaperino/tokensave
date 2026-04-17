@@ -132,14 +132,9 @@ impl GlobalDb {
             Err(_) => return Vec::new(),
         };
         let mut paths = Vec::new();
-        loop {
-            match rows.next().await {
-                Ok(Some(row)) => {
-                    if let Ok(path) = row.get::<String>(0) {
-                        paths.push(path);
-                    }
-                }
-                _ => break,
+        while let Ok(Some(row)) = rows.next().await {
+            if let Ok(path) = row.get::<String>(0) {
+                paths.push(path);
             }
         }
         paths
@@ -242,16 +237,11 @@ impl GlobalDb {
             Err(_) => return Vec::new(),
         };
         let mut out = Vec::new();
-        loop {
-            match rows.next().await {
-                Ok(Some(row)) => {
-                    let model: String = row.get(0).unwrap_or_default();
-                    let cost: f64 = row.get(1).unwrap_or(0.0);
-                    let tokens: i64 = row.get(2).unwrap_or(0);
-                    out.push((model, cost, tokens as u64));
-                }
-                _ => break,
-            }
+        while let Ok(Some(row)) = rows.next().await {
+            let model: String = row.get(0).unwrap_or_default();
+            let cost: f64 = row.get(1).unwrap_or(0.0);
+            let tokens: i64 = row.get(2).unwrap_or(0);
+            out.push((model, cost, tokens as u64));
         }
         out
     }
@@ -273,16 +263,11 @@ impl GlobalDb {
             Err(_) => return Vec::new(),
         };
         let mut out = Vec::new();
-        loop {
-            match rows.next().await {
-                Ok(Some(row)) => {
-                    let cat: String = row.get(0).unwrap_or_default();
-                    let cost: f64 = row.get(1).unwrap_or(0.0);
-                    let count: i64 = row.get(2).unwrap_or(0);
-                    out.push((cat, cost, count as u64));
-                }
-                _ => break,
-            }
+        while let Ok(Some(row)) = rows.next().await {
+            let cat: String = row.get(0).unwrap_or_default();
+            let cost: f64 = row.get(1).unwrap_or(0.0);
+            let count: i64 = row.get(2).unwrap_or(0);
+            out.push((cat, cost, count as u64));
         }
         out
     }

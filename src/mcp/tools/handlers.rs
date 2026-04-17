@@ -1252,7 +1252,7 @@ async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| NodeKind::from_str(s));
+        .and_then(NodeKind::from_str);
 
     let limit = args
         .get("limit")
@@ -1304,7 +1304,7 @@ async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| NodeKind::from_str(s));
+        .and_then(NodeKind::from_str);
 
     let limit = args
         .get("limit")
@@ -1649,7 +1649,7 @@ async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| NodeKind::from_str(s));
+        .and_then(NodeKind::from_str);
 
     let limit = args
         .get("limit")
@@ -3308,6 +3308,7 @@ async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::super::get_tool_definitions;
     use super::*;

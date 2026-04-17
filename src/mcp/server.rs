@@ -157,16 +157,15 @@ impl McpServer {
         let success = tokio::task::spawn_blocking(move || {
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
-            if config.upload_enabled {
-                if crate::cloud::flush_pending(config.pending_upload).is_some() {
-                    config.pending_upload = 0;
-                    config.last_upload_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    config.save();
-                    return true;
-                }
+            if config.upload_enabled && crate::cloud::flush_pending(config.pending_upload).is_some()
+            {
+                config.pending_upload = 0;
+                config.last_upload_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                config.save();
+                return true;
             }
             config.save();
             false
@@ -238,6 +237,7 @@ impl McpServer {
             let line: String = {
                 #[cfg(unix)]
                 {
+                    #[allow(clippy::expect_used)]
                     let mut sigterm =
                         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                             .expect("failed to register SIGTERM handler");

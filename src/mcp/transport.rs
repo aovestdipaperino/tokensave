@@ -102,7 +102,116 @@ impl ErrorCode {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Transport abstraction (zero-cost via monomorphization)
+// ---------------------------------------------------------------------------
+
+/// Async line-oriented transport for JSON-RPC messages.
+///
+/// Implementations are monomorphized at each call site — no dyn dispatch.
+pub trait McpTransport {
+    /// Read the next line from the transport. Returns `None` on EOF.
+    fn read_line(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::io::Result<Option<String>>> + Send;
+
+    /// Write a complete line (including trailing newline) to the transport.
+    fn write_line(
+        &mut self,
+        line: &str,
+    ) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
+
+    /// Flush any buffered output.
+    fn flush(&mut self) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
+}
+
+/// Real stdio transport — reads from stdin, writes to stdout.
+pub struct StdioTransport {
+    reader: tokio::io::Lines<tokio::io::BufReader<tokio::io::Stdin>>,
+    writer: tokio::io::Stdout,
+}
+
+impl Default for StdioTransport {
+    fn default() -> Self {
+        use tokio::io::AsyncBufReadExt;
+        Self {
+            reader: tokio::io::BufReader::new(tokio::io::stdin()).lines(),
+            writer: tokio::io::stdout(),
+        }
+    }
+}
+
+impl StdioTransport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl McpTransport for StdioTransport {
+    async fn read_line(&mut self) -> std::io::Result<Option<String>> {
+        self.reader.next_line().await
+    }
+
+    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.write_all(line.as_bytes()).await
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.flush().await
+    }
+}
+
+/// In-memory transport for tests — backed by tokio mpsc channels.
+#[cfg(any(test, feature = "test-transport"))]
+pub struct ChannelTransport {
+    rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+#[cfg(any(test, feature = "test-transport"))]
+impl ChannelTransport {
+    /// Create a transport and the handles needed by test code.
+    ///
+    /// Returns `(transport, sender_to_server, receiver_from_server)`.
+    pub fn new() -> (
+        Self,
+        tokio::sync::mpsc::UnboundedSender<String>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Self {
+                rx: input_rx,
+                tx: output_tx,
+            },
+            input_tx,
+            output_rx,
+        )
+    }
+}
+
+#[cfg(any(test, feature = "test-transport"))]
+impl McpTransport for ChannelTransport {
+    async fn read_line(&mut self) -> std::io::Result<Option<String>> {
+        Ok(self.rx.recv().await)
+    }
+
+    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        self.tx
+            .send(line.to_string())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -178,107 +287,5 @@ mod tests {
 
         let request: JsonRpcRequest = serde_json::from_value(msg).unwrap();
         assert_eq!(request.id, serde_json::Value::String("abc-123".to_string()));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Transport abstraction (zero-cost via monomorphization)
-// ---------------------------------------------------------------------------
-
-/// Async line-oriented transport for JSON-RPC messages.
-///
-/// Implementations are monomorphized at each call site — no dyn dispatch.
-pub trait McpTransport {
-    /// Read the next line from the transport. Returns `None` on EOF.
-    fn read_line(
-        &mut self,
-    ) -> impl std::future::Future<Output = std::io::Result<Option<String>>> + Send;
-
-    /// Write a complete line (including trailing newline) to the transport.
-    fn write_line(
-        &mut self,
-        line: &str,
-    ) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
-
-    /// Flush any buffered output.
-    fn flush(&mut self) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
-}
-
-/// Real stdio transport — reads from stdin, writes to stdout.
-pub struct StdioTransport {
-    reader: tokio::io::Lines<tokio::io::BufReader<tokio::io::Stdin>>,
-    writer: tokio::io::Stdout,
-}
-
-impl StdioTransport {
-    pub fn new() -> Self {
-        use tokio::io::AsyncBufReadExt;
-        Self {
-            reader: tokio::io::BufReader::new(tokio::io::stdin()).lines(),
-            writer: tokio::io::stdout(),
-        }
-    }
-}
-
-impl McpTransport for StdioTransport {
-    async fn read_line(&mut self) -> std::io::Result<Option<String>> {
-        self.reader.next_line().await
-    }
-
-    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-        self.writer.write_all(line.as_bytes()).await
-    }
-
-    async fn flush(&mut self) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-        self.writer.flush().await
-    }
-}
-
-/// In-memory transport for tests — backed by tokio mpsc channels.
-#[cfg(any(test, feature = "test-transport"))]
-pub struct ChannelTransport {
-    rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-}
-
-#[cfg(any(test, feature = "test-transport"))]
-impl ChannelTransport {
-    /// Create a transport and the handles needed by test code.
-    ///
-    /// Returns `(transport, sender_to_server, receiver_from_server)`.
-    pub fn new() -> (
-        Self,
-        tokio::sync::mpsc::UnboundedSender<String>,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
-    ) {
-        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
-        (
-            Self {
-                rx: input_rx,
-                tx: output_tx,
-            },
-            input_tx,
-            output_rx,
-        )
-    }
-}
-
-#[cfg(any(test, feature = "test-transport"))]
-impl McpTransport for ChannelTransport {
-    async fn read_line(&mut self) -> std::io::Result<Option<String>> {
-        Ok(self.rx.recv().await)
-    }
-
-    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
-        self.tx
-            .send(line.to_string())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
-    }
-
-    async fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
