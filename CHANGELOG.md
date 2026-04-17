@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Default branch detection wrote `"HEAD"` instead of actual branch name** — `detect_default_branch()` used `reference.name()` on the `refs/remotes/origin/HEAD` symbolic ref, which returns the ref's own name. Now resolves through `reference.follow()` to get the target (e.g. `refs/remotes/origin/master`), then strips the prefix correctly.
+- **Branch detection in git worktrees** — `current_branch()` read `.git/HEAD` directly as a plain file, which fails in git worktrees where `.git` is a pointer file (not a directory). This caused the MCP server to always fall back to the default branch database, returning stale or wrong results in worktree environments. Fixed with a two-tier approach: first try `gix::open()` which handles worktrees natively, then fall back to `git symbolic-ref -q HEAD` via subprocess. The subprocess fallback is needed because tokensave's minimal `gix` feature set (`revision`, `blob-diff`, `sha1`) excludes worktree support, so `gix` itself cannot resolve HEAD in worktrees.
 
 ## [4.0.3] - 2026-04-16
 
