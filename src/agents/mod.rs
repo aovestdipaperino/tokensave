@@ -6,12 +6,14 @@
 //! itself is agent-agnostic; this module handles the per-agent config
 //! plumbing (registering the MCP server, permissions, hooks, prompt rules).
 
+pub mod antigravity;
 pub mod claude;
 pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod gemini;
+pub mod kilo;
 pub mod opencode;
 pub mod roo_code;
 pub mod zed;
@@ -21,12 +23,14 @@ use std::path::{Path, PathBuf};
 use crate::errors::Result;
 use crate::errors::TokenSaveError;
 
+pub use antigravity::AntigravityIntegration;
 pub use claude::ClaudeIntegration;
 pub use cline::ClineIntegration;
 pub use codex::CodexIntegration;
 pub use copilot::CopilotIntegration;
 pub use cursor::CursorIntegration;
 pub use gemini::GeminiIntegration;
+pub use kilo::KiloIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use zed::ZedIntegration;
@@ -94,6 +98,8 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "zed" => Ok(Box::new(ZedIntegration)),
         "cline" => Ok(Box::new(ClineIntegration)),
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
+        "antigravity" => Ok(Box::new(AntigravityIntegration)),
+        "kilo" => Ok(Box::new(KiloIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -115,13 +121,25 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(ZedIntegration),
         Box::new(ClineIntegration),
         Box::new(RooCodeIntegration),
+        Box::new(AntigravityIntegration),
+        Box::new(KiloIntegration),
     ]
 }
 
 /// Returns the CLI identifiers of all registered agents (for help text).
 pub fn available_integrations() -> Vec<&'static str> {
     vec![
-        "claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code",
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "copilot",
+        "cursor",
+        "zed",
+        "cline",
+        "roo-code",
+        "antigravity",
+        "kilo",
     ]
 }
 

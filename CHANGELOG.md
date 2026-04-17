@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.4] - 2026-04-17
+
+### Added
+- **Google Antigravity support** — new `tokensave install --agent antigravity` registers the MCP server in `~/.gemini/antigravity/mcp_config.json`. Includes install, uninstall, healthcheck, and auto-detection. Closes #24.
+- **Kilo CLI support** — new `tokensave install --agent kilo` registers the MCP server in `~/.config/kilo/kilo.jsonc` using Kilo's `mcp` key with `type: "local"` format. Includes install, uninstall, healthcheck, and auto-detection. Closes #31.
+
+### Changed
+- **Simpler install prompts** — `tokensave install` now asks a Y/n question per detected agent instead of showing a multi-select dialog box. Prints a +/- summary of changes at the end. Removed `dialoguer` dependency.
+- **No-op upgrade is no longer an error** — `tokensave upgrade` when already on the latest version now exits successfully instead of printing a misleading error. Same for `tokensave channel` when already on the requested channel. (PR #30 by @lesbass)
+
 ### Fixed
-- **Default branch detection wrote `"HEAD"` instead of actual branch name** — `detect_default_branch()` used `reference.name()` on the `refs/remotes/origin/HEAD` symbolic ref, which returns the ref's own name. Now resolves through `reference.follow()` to get the target (e.g. `refs/remotes/origin/master`), then strips the prefix correctly.
-- **Branch detection in git worktrees** — `current_branch()` read `.git/HEAD` directly as a plain file, which fails in git worktrees where `.git` is a pointer file (not a directory). This caused the MCP server to always fall back to the default branch database, returning stale or wrong results in worktree environments. Fixed with a two-tier approach: first try `gix::open()` which handles worktrees natively, then fall back to `git symbolic-ref -q HEAD` via subprocess. The subprocess fallback is needed because tokensave's minimal `gix` feature set (`revision`, `blob-diff`, `sha1`) excludes worktree support, so `gix` itself cannot resolve HEAD in worktrees.
-- **Windows monitor nested runtime panic** — `tokensave monitor` cost cache refresh panicked on Windows because `refresh_cost_cache` created a new tokio runtime inside the existing `#[tokio::main]` runtime. Now uses `block_in_place` + `Handle::current()` on Windows while keeping a single-threaded runtime on Unix, matching the daemon.rs pattern from #23.
+- **Default branch detection wrote `"HEAD"` instead of actual branch name** — `detect_default_branch()` used `reference.name()` on the `refs/remotes/origin/HEAD` symbolic ref, which returns the ref's own name. Now resolves through `reference.follow()` to get the target (e.g. `refs/remotes/origin/master`), then strips the prefix correctly. (PR #26 by @LucioPg)
+- **Branch detection in git worktrees** — `current_branch()` read `.git/HEAD` directly as a plain file, which fails in git worktrees where `.git` is a pointer file (not a directory). Fixed with a two-tier approach: `gix::open()` first, then `git symbolic-ref -q HEAD` subprocess fallback. (PR #28 by @LucioPg)
+- **Windows monitor nested runtime panic** — `tokensave monitor` cost cache refresh panicked on Windows due to nested tokio runtimes. Now uses `block_in_place` + `Handle::current()` on Windows. (PR #29 by @LucioPg)
+- **Clippy clean** — resolved all clippy errors across the codebase; CI clippy step now passes.
 
 ## [4.0.3] - 2026-04-16
 

@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 9);
+    assert_eq!(all.len(), 11);
 }
 
 #[test]
@@ -25,13 +25,25 @@ fn test_available_integrations() {
     assert!(ids.contains(&"zed"));
     assert!(ids.contains(&"cline"));
     assert!(ids.contains(&"roo-code"));
-    assert_eq!(ids.len(), 9);
+    assert!(ids.contains(&"antigravity"));
+    assert!(ids.contains(&"kilo"));
+    assert_eq!(ids.len(), 11);
 }
 
 #[test]
 fn test_get_integration_valid() {
     for id in &[
-        "claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code",
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "copilot",
+        "cursor",
+        "zed",
+        "cline",
+        "roo-code",
+        "antigravity",
+        "kilo",
     ] {
         let agent = get_integration(id).unwrap();
         assert_eq!(agent.id(), *id);
@@ -70,6 +82,8 @@ fn test_agent_names_are_human_readable() {
         ("zed", "Zed"),
         ("cline", "Cline"),
         ("roo-code", "Roo Code"),
+        ("antigravity", "Antigravity"),
+        ("kilo", "Kilo CLI"),
     ];
     for (id, expected_name) in expected_names {
         let agent = get_integration(id).unwrap();
