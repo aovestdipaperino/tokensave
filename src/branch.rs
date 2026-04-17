@@ -23,10 +23,12 @@ pub fn current_branch(project_root: &Path) -> Option<String> {
 pub fn detect_default_branch(project_root: &Path) -> Option<String> {
     let repo = gix::open(project_root).ok()?;
 
-    // Try symbolic-ref first
+    // Try symbolic-ref first (refs/remotes/origin/HEAD -> refs/remotes/origin/<branch>)
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
-        if let Some(name) = reference.name().as_bstr().to_string().strip_prefix("refs/remotes/origin/") {
-            return Some(name.to_string());
+        if let Some(Ok(target)) = reference.follow() {
+            if let Some(name) = target.name().as_bstr().to_string().strip_prefix("refs/remotes/origin/") {
+                return Some(name.to_string());
+            }
         }
     }
 

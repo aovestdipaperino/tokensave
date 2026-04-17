@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Default branch detection wrote `"HEAD"` instead of actual branch name** — `detect_default_branch()` used `reference.name()` on the `refs/remotes/origin/HEAD` symbolic ref, which returns the ref's own name. Now resolves through `reference.follow()` to get the target (e.g. `refs/remotes/origin/master`), then strips the prefix correctly.
+
 ## [4.0.3] - 2026-04-16
 
 ### Fixed
