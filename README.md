@@ -116,16 +116,18 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 ### 2. Configure your agent
 
 ```bash
-tokensave install                    # auto-detects installed agents
-tokensave install --agent claude     # Claude Code (explicit)
-tokensave install --agent codex      # OpenAI Codex CLI
-tokensave install --agent gemini     # Gemini CLI
-tokensave install --agent opencode   # OpenCode
-tokensave install --agent cursor     # Cursor
-tokensave install --agent copilot    # GitHub Copilot
-tokensave install --agent cline      # Cline
-tokensave install --agent roo-code   # Roo Code
-tokensave install --agent zed        # Zed
+tokensave install                         # auto-detects installed agents
+tokensave install --agent claude          # Claude Code
+tokensave install --agent codex           # OpenAI Codex CLI
+tokensave install --agent gemini          # Gemini CLI
+tokensave install --agent opencode        # OpenCode
+tokensave install --agent cursor          # Cursor
+tokensave install --agent copilot         # GitHub Copilot
+tokensave install --agent cline           # Cline
+tokensave install --agent roo-code        # Roo Code
+tokensave install --agent zed             # Zed
+tokensave install --agent antigravity     # Google Antigravity (formerly Windsurf)
+tokensave install --agent kilo            # Kilo CLI
 ```
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions.
