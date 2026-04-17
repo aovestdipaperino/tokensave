@@ -368,6 +368,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         );
     }
 
+    // Nudge beta users to switch to the stable channel.
+    if tokensave::cloud::is_beta() {
+        eprintln!(
+            "\x1b[33mnote:\x1b[0m The beta channel has been merged into stable. \
+             Run `tokensave channel stable` to switch."
+        );
+    }
+
     // Best-effort check: warn if install needs re-running
     if !matches!(command, Commands::Install { .. } | Commands::Reinstall) {
         tokensave::agents::claude::check_install_stale();
