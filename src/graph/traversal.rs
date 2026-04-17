@@ -368,11 +368,7 @@ impl<'a> GraphTraverser<'a> {
 
         // Deduplicate edges by (source, target, kind).
         let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
-        for edge in outgoing_sub
-            .edges
-            .into_iter()
-            .chain(incoming_sub.edges.into_iter())
-        {
+        for edge in outgoing_sub.edges.into_iter().chain(incoming_sub.edges) {
             let key = (
                 edge.source.clone(),
                 edge.target.clone(),

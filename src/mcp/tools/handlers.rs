@@ -963,7 +963,7 @@ async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .into_iter()
         .map(|(id, (inc, out))| (id, inc, out))
         .collect();
-    sorted.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+    sorted.sort_by_key(|x| std::cmp::Reverse(x.1 + x.2));
     sorted.truncate(limit);
 
     // Resolve node details
@@ -1468,7 +1468,7 @@ async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> 
             *totals.entry(kind.clone()).or_insert(0) += count;
         }
         let mut sorted: Vec<(String, u64)> = totals.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|x| std::cmp::Reverse(x.1));
 
         let items: Vec<Value> = sorted
             .iter()

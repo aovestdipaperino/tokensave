@@ -358,11 +358,15 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     let current_channel = if current_is_beta { "beta" } else { "stable" };
 
     let target_is_beta = match target_channel {
-        "beta" => true,
+        "beta" => {
+            return Err(TokenSaveError::Config {
+                message: "the beta channel is not available at this time".to_string(),
+            });
+        }
         "stable" => false,
         other => {
             return Err(TokenSaveError::Config {
-                message: format!("unknown channel '{other}'. Valid channels: stable, beta"),
+                message: format!("unknown channel '{other}'. Valid channels: stable"),
             });
         }
     };

@@ -188,12 +188,9 @@ impl ZigExtractor {
                     Self::visit_enum(state, node, val, &name);
                     return;
                 }
-                "builtin_function" => {
-                    // Check if this is @import(...)
-                    if Self::is_import_call(state, val) {
-                        Self::visit_import(state, node, val, &name);
-                        return;
-                    }
+                "builtin_function" if Self::is_import_call(state, val) => {
+                    Self::visit_import(state, node, val, &name);
+                    return;
                 }
                 "field_expression" => {
                     // Handle `const mem = @import("std").mem` where the object
