@@ -133,7 +133,7 @@ impl TokenSave {
         if !db_path.exists() {
             return Err(TokenSaveError::Config {
                 message: format!(
-                    "no TokenSave database found at '{}'; run 'tokensave sync' first",
+                    "no TokenSave database found at '{}'; run 'tokensave init' first",
                     db_path.display()
                 ),
             });

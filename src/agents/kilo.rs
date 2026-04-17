@@ -66,7 +66,7 @@ impl AgentIntegration for KiloIntegration {
 
         eprintln!();
         eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave sync");
+        eprintln!("  1. cd into your project and run: tokensave init");
         eprintln!("  2. Start a new Kilo CLI session — tokensave tools are now available");
         Ok(())
     }

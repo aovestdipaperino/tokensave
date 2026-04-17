@@ -91,7 +91,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Sync the index (creates it if missing, incremental by default)
+    /// Initialize a new TokenSave project (full index)
+    Init {
+        /// Project path (default: current directory)
+        path: Option<String>,
+        /// Folders to skip during indexing (can be repeated)
+        #[arg(long = "skip-folder", num_args = 1..)]
+        skip_folders: Vec<String>,
+    },
+    /// Incremental sync (project must already be initialized with `tokensave init`)
     Sync {
         /// Project path (default: current directory)
         path: Option<String>,
@@ -356,7 +364,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // Best-effort flush of pending worldwide counter tokens.
     // `matches!` borrows `command` temporarily; the borrow is dropped
     // before the `match command` move below, so this compiles.
-    let is_force_flush = matches!(command, Commands::Sync { .. } | Commands::Status { .. });
+    let is_force_flush = matches!(command, Commands::Init { .. } | Commands::Sync { .. } | Commands::Status { .. });
     let mut user_config = tokensave::user_config::UserConfig::load();
     try_flush(&mut user_config, is_force_flush);
     user_config.save();
@@ -420,6 +428,44 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
+        Commands::Init {
+            path,
+            skip_folders,
+        } => {
+            let project_path = tokensave::config::resolve_path(path);
+            if TokenSave::is_initialized(&project_path) {
+                eprintln!(
+                    "\x1b[31merror:\x1b[0m TokenSave is already initialized at '{}'.\n\
+                     Use \x1b[1mtokensave sync\x1b[0m to update the index, or \
+                     \x1b[1mtokensave sync --force\x1b[0m to rebuild it.",
+                    project_path.display()
+                );
+                std::process::exit(1);
+            }
+            // Check for updates in parallel with indexing
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
+            init_and_index(&project_path, &skip_folders).await?;
+
+            // Print update notice from parallel check (suppressed for 15 min)
+            if let Ok(Some(latest)) = version_handle.join() {
+                let current_version = env!("CARGO_PKG_VERSION");
+                let now = current_unix_timestamp();
+                let mut config = tokensave::user_config::UserConfig::load();
+                config.cached_latest_version = latest.clone();
+                config.last_version_check_at = now;
+                config.save();
+                if tokensave::cloud::is_newer_version(current_version, &latest)
+                    && now - config.last_version_warning_at >= 900
+                {
+                    eprintln!(
+                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
+                        current_version, latest
+                    );
+                    config.last_version_warning_at = now;
+                    config.save();
+                }
+            }
+        }
         Commands::Sync {
             path,
             force,
@@ -427,6 +473,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             doctor,
         } => {
             let project_path = tokensave::config::resolve_path(path);
+            if !TokenSave::is_initialized(&project_path) {
+                eprintln!(
+                    "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+                     Run \x1b[1mtokensave init\x1b[0m to create one first.",
+                    project_path.display()
+                );
+                std::process::exit(1);
+            }
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
                 eprintln!(
@@ -438,10 +492,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // Check for updates in parallel with indexing
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
 
-            if force || !TokenSave::is_initialized(&project_path) {
-                if !force {
-                    eprintln!("No existing index found — performing full index");
-                }
+            if force {
                 init_and_index(&project_path, &skip_folders).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
@@ -1657,14 +1708,14 @@ fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     }
 }
 
-/// Opens an existing project, or tells the user to run `tokensave sync` first.
+/// Opens an existing project, or tells the user to run `tokensave init` first.
 async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
     if TokenSave::is_initialized(project_path) {
         return TokenSave::open(project_path).await;
     }
     Err(tokensave::errors::TokenSaveError::Config {
         message: format!(
-            "no TokenSave index found at '{}' — run 'tokensave sync' first",
+            "no TokenSave index found at '{}' — run 'tokensave init' first",
             project_path.display()
         ),
     })

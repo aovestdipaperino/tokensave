@@ -32,10 +32,10 @@ This single command configures everything — MCP server, tool permissions, PreT
 
 ```bash
 cd /path/to/your/project
-tokensave sync
+tokensave init
 ```
 
-This creates a `.tokensave/` directory and indexes all supported files (15 languages). Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
+This creates a `.tokensave/` directory and indexes all supported files (15 languages). After the initial index, `tokensave sync` picks up only changed files. To force a full re-index, use `tokensave sync --force`.
 
 Check what was indexed:
 

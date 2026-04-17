@@ -79,7 +79,7 @@ CLI or vice versa).
 
 - tokensave built and installed on PATH
 - The daemon autostart service is installed (`tokensave daemon --enable-autostart`)
-- At least one project has been indexed (`tokensave sync` in a project directory)
+- At least one project has been indexed (`tokensave init` in a project directory)
 
 ### Test 1: Verify daemon is running
 

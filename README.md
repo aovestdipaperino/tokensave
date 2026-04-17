@@ -138,10 +138,10 @@ All changes are idempotent -- safe to run again after upgrading. After agent set
 
 ```bash
 cd /path/to/your/project
-tokensave sync
+tokensave init
 ```
 
-This creates a `.tokensave/` directory with the knowledge graph database. Subsequent runs are incremental -- only changed files are re-indexed.
+This creates a `.tokensave/` directory with the knowledge graph database. After the initial index, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
 
 <details>
 <summary><strong>What install writes for Claude Code</strong></summary>
@@ -366,7 +366,8 @@ tokensave channel stable           # switch back to stable
 ## CLI Reference
 
 ```bash
-tokensave sync [path]              # Sync (creates index if missing, incremental by default)
+tokensave init [path]              # Initialize a new project (full index)
+tokensave sync [path]              # Incremental sync (must be initialized first)
 tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
 tokensave status [path]            # Show statistics + cost summary
@@ -595,7 +596,7 @@ Full-index benchmark on a 1,782-file mixed Rust/Java/Scala codebase (57K nodes, 
 The `.tokensave/` directory doesn't exist in your project.
 
 ```bash
-tokensave sync
+tokensave init
 ```
 
 ### MCP server not connecting

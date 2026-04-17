@@ -69,7 +69,7 @@ Navigate to any project directory and run:
 
 ```bash
 cd /path/to/your/project
-tokensave sync
+tokensave init
 ```
 
 Tokensave will scan every supported source file, extract symbols (functions, classes, methods, imports, type relationships, complexity metrics), and store everything in a local database at `.tokensave/tokensave.db`. You'll see a spinner with file-by-file progress and an ETA.
@@ -579,7 +579,7 @@ last_worldwide_fetch_at = 1711375200
 The `.tokensave/` directory doesn't exist in your current project. Run:
 
 ```bash
-tokensave sync
+tokensave init
 ```
 
 ### MCP server not connecting

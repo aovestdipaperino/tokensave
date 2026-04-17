@@ -34,7 +34,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
         check_database(&mut dc, &project_path).await;
     } else {
         dc.warn(&format!(
-            "No index at {}/.tokensave/ — run `tokensave sync`",
+            "No index at {}/.tokensave/ — run `tokensave init`",
             project_path.display()
         ));
     }

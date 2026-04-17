@@ -37,7 +37,7 @@ impl AgentIntegration for CopilotIntegration {
 
         eprintln!();
         eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave sync");
+        eprintln!("  1. cd into your project and run: tokensave init");
         eprintln!("  2. Restart VS Code and/or start a new Copilot CLI session");
         eprintln!("     tokensave tools are now available in GitHub Copilot");
         Ok(())
