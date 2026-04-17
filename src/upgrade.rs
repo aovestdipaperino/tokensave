@@ -229,6 +229,20 @@ fn replace_binary(new_exe: &Path) -> Result<()> {
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeStatus<'a> {
+    AlreadyCurrent,
+    UpgradeAvailable(&'a str),
+}
+
+fn classify_upgrade<'a>(current: &str, latest: &'a str) -> UpgradeStatus<'a> {
+    if cloud::is_newer_version(current, latest) {
+        UpgradeStatus::UpgradeAvailable(latest)
+    } else {
+        UpgradeStatus::AlreadyCurrent
+    }
+}
+
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
 fn perform_upgrade(version: &str, is_beta: bool) -> Result<()> {
     let tag = release_tag(version);
@@ -289,12 +303,13 @@ pub fn run_upgrade() -> Result<String> {
         message: "failed to check for updates — could not reach GitHub".to_string(),
     })?;
 
-    if !cloud::is_newer_version(current, &latest) {
-        eprintln!("\x1b[32m✔\x1b[0m Already up to date (v{current}).");
-        return Err(TokenSaveError::Config {
-            message: format!("already at latest version v{current}"),
-        });
-    }
+    let latest = match classify_upgrade(current, &latest) {
+        UpgradeStatus::AlreadyCurrent => {
+            eprintln!("\x1b[32m✔\x1b[0m Already up to date (v{current}).");
+            return Ok(current.to_string());
+        }
+        UpgradeStatus::UpgradeAvailable(latest) => latest,
+    };
 
     eprintln!("Upgrading v{current} → v{latest}...");
 
@@ -313,7 +328,7 @@ pub fn run_upgrade() -> Result<String> {
                 eprintln!("  Restarting daemon...");
                 restart_daemon();
             }
-            Ok(latest)
+            Ok(latest.to_string())
         }
         Err(e) => {
             if daemon_was_running {
@@ -354,9 +369,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     if target_is_beta == current_is_beta {
         eprintln!("Already on the {current_channel} channel (v{current}).");
         eprintln!("Run `tokensave upgrade` to check for updates within this channel.");
-        return Err(TokenSaveError::Config {
-            message: format!("already on {current_channel} channel"),
-        });
+        return Ok(current.to_string());
     }
 
     eprintln!("Switching from {current_channel} to {target_channel}...");
@@ -457,6 +470,32 @@ mod tests {
         } else {
             assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz"));
         }
+    }
+
+    #[test]
+    fn classify_upgrade_marks_equal_version_as_already_current() {
+        assert_eq!(
+            classify_upgrade("4.0.3", "4.0.3"),
+            UpgradeStatus::AlreadyCurrent
+        );
+    }
+
+    #[test]
+    fn classify_upgrade_marks_newer_version_as_upgrade_available() {
+        assert_eq!(
+            classify_upgrade("4.0.2", "4.0.3"),
+            UpgradeStatus::UpgradeAvailable("4.0.3")
+        );
+    }
+
+    #[test]
+    fn switch_channel_same_channel_is_a_successful_noop() {
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let current_channel = if cloud::is_beta() { "beta" } else { "stable" };
+
+        let result = switch_channel(current_channel);
+
+        assert_eq!(result.unwrap(), current);
     }
 
     // ── Regression tests for symlink upgrade bug ────────────────────────
