@@ -1,5 +1,8 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use tempfile::TempDir;
+use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
 use tokensave::types::EdgeKind;
 
@@ -367,6 +370,67 @@ pub fn create_user(name: &str, email: &str) -> String {
     // Search for function from services
     let results = cg.search("create_user", 10).await.unwrap();
     assert!(!results.is_empty(), "should find 'create_user' function");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_index_follows_symlinked_directories() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let external = TempDir::new().unwrap();
+
+    fs::create_dir_all(external.path()).unwrap();
+    fs::write(
+        external.path().join("lib.rs"),
+        "pub fn through_symlink() {}\n",
+    )
+    .unwrap();
+    symlink(external.path(), project.join("src")).unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(result.file_count, 1, "should index the file behind the symlink");
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"));
+
+    let results = cg.search("through_symlink", 10).await.unwrap();
+    assert!(!results.is_empty(), "should extract symbols from symlinked source");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_gitignore_scan_follows_symlinked_directories() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let external = TempDir::new().unwrap();
+
+    fs::create_dir_all(external.path()).unwrap();
+    fs::write(
+        external.path().join("lib.rs"),
+        "pub fn through_gitignore_symlink() {}\n",
+    )
+    .unwrap();
+    symlink(external.path(), project.join("src")).unwrap();
+
+    TokenSave::init(project).await.unwrap();
+
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    save_config(project, &config).unwrap();
+
+    let cg = TokenSave::open(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(result.file_count, 1, "gitignore-aware scan should follow symlinks");
+
+    let results = cg.search("through_gitignore_symlink", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "should extract symbols through symlink with gitignore-aware walker"
+    );
 }
 
 // ---------------------------------------------------------------------------
