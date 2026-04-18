@@ -390,14 +390,20 @@ async fn test_index_follows_symlinked_directories() {
     let cg = TokenSave::init(project).await.unwrap();
     let result = cg.index_all().await.unwrap();
 
-    assert_eq!(result.file_count, 1, "should index the file behind the symlink");
+    assert_eq!(
+        result.file_count, 1,
+        "should index the file behind the symlink"
+    );
 
     let files = cg.get_all_files().await.unwrap();
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     assert!(paths.contains(&"src/lib.rs"));
 
     let results = cg.search("through_symlink", 10).await.unwrap();
-    assert!(!results.is_empty(), "should extract symbols from symlinked source");
+    assert!(
+        !results.is_empty(),
+        "should extract symbols from symlinked source"
+    );
 }
 
 #[cfg(unix)]
@@ -424,7 +430,10 @@ async fn test_gitignore_scan_follows_symlinked_directories() {
     let cg = TokenSave::open(project).await.unwrap();
     let result = cg.index_all().await.unwrap();
 
-    assert_eq!(result.file_count, 1, "gitignore-aware scan should follow symlinks");
+    assert_eq!(
+        result.file_count, 1,
+        "gitignore-aware scan should follow symlinks"
+    );
 
     let results = cg.search("through_gitignore_symlink", 10).await.unwrap();
     assert!(

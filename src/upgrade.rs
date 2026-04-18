@@ -300,7 +300,9 @@ fn install_binary(src: &Path, target: &Path) -> Result<()> {
 #[cfg(unix)]
 fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
     let exe = std::env::current_exe().map_err(io_err("cannot determine current exe"))?;
-    let canonical = exe.canonicalize().map_err(io_err("cannot resolve binary path"))?;
+    let canonical = exe
+        .canonicalize()
+        .map_err(io_err("cannot resolve binary path"))?;
 
     // Validate Cellar layout: <prefix>/Cellar/<formula>/<version>/bin/<binary>
     let bin_dir = match canonical.parent() {
@@ -353,8 +355,7 @@ fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
                                     .replacen(&old_version, new_version, 1),
                             );
                             let _ = std::fs::remove_file(&symlink_path);
-                            let _ =
-                                std::os::unix::fs::symlink(&new_target, &symlink_path);
+                            let _ = std::os::unix::fs::symlink(&new_target, &symlink_path);
                         }
                     }
                 }
@@ -363,8 +364,7 @@ fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
                 let receipt = new_version_dir.join("INSTALL_RECEIPT.json");
                 if receipt.exists() {
                     if let Ok(text) = std::fs::read_to_string(&receipt) {
-                        let _ =
-                            std::fs::write(&receipt, text.replace(&old_version, new_version));
+                        let _ = std::fs::write(&receipt, text.replace(&old_version, new_version));
                     }
                 }
             }
@@ -1055,11 +1055,10 @@ mod tests {
 
             assert_eq!(fs::read(&target).unwrap(), b"new-binary-content");
             // Temp file should be cleaned up
-            assert!(
-                !tmp.path()
-                    .join(format!(".tokensave_upgrade_{}", std::process::id()))
-                    .exists()
-            );
+            assert!(!tmp
+                .path()
+                .join(format!(".tokensave_upgrade_{}", std::process::id()))
+                .exists());
         }
 
         #[test]
@@ -1101,11 +1100,11 @@ mod tests {
 
             // Update the symlink
             let old_target = fs::read_link(&link).unwrap();
-            let new_target = PathBuf::from(
-                old_target
-                    .to_string_lossy()
-                    .replacen("4.1.1-beta.1", "5.0.0", 1),
-            );
+            let new_target = PathBuf::from(old_target.to_string_lossy().replacen(
+                "4.1.1-beta.1",
+                "5.0.0",
+                1,
+            ));
             fs::remove_file(&link).unwrap();
             symlink(&new_target, &link).unwrap();
 

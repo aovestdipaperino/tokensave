@@ -44,6 +44,8 @@ mod cobol_extractor;
 mod dockerfile_extractor;
 #[cfg(feature = "lang-fortran")]
 mod fortran_extractor;
+#[cfg(feature = "lang-glsl")]
+mod glsl_extractor;
 #[cfg(feature = "lang-gwbasic")]
 mod gwbasic_extractor;
 #[cfg(feature = "lang-lua")]
@@ -60,8 +62,6 @@ pub(crate) mod qbasic_extractor;
 mod quickbasic_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
-#[cfg(feature = "lang-glsl")]
-mod glsl_extractor;
 
 // Lite — always available (no cfg needed)
 pub use c_extractor::CExtractor;
@@ -105,6 +105,8 @@ pub use cobol_extractor::CobolExtractor;
 pub use dockerfile_extractor::DockerfileExtractor;
 #[cfg(feature = "lang-fortran")]
 pub use fortran_extractor::FortranExtractor;
+#[cfg(feature = "lang-glsl")]
+pub use glsl_extractor::GlslExtractor;
 #[cfg(feature = "lang-gwbasic")]
 pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-lua")]
@@ -121,8 +123,6 @@ pub use qbasic_extractor::QBasicExtractor;
 pub use quickbasic_extractor::QuickBasicExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
-#[cfg(feature = "lang-glsl")]
-pub use glsl_extractor::GlslExtractor;
 
 use crate::types::ExtractionResult;
 

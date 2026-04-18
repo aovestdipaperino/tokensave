@@ -364,7 +364,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // Best-effort flush of pending worldwide counter tokens.
     // `matches!` borrows `command` temporarily; the borrow is dropped
     // before the `match command` move below, so this compiles.
-    let is_force_flush = matches!(command, Commands::Init { .. } | Commands::Sync { .. } | Commands::Status { .. });
+    let is_force_flush = matches!(
+        command,
+        Commands::Init { .. } | Commands::Sync { .. } | Commands::Status { .. }
+    );
     let mut user_config = tokensave::user_config::UserConfig::load();
     try_flush(&mut user_config, is_force_flush);
     user_config.save();
@@ -428,10 +431,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Init {
-            path,
-            skip_folders,
-        } => {
+        Commands::Init { path, skip_folders } => {
             let project_path = tokensave::config::resolve_path(path);
             if TokenSave::is_initialized(&project_path) {
                 eprintln!(
