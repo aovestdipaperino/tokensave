@@ -4050,9 +4050,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-large-treesitters"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd94a25234c987eec2efbf0ff1a43082b043e7cc49299aab91751440264110d0"
+checksum = "72794ea31dbe86a31b000fa3ddceb15eb7b82ce8399ce4e636f1ea9d345e89e0"
 dependencies = [
  "cc",
  "tokensave-medium-treesitters",
@@ -4060,6 +4060,7 @@ dependencies = [
  "tree-sitter-batch",
  "tree-sitter-dockerfile",
  "tree-sitter-fortran",
+ "tree-sitter-glsl",
  "tree-sitter-gwbasic",
  "tree-sitter-language",
  "tree-sitter-msbasic2",
@@ -4483,6 +4484,16 @@ name = "tree-sitter-fortran"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce58ab374a2cc3a2ff8a5dab2e5230530dbfcb439475afa75233f59d1d115b40"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-glsl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0ee57cbf4c2b35d3a7f17a01bf33c0ef2e85987cb85e516ac8c6904c4e62ac"
 dependencies = [
  "cc",
  "tree-sitter-language",

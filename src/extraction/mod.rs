@@ -60,6 +60,8 @@ pub(crate) mod qbasic_extractor;
 mod quickbasic_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
+#[cfg(feature = "lang-glsl")]
+mod glsl_extractor;
 
 // Lite — always available (no cfg needed)
 pub use c_extractor::CExtractor;
@@ -119,6 +121,8 @@ pub use qbasic_extractor::QBasicExtractor;
 pub use quickbasic_extractor::QuickBasicExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
+#[cfg(feature = "lang-glsl")]
+pub use glsl_extractor::GlslExtractor;
 
 use crate::types::ExtractionResult;
 
@@ -211,6 +215,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(QuickBasicExtractor));
         #[cfg(feature = "lang-dockerfile")]
         extractors.push(Box::new(DockerfileExtractor));
+        #[cfg(feature = "lang-glsl")]
+        extractors.push(Box::new(GlslExtractor));
 
         Self { extractors }
     }

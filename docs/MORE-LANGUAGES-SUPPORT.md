@@ -1,12 +1,12 @@
 # Future Language Support
 
-## Currently Supported (31 languages)
+## Currently Supported (32 languages)
 
 | Tier | Languages |
 |------|-----------|
 | **Lite** (always compiled) | Rust, Go, Java, Scala, TypeScript/JavaScript/TSX/JSX, Python, C, C++, Kotlin, C#, Swift |
 | **Medium** (feature flags) | Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET |
-| **Full** (feature flags) | Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic |
+| **Full** (feature flags) | Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic, GLSL |
 
 ## How to add a language
 
@@ -121,7 +121,7 @@ Very niche but occasionally requested by game/graphics developers.
 | Language | Extensions | Grammar crate | Complexity | Notes |
 |----------|-----------|---------------|------------|-------|
 | **WGSL** | `.wgsl` | `tree-sitter-wgsl` (0.0.6) | Low-medium | Functions, structs, bindings. WebGPU shader language. |
-| **GLSL** | `.glsl`, `.vert`, `.frag` | `tree-sitter-glsl` (0.2.0) | Low-medium | Functions, structs, uniforms. OpenGL shaders. |
+| ~~**GLSL**~~ | | | | **Implemented** — see Full tier above. |
 
 ---
 
