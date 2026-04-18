@@ -5,13 +5,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-// Force linkage of the tree-sitter-dockerfile native C parser library.
-// The `tokensave-large-treesitters` crate declares an `extern "C"` reference
-// to `tree_sitter_dockerfile` but doesn't use any Rust items from the
-// `tree-sitter-dockerfile` crate, so Cargo won't propagate its build-script
-// link directives unless we reference it here.
-extern crate tree_sitter_dockerfile;
-
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, Visibility,
 };
