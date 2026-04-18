@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::cloud;
+use crate::cloud::{self, InstallMethod};
 use crate::daemon;
 use crate::errors::{Result, TokenSaveError};
 
@@ -215,17 +215,41 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
     })
 }
 
-/// Replaces the running binary with `new_exe`, then removes the temp file.
-fn replace_binary(new_exe: &Path) -> Result<()> {
-    let result = self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
+/// Replaces the running binary with `new_exe`, dispatching to the
+/// appropriate strategy for the detected install method. Cleans up the
+/// temp file afterwards regardless of outcome.
+fn replace_binary(new_exe: &Path, method: &InstallMethod, new_version: &str) -> Result<()> {
+    let result = match method {
+        InstallMethod::Brew => replace_for_brew(new_exe, new_version),
+        InstallMethod::Scoop => replace_for_scoop(new_exe, new_version),
+        _ => replace_default(new_exe),
+    };
+    let _ = std::fs::remove_file(new_exe);
+    result
+}
+
+/// Default replacement using `self_replace`. Falls back to a direct copy
+/// when the running binary is behind a symlink (avoids ENOENT caused by
+/// `self_replace` resolving relative symlink targets from CWD).
+fn replace_default(new_exe: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let exe = std::env::current_exe().ok();
+        let canonical = exe.as_ref().and_then(|e| e.canonicalize().ok());
+        if let (Some(exe), Some(ref canonical)) = (&exe, canonical) {
+            if exe.as_path() != canonical.as_path() {
+                return install_binary(new_exe, canonical);
+            }
+        }
+    }
+
+    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
         message: format!(
             "binary replacement failed: {e}\n  \
              The old version is still in place.\n  \
              To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
         ),
-    });
-    let _ = std::fs::remove_file(new_exe);
-    result
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,8 +266,244 @@ fn classify_upgrade<'a>(current: &str, latest: &'a str) -> UpgradeStatus<'a> {
     }
 }
 
+/// Atomically replace a binary at `target` by copying `src` to a temp file
+/// in the same directory, setting permissions, then renaming over `target`.
+/// Avoids `ETXTBSY` on Linux (rename swaps directory entries rather than
+/// writing into the running executable).
+#[cfg(unix)]
+fn install_binary(src: &Path, target: &Path) -> Result<()> {
+    let dir = target.parent().ok_or_else(|| TokenSaveError::Config {
+        message: "cannot determine target directory".into(),
+    })?;
+    let temp = dir.join(format!(".tokensave_upgrade_{}", std::process::id()));
+
+    std::fs::copy(src, &temp).map_err(io_err("cannot copy new binary"))?;
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))
+            .map_err(io_err("cannot set permissions"))?;
+    }
+
+    if let Err(e) = std::fs::rename(&temp, target) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(io_err("cannot replace binary")(e));
+    }
+
+    Ok(())
+}
+
+// ── Homebrew ────────────────────────────────────────────────────────────
+
+/// Replace the binary inside the Homebrew Cellar, then rename the version
+/// directory and update the symlink so that `brew` reports the new version.
+#[cfg(unix)]
+fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
+    let exe = std::env::current_exe().map_err(io_err("cannot determine current exe"))?;
+    let canonical = exe.canonicalize().map_err(io_err("cannot resolve binary path"))?;
+
+    // Validate Cellar layout: <prefix>/Cellar/<formula>/<version>/bin/<binary>
+    let bin_dir = match canonical.parent() {
+        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("bin") => p,
+        _ => return replace_default(new_exe),
+    };
+    let version_dir = match bin_dir.parent() {
+        Some(p) => p,
+        None => return replace_default(new_exe),
+    };
+    let formula_dir = match version_dir.parent() {
+        Some(p) => p,
+        None => return replace_default(new_exe),
+    };
+    let cellar_dir = match formula_dir.parent() {
+        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("Cellar") => p,
+        _ => return replace_default(new_exe),
+    };
+    let prefix = match cellar_dir.parent() {
+        Some(p) => p,
+        None => return replace_default(new_exe),
+    };
+
+    let bin_name = canonical.file_name().unwrap(); // safe: canonical has a filename
+    let old_version = version_dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    // Step 1 (critical): replace the binary atomically.
+    install_binary(new_exe, &canonical)?;
+
+    // Steps 2-4 update Cellar metadata so `brew` sees the correct version.
+    // These are best-effort — if they fail the binary itself is fine.
+    if old_version != new_version {
+        let new_version_dir = formula_dir.join(new_version);
+
+        // Step 2: rename the version directory (e.g. 4.0.3 → 4.0.4).
+        match std::fs::rename(version_dir, &new_version_dir) {
+            Ok(()) => {
+                // Step 3: update the symlink at <prefix>/bin/<binary>.
+                let symlink_path = prefix.join("bin").join(bin_name);
+                if let Ok(meta) = std::fs::symlink_metadata(&symlink_path) {
+                    if meta.file_type().is_symlink() {
+                        if let Ok(old_target) = std::fs::read_link(&symlink_path) {
+                            let new_target = std::path::PathBuf::from(
+                                old_target
+                                    .to_string_lossy()
+                                    .replacen(&old_version, new_version, 1),
+                            );
+                            let _ = std::fs::remove_file(&symlink_path);
+                            let _ =
+                                std::os::unix::fs::symlink(&new_target, &symlink_path);
+                        }
+                    }
+                }
+
+                // Step 4: patch INSTALL_RECEIPT.json so `brew info` is accurate.
+                let receipt = new_version_dir.join("INSTALL_RECEIPT.json");
+                if receipt.exists() {
+                    if let Ok(text) = std::fs::read_to_string(&receipt) {
+                        let _ =
+                            std::fs::write(&receipt, text.replace(&old_version, new_version));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "\n  \x1b[33mwarning:\x1b[0m could not rename Cellar directory: {e}\n    \
+                     brew may still report the old version"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn replace_for_brew(new_exe: &Path, _new_version: &str) -> Result<()> {
+    replace_default(new_exe)
+}
+
+// ── Scoop ───────────────────────────────────────────────────────────────
+
+/// Replace the binary via `self_replace` (handles Windows exe locking),
+/// then update Scoop's version directory and junction so that
+/// `scoop status` reports the new version.
+#[cfg(windows)]
+fn replace_for_scoop(new_exe: &Path, new_version: &str) -> Result<()> {
+    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "binary replacement failed: {e}\n  \
+             The old version is still in place.\n  \
+             To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
+        ),
+    })?;
+
+    // Best-effort: update Scoop metadata for `scoop status` compatibility.
+    update_scoop_metadata(new_version);
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn update_scoop_metadata(new_version: &str) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let canonical = exe.canonicalize().unwrap_or(exe);
+
+    let Some(version_dir) = find_scoop_version_dir(&canonical) else {
+        return;
+    };
+    let Some(app_dir) = version_dir.parent() else {
+        return;
+    };
+    let old_version = version_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if old_version == new_version || old_version == "current" {
+        return;
+    }
+
+    let new_version_dir = app_dir.join(new_version);
+    if std::fs::create_dir_all(&new_version_dir).is_err() {
+        return;
+    }
+
+    // Copy files from old version directory to new.
+    if let Ok(entries) = std::fs::read_dir(&version_dir) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name();
+            if name.to_string_lossy().contains("__self_delete__") {
+                continue;
+            }
+            let _ = std::fs::copy(entry.path(), new_version_dir.join(&name));
+        }
+    }
+
+    // Patch manifest.json version.
+    let manifest = new_version_dir.join("manifest.json");
+    if manifest.exists() {
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            let _ = std::fs::write(&manifest, text.replace(&old_version, new_version));
+        }
+    }
+
+    // Update the `current` directory junction.
+    let current = app_dir.join("current");
+    let _ = std::fs::remove_dir(&current);
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "mklink",
+            "/J",
+            &current.to_string_lossy(),
+            &new_version_dir.to_string_lossy(),
+        ])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .status();
+}
+
+/// Walk the canonical path to find the Scoop version directory.
+/// Layout: `<scoop>/apps/<app>/<version>/…`
+#[cfg(windows)]
+fn find_scoop_version_dir(path: &Path) -> Option<std::path::PathBuf> {
+    let mut found_apps = false;
+    let mut depth_after_apps = 0u8;
+    let mut result = std::path::PathBuf::new();
+
+    for comp in path.components() {
+        result.push(comp);
+        if found_apps {
+            depth_after_apps += 1;
+            if depth_after_apps == 2 {
+                return Some(result);
+            }
+        } else if let std::path::Component::Normal(name) = comp {
+            if name.to_string_lossy().eq_ignore_ascii_case("apps") {
+                found_apps = true;
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn replace_for_scoop(new_exe: &Path, _new_version: &str) -> Result<()> {
+    replace_default(new_exe)
+}
+
+// ────────────────────────────────────────────────────────────────────────
+
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
-fn perform_upgrade(version: &str, is_beta: bool) -> Result<()> {
+fn perform_upgrade(version: &str, is_beta: bool, method: &InstallMethod) -> Result<()> {
     let tag = release_tag(version);
     let expected = asset_name(version, is_beta);
     let bin_name = if cfg!(windows) {
@@ -257,8 +517,13 @@ fn perform_upgrade(version: &str, is_beta: bool) -> Result<()> {
     let url = fetch_asset_url(&tag, &expected)?;
     let tmp = download_and_extract(&url, bin_name)?;
 
-    eprint!("  Replacing binary...");
-    replace_binary(&tmp)?;
+    let label = match method {
+        InstallMethod::Brew => " (Homebrew Cellar)",
+        InstallMethod::Scoop => " (Scoop)",
+        _ => "",
+    };
+    eprint!("  Replacing binary{label}...");
+    replace_binary(&tmp, method, version)?;
     eprintln!(" Done");
 
     Ok(())
@@ -296,8 +561,15 @@ pub fn run_upgrade() -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let is_beta = cloud::is_beta();
     let channel = if is_beta { "beta" } else { "stable" };
+    let method = cloud::detect_install_method();
 
-    eprintln!("Current version: v{current} ({channel} channel)");
+    let method_suffix = match &method {
+        InstallMethod::Brew => " · Homebrew",
+        InstallMethod::Scoop => " · Scoop",
+        InstallMethod::Cargo => " · cargo",
+        InstallMethod::Unknown => "",
+    };
+    eprintln!("Current version: v{current} ({channel} channel{method_suffix})");
     eprintln!("Checking for updates...");
 
     let latest = cloud::fetch_latest_version().ok_or_else(|| TokenSaveError::Config {
@@ -320,7 +592,7 @@ pub fn run_upgrade() -> Result<String> {
         daemon::stop().ok();
     }
 
-    let result = perform_upgrade(latest, is_beta);
+    let result = perform_upgrade(latest, is_beta, &method);
 
     match result {
         Ok(()) => {
@@ -356,6 +628,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let current_is_beta = cloud::is_beta();
     let current_channel = if current_is_beta { "beta" } else { "stable" };
+    let method = cloud::detect_install_method();
 
     let target_is_beta = match target_channel {
         "beta" => {
@@ -396,7 +669,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
         daemon::stop().ok();
     }
 
-    let result = perform_upgrade(&latest, target_is_beta);
+    let result = perform_upgrade(&latest, target_is_beta, &method);
 
     match result {
         Ok(()) => {
@@ -765,6 +1038,121 @@ mod tests {
             let dangling = tmp3.path().join("tokensave");
             symlink("/nonexistent/path/tokensave", &dangling).unwrap();
             assert!(dangling.canonicalize().is_err());
+        }
+
+        // ── install_binary tests ───────────────────────────────────────
+
+        #[test]
+        fn install_binary_replaces_target_atomically() {
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("tokensave");
+            fs::write(&target, b"old-binary").unwrap();
+
+            let src = tmp.path().join("new-binary");
+            fs::write(&src, b"new-binary-content").unwrap();
+
+            super::super::install_binary(&src, &target).unwrap();
+
+            assert_eq!(fs::read(&target).unwrap(), b"new-binary-content");
+            // Temp file should be cleaned up
+            assert!(
+                !tmp.path()
+                    .join(format!(".tokensave_upgrade_{}", std::process::id()))
+                    .exists()
+            );
+        }
+
+        #[test]
+        fn install_binary_sets_executable_permission() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("tokensave");
+            fs::write(&target, b"old").unwrap();
+
+            let src = tmp.path().join("new");
+            fs::write(&src, b"new").unwrap();
+
+            super::super::install_binary(&src, &target).unwrap();
+
+            let mode = fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o755, 0o755, "binary should be executable");
+        }
+
+        // ── Brew upgrade flow ──────────────────────────────────────────
+
+        #[test]
+        fn brew_upgrade_renames_version_dir_and_updates_symlink() {
+            let (real, link, tmp) = homebrew_layout();
+
+            // Write an "upgraded" binary via the Cellar path
+            let canonical = link.canonicalize().unwrap();
+            fs::write(&canonical, b"v5.0.0-binary").unwrap();
+
+            // Simulate the Cellar directory rename (4.1.1-beta.1 → 5.0.0)
+            let bin_dir = canonical.parent().unwrap();
+            let version_dir = bin_dir.parent().unwrap();
+            let formula_dir = version_dir.parent().unwrap();
+            let cellar_dir = formula_dir.parent().unwrap();
+            let prefix = cellar_dir.parent().unwrap();
+
+            let new_version_dir = formula_dir.join("5.0.0");
+            fs::rename(version_dir, &new_version_dir).unwrap();
+
+            // Update the symlink
+            let old_target = fs::read_link(&link).unwrap();
+            let new_target = PathBuf::from(
+                old_target
+                    .to_string_lossy()
+                    .replacen("4.1.1-beta.1", "5.0.0", 1),
+            );
+            fs::remove_file(&link).unwrap();
+            symlink(&new_target, &link).unwrap();
+
+            // Verify: symlink resolves and has the new content
+            assert!(link.exists(), "symlink must resolve after dir rename");
+            assert_eq!(fs::read(&link).unwrap(), b"v5.0.0-binary");
+
+            // Verify: new version directory exists, old one doesn't
+            assert!(new_version_dir.exists());
+            assert!(!version_dir.exists());
+
+            // Verify: brew would see "5.0.0" as the installed version
+            // (brew reads directory names under Cellar/<formula>/)
+            let versions: Vec<_> = fs::read_dir(formula_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            assert_eq!(versions, vec!["5.0.0"]);
+        }
+
+        #[test]
+        fn brew_upgrade_updates_install_receipt() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cellar = tmp.path().join("Cellar/tokensave/4.0.3");
+            fs::create_dir_all(cellar.join("bin")).unwrap();
+            fs::write(cellar.join("bin/tokensave"), b"binary").unwrap();
+
+            let receipt_content = r#"{
+  "source": {
+    "versions": { "stable": "4.0.3" }
+  },
+  "tabfile": "/opt/homebrew/Cellar/tokensave/4.0.3/INSTALL_RECEIPT.json"
+}"#;
+            fs::write(cellar.join("INSTALL_RECEIPT.json"), receipt_content).unwrap();
+
+            // Simulate rename + receipt update
+            let new_dir = tmp.path().join("Cellar/tokensave/4.0.4");
+            fs::rename(&cellar, &new_dir).unwrap();
+
+            let text = fs::read_to_string(new_dir.join("INSTALL_RECEIPT.json")).unwrap();
+            let updated = text.replace("4.0.3", "4.0.4");
+            fs::write(new_dir.join("INSTALL_RECEIPT.json"), &updated).unwrap();
+
+            assert!(updated.contains("\"stable\": \"4.0.4\""));
+            assert!(updated.contains("/4.0.4/INSTALL_RECEIPT.json"));
+            assert!(!updated.contains("4.0.3"));
         }
     }
 }
