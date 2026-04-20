@@ -1285,3 +1285,44 @@ async fn test_doc_coverage_response_structure() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_files_scope_prefix_filters() {
+    let (cg, _dir) = setup_project().await;
+    // With scope_prefix "src", should only return files under src/
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({}),
+        None,
+        Some("src"),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("tests/"),
+        "scope_prefix 'src' should exclude test files"
+    );
+    assert!(text.contains("main.rs"), "should include src/main.rs");
+}
+
+#[tokio::test]
+async fn test_files_explicit_path_overrides_scope() {
+    let (cg, _dir) = setup_project().await;
+    // Explicit path "tests" should override scope_prefix "src"
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"path": "tests"}),
+        None,
+        Some("src"),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("src/main.rs"),
+        "explicit path 'tests' should exclude src files"
+    );
+}

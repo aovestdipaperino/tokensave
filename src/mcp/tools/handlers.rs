@@ -30,7 +30,6 @@ fn require_node_id(args: &Value) -> Result<&str> {
 /// Returns the user-provided `path` argument, falling back to the scope
 /// prefix when the argument is absent. This makes listing tools
 /// automatically scoped to the subdirectory the server was launched from.
-#[allow(dead_code)]
 fn effective_path<'a>(args: &'a Value, scope_prefix: Option<&'a str>) -> Option<&'a str> {
     args.get("path").and_then(|v| v.as_str()).or(scope_prefix)
 }
@@ -551,13 +550,13 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>, _scope_prefi
 }
 
 /// Handles `tokensave_files` tool calls.
-async fn handle_files(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_files(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(args.is_object(), "handle_files expects an object argument");
     let mut files = cg.get_all_files().await?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     // Apply directory prefix filter
-    if let Some(dir) = args.get("path").and_then(|v| v.as_str()) {
+    if let Some(dir) = effective_path(&args, scope_prefix) {
         let prefix = if dir.ends_with('/') {
             dir.to_string()
         } else {
@@ -867,10 +866,8 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
 }
 
 /// Handles `tokensave_module_api` tool calls.
-async fn handle_module_api(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
-    let path = args
-        .get("path")
-        .and_then(|v| v.as_str())
+async fn handle_module_api(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
+    let path = effective_path(&args, scope_prefix)
         .ok_or_else(|| TokenSaveError::Config {
             message: "missing required parameter: path".to_string(),
         })?;
@@ -1222,7 +1219,7 @@ async fn handle_unused_imports(cg: &TokenSave, _args: Value, _scope_prefix: Opti
 }
 
 /// Handles `tokensave_rank` tool calls.
-async fn handle_rank(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_rank(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(args.is_object(), "handle_rank expects an object argument");
     use crate::types::EdgeKind;
 
@@ -1269,7 +1266,7 @@ async fn handle_rank(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg
         .get_ranked_nodes_by_edge_kind(&edge_kind, node_kind.as_ref(), incoming, path_prefix, limit)
@@ -1309,7 +1306,7 @@ async fn handle_rank(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -
 }
 
 /// Handles `tokensave_largest` tool calls.
-async fn handle_largest(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_largest(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
@@ -1321,7 +1318,7 @@ async fn handle_largest(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg
         .get_largest_nodes(node_kind.as_ref(), path_prefix, limit)
@@ -1360,7 +1357,7 @@ async fn handle_largest(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>
 }
 
 /// Handles `tokensave_coupling` tool calls.
-async fn handle_coupling(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_coupling(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let direction = args
         .get("direction")
         .and_then(|v| v.as_str())
@@ -1385,7 +1382,7 @@ async fn handle_coupling(cg: &TokenSave, args: Value, _scope_prefix: Option<&str
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg.get_file_coupling(fan_in, path_prefix, limit).await?;
 
@@ -1415,14 +1412,14 @@ async fn handle_coupling(cg: &TokenSave, args: Value, _scope_prefix: Option<&str
 }
 
 /// Handles `tokensave_inheritance_depth` tool calls.
-async fn handle_inheritance_depth(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_inheritance_depth(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg.get_inheritance_depth(path_prefix, limit).await?;
 
@@ -1457,12 +1454,12 @@ async fn handle_inheritance_depth(cg: &TokenSave, args: Value, _scope_prefix: Op
 }
 
 /// Handles `tokensave_distribution` tool calls.
-async fn handle_distribution(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_distribution(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(
         args.is_object(),
         "handle_distribution expects an object argument"
     );
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
     let summary = args
         .get("summary")
         .and_then(|v| v.as_bool())
@@ -1530,13 +1527,13 @@ async fn handle_distribution(cg: &TokenSave, args: Value, _scope_prefix: Option<
 ///
 /// Detects cycles in the call graph using iterative DFS on the calls-only
 /// edge subgraph. Each cycle is a vec of node IDs forming the loop.
-async fn handle_recursion(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_recursion(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     debug_assert!(limit > 0, "handle_recursion limit must be positive");
 
@@ -1654,7 +1651,7 @@ async fn handle_recursion(cg: &TokenSave, args: Value, _scope_prefix: Option<&st
 }
 
 /// Handles `tokensave_complexity` tool calls.
-async fn handle_complexity(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_complexity(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
@@ -1666,7 +1663,7 @@ async fn handle_complexity(cg: &TokenSave, args: Value, _scope_prefix: Option<&s
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg
         .get_complexity_ranked(node_kind.as_ref(), path_prefix, limit)
@@ -1717,8 +1714,8 @@ async fn handle_complexity(cg: &TokenSave, args: Value, _scope_prefix: Option<&s
 }
 
 /// Handles `tokensave_doc_coverage` tool calls.
-async fn handle_doc_coverage(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+async fn handle_doc_coverage(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let limit = args
         .get("limit")
@@ -1776,14 +1773,14 @@ async fn handle_doc_coverage(cg: &TokenSave, args: Value, _scope_prefix: Option<
 }
 
 /// Handles `tokensave_god_class` tool calls.
-async fn handle_god_class(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_god_class(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
         .map(|v| v.min(100) as usize)
         .unwrap_or(10);
 
-    let path_prefix = args.get("path").and_then(|v| v.as_str());
+    let path_prefix = effective_path(&args, scope_prefix);
 
     let results = cg.get_god_classes(path_prefix, limit).await?;
 
