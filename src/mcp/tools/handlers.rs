@@ -27,6 +27,14 @@ fn require_node_id(args: &Value) -> Result<&str> {
         })
 }
 
+/// Returns the user-provided `path` argument, falling back to the scope
+/// prefix when the argument is absent. This makes listing tools
+/// automatically scoped to the subdirectory the server was launched from.
+#[allow(dead_code)]
+fn effective_path<'a>(args: &'a Value, scope_prefix: Option<&'a str>) -> Option<&'a str> {
+    args.get("path").and_then(|v| v.as_str()).or(scope_prefix)
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
@@ -37,6 +45,7 @@ pub async fn handle_tool_call(
     tool_name: &str,
     args: Value,
     server_stats: Option<Value>,
+    scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
     debug_assert!(
         !tool_name.is_empty(),
@@ -47,39 +56,39 @@ pub async fn handle_tool_call(
         "tool_name must start with 'tokensave_' prefix"
     );
     match tool_name {
-        "tokensave_search" => handle_search(cg, args).await,
-        "tokensave_context" => handle_context(cg, args).await,
+        "tokensave_search" => handle_search(cg, args, scope_prefix).await,
+        "tokensave_context" => handle_context(cg, args, scope_prefix).await,
         "tokensave_callers" => handle_callers(cg, args).await,
         "tokensave_callees" => handle_callees(cg, args).await,
         "tokensave_impact" => handle_impact(cg, args).await,
         "tokensave_node" => handle_node(cg, args).await,
-        "tokensave_status" => handle_status(cg, server_stats).await,
-        "tokensave_files" => handle_files(cg, args).await,
+        "tokensave_status" => handle_status(cg, server_stats, scope_prefix).await,
+        "tokensave_files" => handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => handle_affected(cg, args).await,
-        "tokensave_dead_code" => handle_dead_code(cg, args).await,
+        "tokensave_dead_code" => handle_dead_code(cg, args, scope_prefix).await,
         "tokensave_diff_context" => handle_diff_context(cg, args).await,
-        "tokensave_module_api" => handle_module_api(cg, args).await,
+        "tokensave_module_api" => handle_module_api(cg, args, scope_prefix).await,
         "tokensave_circular" => handle_circular(cg, args).await,
-        "tokensave_hotspots" => handle_hotspots(cg, args).await,
+        "tokensave_hotspots" => handle_hotspots(cg, args, scope_prefix).await,
         "tokensave_similar" => handle_similar(cg, args).await,
         "tokensave_rename_preview" => handle_rename_preview(cg, args).await,
-        "tokensave_unused_imports" => handle_unused_imports(cg, args).await,
-        "tokensave_rank" => handle_rank(cg, args).await,
-        "tokensave_largest" => handle_largest(cg, args).await,
-        "tokensave_coupling" => handle_coupling(cg, args).await,
-        "tokensave_inheritance_depth" => handle_inheritance_depth(cg, args).await,
-        "tokensave_distribution" => handle_distribution(cg, args).await,
-        "tokensave_recursion" => handle_recursion(cg, args).await,
-        "tokensave_complexity" => handle_complexity(cg, args).await,
-        "tokensave_doc_coverage" => handle_doc_coverage(cg, args).await,
-        "tokensave_god_class" => handle_god_class(cg, args).await,
+        "tokensave_unused_imports" => handle_unused_imports(cg, args, scope_prefix).await,
+        "tokensave_rank" => handle_rank(cg, args, scope_prefix).await,
+        "tokensave_largest" => handle_largest(cg, args, scope_prefix).await,
+        "tokensave_coupling" => handle_coupling(cg, args, scope_prefix).await,
+        "tokensave_inheritance_depth" => handle_inheritance_depth(cg, args, scope_prefix).await,
+        "tokensave_distribution" => handle_distribution(cg, args, scope_prefix).await,
+        "tokensave_recursion" => handle_recursion(cg, args, scope_prefix).await,
+        "tokensave_complexity" => handle_complexity(cg, args, scope_prefix).await,
+        "tokensave_doc_coverage" => handle_doc_coverage(cg, args, scope_prefix).await,
+        "tokensave_god_class" => handle_god_class(cg, args, scope_prefix).await,
         "tokensave_changelog" => handle_changelog(cg, args).await,
         "tokensave_port_status" => handle_port_status(cg, args).await,
         "tokensave_port_order" => handle_port_order(cg, args).await,
         "tokensave_commit_context" => handle_commit_context(cg, args).await,
         "tokensave_pr_context" => handle_pr_context(cg, args).await,
-        "tokensave_simplify_scan" => handle_simplify_scan(cg, args).await,
-        "tokensave_test_map" => handle_test_map(cg, args).await,
+        "tokensave_simplify_scan" => handle_simplify_scan(cg, args, scope_prefix).await,
+        "tokensave_test_map" => handle_test_map(cg, args, scope_prefix).await,
         "tokensave_type_hierarchy" => handle_type_hierarchy(cg, args).await,
         "tokensave_branch_search" => handle_branch_search(cg, args).await,
         "tokensave_branch_diff" => handle_branch_diff(cg, args).await,
@@ -119,7 +128,7 @@ fn truncate_response(s: &str) -> String {
 }
 
 /// Handles `tokensave_search` tool calls.
-async fn handle_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_search(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let query =
         args.get("query")
             .and_then(|v| v.as_str())
@@ -162,7 +171,7 @@ async fn handle_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_context` tool calls.
-async fn handle_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_context(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let task = args
         .get("task")
         .and_then(|v| v.as_str())
@@ -488,7 +497,7 @@ async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_status` tool calls.
-async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<ToolResult> {
+async fn handle_status(cg: &TokenSave, server_stats: Option<Value>, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     if let Some(ss) = server_stats {
@@ -542,7 +551,7 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>) -> Result<To
 }
 
 /// Handles `tokensave_files` tool calls.
-async fn handle_files(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_files(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(args.is_object(), "handle_files expects an object argument");
     let mut files = cg.get_all_files().await?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -699,7 +708,7 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_dead_code` tool calls.
-async fn handle_dead_code(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_dead_code(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let kinds: Vec<NodeKind> = args
         .get("kinds")
         .and_then(|v| v.as_array())
@@ -858,7 +867,7 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
 }
 
 /// Handles `tokensave_module_api` tool calls.
-async fn handle_module_api(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_module_api(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let path = args
         .get("path")
         .and_then(|v| v.as_str())
@@ -941,7 +950,7 @@ async fn handle_circular(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_hotspots` tool calls.
-async fn handle_hotspots(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_hotspots(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -1161,7 +1170,7 @@ async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result<ToolResult
 }
 
 /// Handles `tokensave_unused_imports` tool calls.
-async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
+async fn handle_unused_imports(cg: &TokenSave, _args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let all_nodes = cg.get_all_nodes().await?;
 
     // Find all Use nodes
@@ -1213,7 +1222,7 @@ async fn handle_unused_imports(cg: &TokenSave, _args: Value) -> Result<ToolResul
 }
 
 /// Handles `tokensave_rank` tool calls.
-async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_rank(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(args.is_object(), "handle_rank expects an object argument");
     use crate::types::EdgeKind;
 
@@ -1300,7 +1309,7 @@ async fn handle_rank(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_largest` tool calls.
-async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_largest(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
@@ -1351,7 +1360,7 @@ async fn handle_largest(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_coupling` tool calls.
-async fn handle_coupling(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_coupling(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let direction = args
         .get("direction")
         .and_then(|v| v.as_str())
@@ -1406,7 +1415,7 @@ async fn handle_coupling(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_inheritance_depth` tool calls.
-async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_inheritance_depth(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -1448,7 +1457,7 @@ async fn handle_inheritance_depth(cg: &TokenSave, args: Value) -> Result<ToolRes
 }
 
 /// Handles `tokensave_distribution` tool calls.
-async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_distribution(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     debug_assert!(
         args.is_object(),
         "handle_distribution expects an object argument"
@@ -1521,7 +1530,7 @@ async fn handle_distribution(cg: &TokenSave, args: Value) -> Result<ToolResult> 
 ///
 /// Detects cycles in the call graph using iterative DFS on the calls-only
 /// edge subgraph. Each cycle is a vec of node IDs forming the loop.
-async fn handle_recursion(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_recursion(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -1645,7 +1654,7 @@ async fn handle_recursion(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_complexity` tool calls.
-async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_complexity(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
@@ -1708,7 +1717,7 @@ async fn handle_complexity(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_doc_coverage` tool calls.
-async fn handle_doc_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_doc_coverage(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let path_prefix = args.get("path").and_then(|v| v.as_str());
 
     let limit = args
@@ -1767,7 +1776,7 @@ async fn handle_doc_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> 
 }
 
 /// Handles `tokensave_god_class` tool calls.
-async fn handle_god_class(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_god_class(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -2777,7 +2786,7 @@ async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_simplify_scan` tool calls.
-async fn handle_simplify_scan(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_simplify_scan(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let files: Vec<String> = args
         .get("files")
         .and_then(|v| v.as_array())
@@ -2893,7 +2902,7 @@ async fn handle_simplify_scan(cg: &TokenSave, args: Value) -> Result<ToolResult>
 }
 
 /// Handles `tokensave_test_map` tool calls.
-async fn handle_test_map(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+async fn handle_test_map(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
     let source_nodes = if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
         cg.get_nodes_by_file(file).await?
     } else if let Some(node_id) = args

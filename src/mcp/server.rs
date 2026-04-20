@@ -741,7 +741,7 @@ impl McpServer {
             None
         };
 
-        match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
+        match handle_tool_call(&self.cg, tool_name, arguments, server_stats, self.scope_prefix()).await {
             Ok(mut result) => {
                 let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
                 crate::monitor::write_entry(
