@@ -472,7 +472,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             skip_folders,
             doctor,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             if !TokenSave::is_initialized(&project_path) {
                 eprintln!(
                     "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
@@ -577,7 +577,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             short,
             details,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
             } else {
@@ -1057,7 +1057,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::hooks::hook_stop().await;
         }
         Commands::Serve { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = ensure_initialized(&project_path).await?;
 
             // If the daemon isn't running, watch this project for local changes.
