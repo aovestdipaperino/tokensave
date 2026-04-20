@@ -1057,8 +1057,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::hooks::hook_stop().await;
         }
         Commands::Serve { path } => {
+            let original_cwd = std::env::current_dir().ok();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = ensure_initialized(&project_path).await?;
+
+            // Compute scope prefix: relative path from project root to original cwd
+            let scope_prefix = original_cwd.and_then(|cwd| {
+                cwd.strip_prefix(&project_path)
+                    .ok()
+                    .filter(|rel| !rel.as_os_str().is_empty())
+                    .map(|rel| rel.to_string_lossy().into_owned())
+            });
 
             // If the daemon isn't running, watch this project for local changes.
             let watcher_cancel = if tokensave::daemon::running_daemon_pid().is_none() {
@@ -1078,7 +1087,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 None
             };
 
-            let server = tokensave::mcp::McpServer::new(cg).await;
+            let server = tokensave::mcp::McpServer::new(cg, scope_prefix).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
             server.run(&mut transport).await?;
 

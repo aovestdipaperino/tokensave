@@ -66,11 +66,15 @@ pub struct McpServer {
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
     pending_notifications: std::sync::Mutex<Vec<Value>>,
+    /// When the MCP server was started from a subdirectory of the project root,
+    /// this holds the relative path prefix (e.g. `"src/mcp"`). Listing tools
+    /// use it as the default path filter. `None` when cwd == project root.
+    scope_prefix: Option<String>,
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
-    pub async fn new(cg: TokenSave) -> Self {
+    pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Self {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
@@ -92,7 +96,13 @@ impl McpServer {
                 checked_at: None,
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
+            scope_prefix,
         }
+    }
+
+    /// Returns the active scope prefix, if the server was launched from a subdirectory.
+    pub fn scope_prefix(&self) -> Option<&str> {
+        self.scope_prefix.as_deref()
     }
 
     /// Adds the approximate token count for the given file paths to the

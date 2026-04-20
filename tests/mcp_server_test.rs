@@ -28,7 +28,7 @@ async fn setup_server() -> (McpServer, TempDir) {
     .unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    let server = McpServer::new(cg).await;
+    let server = McpServer::new(cg, None).await;
     (server, dir)
 }
 
