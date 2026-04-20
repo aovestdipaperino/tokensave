@@ -232,6 +232,16 @@ tokensave serve
 
 This starts the MCP server over stdio. You normally don't need to run this yourself — the agent integration handles it. But it's useful for debugging or connecting custom tools.
 
+### Working from a subdirectory
+
+You can open your AI agent from any subdirectory of an indexed project. Tokensave will walk up the directory tree to find the nearest `.tokensave/` database — similar to how git finds `.git/`.
+
+When the MCP server starts from a subdirectory, listing tools like `tokensave_files`, `tokensave_search`, and `tokensave_context` automatically scope their results to that subdirectory. This is useful in monorepos or large projects where you want to focus on one area.
+
+Graph traversal tools (`tokensave_callers`, `tokensave_callees`, `tokensave_impact`, etc.) remain unscoped so you can still follow connections across directory boundaries.
+
+You can always override the automatic scope by passing an explicit `path` parameter to any tool. `tokensave_status` shows the active scope prefix when one is in effect.
+
 ---
 
 ## Keeping the Index Fresh

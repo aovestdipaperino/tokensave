@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-04-20
+
+### Added
+- **Walk-up project discovery** — `tokensave serve`, `tokensave sync`, and `tokensave status` now walk up the directory tree to find the nearest `.tokensave/` database when no `--path` is given. This means you can launch an AI agent from a subdirectory of your project and tokensave will find the index automatically — similar to how git finds `.git/`. `tokensave init` is unchanged and always creates a new project at the target directory.
+- **Subdirectory scope filtering** — when the MCP server is started from a subdirectory, listing and discovery tools (`tokensave_files`, `tokensave_search`, `tokensave_context`, `tokensave_dead_code`, `tokensave_rank`, `tokensave_largest`, `tokensave_coupling`, `tokensave_complexity`, `tokensave_doc_coverage`, `tokensave_god_class`, `tokensave_unused_imports`, `tokensave_hotspots`, and others) automatically scope results to that subdirectory. Graph traversal tools (`tokensave_callers`, `tokensave_callees`, `tokensave_impact`, `tokensave_affected`, `tokensave_type_hierarchy`) remain unscoped so cross-directory relationships are preserved. The user can always override the scope by providing an explicit `path` parameter. `tokensave_status` reports the active scope prefix when one is in effect.
+
 ## [4.0.7] - 2026-04-18
 
 ### Fixed
