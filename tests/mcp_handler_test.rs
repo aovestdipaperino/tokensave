@@ -1371,3 +1371,41 @@ async fn test_context_scope_prefix_filters() {
         "context should return results even when scoped"
     );
 }
+
+#[tokio::test]
+async fn test_status_reports_scope_prefix() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_status",
+        json!({}),
+        None,
+        Some("src/mcp"),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("scope_prefix"),
+        "status should report scope_prefix"
+    );
+    assert!(
+        text.contains("src/mcp"),
+        "status should show the actual prefix value"
+    );
+}
+
+#[tokio::test]
+async fn test_status_no_scope_prefix() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("scope_prefix").is_none()
+            || parsed["scope_prefix"].is_null(),
+        "status should not have scope_prefix when None"
+    );
+}

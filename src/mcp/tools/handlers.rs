@@ -525,7 +525,7 @@ async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_status` tool calls.
-async fn handle_status(cg: &TokenSave, server_stats: Option<Value>, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_status(cg: &TokenSave, server_stats: Option<Value>, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     if let Some(ss) = server_stats {
@@ -567,6 +567,10 @@ async fn handle_status(cg: &TokenSave, server_stats: Option<Value>, _scope_prefi
     let stale_files = cg.check_file_staleness(&sample_paths).await;
     if !stale_files.is_empty() {
         output["stale_files"] = json!(stale_files.len());
+    }
+
+    if let Some(prefix) = scope_prefix {
+        output["scope_prefix"] = json!(prefix);
     }
 
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
