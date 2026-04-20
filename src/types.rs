@@ -512,6 +512,10 @@ pub struct BuildContextOptions {
     /// large file from dominating the output. `None` means no cap (defaults
     /// to `max_nodes`).
     pub max_per_file: Option<usize>,
+    /// When set, only nodes whose `file_path` starts with this prefix are
+    /// considered as entry points. Graph expansion may still traverse outside
+    /// the prefix (traversals are unscoped).
+    pub path_prefix: Option<String>,
 }
 
 impl Default for BuildContextOptions {
@@ -529,6 +533,7 @@ impl Default for BuildContextOptions {
             exclude_node_ids: HashSet::new(),
             merge_adjacent: false,
             max_per_file: None,
+            path_prefix: None,
         }
     }
 }

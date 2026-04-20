@@ -237,6 +237,18 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
+        // --- path_prefix filter: restrict entry points to the given subdirectory ---
+        if let Some(ref prefix) = options.path_prefix {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.clone()
+            } else {
+                format!("{prefix}/")
+            };
+            candidates.retain(|sr| {
+                sr.node.file_path.starts_with(&with_slash) || sr.node.file_path == *prefix
+            });
+        }
+
         // --- Re-rank with structural signals (kind, visibility, path) ---
         rerank_candidates(&mut candidates);
 

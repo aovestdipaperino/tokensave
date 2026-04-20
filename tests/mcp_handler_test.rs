@@ -1351,3 +1351,23 @@ async fn test_files_explicit_path_overrides_scope() {
         "explicit path 'tests' should exclude src files"
     );
 }
+
+#[tokio::test]
+async fn test_context_scope_prefix_filters() {
+    let (cg, _dir) = setup_project().await;
+    // Context scoped to "tests" should return results (even if limited to test files)
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_context",
+        json!({"task": "understand helper"}),
+        None,
+        Some("tests"),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.is_empty(),
+        "context should return results even when scoped"
+    );
+}

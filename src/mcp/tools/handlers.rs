@@ -196,7 +196,7 @@ async fn handle_search(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) 
 }
 
 /// Handles `tokensave_context` tool calls.
-async fn handle_context(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_context(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let task = args
         .get("task")
         .and_then(|v| v.as_str())
@@ -257,6 +257,8 @@ async fn handle_context(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>
         .map(|v| v as usize)
         .or(Some((max_nodes / 3).max(3)));
 
+    let path_prefix = effective_path(&args, scope_prefix).map(String::from);
+
     let options = BuildContextOptions {
         max_nodes,
         include_code,
@@ -265,6 +267,7 @@ async fn handle_context(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>
         exclude_node_ids,
         merge_adjacent,
         max_per_file,
+        path_prefix,
         ..Default::default()
     };
 
