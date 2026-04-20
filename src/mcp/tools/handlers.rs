@@ -34,6 +34,31 @@ fn effective_path<'a>(args: &'a Value, scope_prefix: Option<&'a str>) -> Option<
     args.get("path").and_then(|v| v.as_str()).or(scope_prefix)
 }
 
+/// Filters a Vec of items by file path prefix when a scope is active.
+/// Returns the vec unchanged when `scope_prefix` is `None`.
+fn filter_by_scope<T, F>(items: Vec<T>, scope_prefix: Option<&str>, get_path: F) -> Vec<T>
+where
+    F: Fn(&T) -> &str,
+{
+    match scope_prefix {
+        Some(prefix) => {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            items
+                .into_iter()
+                .filter(|item| {
+                    let p = get_path(item);
+                    p.starts_with(&with_slash) || p == prefix
+                })
+                .collect()
+        }
+        None => items,
+    }
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
@@ -127,7 +152,7 @@ fn truncate_response(s: &str) -> String {
 }
 
 /// Handles `tokensave_search` tool calls.
-async fn handle_search(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_search(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let query =
         args.get("query")
             .and_then(|v| v.as_str())
@@ -142,6 +167,7 @@ async fn handle_search(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>)
         .unwrap_or(10);
 
     let results = cg.search(query, limit).await?;
+    let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
 
     let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
 
@@ -707,7 +733,7 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_dead_code` tool calls.
-async fn handle_dead_code(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_dead_code(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let kinds: Vec<NodeKind> = args
         .get("kinds")
         .and_then(|v| v.as_array())
@@ -719,6 +745,7 @@ async fn handle_dead_code(cg: &TokenSave, args: Value, _scope_prefix: Option<&st
         .unwrap_or_else(|| vec![NodeKind::Function, NodeKind::Method]);
 
     let dead = cg.find_dead_code(&kinds).await?;
+    let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
 
     let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));
 
@@ -947,7 +974,7 @@ async fn handle_circular(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
 }
 
 /// Handles `tokensave_hotspots` tool calls.
-async fn handle_hotspots(cg: &TokenSave, args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_hotspots(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -989,6 +1016,20 @@ async fn handle_hotspots(cg: &TokenSave, args: Value, _scope_prefix: Option<&str
                 "total": incoming + outgoing,
             }));
         }
+    }
+
+    if let Some(prefix) = scope_prefix {
+        let with_slash = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/")
+        };
+        items.retain(|item| {
+            item["file"]
+                .as_str()
+                .map_or(false, |f| f.starts_with(&with_slash) || f == prefix)
+        });
+        touched.retain(|f| f.starts_with(&with_slash) || f == prefix);
     }
 
     let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
@@ -1167,13 +1208,24 @@ async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result<ToolResult
 }
 
 /// Handles `tokensave_unused_imports` tool calls.
-async fn handle_unused_imports(cg: &TokenSave, _args: Value, _scope_prefix: Option<&str>) -> Result<ToolResult> {
+async fn handle_unused_imports(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
+    let _ = args; // currently unused beyond scope filtering
     let all_nodes = cg.get_all_nodes().await?;
 
     // Find all Use nodes
     let use_nodes: Vec<&crate::types::Node> = all_nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Use)
+        .filter(|n| {
+            scope_prefix.map_or(true, |prefix| {
+                let with_slash = if prefix.ends_with('/') {
+                    prefix.to_string()
+                } else {
+                    format!("{prefix}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == prefix
+            })
+        })
         .collect();
 
     let mut unused: Vec<Value> = Vec::new();

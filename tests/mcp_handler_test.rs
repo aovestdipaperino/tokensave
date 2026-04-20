@@ -1308,6 +1308,31 @@ async fn test_files_scope_prefix_filters() {
 }
 
 #[tokio::test]
+async fn test_search_scope_prefix_filters() {
+    let (cg, _dir) = setup_project().await;
+    // Search for "helper" but scoped to "tests" — should only return test file results
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20}),
+        None,
+        Some("tests"),
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let items: Vec<serde_json::Value> = serde_json::from_str(text).unwrap_or_default();
+    for item in &items {
+        let file = item["file"].as_str().unwrap_or("");
+        assert!(
+            file.starts_with("tests"),
+            "scoped search should only return files under 'tests', got: {}",
+            file
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_files_explicit_path_overrides_scope() {
     let (cg, _dir) = setup_project().await;
     // Explicit path "tests" should override scope_prefix "src"
