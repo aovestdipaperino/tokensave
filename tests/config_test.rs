@@ -151,3 +151,34 @@ fn test_resolve_path_none_uses_cwd() {
     let result = resolve_path(None);
     assert!(!result.as_os_str().is_empty());
 }
+
+#[test]
+fn test_discover_project_root_finds_parent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
+    std::fs::write(root.join(".tokensave/tokensave.db"), b"fake").unwrap();
+    let child = root.join("src/mcp");
+    std::fs::create_dir_all(&child).unwrap();
+
+    let found = tokensave::config::discover_project_root(&child);
+    assert_eq!(found, Some(root.to_path_buf()));
+}
+
+#[test]
+fn test_discover_project_root_returns_none() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let found = tokensave::config::discover_project_root(dir.path());
+    assert!(found.is_none());
+}
+
+#[test]
+fn test_discover_project_root_at_root_itself() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
+    std::fs::write(root.join(".tokensave/tokensave.db"), b"fake").unwrap();
+
+    let found = tokensave::config::discover_project_root(root);
+    assert_eq!(found, Some(root.to_path_buf()));
+}
