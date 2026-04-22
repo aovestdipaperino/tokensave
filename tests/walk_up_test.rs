@@ -89,25 +89,19 @@ async fn test_files_scoped_to_subdir() {
     let (cg, _dir) = setup_nested_project().await;
 
     // Scoped to "src/mcp" — should only return mcp files
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({}),
-        None,
-        Some("src/mcp"),
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({}), None, Some("src/mcp"))
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
-    assert!(text.contains("server.rs"), "should include src/mcp/server.rs");
+    assert!(
+        text.contains("server.rs"),
+        "should include src/mcp/server.rs"
+    );
     assert!(
         !text.contains("queries.rs"),
         "should exclude src/db/queries.rs"
     );
-    assert!(
-        !text.contains("test_server"),
-        "should exclude tests/"
-    );
+    assert!(!text.contains("test_server"), "should exclude tests/");
 }
 
 #[tokio::test]

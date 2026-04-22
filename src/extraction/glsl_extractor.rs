@@ -306,9 +306,8 @@ impl GlslExtractor {
         } else if Self::has_qualifier(state, node, "in")
             || Self::has_qualifier(state, node, "varying")
             || Self::has_qualifier(state, node, "attribute")
+            || Self::has_qualifier(state, node, "out")
         {
-            (NodeKind::Field, Visibility::Pub)
-        } else if Self::has_qualifier(state, node, "out") {
             (NodeKind::Field, Visibility::Pub)
         } else if text_trimmed.starts_with("const ") || text_trimmed.contains(" const ") {
             (NodeKind::Const, Visibility::Private)

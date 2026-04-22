@@ -326,12 +326,13 @@ fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
         None => return replace_default(new_exe),
     };
 
-    let bin_name = canonical.file_name().unwrap(); // safe: canonical has a filename
-    let old_version = version_dir
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let Some(bin_name) = canonical.file_name() else {
+        return replace_default(new_exe);
+    };
+    let Some(old_version_os) = version_dir.file_name() else {
+        return replace_default(new_exe);
+    };
+    let old_version = old_version_os.to_string_lossy().to_string();
 
     // Step 1 (critical): replace the binary atomically.
     install_binary(new_exe, &canonical)?;

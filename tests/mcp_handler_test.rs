@@ -103,7 +103,8 @@ async fn test_search() {
         &cg,
         "tokensave_search",
         json!({"query": "helper", "limit": 5}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -126,7 +127,8 @@ async fn test_context() {
         &cg,
         "tokensave_context",
         json!({"task": "understand the helper function"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -142,9 +144,15 @@ async fn test_context() {
 async fn test_callers() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(&cg, "tokensave_callers", json!({"node_id": node_id}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": node_id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -157,9 +165,15 @@ async fn test_callers() {
 async fn test_callees() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(&cg, "tokensave_callees", json!({"node_id": node_id}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callees",
+        json!({"node_id": node_id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -172,9 +186,15 @@ async fn test_callees() {
 async fn test_impact() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(&cg, "tokensave_impact", json!({"node_id": node_id}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_impact",
+        json!({"node_id": node_id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("node_count"));
 }
@@ -187,9 +207,15 @@ async fn test_impact() {
 async fn test_node_existing() {
     let (cg, _dir) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
-    let result = handle_tool_call(&cg, "tokensave_node", json!({"node_id": node_id}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_node",
+        json!({"node_id": node_id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(
         text.contains("helper"),
@@ -220,7 +246,8 @@ async fn test_node_not_found() {
         &cg,
         "tokensave_node",
         json!({"node_id": "nonexistent_id_12345"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -304,9 +331,15 @@ async fn test_files_path_filter() {
 #[tokio::test]
 async fn test_files_pattern_filter() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_files", json!({"pattern": "*.rs"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"pattern": "*.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
 }
@@ -318,9 +351,15 @@ async fn test_files_pattern_filter() {
 #[tokio::test]
 async fn test_files_flat_format() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_files", json!({"format": "flat"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"format": "flat"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     // Flat format includes "bytes" per entry
@@ -338,7 +377,8 @@ async fn test_affected() {
         &cg,
         "tokensave_affected",
         json!({"files": ["src/utils.rs"]}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -378,7 +418,8 @@ async fn test_diff_context() {
         &cg,
         "tokensave_diff_context",
         json!({"files": ["src/utils.rs"]}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -400,9 +441,15 @@ async fn test_diff_context() {
 #[tokio::test]
 async fn test_module_api() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_module_api", json!({"path": "src"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_module_api",
+        json!({"path": "src"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(
         text.contains("public_symbol_count"),
@@ -453,9 +500,15 @@ async fn test_hotspots() {
 #[tokio::test]
 async fn test_similar() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_similar", json!({"symbol": "helper"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_similar",
+        json!({"symbol": "helper"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     assert!(
@@ -476,7 +529,8 @@ async fn test_rename_preview() {
         &cg,
         "tokensave_rename_preview",
         json!({"node_id": node_id}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -516,7 +570,8 @@ async fn test_rank() {
         &cg,
         "tokensave_rank",
         json!({"edge_kind": "calls", "direction": "incoming"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -539,7 +594,8 @@ async fn test_rank_invalid_direction() {
         &cg,
         "tokensave_rank",
         json!({"edge_kind": "calls", "direction": "sideways"}),
-        None, None,
+        None,
+        None,
     )
     .await;
     match result {
@@ -584,7 +640,8 @@ async fn test_coupling() {
         &cg,
         "tokensave_coupling",
         json!({"direction": "fan_in"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -603,7 +660,8 @@ async fn test_inheritance_depth() {
         &cg,
         "tokensave_inheritance_depth",
         json!({"limit": 5}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -635,7 +693,8 @@ async fn test_distribution_summary() {
         &cg,
         "tokensave_distribution",
         json!({"summary": true}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -726,7 +785,8 @@ async fn test_changelog_no_git() {
         &cg,
         "tokensave_changelog",
         json!({"from_ref": "HEAD~1", "to_ref": "HEAD"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -749,7 +809,8 @@ async fn test_port_status() {
         &cg,
         "tokensave_port_status",
         json!({"source_dir": "src", "target_dir": "tests"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -771,7 +832,8 @@ async fn test_port_order() {
         &cg,
         "tokensave_port_order",
         json!({"source_dir": "src"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -871,9 +933,15 @@ async fn test_status_without_server_stats() {
 #[tokio::test]
 async fn test_search_populates_touched_files() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_search", json!({"query": "helper"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(
         !result.touched_files.is_empty(),
         "search results should populate touched_files"
@@ -891,7 +959,8 @@ async fn test_rename_preview_not_found() {
         &cg,
         "tokensave_rename_preview",
         json!({"node_id": "nonexistent_id_12345"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -914,7 +983,8 @@ async fn test_coupling_fan_out() {
         &cg,
         "tokensave_coupling",
         json!({"direction": "fan_out"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -933,7 +1003,8 @@ async fn test_rank_outgoing() {
         &cg,
         "tokensave_rank",
         json!({"edge_kind": "calls", "direction": "outgoing"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -983,7 +1054,8 @@ async fn test_rank_missing_edge_kind() {
         &cg,
         "tokensave_rank",
         json!({"direction": "incoming"}),
-        None, None,
+        None,
+        None,
     )
     .await;
     assert!(result.is_err(), "rank without edge_kind should error");
@@ -1093,7 +1165,8 @@ async fn test_changelog_with_real_git() {
         &cg,
         "tokensave_changelog",
         json!({"from_ref": "HEAD~1", "to_ref": "HEAD"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -1119,9 +1192,15 @@ async fn test_changelog_with_real_git() {
 #[tokio::test]
 async fn test_distribution_with_path_filter() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_distribution", json!({"path": "src/"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_distribution",
+        json!({"path": "src/"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(text.contains("per_file"), "default mode should be per_file");
     // Should only contain src/ files, not tests/
@@ -1138,9 +1217,15 @@ async fn test_distribution_with_path_filter() {
 #[tokio::test]
 async fn test_files_grouped_format() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(&cg, "tokensave_files", json!({"format": "grouped"}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"format": "grouped"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
     // Grouped format shows directory headers like "src/ (N files)"
@@ -1166,7 +1251,8 @@ async fn test_dead_code_custom_kinds() {
         &cg,
         "tokensave_dead_code",
         json!({"kinds": ["struct"]}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -1199,7 +1285,8 @@ async fn test_affected_with_custom_filter() {
         &cg,
         "tokensave_affected",
         json!({"files": ["src/utils.rs"], "filter": "**/*test*"}),
-        None, None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -1290,15 +1377,9 @@ async fn test_doc_coverage_response_structure() {
 async fn test_files_scope_prefix_filters() {
     let (cg, _dir) = setup_project().await;
     // With scope_prefix "src", should only return files under src/
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_files",
-        json!({}),
-        None,
-        Some("src"),
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_files", json!({}), None, Some("src"))
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(
         !text.contains("tests/"),
@@ -1375,15 +1456,9 @@ async fn test_context_scope_prefix_filters() {
 #[tokio::test]
 async fn test_status_reports_scope_prefix() {
     let (cg, _dir) = setup_project().await;
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_status",
-        json!({}),
-        None,
-        Some("src/mcp"),
-    )
-    .await
-    .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, Some("src/mcp"))
+        .await
+        .unwrap();
     let text = extract_text(&result.value);
     assert!(
         text.contains("scope_prefix"),
@@ -1404,8 +1479,7 @@ async fn test_status_no_scope_prefix() {
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert!(
-        parsed.get("scope_prefix").is_none()
-            || parsed["scope_prefix"].is_null(),
+        parsed.get("scope_prefix").is_none() || parsed["scope_prefix"].is_null(),
         "status should not have scope_prefix when None"
     );
 }

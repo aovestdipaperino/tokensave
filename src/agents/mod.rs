@@ -1021,7 +1021,7 @@ fn insert_gitconfig_value(contents: &str, section: &str, key: &str, value: &str)
 /// Expand a leading `~` to the given home directory.
 fn expand_tilde(s: &str, home: &Path) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
-        return home.join(rest).to_string_lossy().to_string();
+        return home.join(rest).to_string_lossy().replace('\\', "/");
     }
     if s == "~" {
         return home.to_string_lossy().to_string();

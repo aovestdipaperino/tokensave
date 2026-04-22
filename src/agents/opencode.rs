@@ -83,11 +83,16 @@ impl AgentIntegration for OpenCodeIntegration {
 // ---------------------------------------------------------------------------
 
 /// Returns the path to opencode config (global).
-/// Uses `$HOME/.config/opencode/opencode.json` (modern location) or
-/// `$XDG_CONFIG_HOME/opencode/opencode.json` if set.
+/// Prefers `$HOME/.config/opencode/opencode.json`. Falls back to
+/// `$XDG_CONFIG_HOME/opencode/opencode.json` only when the XDG path
+/// is under `home` (so tests with temp-dir homes are never polluted by
+/// the real user's environment).
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return std::path::PathBuf::from(xdg).join("opencode/opencode.json");
+        let xdg_path = std::path::PathBuf::from(&xdg);
+        if xdg_path.starts_with(home) {
+            return xdg_path.join("opencode/opencode.json");
+        }
     }
     home.join(".config/opencode/opencode.json")
 }
@@ -99,9 +104,12 @@ fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
         return modern;
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        let xdg_dir = std::path::PathBuf::from(xdg).join("opencode");
-        if xdg_dir.exists() {
-            return xdg_dir.join("OPENCODE.md");
+        let xdg_path = std::path::PathBuf::from(&xdg);
+        if xdg_path.starts_with(home) {
+            let xdg_dir = xdg_path.join("opencode");
+            if xdg_dir.exists() {
+                return xdg_dir.join("OPENCODE.md");
+            }
         }
     }
     home.join("OPENCODE.md")
