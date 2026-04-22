@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.2] - 2026-04-22
+
+### Added
+- **Mistral Vibe agent integration** — `tokensave install --agent vibe` registers the tokensave MCP server in Vibe's `~/.vibe/config.toml` as a `[[mcp_servers]]` stdio entry, and appends prompt rules to `~/.vibe/prompts/cli.md`. Supports install, uninstall, and healthcheck. Respects the `VIBE_HOME` environment variable. Closes #37.
+
 ## [4.1.1] - 2026-04-22
 
 ### Added

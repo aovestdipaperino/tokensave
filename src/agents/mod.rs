@@ -16,6 +16,7 @@ pub mod gemini;
 pub mod kilo;
 pub mod opencode;
 pub mod roo_code;
+pub mod vibe;
 pub mod zed;
 
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ pub use gemini::GeminiIntegration;
 pub use kilo::KiloIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use roo_code::RooCodeIntegration;
+pub use vibe::VibeIntegration;
 pub use zed::ZedIntegration;
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
         "antigravity" => Ok(Box::new(AntigravityIntegration)),
         "kilo" => Ok(Box::new(KiloIntegration)),
+        "vibe" => Ok(Box::new(VibeIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -123,6 +126,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(RooCodeIntegration),
         Box::new(AntigravityIntegration),
         Box::new(KiloIntegration),
+        Box::new(VibeIntegration),
     ]
 }
 
@@ -140,6 +144,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "roo-code",
         "antigravity",
         "kilo",
+        "vibe",
     ]
 }
 

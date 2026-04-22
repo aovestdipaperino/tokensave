@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 11);
+    assert_eq!(all.len(), 12);
 }
 
 #[test]
@@ -27,7 +27,8 @@ fn test_available_integrations() {
     assert!(ids.contains(&"roo-code"));
     assert!(ids.contains(&"antigravity"));
     assert!(ids.contains(&"kilo"));
-    assert_eq!(ids.len(), 11);
+    assert!(ids.contains(&"vibe"));
+    assert_eq!(ids.len(), 12);
 }
 
 #[test]
@@ -44,6 +45,7 @@ fn test_get_integration_valid() {
         "roo-code",
         "antigravity",
         "kilo",
+        "vibe",
     ] {
         let agent = get_integration(id).unwrap();
         assert_eq!(agent.id(), *id);
@@ -84,6 +86,7 @@ fn test_agent_names_are_human_readable() {
         ("roo-code", "Roo Code"),
         ("antigravity", "Antigravity"),
         ("kilo", "Kilo CLI"),
+        ("vibe", "Mistral Vibe"),
     ];
     for (id, expected_name) in expected_names {
         let agent = get_integration(id).unwrap();
@@ -371,6 +374,42 @@ fn test_copilot_install_creates_config() {
     assert!(cli_content["mcpServers"]["tokensave"].is_object());
 }
 
+#[test]
+fn test_vibe_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    VibeIntegration.install(&ctx).unwrap();
+
+    let config_path = home.join(".vibe/config.toml");
+    assert!(
+        config_path.exists(),
+        "config.toml should exist after install"
+    );
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("name = \"tokensave\""),
+        "config should contain tokensave MCP server"
+    );
+    assert!(
+        content.contains("transport = \"stdio\""),
+        "config should use stdio transport"
+    );
+    assert!(
+        content.contains("args = [\"serve\"]"),
+        "config should have serve arg"
+    );
+
+    // Check prompt rules
+    let prompt_path = home.join(".vibe/prompts/cli.md");
+    assert!(
+        prompt_path.exists(),
+        "Vibe prompt should exist after install"
+    );
+    let prompt = std::fs::read_to_string(&prompt_path).unwrap();
+    assert!(prompt.contains("tokensave"));
+}
+
 // ---------------------------------------------------------------------------
 // 4. Install followed by Uninstall
 // ---------------------------------------------------------------------------
@@ -513,6 +552,34 @@ fn test_copilot_install_then_uninstall() {
             .and_then(|v| v.get("tokensave"))
             .is_some();
         assert!(!has_tokensave);
+    }
+}
+
+#[test]
+fn test_vibe_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    VibeIntegration.install(&ctx).unwrap();
+    VibeIntegration.uninstall(&ctx).unwrap();
+
+    let config_path = home.join(".vibe/config.toml");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !content.contains("name = \"tokensave\""),
+            "tokensave should be removed from config.toml"
+        );
+    }
+
+    let prompt_path = home.join(".vibe/prompts/cli.md");
+    if prompt_path.exists() {
+        let content = std::fs::read_to_string(&prompt_path).unwrap();
+        assert!(
+            !content.contains("tokensave"),
+            "tokensave rules should be removed from prompt"
+        );
     }
 }
 
@@ -1131,6 +1198,7 @@ fn test_uninstall_without_install_does_not_crash() {
     ZedIntegration.uninstall(&ctx).unwrap();
     ClineIntegration.uninstall(&ctx).unwrap();
     RooCodeIntegration.uninstall(&ctx).unwrap();
+    VibeIntegration.uninstall(&ctx).unwrap();
 }
 
 // ---------------------------------------------------------------------------
