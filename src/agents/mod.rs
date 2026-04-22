@@ -603,9 +603,13 @@ pub fn vscode_data_dir(home: &Path) -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA")
-            .map(|a| PathBuf::from(a).join("Code"))
-            .unwrap_or_else(|_| home.join("AppData/Roaming/Code"))
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata_path = PathBuf::from(&appdata);
+            if appdata_path.starts_with(home) {
+                return appdata_path.join("Code");
+            }
+        }
+        home.join("AppData/Roaming/Code")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
