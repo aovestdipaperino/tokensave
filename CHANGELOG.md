@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-04-22
+
+### Added
+- **`tokensave sync --verbose` (`-v`)** — prints per-phase diagnostic lines during sync to help diagnose slow or stuck syncs on large repos. Shows file counts, change breakdowns, and timings for each phase (scan, stat-check, hash, content check, index, resolve, DB write). Also works with `--force` full re-index. Addresses #36.
+
 ## [4.1.0] - 2026-04-20
 
 ### Added

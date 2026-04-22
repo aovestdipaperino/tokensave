@@ -112,6 +112,9 @@ enum Commands {
         /// List added, modified, and removed files after sync
         #[arg(long)]
         doctor: bool,
+        /// Print per-phase diagnostics (file counts, timings) to help debug slow syncs
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Show project statistics
     Status {
@@ -444,7 +447,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             // Check for updates in parallel with indexing
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
-            init_and_index(&project_path, &skip_folders).await?;
+            init_and_index(&project_path, &skip_folders, false).await?;
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
@@ -471,6 +474,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             force,
             skip_folders,
             doctor,
+            verbose,
         } => {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             if !TokenSave::is_initialized(&project_path) {
@@ -493,35 +497,43 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
 
             if force {
-                init_and_index(&project_path, &skip_folders).await?;
+                init_and_index(&project_path, &skip_folders, verbose).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
                 let result = cg
-                    .sync_with_progress(|current, total, detail| {
-                        if current == 0 {
-                            // Phase message (scanning, hashing, detecting, resolving)
-                            spinner.set_message(detail);
-                        } else {
-                            // Per-file progress with ETA
-                            let elapsed = sync_start.elapsed().as_secs_f64();
-                            let eta = if current > 1 {
-                                let per_file = elapsed / (current - 1) as f64;
-                                let remaining = per_file * (total - current) as f64;
-                                if remaining >= 1.0 {
-                                    format!(" (ETA: {remaining:.0}s)")
+                    .sync_with_progress_verbose(
+                        |current, total, detail| {
+                            if current == 0 {
+                                // Phase message (scanning, hashing, detecting, resolving)
+                                spinner.set_message(detail);
+                            } else {
+                                // Per-file progress with ETA
+                                let elapsed = sync_start.elapsed().as_secs_f64();
+                                let eta = if current > 1 {
+                                    let per_file = elapsed / (current - 1) as f64;
+                                    let remaining = per_file * (total - current) as f64;
+                                    if remaining >= 1.0 {
+                                        format!(" (ETA: {remaining:.0}s)")
+                                    } else {
+                                        String::new()
+                                    }
                                 } else {
                                     String::new()
-                                }
-                            } else {
-                                String::new()
-                            };
-                            spinner
-                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
-                        }
-                    })
+                                };
+                                spinner.set_message(&format!(
+                                    "[{current}/{total}] syncing {detail}{eta}"
+                                ));
+                            }
+                        },
+                        |msg| {
+                            if verbose {
+                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                            }
+                        },
+                    )
                     .await?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
@@ -594,7 +606,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    init_and_index(&project_path, &[]).await?
+                    init_and_index(&project_path, &[], false).await?
                 } else {
                     return Ok(());
                 }
@@ -1621,7 +1633,7 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
     })?;
     let answer = answer.trim();
     if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-        init_and_index(&project_path, &[]).await?;
+        init_and_index(&project_path, &[], false).await?;
     }
     Ok(())
 }
@@ -1630,6 +1642,7 @@ async fn handle_no_command() -> tokensave::errors::Result<()> {
 async fn init_and_index(
     project_path: &Path,
     skip_folders: &[String],
+    verbose: bool,
 ) -> tokensave::errors::Result<TokenSave> {
     debug_assert!(
         project_path.is_dir(),
@@ -1663,21 +1676,28 @@ async fn init_and_index(
     let spinner = Spinner::new();
     let index_start = std::time::Instant::now();
     let result = cg
-        .index_all_with_progress(|current, total, file| {
-            let elapsed = index_start.elapsed().as_secs_f64();
-            let eta = if current > 1 {
-                let per_file = elapsed / (current - 1) as f64;
-                let remaining = per_file * (total - current) as f64;
-                if remaining >= 1.0 {
-                    format!(" (ETA: {remaining:.0}s)")
+        .index_all_with_progress_verbose(
+            |current, total, file| {
+                let elapsed = index_start.elapsed().as_secs_f64();
+                let eta = if current > 1 {
+                    let per_file = elapsed / (current - 1) as f64;
+                    let remaining = per_file * (total - current) as f64;
+                    if remaining >= 1.0 {
+                        format!(" (ETA: {remaining:.0}s)")
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
+                };
+                spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
+            },
+            |msg| {
+                if verbose {
+                    eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
                 }
-            } else {
-                String::new()
-            };
-            spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
-        })
+            },
+        )
         .await?;
     spinner.done(&format!(
         "indexing done — {} files, {} nodes, {} edges in {}ms",

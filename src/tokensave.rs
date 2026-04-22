@@ -523,6 +523,20 @@ impl TokenSave {
     where
         F: Fn(usize, usize, &str),
     {
+        self.index_all_with_progress_verbose(on_file, |_| {}).await
+    }
+
+    /// Like `index_all_with_progress()`, but also calls `on_verbose` after
+    /// each phase completes with a diagnostic summary line.
+    pub async fn index_all_with_progress_verbose<F, V>(
+        &self,
+        on_file: F,
+        on_verbose: V,
+    ) -> Result<IndexResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(
             self.project_root.is_dir(),
@@ -537,13 +551,20 @@ impl TokenSave {
         self.db.begin_bulk_load().await?;
 
         // 2. Scan for source files
+        let phase_start = Instant::now();
         let files = self.scan_files()?;
         let total = files.len();
+        on_verbose(&format!(
+            "scanned {} files in {:.1}s",
+            total,
+            phase_start.elapsed().as_secs_f64()
+        ));
 
         // 3. Parallel extraction: read + parse + hash on all cores
         let project_root = &self.project_root;
         let registry = &self.registry;
 
+        let phase_start = Instant::now();
         let extractions: Vec<_> = files
             .par_iter()
             .filter_map(|file_path| {
@@ -582,12 +603,26 @@ impl TokenSave {
             });
         }
 
+        on_verbose(&format!(
+            "extracted {} nodes, {} edges from {} files in {:.1}s",
+            total_nodes,
+            all_edges.len(),
+            extractions.len(),
+            phase_start.elapsed().as_secs_f64()
+        ));
+
         // 5. Resolve references in-memory (parallel) before DB insert
+        let phase_start = Instant::now();
         if !all_unresolved.is_empty() {
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
             all_edges.extend(resolver.create_edges(&resolution.resolved));
         }
+        on_verbose(&format!(
+            "resolved {} references in {:.1}s",
+            all_unresolved.len(),
+            phase_start.elapsed().as_secs_f64()
+        ));
 
         // 6. Sort by PK order + dedup edges
         all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
@@ -606,12 +641,17 @@ impl TokenSave {
         let total_edges = all_edges.len();
 
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
+        let phase_start = Instant::now();
         self.db.insert_nodes(&all_nodes).await?;
         self.db.insert_edges(&all_edges).await?;
         self.db.upsert_files(&file_records).await?;
 
         // 8. Restore indexes and normal durability
         self.db.end_bulk_load().await?;
+        on_verbose(&format!(
+            "wrote to database in {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        ));
 
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
@@ -641,17 +681,31 @@ impl TokenSave {
         self.sync_with_progress(|_, _, _| {}).await
     }
 
-    /// Like `sync()`, but calls `on_progress` with a description and the
-    /// current step for each phase of work. Use this to drive a progress
-    /// spinner in the CLI.
-    ///
-    /// The callback receives `(current_file_index, total_files, message)` where
-    /// `current_file_index` and `total_files` are zero during non-file phases
-    /// (scanning, hashing, detecting, resolving) and populated during the
-    /// per-file syncing phase.
+    /// Like `sync()`, but calls `on_progress` for spinner updates.
+    /// Equivalent to `sync_with_progress_verbose(on_progress, |_| {})`.
     pub async fn sync_with_progress<F>(&self, on_progress: F) -> Result<SyncResult>
     where
         F: Fn(usize, usize, &str),
+    {
+        self.sync_with_progress_verbose(on_progress, |_| {}).await
+    }
+
+    /// Like `sync()`, but calls `on_progress` with a description and the
+    /// current step for each phase of work, and `on_verbose` after each phase
+    /// completes with a diagnostic summary line (count + timing).
+    ///
+    /// The progress callback receives `(current_file_index, total_files, message)`
+    /// where `current_file_index` and `total_files` are zero during non-file phases
+    /// (scanning, hashing, detecting, resolving) and populated during the
+    /// per-file syncing phase.
+    pub async fn sync_with_progress_verbose<F, V>(
+        &self,
+        on_progress: F,
+        on_verbose: V,
+    ) -> Result<SyncResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
     {
         debug_assert!(
             self.project_root.exists(),
@@ -666,10 +720,17 @@ impl TokenSave {
         let start = Instant::now();
 
         on_progress(0, 0, "scanning files");
+        let phase_start = Instant::now();
         let current_files = self.scan_files()?;
+        on_verbose(&format!(
+            "scanned {} files in {:.1}s",
+            current_files.len(),
+            phase_start.elapsed().as_secs_f64()
+        ));
 
         // Stat all files in parallel to get (mtime, size) — ~11ms for 20k files
         on_progress(0, 0, "checking file timestamps");
+        let phase_start = Instant::now();
         let project_root = &self.project_root;
         let file_stats: Vec<(String, i64, u64)> = current_files
             .par_iter()
@@ -679,6 +740,11 @@ impl TokenSave {
                 Some((path.clone(), mtime, size))
             })
             .collect();
+        on_verbose(&format!(
+            "stat-checked {} files in {:.1}s",
+            file_stats.len(),
+            phase_start.elapsed().as_secs_f64()
+        ));
 
         // Load all DB file records into a map for O(1) lookups
         let db_files = self.db.get_all_files().await?;
@@ -712,8 +778,17 @@ impl TokenSave {
             .cloned()
             .collect();
 
+        on_verbose(&format!(
+            "changes: {} new, {} stat-changed, {} removed, {} unchanged",
+            new_files.len(),
+            stat_changed.len(),
+            removed.len(),
+            file_stats.len() - new_files.len() - stat_changed.len()
+        ));
+
         // Read + hash only files with changed stats or new files
         on_progress(0, 0, "hashing changed files");
+        let phase_start = Instant::now();
         let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
         let hash_results: Vec<_> = needs_read
             .par_iter()
@@ -738,6 +813,12 @@ impl TokenSave {
                 }
             }
         }
+        on_verbose(&format!(
+            "hashed {} files in {:.1}s ({} read errors)",
+            hash_map.len(),
+            phase_start.elapsed().as_secs_f64(),
+            skipped.len()
+        ));
 
         // Among stat_changed files, find those with actually different content
         on_progress(0, 0, "detecting changes");
@@ -756,6 +837,11 @@ impl TokenSave {
                 }
             }
         }
+        on_verbose(&format!(
+            "content check: {} modified, {} mtime-only",
+            stale.len(),
+            mtime_only_changed.len()
+        ));
 
         // Update mtime for false-positive files so future syncs skip them
         for path in &mtime_only_changed {
@@ -779,6 +865,7 @@ impl TokenSave {
         let to_index: Vec<String> = stale.iter().chain(new_files.iter()).cloned().collect();
         let registry = &self.registry;
 
+        let phase_start = Instant::now();
         let sync_extractions: Vec<_> = to_index
             .par_iter()
             .filter_map(|file_path| {
@@ -797,8 +884,13 @@ impl TokenSave {
             .collect();
 
         let total = sync_extractions.len();
+        let mut total_nodes = 0usize;
+        let mut total_edges = 0usize;
         for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
             on_progress(idx + 1, total, file_path);
+
+            total_nodes += result.nodes.len();
+            total_edges += result.edges.len();
 
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
@@ -819,12 +911,22 @@ impl TokenSave {
             };
             self.db.upsert_file(&file_record).await?;
         }
+        if !to_index.is_empty() {
+            on_verbose(&format!(
+                "indexed {} files ({} nodes, {} edges) in {:.1}s",
+                to_index.len(),
+                total_nodes,
+                total_edges,
+                phase_start.elapsed().as_secs_f64()
+            ));
+        }
 
         // Resolve references (call edges, uses, etc.) across all files.
         // This must run after all files are indexed so cross-file references
         // can find their targets.
         if !to_index.is_empty() {
             on_progress(0, 0, "resolving references");
+            let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolver = ReferenceResolver::new(&self.db).await;
@@ -834,6 +936,11 @@ impl TokenSave {
                     self.db.insert_edges(&edges).await?;
                 }
             }
+            on_verbose(&format!(
+                "resolved {} references in {:.1}s",
+                unresolved.len(),
+                phase_start.elapsed().as_secs_f64()
+            ));
         }
 
         self.db

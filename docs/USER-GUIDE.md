@@ -126,6 +126,29 @@ The `--doctor` flag lists every file that was added, modified, or removed during
 tokensave sync --doctor
 ```
 
+### Diagnosing slow syncs
+
+If a sync appears stuck or is taking longer than expected, add `--verbose` (`-v`) to see per-phase diagnostics with file counts and timings:
+
+```bash
+tokensave sync --verbose
+```
+
+Example output:
+
+```
+  [verbose] scanned 10432 files in 2.3s
+  [verbose] stat-checked 10432 files in 0.1s
+  [verbose] changes: 3 new, 847 stat-changed, 0 removed, 9582 unchanged
+  [verbose] hashed 850 files in 1.2s (0 read errors)
+  [verbose] content check: 12 modified, 838 mtime-only
+  [verbose] indexed 15 files (204 nodes, 189 edges) in 0.3s
+  [verbose] resolved 39841 references in 0.5s
+✔ sync done — 3 added, 12 modified, 0 removed in 4412ms
+```
+
+This also works with `--force` for full re-index diagnostics.
+
 ### Respecting .gitignore
 
 By default, tokensave respects your `.gitignore` rules and skips ignored files during indexing. You can check the current setting or toggle it:
@@ -620,7 +643,7 @@ Some symbols aren't showing up.
 
 ### Indexing is slow on first run
 
-The initial full index of a large project can take a few seconds. This is normal.
+The initial full index of a large project can take a few seconds. This is normal. Use `tokensave sync --verbose` to see which phase is taking the longest.
 
 - Subsequent syncs are incremental and much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
