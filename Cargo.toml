@@ -9,6 +9,19 @@ homepage = "https://github.com/aovestdipaperino/tokensave"
 readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
+exclude = [
+    ".mcpregistry_*",
+    ".rtk/",
+    ".claude/",
+    "CLAUDE.md",
+    "cache/",
+    "docs/LSP-INTEGRATION.md",
+    "docs/TOKENSAVE-ALTERNATIVES.md",
+    "docs/TOKENSAVIOR-REPORT.md",
+    "generated-illustrations/",
+    "local-only/",
+    ".worktrees/",
+]
 
 [features]
 default = ["full"]
