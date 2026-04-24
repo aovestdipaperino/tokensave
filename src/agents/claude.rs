@@ -1082,21 +1082,39 @@ fn clean_orphaned_local_mcp_keys(local_val: &mut serde_json::Value) {
 /// Reads ~/.claude/settings.json and compares installed permissions
 /// against what the current version expects. Silent on any error.
 ///
-/// Also silently backfills any missing hooks when at least one tokensave
-/// hook already exists (post-upgrade migration).
+/// Also silently backfills any missing hooks (post-upgrade migration)
+/// and normalizes Windows backslash paths in hook commands — both in the
+/// user-level settings and in the current project's `.claude/settings.json`
+/// / `.claude/settings.local.json`, so broken project-scope hooks self-heal.
 pub fn check_install_stale() {
     let Some(home) = super::home_dir() else {
         return;
     };
-    let settings_path = home.join(".claude").join("settings.json");
-    let Ok(contents) = std::fs::read_to_string(&settings_path) else {
-        return;
-    };
-    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return;
-    };
 
-    // --- permissions check (warn only) ---
+    // --- user-level settings: permissions warning + hook backfill ---
+    let user_settings_path = home.join(".claude").join("settings.json");
+    if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
+        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
+            warn_missing_permissions(&settings);
+        }
+    }
+    normalize_and_backfill_settings_file(&user_settings_path);
+
+    // --- project-level settings: hook backfill only ---
+    // Fixes issue #38: a project opened with pre-fix backslash paths in
+    // .claude/settings.json never self-healed because we only scanned the
+    // user-level file. Scanning the cwd covers the common case of Claude
+    // Code invoking a project-scoped hook.
+    if let Ok(cwd) = std::env::current_dir() {
+        let project_claude = cwd.join(".claude");
+        normalize_and_backfill_settings_file(&project_claude.join("settings.json"));
+        normalize_and_backfill_settings_file(&project_claude.join("settings.local.json"));
+    }
+}
+
+/// Emit a warning if the current tokensave version expects tool permissions
+/// that aren't present in `settings`.
+fn warn_missing_permissions(settings: &serde_json::Value) {
     let installed: Vec<&str> = settings["permissions"]["allow"]
         .as_array()
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
@@ -1113,18 +1131,62 @@ pub fn check_install_stale() {
             missing_count
         );
     }
+}
 
-    // --- silent hook backfill (post-upgrade) ---
-    // If at least one tokensave hook exists, extract the binary path from it
-    // and silently add any missing hooks so the user doesn't need to re-install.
-    if let Some(bin) = extract_tokensave_bin_from_hooks(&settings) {
-        let before = serde_json::to_string(&settings["hooks"]).unwrap_or_default();
-        install_hook_quiet(&mut settings, &bin);
-        let after = serde_json::to_string(&settings["hooks"]).unwrap_or_default();
-        if before != after {
-            let pretty =
-                serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
-            std::fs::write(&settings_path, format!("{pretty}\n")).ok();
+/// Load `path`, normalize any backslashed tokensave hook commands, backfill
+/// missing hook events, and write back if anything changed. Silent on any
+/// error (missing file, unparseable JSON, write failure). Safe no-op when
+/// no tokensave hook is present in the file.
+fn normalize_and_backfill_settings_file(path: &Path) {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return;
+    };
+    // Only touch files that already reference tokensave — don't accidentally
+    // rewrite unrelated project settings just because tokensave ran in cwd.
+    let Some(bin) = extract_tokensave_bin_from_hooks(&settings) else {
+        return;
+    };
+    let before = serde_json::to_string(&settings).unwrap_or_default();
+    normalize_hook_command_paths(&mut settings);
+    install_hook_quiet(&mut settings, &bin);
+    let after = serde_json::to_string(&settings).unwrap_or_default();
+    if before != after {
+        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
+        std::fs::write(path, format!("{pretty}\n")).ok();
+    }
+}
+
+/// Rewrite any tokensave hook command containing a backslash to use forward
+/// slashes. Fixes pre-v4.0.x Windows installs where backslashed paths got
+/// mangled by `bash -c` (e.g. `C:\Users\...` → `C:Users...` — see issue #38).
+/// Only touches commands that mention `tokensave` so unrelated hooks are left
+/// alone.
+fn normalize_hook_command_paths(settings: &mut serde_json::Value) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    for entries in hooks.values_mut() {
+        let Some(arr) = entries.as_array_mut() else {
+            continue;
+        };
+        for entry in arr.iter_mut() {
+            let Some(cmds) = entry.get_mut("hooks").and_then(|a| a.as_array_mut()) else {
+                continue;
+            };
+            for cmd in cmds.iter_mut() {
+                let Some(command_val) = cmd.get_mut("command") else {
+                    continue;
+                };
+                let Some(command) = command_val.as_str() else {
+                    continue;
+                };
+                if command.contains("tokensave") && command.contains('\\') {
+                    *command_val = serde_json::Value::String(command.replace('\\', "/"));
+                }
+            }
         }
     }
 }
@@ -1349,6 +1411,130 @@ mod tests {
             extract_tokensave_bin_from_hooks(&settings),
             Some("C:/Users/dev/scoop/shims/tokensave.exe".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_hook_command_paths tests (issue #38)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn normalize_rewrites_backslashed_tokensave_commands() {
+        let mut settings = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "C:\\Users\\alkam\\scoop\\apps\\tokensave\\current\\tokensave.exe hook-stop"
+                    }]
+                }]
+            }
+        });
+        normalize_hook_command_paths(&mut settings);
+        assert_eq!(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap(),
+            "C:/Users/alkam/scoop/apps/tokensave/current/tokensave.exe hook-stop"
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_non_tokensave_hooks_alone() {
+        let mut settings = json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "C:\\Windows\\System32\\other.exe --flag"
+                    }]
+                }]
+            }
+        });
+        let before = settings.clone();
+        normalize_hook_command_paths(&mut settings);
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn normalize_is_noop_when_already_forward_slashed() {
+        let mut settings = settings_with_all_hooks("C:/Users/dev/scoop/shims/tokensave.exe");
+        let before = settings.clone();
+        normalize_hook_command_paths(&mut settings);
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn normalize_and_backfill_rewrites_project_settings_file() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!(
+            "tokensave-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let contents = r#"{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "C:\\Users\\u\\tokensave.exe hook-stop" }]
+    }]
+  }
+}
+"#;
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+
+        normalize_and_backfill_settings_file(&path);
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap(),
+            "C:/Users/u/tokensave.exe hook-stop"
+        );
+        // All three events should now be present (backfill).
+        assert!(parsed["hooks"]["PreToolUse"].is_array());
+        assert!(parsed["hooks"]["UserPromptSubmit"].is_array());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn normalize_and_backfill_skips_file_without_tokensave_hook() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!(
+            "tokensave-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let contents = r#"{"permissions": {"allow": ["Bash"]}}
+"#;
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+
+        normalize_and_backfill_settings_file(&path);
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, contents,
+            "file without tokensave hook must be untouched"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------------

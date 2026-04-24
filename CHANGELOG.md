@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.3] - 2026-04-24
+
+### Fixed
+- **Backslashed Windows hook paths never self-healed (issue #38)** — the v4.0.2 fix for #20 normalized `which_tokensave()` output but could not rewrite existing settings. `install_single_hook` is idempotent by presence, so when a tokensave hook already existed with a backslashed path, the silent backfill in `check_install_stale` left it untouched. Additionally, the backfill only scanned `~/.claude/settings.json` — project-level `.claude/settings.json` and `.claude/settings.local.json` were never touched, so opening a previously-configured project could still trigger `bash: C:Usersalkamscoopappstokensavecurrenttokensave.exe: command not found`. Fixed with a new `normalize_hook_command_paths` pass that rewrites any backslash-containing tokensave hook command to forward slashes, and by extending the backfill to the current project's `.claude` directory.
+
 ## [4.1.2] - 2026-04-22
 
 ### Added
