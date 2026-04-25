@@ -572,6 +572,7 @@ fn format_number(n: u64) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     /// Regression test for issue #39: `tokensave monitor` panicked on
     /// macOS/Linux with "Cannot start a runtime from within a runtime."
