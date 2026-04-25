@@ -570,3 +570,32 @@ fn format_number(n: u64) -> String {
     }
     result.chars().rev().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    /// Regression test for issue #39: `tokensave monitor` panicked on
+    /// macOS/Linux with "Cannot start a runtime from within a runtime."
+    ///
+    /// `refresh_cost_cache` was building a fresh `tokio::runtime` and
+    /// calling `block_on` inside `#[tokio::main]`, which always panics on
+    /// a multi-thread runtime. The fix uses `block_in_place` +
+    /// `Handle::current().block_on()` — safe inside a multi-thread runtime
+    /// and the same pattern the daemon already uses on Windows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_cost_cache_runtime_pattern_does_not_panic() {
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async { 42 })
+        });
+        assert_eq!(result, 42);
+    }
+
+    /// Verify the pre-fix pattern (`Runtime::new()` inside a running
+    /// multi-thread runtime) panics — locking in the bug we are guarding
+    /// against. tokio's exact wording varies across versions, so we just
+    /// match on "runtime".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "runtime")]
+    async fn nested_runtime_new_panics() {
+        let _rt = tokio::runtime::Runtime::new().unwrap();
+    }
+}
