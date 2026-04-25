@@ -408,24 +408,10 @@ fn refresh_cost_cache(cache: &mut CostCache) {
             cache.top_model_cost = *cost;
         }
     };
-    // On Windows the monitor TUI runs inside #[tokio::main], so creating
-    // a new runtime would panic. Use block_in_place + existing handle.
-    #[cfg(windows)]
-    {
-        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
-    }
-    // On Unix the function may be called outside any tokio runtime,
-    // so create a single-threaded one.
-    #[cfg(not(windows))]
-    {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        rt.block_on(future)
-    }
+    // monitor::run() is always invoked from inside #[tokio::main]'s
+    // multi-threaded runtime, so creating a new runtime would panic.
+    // Use block_in_place + the existing handle on every platform.
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future));
     cache.last_refresh = std::time::Instant::now();
 }
 
