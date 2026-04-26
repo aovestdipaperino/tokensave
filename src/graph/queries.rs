@@ -2,7 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db::Database;
-use crate::errors::Result;
+use crate::errors::{Result, TokenSaveError};
 use crate::types::*;
 
 /// Metrics describing the connectivity and structure around a single node.
@@ -52,26 +52,61 @@ impl<'a> GraphQueryManager<'a> {
             all
         };
 
-        let mut dead: Vec<Node> = Vec::new();
+        let candidate_ids: Vec<String> = nodes
+            .iter()
+            .filter(|node| {
+                if node.name == "main" {
+                    return false;
+                }
+                if node.name.starts_with("test") {
+                    return false;
+                }
+                if node.visibility == Visibility::Pub {
+                    return false;
+                }
+                true
+            })
+            .map(|n| n.id.clone())
+            .collect();
 
-        for node in nodes {
-            // Exclude entry points and tests.
-            if node.name == "main" {
-                continue;
-            }
-            if node.name.starts_with("test") {
-                continue;
-            }
-            // Exclude pub items (potential public API).
-            if node.visibility == Visibility::Pub {
-                continue;
-            }
+        if candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
 
-            let incoming = self.db.get_incoming_edges(&node.id, &[]).await?;
-            if incoming.is_empty() {
-                dead.push(node);
+        let placeholders: Vec<String> = (1..=candidate_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT target FROM edges WHERE target IN ({}) LIMIT 1",
+            placeholders.join(", ")
+        );
+        let param_values: Vec<libsql::Value> = candidate_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+        let mut rows = self
+            .db
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find nodes with incoming edges: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
+
+        let mut nodes_with_incoming: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: "find_dead_code".to_string(),
+        })? {
+            if let Ok(id) = row.get::<String>(0) {
+                nodes_with_incoming.insert(id);
             }
         }
+
+        let candidate_set: std::collections::HashSet<String> = candidate_ids.iter().cloned().collect();
+        let dead: Vec<Node> = nodes
+            .into_iter()
+            .filter(|node| candidate_set.contains(&node.id) && !nodes_with_incoming.contains(&node.id))
+            .collect();
 
         Ok(dead)
     }
@@ -114,22 +149,55 @@ impl<'a> GraphQueryManager<'a> {
     /// excluding the source file itself.
     pub async fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
         let nodes = self.db.get_nodes_by_file(file_path).await?;
-        let mut dep_files: HashSet<String> = HashSet::new();
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        for node in &nodes {
-            let edges = self
-                .db
-                .get_outgoing_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])
-                .await?;
+        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+        let kind_filter = "('uses', 'calls')";
 
-            for edge in &edges {
-                if let Some(target_node) = self.db.get_node_by_id(&edge.target).await? {
-                    if target_node.file_path != file_path {
-                        dep_files.insert(target_node.file_path);
-                    }
-                }
+        let sql = format!(
+            "SELECT DISTINCT e.target FROM edges e \
+             WHERE e.source IN ({}) AND e.kind IN {kind_filter}",
+            placeholders.join(", ")
+        );
+
+        let param_values: Vec<libsql::Value> = node_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+
+        let mut rows = self
+            .db
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file dependencies: {e}"),
+                operation: "get_file_dependencies".to_string(),
+            })?;
+
+        let mut target_ids: Vec<String> = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read target id: {e}"),
+            operation: "get_file_dependencies".to_string(),
+        })? {
+            if let Ok(id) = row.get::<String>(0) {
+                target_ids.push(id);
             }
         }
+
+        if target_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let target_nodes = self.db.get_nodes_by_ids(&target_ids).await?;
+        let dep_files: HashSet<String> = target_nodes
+            .into_iter()
+            .filter(|n| n.file_path != file_path)
+            .map(|n| n.file_path)
+            .collect();
 
         let mut result: Vec<String> = dep_files.into_iter().collect();
         result.sort();
@@ -143,22 +211,55 @@ impl<'a> GraphQueryManager<'a> {
     /// excluding the target file itself.
     pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
         let nodes = self.db.get_nodes_by_file(file_path).await?;
-        let mut dependent_files: HashSet<String> = HashSet::new();
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        for node in &nodes {
-            let edges = self
-                .db
-                .get_incoming_edges(&node.id, &[EdgeKind::Uses, EdgeKind::Calls])
-                .await?;
+        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+        let kind_filter = "('uses', 'calls')";
 
-            for edge in &edges {
-                if let Some(source_node) = self.db.get_node_by_id(&edge.source).await? {
-                    if source_node.file_path != file_path {
-                        dependent_files.insert(source_node.file_path);
-                    }
-                }
+        let sql = format!(
+            "SELECT DISTINCT e.source FROM edges e \
+             WHERE e.target IN ({}) AND e.kind IN {kind_filter}",
+            placeholders.join(", ")
+        );
+
+        let param_values: Vec<libsql::Value> = node_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+
+        let mut rows = self
+            .db
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file dependents: {e}"),
+                operation: "get_file_dependents".to_string(),
+            })?;
+
+        let mut source_ids: Vec<String> = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read source id: {e}"),
+            operation: "get_file_dependents".to_string(),
+        })? {
+            if let Ok(id) = row.get::<String>(0) {
+                source_ids.push(id);
             }
         }
+
+        if source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let source_nodes = self.db.get_nodes_by_ids(&source_ids).await?;
+        let dependent_files: HashSet<String> = source_nodes
+            .into_iter()
+            .filter(|n| n.file_path != file_path)
+            .map(|n| n.file_path)
+            .collect();
 
         let mut result: Vec<String> = dependent_files.into_iter().collect();
         result.sort();
