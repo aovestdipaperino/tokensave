@@ -415,6 +415,35 @@ impl Database {
         }
     }
 
+    /// Returns nodes by their IDs in a single batch query.
+    /// IDs not found are silently omitted. Results are returned in arbitrary order.
+    pub async fn get_nodes_by_ids(&self, ids: &[String]) -> Result<Vec<Node>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+             FROM nodes WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let param_values: Vec<libsql::Value> = ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to batch query nodes: {e}"),
+                operation: "get_nodes_by_ids".to_string(),
+            })?;
+        collect_rows(&mut rows, row_to_node, "get_nodes_by_ids").await
+    }
+
     /// Returns all nodes for a given file, ordered by start line.
     pub async fn get_nodes_by_file(&self, file_path: &str) -> Result<Vec<Node>> {
         let mut rows = self

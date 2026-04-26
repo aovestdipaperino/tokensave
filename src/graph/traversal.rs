@@ -73,51 +73,69 @@ impl<'a> GraphTraverser<'a> {
                 .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
                 .await?;
 
+            let neighbor_ids: Vec<String> = edges
+                .iter()
+                .map(|edge| self.neighbor_id(edge, &current_id, &opts.direction))
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            let neighbor_map: std::collections::HashMap<String, Node> = neighbor_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
+
             for edge in edges {
                 let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
                 }
+
+                let Some(neighbor_node) = neighbor_map.get(&neighbor_id) else {
+                    continue;
+                };
+
                 visited.insert(neighbor_id.clone());
 
-                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
-                    if self.node_matches_filter(&neighbor_node, opts) {
-                        // For Incoming traversals, if we discovered a container
-                        // (class/struct/trait/interface/module), also enqueue its
-                        // children so callers of methods appear in the container's
-                        // impact radius.
-                        if opts.direction == TraversalDirection::Incoming
-                            && is_container_kind(&neighbor_node.kind)
-                        {
-                            let children = self
-                                .get_edges_for_direction(
-                                    &neighbor_id,
-                                    &[EdgeKind::Contains],
-                                    &TraversalDirection::Outgoing,
-                                )
-                                .await?;
-                            for child_edge in children {
-                                let child_id = self.neighbor_id(
-                                    &child_edge,
-                                    &neighbor_id,
-                                    &TraversalDirection::Outgoing,
-                                );
-                                if !visited.contains(&child_id) {
-                                    visited.insert(child_id.clone());
-                                    result_edges.push(child_edge);
-                                    queue.push_back((child_id, depth + 1));
-                                }
+                if self.node_matches_filter(neighbor_node, opts) {
+                    if opts.direction == TraversalDirection::Incoming
+                        && is_container_kind(&neighbor_node.kind)
+                    {
+                        let children = self
+                            .get_edges_for_direction(
+                                &neighbor_id,
+                                &[EdgeKind::Contains],
+                                &TraversalDirection::Outgoing,
+                            )
+                            .await?;
+                        for child_edge in children {
+                            let child_id = self.neighbor_id(
+                                &child_edge,
+                                &neighbor_id,
+                                &TraversalDirection::Outgoing,
+                            );
+                            if !visited.contains(&child_id) {
+                                visited.insert(child_id.clone());
+                                result_edges.push(child_edge);
+                                queue.push_back((child_id, depth + 1));
                             }
                         }
-
-                        result_nodes.push(neighbor_node);
-                        if result_nodes.len() >= opts.limit as usize {
-                            result_edges.push(edge);
-                            break;
-                        }
                     }
-                    result_edges.push(edge);
+
+                    result_nodes.push(neighbor_node.clone());
+                    result_edges.push(edge.clone());
+                    queue.push_back((neighbor_id, depth + 1));
+
+                    if result_nodes.len() >= opts.limit as usize {
+                        break;
+                    }
+                } else {
+                    result_edges.push(edge.clone());
                     queue.push_back((neighbor_id, depth + 1));
                 }
             }
@@ -184,23 +202,45 @@ impl<'a> GraphTraverser<'a> {
                 .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
                 .await?;
 
+            let neighbor_ids: Vec<String> = edges
+                .iter()
+                .map(|edge| self.neighbor_id(edge, &current_id, &opts.direction))
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            let neighbor_map: std::collections::HashMap<String, Node> = neighbor_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
+
             for edge in edges {
                 let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
                 }
+
+                let Some(neighbor_node) = neighbor_map.get(&neighbor_id) else {
+                    continue;
+                };
+
                 visited.insert(neighbor_id.clone());
 
-                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
-                    if self.node_matches_filter(&neighbor_node, opts) {
-                        result_nodes.push(neighbor_node);
-                        if result_nodes.len() >= opts.limit as usize {
-                            result_edges.push(edge);
-                            break;
-                        }
+                if self.node_matches_filter(neighbor_node, opts) {
+                    result_nodes.push(neighbor_node.clone());
+                    result_edges.push(edge.clone());
+                    stack.push((neighbor_id, depth + 1));
+
+                    if result_nodes.len() >= opts.limit as usize {
+                        break;
                     }
-                    result_edges.push(edge);
+                } else {
+                    result_edges.push(edge.clone());
                     stack.push((neighbor_id, depth + 1));
                 }
             }
@@ -236,16 +276,32 @@ impl<'a> GraphTraverser<'a> {
                 .get_incoming_edges(&current_id, &[EdgeKind::Calls])
                 .await?;
 
+            let caller_ids: Vec<String> = edges
+                .iter()
+                .map(|e| e.source.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if caller_ids.is_empty() {
+                continue;
+            }
+
+            let caller_nodes = self.db.get_nodes_by_ids(&caller_ids).await?;
+            let caller_map: std::collections::HashMap<String, Node> = caller_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
+
             for edge in edges {
                 let caller_id = &edge.source;
                 if visited.contains(caller_id) {
                     continue;
                 }
-                visited.insert(caller_id.clone());
 
-                if let Some(caller_node) = self.db.get_node_by_id(caller_id).await? {
+                if let Some(caller_node) = caller_map.get(caller_id) {
+                    visited.insert(caller_id.clone());
                     queue.push_back((caller_id.clone(), depth + 1));
-                    results.push((caller_node, edge));
+                    results.push((caller_node.clone(), edge));
                 }
             }
         }
@@ -276,16 +332,32 @@ impl<'a> GraphTraverser<'a> {
                 .get_outgoing_edges(&current_id, &[EdgeKind::Calls])
                 .await?;
 
+            let callee_ids: Vec<String> = edges
+                .iter()
+                .map(|e| e.target.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if callee_ids.is_empty() {
+                continue;
+            }
+
+            let callee_nodes = self.db.get_nodes_by_ids(&callee_ids).await?;
+            let callee_map: std::collections::HashMap<String, Node> = callee_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
+
             for edge in edges {
                 let callee_id = &edge.target;
                 if visited.contains(callee_id) {
                     continue;
                 }
-                visited.insert(callee_id.clone());
 
-                if let Some(callee_node) = self.db.get_node_by_id(callee_id).await? {
+                if let Some(callee_node) = callee_map.get(callee_id) {
+                    visited.insert(callee_id.clone());
                     queue.push_back((callee_id.clone(), depth + 1));
-                    results.push((callee_node, edge));
+                    results.push((callee_node.clone(), edge));
                 }
             }
         }
