@@ -3,6 +3,30 @@ use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;
 
 #[test]
+fn test_java_empty_javadoc_no_panic() {
+    let source = r#"
+public class PanicReproduction {
+    /**/
+    public enum Problem {
+        VALUE
+    }
+}
+"#;
+    let extractor = JavaExtractor;
+    let result = extractor.extract("PanicReproduction.java", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let enums: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Enum)
+        .collect();
+    assert_eq!(enums.len(), 1);
+    assert_eq!(enums[0].name, "Problem");
+    assert!(enums[0].docstring.is_none() || enums[0].docstring.as_ref().unwrap().is_empty());
+}
+
+#[test]
 fn test_java_extract_package() {
     let source = r#"package com.example.app;
 
