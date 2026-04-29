@@ -4041,6 +4041,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
+ "tree-sitter-markdown-fork",
  "ureq",
  "walkdir",
  "windows-sys 0.61.2",
@@ -4541,6 +4542,16 @@ checksum = "8daaf5f4235188a58603c39760d5fa5d4b920d36a299c934adddae757f32a10c"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-markdown-fork"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d5ad4a0fbf1d16abe5391387dab9e25977ba0c86661627a2e8680386c8a1c27"
+dependencies = [
+ "cc",
+ "tree-sitter",
 ]
 
 [[package]]

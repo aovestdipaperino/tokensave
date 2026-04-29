@@ -50,6 +50,8 @@ mod glsl_extractor;
 mod gwbasic_extractor;
 #[cfg(feature = "lang-lua")]
 mod lua_extractor;
+#[cfg(feature = "lang-markdown")]
+mod markdown_extractor;
 #[cfg(feature = "lang-msbasic2")]
 mod msbasic2_extractor;
 #[cfg(feature = "lang-objc")]
@@ -111,6 +113,8 @@ pub use glsl_extractor::GlslExtractor;
 pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-lua")]
 pub use lua_extractor::LuaExtractor;
+#[cfg(feature = "lang-markdown")]
+pub use markdown_extractor::MarkdownExtractor;
 #[cfg(feature = "lang-msbasic2")]
 pub use msbasic2_extractor::MsBasic2Extractor;
 #[cfg(feature = "lang-objc")]
@@ -217,6 +221,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(DockerfileExtractor));
         #[cfg(feature = "lang-glsl")]
         extractors.push(Box::new(GlslExtractor));
+        #[cfg(feature = "lang-markdown")]
+        extractors.push(Box::new(MarkdownExtractor));
 
         Self { extractors }
     }
