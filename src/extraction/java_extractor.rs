@@ -965,7 +965,11 @@ impl JavaExtractor {
         let trimmed = comment.trim();
         // Strip /** prefix and */ suffix.
         let inner = if trimmed.starts_with("/**") && trimmed.ends_with("*/") {
-            &trimmed[3..trimmed.len() - 2]
+            if trimmed.len() >= 5 {
+                &trimmed[3..trimmed.len() - 2]
+            } else {
+                "" // Handles "/**/"
+            }
         } else {
             trimmed
         };

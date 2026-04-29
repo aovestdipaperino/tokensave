@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `java_extraction` avoid panic when parsing empty Java docstrings (fixes #44)
+
 ## [4.1.5] - 2026-04-29
 
 ### Added
