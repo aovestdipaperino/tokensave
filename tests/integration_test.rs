@@ -6,6 +6,43 @@ use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
 use tokensave::types::EdgeKind;
 
+/// Directly test that the ignore crate with add_custom_ignore_filename reads
+/// nested .gitignore files, regardless of git repo presence.
+#[test]
+fn test_ignore_crate_nested_gitignore_direct() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src/vendor")).unwrap();
+    fs::write(project.join("src/lib.rs"), "kept").unwrap();
+    fs::write(project.join("src/vendor/gen.rs"), "generated").unwrap();
+    fs::write(project.join("src/vendor/.gitignore"), "*\n").unwrap();
+
+    let files: Vec<String> = ignore::WalkBuilder::new(project)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .follow_links(true)
+        .add_custom_ignore_filename(".gitignore")
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(project)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
+        .collect();
+
+    assert!(files.contains(&"src/lib.rs".to_string()), "lib.rs must be found");
+    assert!(
+        !files.iter().any(|f| f.contains("vendor")),
+        "nested .gitignore (*) must exclude vendor/gen.rs; got: {files:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_full_pipeline() {
     let dir = TempDir::new().unwrap();
@@ -403,6 +440,141 @@ async fn test_index_follows_symlinked_directories() {
     assert!(
         !results.is_empty(),
         "should extract symbols from symlinked source"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nested .gitignore tests
+// ---------------------------------------------------------------------------
+
+/// Helper: init a project with git_ignore enabled and return the TokenSave.
+async fn setup_gitignore_project(project: &std::path::Path) -> TokenSave {
+    TokenSave::init(project).await.unwrap();
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    save_config(project, &config).unwrap();
+    TokenSave::open(project).await.unwrap()
+}
+
+/// A nested `.gitignore` in a subdirectory must exclude files inside that
+/// subdirectory even when the root `.gitignore` has no matching rule.
+#[tokio::test]
+async fn test_nested_gitignore_excludes_files_in_subdir() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src/vendor")).unwrap();
+    // This file should be indexed.
+    fs::write(project.join("src/lib.rs"), "pub fn kept() {}\n").unwrap();
+    // This file is excluded by the nested .gitignore only.
+    fs::write(project.join("src/vendor/gen.rs"), "pub fn generated() {}\n").unwrap();
+    // Nested .gitignore ignores everything in vendor/.
+    fs::write(project.join("src/vendor/.gitignore"), "*\n").unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(result.file_count, 1, "vendor/ should be excluded by nested .gitignore");
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"), "src/lib.rs must be indexed");
+    assert!(
+        !paths.iter().any(|p| p.contains("vendor")),
+        "vendor files must be excluded by nested .gitignore"
+    );
+}
+
+/// A nested `.gitignore` must not affect files outside its own directory.
+/// Only `src/internal/` should be excluded; `src/lib.rs` must still be indexed.
+#[tokio::test]
+async fn test_nested_gitignore_scope_is_limited_to_its_directory() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src/internal")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn public_api() {}\n").unwrap();
+    fs::write(project.join("src/internal/secret.rs"), "pub fn secret() {}\n").unwrap();
+    // The nested .gitignore only covers files within src/internal/.
+    fs::write(project.join("src/internal/.gitignore"), "*.rs\n").unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        paths.contains(&"src/lib.rs"),
+        "src/lib.rs must not be affected by nested .gitignore in src/internal/"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("secret")),
+        "src/internal/secret.rs must be excluded by its own directory's .gitignore"
+    );
+}
+
+/// A nested `.gitignore` negation (`!`) must un-ignore a file that a higher-level
+/// rule would otherwise exclude. The `ignore` crate replicates git's precedence:
+/// a more specific (deeper) rule wins over a less specific (shallower) one.
+#[tokio::test]
+async fn test_nested_gitignore_negation_overrides_parent_rule() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src/exceptions")).unwrap();
+    // Root .gitignore ignores all .rs files.
+    fs::write(project.join(".gitignore"), "*.rs\n").unwrap();
+    // The nested .gitignore un-ignores the one file we actually want indexed.
+    fs::write(project.join("src/exceptions/.gitignore"), "!important.rs\n").unwrap();
+    fs::write(
+        project.join("src/exceptions/important.rs"),
+        "pub fn must_be_indexed() {}\n",
+    )
+    .unwrap();
+    // This sibling file stays excluded by the root rule.
+    fs::write(project.join("src/exceptions/ignored.rs"), "pub fn ignored() {}\n").unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let results = cg.search("must_be_indexed", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "nested .gitignore negation must un-ignore important.rs even though root rule excludes *.rs"
+    );
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        !paths.iter().any(|p| p.ends_with("ignored.rs")),
+        "ignored.rs must remain excluded by root .gitignore"
+    );
+}
+
+/// Files in deeply nested subdirectories must be excluded by a `.gitignore`
+/// anywhere in their ancestor chain, not just the root.
+#[tokio::test]
+async fn test_nested_gitignore_applies_to_deeper_descendants() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src/mid/deep")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn top() {}\n").unwrap();
+    // The mid-level .gitignore excludes the deep/ subtree.
+    fs::write(project.join("src/mid/.gitignore"), "deep/\n").unwrap();
+    fs::write(project.join("src/mid/mid.rs"), "pub fn mid() {}\n").unwrap();
+    fs::write(project.join("src/mid/deep/leaf.rs"), "pub fn leaf() {}\n").unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"), "src/lib.rs must be indexed");
+    assert!(paths.contains(&"src/mid/mid.rs"), "src/mid/mid.rs must be indexed");
+    assert!(
+        !paths.iter().any(|p| p.contains("deep")),
+        "src/mid/deep/leaf.rs must be excluded by mid-level .gitignore"
     );
 }
 

@@ -1177,6 +1177,12 @@ impl TokenSave {
 
     /// Walk using the `ignore` crate, which respects `.gitignore` rules,
     /// `.git/info/exclude`, and the user's global gitignore.
+    ///
+    /// `git_ignore(true)` alone only reads nested `.gitignore` files when a
+    /// `.git` directory is reachable from the walk root (it relies on git repo
+    /// discovery). `add_custom_ignore_filename(".gitignore")` makes the crate
+    /// additionally treat every `.gitignore` it encounters as a standalone
+    /// ignore file, ensuring nested rules are applied even outside a git repo.
     fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Vec<String> {
         let mut files = Vec::new();
         let walker = ignore::WalkBuilder::new(&self.project_root)
@@ -1185,6 +1191,7 @@ impl TokenSave {
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
+            .add_custom_ignore_filename(".gitignore")
             .build();
 
         for entry in walker {
