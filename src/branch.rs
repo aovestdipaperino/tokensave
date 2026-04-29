@@ -21,7 +21,9 @@ fn current_branch_gix(project_root: &Path) -> Option<String> {
     let head = repo.head().ok()?;
     let name = head.name().as_bstr();
     let name_str = std::str::from_utf8(name).ok()?;
-    name_str.strip_prefix("refs/heads/").map(|s| s.to_string())
+    name_str
+        .strip_prefix("refs/heads/")
+        .map(std::string::ToString::to_string)
 }
 
 fn current_branch_git(project_root: &Path) -> Option<String> {
@@ -36,7 +38,7 @@ fn current_branch_git(project_root: &Path) -> Option<String> {
     let name = std::str::from_utf8(&output.stdout).ok()?;
     name.strip_prefix("refs/heads/")
         .and_then(|s| s.strip_suffix('\n'))
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Auto-detects the default branch (main or master).

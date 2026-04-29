@@ -27,6 +27,61 @@ pub struct GraphQueryManager<'a> {
     db: &'a Database,
 }
 
+fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
+    let kind_str = get_string_lossy(row, 1)?;
+    let vis_str = get_string_lossy(row, 11)?;
+    let is_async_int = row.get::<i64>(12)?;
+
+    Ok(Node {
+        id: get_string_lossy(row, 0)?,
+        kind: NodeKind::from_str(&kind_str).unwrap_or(NodeKind::Function),
+        name: get_string_lossy(row, 2)?,
+        qualified_name: get_string_lossy(row, 3)?,
+        file_path: get_string_lossy(row, 4)?,
+        start_line: row.get::<u32>(5)?,
+        end_line: row.get::<u32>(6)?,
+        start_column: row.get::<u32>(7)?,
+        end_column: row.get::<u32>(8)?,
+        signature: get_opt_string_lossy(row, 10)?,
+        docstring: get_opt_string_lossy(row, 9)?,
+        visibility: Visibility::from_str(&vis_str).unwrap_or_default(),
+        is_async: is_async_int != 0,
+        branches: row.get::<u32>(13)?,
+        loops: row.get::<u32>(14)?,
+        returns: row.get::<u32>(15)?,
+        max_nesting: row.get::<u32>(16)?,
+        unsafe_blocks: row.get::<u32>(17)?,
+        unchecked_calls: row.get::<u32>(18)?,
+        assertions: row.get::<u32>(19)?,
+        updated_at: row.get::<u64>(20)?,
+    })
+}
+
+fn get_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<String, libsql::Error> {
+    let val = row.get::<libsql::Value>(idx)?;
+    match val {
+        libsql::Value::Text(s) => Ok(s),
+        libsql::Value::Blob(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        libsql::Value::Null => Ok(String::new()),
+        libsql::Value::Integer(i) => Ok(i.to_string()),
+        libsql::Value::Real(f) => Ok(f.to_string()),
+    }
+}
+
+fn get_opt_string_lossy(
+    row: &libsql::Row,
+    idx: i32,
+) -> std::result::Result<Option<String>, libsql::Error> {
+    let val = row.get::<libsql::Value>(idx)?;
+    match val {
+        libsql::Value::Text(s) => Ok(Some(s)),
+        libsql::Value::Blob(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        libsql::Value::Null => Ok(None),
+        libsql::Value::Integer(i) => Ok(Some(i.to_string())),
+        libsql::Value::Real(f) => Ok(Some(f.to_string())),
+    }
+}
+
 impl<'a> GraphQueryManager<'a> {
     /// Creates a new `GraphQueryManager` backed by the given database.
     pub fn new(db: &'a Database) -> Self {
@@ -42,71 +97,45 @@ impl<'a> GraphQueryManager<'a> {
     ///
     /// If `kinds` is non-empty, only nodes of the specified kinds are checked.
     pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
-        let nodes = if kinds.is_empty() {
-            self.db.get_all_nodes().await?
+        let kind_filter = if kinds.is_empty() {
+            String::new()
         } else {
-            let mut all = Vec::new();
-            for kind in kinds {
-                all.extend(self.db.get_nodes_by_kind(kind.clone()).await?);
-            }
-            all
+            let kind_strs: Vec<String> =
+                kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
+            format!(" AND kind IN ({})", kind_strs.join(", "))
         };
 
-        let candidate_ids: Vec<String> = nodes
-            .iter()
-            .filter(|node| {
-                if node.name == "main" {
-                    return false;
-                }
-                if node.name.starts_with("test") {
-                    return false;
-                }
-                if node.visibility == Visibility::Pub {
-                    return false;
-                }
-                true
-            })
-            .map(|n| n.id.clone())
-            .collect();
-
-        if candidate_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let placeholders: Vec<String> = (1..=candidate_ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
-            "SELECT target FROM edges WHERE target IN ({}) LIMIT 1",
-            placeholders.join(", ")
+            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+                    start_column, end_column, docstring, signature, visibility,
+                    is_async, branches, loops, returns, max_nesting, unsafe_blocks,
+                    unchecked_calls, assertions, updated_at
+             FROM nodes
+             WHERE name != 'main'
+             AND name NOT LIKE 'test%'
+             AND visibility != 'public'
+             {kind_filter}
+             AND NOT EXISTS (SELECT 1 FROM edges WHERE target = nodes.id)"
         );
-        let param_values: Vec<libsql::Value> = candidate_ids
-            .iter()
-            .map(|id| libsql::Value::Text(id.clone()))
-            .collect();
-        let mut rows = self
-            .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to find nodes with incoming edges: {e}"),
-                operation: "find_dead_code".to_string(),
-            })?;
 
-        let mut nodes_with_incoming: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut rows =
+            self.db
+                .conn()
+                .query(&sql, ())
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to find dead code: {e}"),
+                    operation: "find_dead_code".to_string(),
+                })?;
+
+        let mut dead = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read row: {e}"),
             operation: "find_dead_code".to_string(),
         })? {
-            if let Ok(id) = row.get::<String>(0) {
-                nodes_with_incoming.insert(id);
-            }
+            let node = row_to_node_dead_code(&row)?;
+            dead.push(node);
         }
-
-        let candidate_set: std::collections::HashSet<String> = candidate_ids.iter().cloned().collect();
-        let dead: Vec<Node> = nodes
-            .into_iter()
-            .filter(|node| candidate_set.contains(&node.id) && !nodes_with_incoming.contains(&node.id))
-            .collect();
 
         Ok(dead)
     }
@@ -330,7 +359,7 @@ impl<'a> GraphQueryManager<'a> {
             // Take the first parent in the containment hierarchy.
             match incoming.first() {
                 Some(edge) => {
-                    current_id = edge.source.clone();
+                    current_id.clone_from(&edge.source);
                     depth += 1;
                 }
                 None => break,

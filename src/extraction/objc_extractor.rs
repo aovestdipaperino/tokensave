@@ -20,7 +20,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -175,12 +175,14 @@ impl ObjcExtractor {
     fn visit_preproc_include(state: &mut ExtractionState, node: TsNode<'_>) {
         let path = Self::find_child_by_kind(node, "string_literal")
             .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
-            .map(|n| {
-                let text = state.node_text(n);
-                text.trim_matches(|c| c == '"' || c == '<' || c == '>')
-                    .to_string()
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(
+                || "<unknown>".to_string(),
+                |n| {
+                    let text = state.node_text(n);
+                    text.trim_matches(|c| c == '"' || c == '<' || c == '>')
+                        .to_string()
+                },
+            );
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -232,8 +234,7 @@ impl ObjcExtractor {
     /// Extract a preprocessor #define.
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -287,11 +288,11 @@ impl ObjcExtractor {
     // type_definition (typedef, including NS_ENUM)
     // -------------------------------------------------------
 
-    /// Visit a type_definition node (typedef).
+    /// Visit a `type_definition` node (typedef).
     ///
     /// For `typedef NS_ENUM(NSInteger, LogLevel) { ... };` the grammar produces
-    /// a type_definition whose first macro_type_specifier child has name "NS_ENUM".
-    /// The enum variant names appear as type_identifier children with field "declarator".
+    /// a `type_definition` whose first `macro_type_specifier` child has name "`NS_ENUM`".
+    /// The enum variant names appear as `type_identifier` children with field "declarator".
     fn visit_type_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // Check if this is an NS_ENUM pattern
         if let Some(macro_spec) = Self::find_child_by_kind(node, "macro_type_specifier") {
@@ -308,17 +309,17 @@ impl ObjcExtractor {
         Self::visit_simple_typedef(state, node);
     }
 
-    /// Handle NS_ENUM / NS_OPTIONS typedef.
+    /// Handle `NS_ENUM` / `NS_OPTIONS` typedef.
     ///
     /// The grammar parses this as:
-    /// type_definition
-    ///   macro_type_specifier (NS_ENUM)
-    ///     identifier (NS_ENUM)
-    ///     type_descriptor (NSInteger)
-    ///     ERROR (, LogLevel)
+    /// `type_definition`
+    ///   `macro_type_specifier` (`NS_ENUM`)
+    ///     identifier (`NS_ENUM`)
+    ///     `type_descriptor` (`NSInteger`)
+    ///     ERROR (, `LogLevel`)
     ///   ERROR ({)
-    ///   type_identifier (LogLevelDebug)   [field=declarator]
-    ///   type_identifier (LogLevelInfo)    [field=declarator]
+    ///   `type_identifier` (`LogLevelDebug`)   [field=declarator]
+    ///   `type_identifier` (`LogLevelInfo`)    [field=declarator]
     ///   ...
     ///   ERROR (})
     fn visit_ns_enum(state: &mut ExtractionState, node: TsNode<'_>, macro_spec: &TsNode<'_>) {
@@ -389,7 +390,7 @@ impl ObjcExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract the NS_ENUM name from the macro_type_specifier.
+    /// Extract the `NS_ENUM` name from the `macro_type_specifier`.
     /// The name is inside an ERROR child as an identifier.
     fn extract_ns_enum_name(state: &ExtractionState, macro_spec: TsNode<'_>) -> Option<String> {
         // Look for ERROR child containing an identifier
@@ -456,7 +457,7 @@ impl ObjcExtractor {
         }
     }
 
-    /// Visit a simple typedef (not NS_ENUM).
+    /// Visit a simple typedef (not `NS_ENUM`).
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
         let name =
             Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -505,7 +506,7 @@ impl ObjcExtractor {
         }
     }
 
-    /// Find the typedef name (last type_identifier child).
+    /// Find the typedef name (last `type_identifier` child).
     fn find_typedef_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut last_type_id = None;
         let mut cursor = node.walk();
@@ -532,8 +533,7 @@ impl ObjcExtractor {
     /// Maps to Interface node kind with method declarations inside.
     fn visit_protocol(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let text = state.node_text(node);
@@ -608,7 +608,7 @@ impl ObjcExtractor {
         }
     }
 
-    /// Extract protocol references (inheritance/conformance) from a protocol_reference_list.
+    /// Extract protocol references (inheritance/conformance) from a `protocol_reference_list`.
     fn extract_protocol_refs(
         state: &mut ExtractionState,
         ref_list: TsNode<'_>,
@@ -646,8 +646,7 @@ impl ObjcExtractor {
     /// This includes properties, method declarations, superclass, and protocol conformance.
     fn visit_class_interface(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let text = state.node_text(node);
@@ -719,7 +718,7 @@ impl ObjcExtractor {
         state.class_depth -= 1;
     }
 
-    /// Extract protocol conformance from parameterized_arguments (<Serializable>).
+    /// Extract protocol conformance from `parameterized_arguments` (<Serializable>).
     fn extract_protocol_conformance(
         state: &mut ExtractionState,
         params: TsNode<'_>,
@@ -824,7 +823,7 @@ impl ObjcExtractor {
         }
     }
 
-    /// Extract the property name from a property_declaration node.
+    /// Extract the property name from a `property_declaration` node.
     fn extract_property_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(struct_decl) = Self::find_child_by_kind(node, "struct_declaration") {
             if let Some(struct_declarator) =
@@ -847,28 +846,6 @@ impl ObjcExtractor {
         None
     }
 
-    /// Check if a property has the "readonly" attribute.
-    fn is_property_readonly(state: &ExtractionState, node: TsNode<'_>) -> bool {
-        if let Some(attrs) = Self::find_child_by_kind(node, "property_attributes_declaration") {
-            let mut cursor = attrs.walk();
-            if cursor.goto_first_child() {
-                loop {
-                    let child = cursor.node();
-                    if child.kind() == "property_attribute" {
-                        let text = state.node_text(child);
-                        if text == "readonly" {
-                            return true;
-                        }
-                    }
-                    if !cursor.goto_next_sibling() {
-                        break;
-                    }
-                }
-            }
-        }
-        false
-    }
-
     // -------------------------------------------------------
     // method_declaration (in @interface or @protocol)
     // -------------------------------------------------------
@@ -877,7 +854,7 @@ impl ObjcExtractor {
     fn visit_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let name =
             Self::extract_method_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
-        let is_class_method = Self::is_class_method(state, node);
+        let _is_class_method = Self::is_class_method(state, node);
 
         let text = state.node_text(node);
         let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
@@ -936,8 +913,7 @@ impl ObjcExtractor {
     /// Maps to Impl node kind with method definitions inside.
     fn visit_class_implementation(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let text = state.node_text(node);
@@ -1007,7 +983,7 @@ impl ObjcExtractor {
         }
     }
 
-    /// Visit an implementation_definition which wraps a method_definition.
+    /// Visit an `implementation_definition` which wraps a `method_definition`.
     fn visit_implementation_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // The implementation_definition contains a method_definition child
         if let Some(method_def) = Self::find_child_by_kind(node, "method_definition") {
@@ -1018,8 +994,8 @@ impl ObjcExtractor {
         }
     }
 
-    /// Extract docstring for an implementation_definition by looking at preceding
-    /// sibling comments within the class_implementation.
+    /// Extract docstring for an `implementation_definition` by looking at preceding
+    /// sibling comments within the `class_implementation`.
     fn extract_impl_method_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut comments = Vec::new();
         let mut current = node.prev_named_sibling();
@@ -1116,7 +1092,7 @@ impl ObjcExtractor {
     fn visit_function_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         let name =
             Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -1227,7 +1203,7 @@ impl ObjcExtractor {
     // Call site extraction
     // -------------------------------------------------------
 
-    /// Recursively find call_expression and message_expression nodes and create
+    /// Recursively find `call_expression` and `message_expression` nodes and create
     /// unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -1268,7 +1244,7 @@ impl ObjcExtractor {
 
     /// Extract a message expression call site.
     ///
-    /// For `[NSString stringWithFormat:...]`, the receiver is "NSString" and
+    /// For `[NSString stringWithFormat:...]`, the receiver is "`NSString`" and
     /// the method is "stringWithFormat".
     fn extract_message_call(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let method_name = node
@@ -1280,7 +1256,7 @@ impl ObjcExtractor {
 
         if let Some(method) = method_name {
             let reference_name = if let Some(receiver) = receiver_name {
-                format!("{}.{}", receiver, method)
+                format!("{receiver}.{method}")
             } else {
                 method
             };
@@ -1299,9 +1275,9 @@ impl ObjcExtractor {
     // Method name and type extraction helpers
     // -------------------------------------------------------
 
-    /// Extract the method name from a method_definition or method_declaration node.
+    /// Extract the method name from a `method_definition` or `method_declaration` node.
     ///
-    /// The method name is the first identifier child (not inside method_type or method_parameter).
+    /// The method name is the first identifier child (not inside `method_type` or `method_parameter`).
     fn extract_method_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1327,7 +1303,7 @@ impl ObjcExtractor {
         false
     }
 
-    /// Extract the function name from a function_definition or declaration node.
+    /// Extract the function name from a `function_definition` or declaration node.
     fn extract_function_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
             if let Some(ident) = Self::find_child_by_kind(declarator, "identifier") {
@@ -1338,13 +1314,12 @@ impl ObjcExtractor {
     }
 
     /// Extract the function signature (everything except the body).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            let trimmed = text.trim().trim_end_matches(';').trim().to_string();
-            Some(trimmed)
+            text.trim().trim_end_matches(';').trim().to_string()
         }
     }
 
@@ -1450,7 +1425,7 @@ impl ObjcExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1467,7 +1442,7 @@ impl crate::extraction::LanguageExtractor for ObjcExtractor {
         &["m", "mm"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Objective-C"
     }
 

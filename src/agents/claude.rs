@@ -13,8 +13,8 @@ use serde_json::json;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    backup_config_file, load_json_file_strict, safe_write_json_file, write_json_file,
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext, EXPECTED_TOOL_PERMS,
+    backup_config_file, expected_tool_perms, load_json_file_strict, safe_write_json_file,
+    write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// Claude Code agent.
@@ -41,7 +41,7 @@ impl AgentIntegration for ClaudeIntegration {
         let mut settings = load_json_file_strict(&settings_path)?;
         install_migrate_old_mcp(&mut settings, &settings_path);
         install_hook(&mut settings, &ctx.tokensave_bin);
-        install_permissions(&mut settings, ctx.tool_permissions);
+        install_permissions(&mut settings, &ctx.tool_permissions);
         write_json_file(&settings_path, &settings)?;
 
         install_claude_md_rules(&claude_md_path)?;
@@ -194,16 +194,14 @@ fn install_single_hook(
 
     let has_hook = hooks_arr.iter().any(|h| {
         let hooks_list = h.get("hooks").and_then(|a| a.as_array());
-        hooks_list
-            .map(|arr| {
-                arr.iter().any(|entry| {
-                    entry
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .is_some_and(|c| c.contains("tokensave"))
-                })
+        hooks_list.is_some_and(|arr| {
+            arr.iter().any(|entry| {
+                entry
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| c.contains("tokensave"))
             })
-            .unwrap_or(false)
+        })
     });
 
     if !has_hook {
@@ -225,19 +223,19 @@ fn install_single_hook(
 }
 
 /// Add MCP tool permissions (idempotent).
-fn install_permissions(settings: &mut serde_json::Value, tool_permissions: &[&str]) {
+fn install_permissions(settings: &mut serde_json::Value, tool_permissions: &[String]) {
     let existing: Vec<String> = settings["permissions"]["allow"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                 .collect()
         })
         .unwrap_or_default();
     let mut allow: Vec<String> = existing;
     for tool in tool_permissions {
-        if !allow.iter().any(|e| e == *tool) {
-            allow.push(tool.to_string());
+        if !allow.iter().any(|e| e == tool) {
+            allow.push(tool.clone());
         }
     }
     allow.sort();
@@ -392,7 +390,7 @@ fn clean_local_settings_file(project_path: &Path, local_settings_path: &Path) {
         return;
     }
 
-    let is_empty = local_val.as_object().is_some_and(|obj| obj.is_empty());
+    let is_empty = local_val.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         if std::fs::remove_file(local_settings_path).is_ok() {
             eprintln!(
@@ -441,7 +439,9 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
     if servers.is_empty() {
         claude_json.as_object_mut().map(|o| o.remove("mcpServers"));
     }
-    let is_empty = claude_json.as_object().is_some_and(|o| o.is_empty());
+    let is_empty = claude_json
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(claude_json_path).ok();
         eprintln!(
@@ -518,7 +518,7 @@ fn uninstall_single_hook(settings: &mut serde_json::Value, event: &str) -> bool 
         .filter(|h| {
             !h.get("hooks")
                 .and_then(|a| a.as_array())
-                .map(|arr| {
+                .is_some_and(|arr| {
                     arr.iter().any(|entry| {
                         entry
                             .get("command")
@@ -526,10 +526,13 @@ fn uninstall_single_hook(settings: &mut serde_json::Value, event: &str) -> bool 
                             .is_some_and(|c| c.contains("tokensave"))
                     })
                 })
-                .unwrap_or(false)
         })
         .collect();
-    if filtered.len() >= settings["hooks"][event].as_array().map_or(0, |a| a.len()) {
+    if filtered.len()
+        >= settings["hooks"][event]
+            .as_array()
+            .map_or(0, std::vec::Vec::len)
+    {
         return false;
     }
     if filtered.is_empty() {
@@ -561,7 +564,7 @@ fn uninstall_permissions(settings: &mut serde_json::Value) -> bool {
     if filtered.len()
         >= settings["permissions"]["allow"]
             .as_array()
-            .map_or(0, |a| a.len())
+            .map_or(0, std::vec::Vec::len)
     {
         return false;
     }
@@ -781,7 +784,7 @@ fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Valu
                 .and_then(|a| a.first())
                 .and_then(|c| c["command"].as_str())
                 .filter(|c| c.contains("tokensave"))
-                .map(|s| s.to_string())
+                .map(String::from)
         })
     });
     let Some(ref hook_cmd) = hook_cmd_str else {
@@ -819,7 +822,7 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
     let bin = extract_tokensave_bin_from_hooks(settings).or_else(|| {
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .and_then(|p| p.to_str().map(String::from))
     });
     let Some(bin) = bin else {
         return;
@@ -840,7 +843,7 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
                     .and_then(|a| a.first())
                     .and_then(|c| c["command"].as_str())
                     .filter(|c| c.contains("tokensave"))
-                    .map(|s| s.to_string())
+                    .map(String::from)
             })
         });
 
@@ -879,29 +882,27 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let missing: Vec<&&str> = EXPECTED_TOOL_PERMS
+    let expected = expected_tool_perms();
+    let missing: Vec<&String> = expected
         .iter()
-        .filter(|p| !installed.contains(p))
+        .filter(|p| !installed.contains(&p.as_str()))
         .collect();
 
     if missing.is_empty() {
-        dc.pass(&format!(
-            "All {} tool permissions granted",
-            EXPECTED_TOOL_PERMS.len()
-        ));
+        dc.pass(&format!("All {} tool permissions granted", expected.len()));
     } else {
         dc.fail(&format!(
             "{} tool permission(s) missing — run `tokensave install`",
             missing.len()
         ));
         for perm in &missing {
-            dc.info(&format!("missing: {}", perm));
+            dc.info(&format!("missing: {perm}"));
         }
     }
 
     let stale: Vec<&&str> = installed
         .iter()
-        .filter(|p| p.starts_with("mcp__tokensave__") && !EXPECTED_TOOL_PERMS.contains(p))
+        .filter(|p| p.starts_with("mcp__tokensave__") && !expected.contains(&p.to_string()))
         .collect();
     if !stale.is_empty() {
         dc.warn(&format!(
@@ -1032,7 +1033,7 @@ fn doctor_clean_local_settings(
         return false;
     }
 
-    let is_empty = local_val.as_object().is_some_and(|obj| obj.is_empty());
+    let is_empty = local_val.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         if std::fs::remove_file(local_settings_path).is_ok() {
             dc.warn(&format!(
@@ -1063,11 +1064,11 @@ fn clean_orphaned_local_mcp_keys(local_val: &mut serde_json::Value) {
     let no_local_servers = local_val
         .get("enabledMcpjsonServers")
         .and_then(|v| v.as_array())
-        .is_some_and(|a| a.is_empty())
+        .is_some_and(std::vec::Vec::is_empty)
         && local_val
             .get("mcpServers")
             .and_then(|v| v.as_object())
-            .is_none_or(|o| o.is_empty());
+            .is_none_or(serde_json::Map::is_empty);
     if no_local_servers {
         local_val
             .as_object_mut()
@@ -1120,15 +1121,15 @@ fn warn_missing_permissions(settings: &serde_json::Value) {
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let missing_count = EXPECTED_TOOL_PERMS
+    let expected = expected_tool_perms();
+    let missing_count = expected
         .iter()
-        .filter(|p| !installed.contains(p))
+        .filter(|p| !installed.contains(&p.as_str()))
         .count();
 
     if missing_count > 0 {
         eprintln!(
-            "\x1b[33mwarning: {} new tokensave tool(s) not yet permitted. Run `tokensave install` to update.\x1b[0m",
-            missing_count
+            "\x1b[33mwarning: {missing_count} new tokensave tool(s) not yet permitted. Run `tokensave install` to update.\x1b[0m"
         );
     }
 }

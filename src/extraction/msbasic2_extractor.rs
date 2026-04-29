@@ -23,7 +23,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -177,7 +177,7 @@ impl MsBasic2Extractor {
         lines
     }
 
-    /// Parse a single `line` node into a BasicLine struct.
+    /// Parse a single `line` node into a `BasicLine` struct.
     fn parse_line<'a>(state: &ExtractionState, node: TsNode<'a>) -> Option<BasicLine<'a>> {
         let line_number_node = Self::find_child_by_kind(node, "line_number")?;
         let line_number_text = state.node_text(line_number_node);
@@ -236,27 +236,23 @@ impl MsBasic2Extractor {
 
     /// Extract a LET statement as a Const node.
     fn visit_let_statement(state: &mut ExtractionState, basic_line: &BasicLine<'_>) {
-        let statement_list = match Self::find_child_by_kind(basic_line.node, "statement_list") {
-            Some(sl) => sl,
-            None => return,
+        let Some(statement_list) = Self::find_child_by_kind(basic_line.node, "statement_list")
+        else {
+            return;
         };
-        let statement = match Self::find_child_by_kind(statement_list, "statement") {
-            Some(s) => s,
-            None => return,
+        let Some(statement) = Self::find_child_by_kind(statement_list, "statement") else {
+            return;
         };
-        let let_stmt = match Self::find_child_by_kind(statement, "let_statement") {
-            Some(ls) => ls,
-            None => return,
+        let Some(let_stmt) = Self::find_child_by_kind(statement, "let_statement") else {
+            return;
         };
 
         // Extract the variable name from: let_statement -> variable -> identifier
-        let var_node = match Self::find_child_by_kind(let_stmt, "variable") {
-            Some(v) => v,
-            None => return,
+        let Some(var_node) = Self::find_child_by_kind(let_stmt, "variable") else {
+            return;
         };
-        let id_node = match Self::find_child_by_kind(var_node, "identifier") {
-            Some(i) => i,
-            None => return,
+        let Some(id_node) = Self::find_child_by_kind(var_node, "identifier") else {
+            return;
         };
         let name = state.node_text(id_node);
 
@@ -399,7 +395,7 @@ impl MsBasic2Extractor {
                     // Use the line number of the first code line (after REMs) as the
                     // signature, so callers can reference it by GOSUB <line_number>.
                     let sig_line_num = lines[body_start].line_number;
-                    let signature = format!("GOSUB {}", sig_line_num);
+                    let signature = format!("GOSUB {sig_line_num}");
 
                     let graph_node = Node {
                         id: fn_id.clone(),
@@ -518,7 +514,7 @@ impl MsBasic2Extractor {
         Self::walk_for_calls(state, line.node, from_node_id);
     }
 
-    /// Recursively walk AST nodes looking for gosub_statement and goto_statement.
+    /// Recursively walk AST nodes looking for `gosub_statement` and `goto_statement`.
     fn walk_for_calls(state: &mut ExtractionState, node: TsNode<'_>, from_node_id: &str) {
         let kind = node.kind();
         match kind {
@@ -554,7 +550,7 @@ impl MsBasic2Extractor {
     /// Derive a function name from REM comment text.
     ///
     /// Takes the first REM line text and converts it into a snake_case-like
-    /// identifier. For example, "LOG A MESSAGE" becomes "LOG_A_MESSAGE".
+    /// identifier. For example, "LOG A MESSAGE" becomes "`LOG_A_MESSAGE`".
     fn derive_function_name(rem_comments: &[String]) -> String {
         if rem_comments.is_empty() {
             return "UNNAMED_SUB".to_string();
@@ -610,7 +606,7 @@ impl MsBasic2Extractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -627,7 +623,7 @@ impl crate::extraction::LanguageExtractor for MsBasic2Extractor {
         &["bas"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "MS BASIC 2.0"
     }
 

@@ -1,9 +1,9 @@
 // Rust guideline compliant 2025-10-17
-//! OpenCode agent integration.
+//! `OpenCode` agent integration.
 //!
-//! Handles registration of the tokensave MCP server in OpenCode's config
+//! Handles registration of the tokensave MCP server in `OpenCode`'s config
 //! file (`$HOME/.config/opencode/opencode.json` or `$XDG_CONFIG_HOME/opencode/opencode.json`),
-//! and prompt rules via `OPENCODE.md`. OpenCode has no hook system or
+//! and prompt rules via `OPENCODE.md`. `OpenCode` has no hook system or
 //! declarative tool permissions — it uses interactive runtime approval.
 
 use std::io::Write;
@@ -18,7 +18,7 @@ use super::{
     AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
-/// OpenCode agent.
+/// `OpenCode` agent.
 pub struct OpenCodeIntegration;
 
 impl AgentIntegration for OpenCodeIntegration {
@@ -222,7 +222,7 @@ fn uninstall_mcp_server(config_path: &Path) {
     if mcp.is_empty() {
         config.as_object_mut().map(|o| o.remove("mcp"));
     }
-    let is_empty = config.as_object().is_some_and(|o| o.is_empty());
+    let is_empty = config.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(config_path).ok();
         eprintln!(
@@ -258,8 +258,7 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
     let after_marker = start + marker.len();
     let end = contents[after_marker..]
         .find("\n## ")
-        .map(|pos| after_marker + pos)
-        .unwrap_or(contents.len());
+        .map_or(contents.len(), |pos| after_marker + pos);
     let mut new_contents = String::new();
     new_contents.push_str(contents[..start].trim_end());
     let remainder = &contents[end..];

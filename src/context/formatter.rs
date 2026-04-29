@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use crate::types::TaskContext;
 
@@ -18,7 +19,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
     let mut out = String::new();
 
     out.push_str("## Code Context\n");
-    out.push_str(&format!("**Query:** {}\n\n", context.query));
+    let _ = write!(out, "**Query:** {}\n\n", context.query);
 
     // Entry Points
     out.push_str("### Entry Points\n");
@@ -26,15 +27,16 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         out.push_str("_No entry points found._\n\n");
     } else {
         for node in &context.entry_points {
-            out.push_str(&format!(
-                "- **{}** ({}) - {}:{}\n",
+            let _ = writeln!(
+                out,
+                "- **{}** ({}) - {}:{}",
                 node.name,
                 node.kind.as_str(),
                 node.file_path,
                 node.start_line,
-            ));
+            );
             if let Some(ref sig) = node.signature {
-                out.push_str(&format!("  `{}`\n", sig));
+                let _ = writeln!(out, "  `{sig}`");
             }
         }
         out.push('\n');
@@ -61,9 +63,9 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
             let symbols = by_file.get(*file).unwrap_or(&Vec::new()).clone();
             let formatted: Vec<String> = symbols
                 .iter()
-                .map(|(name, line)| format!("{}:{}", name, line))
+                .map(|(name, line)| format!("{name}:{line}"))
                 .collect();
-            out.push_str(&format!("- {}: {}\n", file, formatted.join(", ")));
+            let _ = writeln!(out, "- {}: {}", file, formatted.join(", "));
         }
         out.push('\n');
     }
@@ -81,16 +83,16 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                     .entry_points
                     .iter()
                     .find(|n| &n.id == node_id)
-                    .map(|n| n.name.clone())
-                    .unwrap_or_else(|| node_id.clone())
+                    .map_or_else(|| node_id.clone(), |n| n.name.clone())
             } else {
                 "unknown".to_string()
             };
 
-            out.push_str(&format!(
-                "#### {} ({}:{})\n",
+            let _ = writeln!(
+                out,
+                "#### {} ({}:{})",
                 label, block.file_path, block.start_line,
-            ));
+            );
             out.push_str("```rust\n");
             out.push_str(&block.content);
             if !block.content.ends_with('\n') {

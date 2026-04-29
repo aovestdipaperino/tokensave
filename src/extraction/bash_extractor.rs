@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -158,12 +158,11 @@ impl BashExtractor {
 
     /// Extract a function definition.
     ///
-    /// Bash functions are always top-level (no classes), so they get NodeKind::Function.
+    /// Bash functions are always top-level (no classes), so they get `NodeKind::Function`.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let kind = NodeKind::Function;
         let visibility = Visibility::Pub;
@@ -445,7 +444,7 @@ impl BashExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -462,7 +461,7 @@ impl crate::extraction::LanguageExtractor for BashExtractor {
         &["sh", "bash"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Bash"
     }
 

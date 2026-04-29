@@ -1483,3 +1483,351 @@ async fn test_status_no_scope_prefix() {
         "status should not have scope_prefix when None"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Edit tools: tokensave_str_replace, tokensave_multi_str_replace, tokensave_insert_at
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_str_replace_success() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("src/main.rs"),
+        "fn hello() {}\nfn world() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn hello() {}",
+            "new_str": "fn hello_updated() {}"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["matched_str"], "fn hello() {}");
+    assert_eq!(parsed["new_str"], "fn hello_updated() {}");
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(content.contains("fn hello_updated() {}"));
+    assert!(!content.contains("fn hello() {}"));
+}
+
+#[tokio::test]
+async fn test_str_replace_not_found() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn not_exists() {}",
+            "new_str": "fn replaced() {}"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"].as_str().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn test_str_replace_multiple_matches_fails() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn foo() {}\nfn foo() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn foo() {}",
+            "new_str": "fn bar() {}"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("matches 2 times"));
+}
+
+#[tokio::test]
+async fn test_multi_str_replace_success() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("src/main.rs"),
+        "fn foo() {}\nfn bar() {}\nfn baz() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_multi_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "replacements": [
+                ["fn foo() {}", "fn foo_replaced() {}"],
+                ["fn bar() {}", "fn bar_replaced() {}"]
+            ]
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["applied_count"], 2);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(content.contains("fn foo_replaced()"));
+    assert!(content.contains("fn bar_replaced()"));
+    assert!(content.contains("fn baz() {}"));
+}
+
+#[tokio::test]
+async fn test_multi_str_replace_atomic_failure() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn foo() {}\nfn baz() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_multi_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "replacements": [
+                ["fn not_exists() {}", "fn replaced() {}"],
+                ["fn baz() {}", "fn baz_replaced() {}"]
+            ]
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("must match exactly once"));
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(content.contains("fn foo() {}"));
+    assert!(content.contains("fn baz() {}"));
+    assert!(!content.contains("fn replaced()"));
+}
+
+#[tokio::test]
+async fn test_insert_at_string_anchor_before() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("src/main.rs"),
+        "line one\nline two\nline three\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/main.rs",
+            "anchor": "line two",
+            "content": "inserted line",
+            "before": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines[0], "line one");
+    assert_eq!(lines[1], "inserted line");
+    assert_eq!(lines[2], "line two");
+    assert_eq!(lines[3], "line three");
+}
+
+#[tokio::test]
+async fn test_insert_at_line_number() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("src/main.rs"),
+        "line one\nline two\nline three\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/main.rs",
+            "anchor": "2",
+            "content": "inserted at line 2",
+            "before": false
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["anchor_line"], 2);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines[0], "line one");
+    assert_eq!(lines[1], "line two");
+    assert_eq!(lines[2], "inserted at line 2");
+    assert_eq!(lines[3], "line three");
+}
+
+#[tokio::test]
+async fn test_insert_at_anchor_not_found() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "line one\nline two\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/main.rs",
+            "anchor": "nonexistent",
+            "content": "should not be inserted",
+            "before": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"].as_str().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn test_insert_at_ambiguous_anchor() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("src/main.rs"),
+        "line foo\nline foo\nline bar\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/main.rs",
+            "anchor": "foo",
+            "content": "should not be inserted",
+            "before": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("matches 2 lines"));
+}

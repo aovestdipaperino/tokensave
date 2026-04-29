@@ -20,7 +20,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -179,7 +179,7 @@ impl CExtractor {
 
         let name =
             Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -230,7 +230,7 @@ impl CExtractor {
         }
     }
 
-    /// Extract the function name from a function_definition or declaration node.
+    /// Extract the function name from a `function_definition` or declaration node.
     /// The name is typically inside a `function_declarator` -> `identifier`.
     fn extract_function_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // Look for function_declarator which contains the name
@@ -251,14 +251,13 @@ impl CExtractor {
     }
 
     /// Extract the function signature (everything except the body).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
             // For declarations without a body (prototypes), use the full text without semicolon
-            let trimmed = text.trim().trim_end_matches(';').trim().to_string();
-            Some(trimmed)
+            text.trim().trim_end_matches(';').trim().to_string()
         }
     }
 
@@ -440,7 +439,7 @@ impl CExtractor {
     // type_definition (typedef)
     // -------------------------------------------------------
 
-    /// Visit a type_definition node (typedef).
+    /// Visit a `type_definition` node (typedef).
     fn visit_type_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // Check for typedef struct { ... } Name;
         if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
@@ -532,8 +531,7 @@ impl CExtractor {
         // Also create a Struct node if it has a body
         if Self::find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
             let struct_name = Self::find_child_by_kind(struct_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_struct_node(state, &struct_name, struct_spec, docstring);
         }
@@ -600,8 +598,7 @@ impl CExtractor {
         // Also create a Union node if it has a body
         if Self::find_child_by_kind(union_spec, "field_declaration_list").is_some() {
             let union_name = Self::find_child_by_kind(union_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_union_node(state, &union_name, union_spec, docstring);
         }
@@ -668,8 +665,7 @@ impl CExtractor {
         // Also create an Enum node if it has a body
         if Self::find_child_by_kind(enum_spec, "enumerator_list").is_some() {
             let enum_name = Self::find_child_by_kind(enum_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_enum_node(state, &enum_name, enum_spec, docstring);
         }
@@ -800,8 +796,8 @@ impl CExtractor {
         }
     }
 
-    /// Find the typedef name, which is usually the last type_identifier child of the
-    /// type_definition node.
+    /// Find the typedef name, which is usually the last `type_identifier` child of the
+    /// `type_definition` node.
     fn find_typedef_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // The typedef name is typically the last type_identifier direct child
         let mut last_type_id = None;
@@ -831,8 +827,7 @@ impl CExtractor {
             return;
         }
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Skip anonymous structs that are not inside a typedef
         if name == "<anonymous>" {
@@ -849,8 +844,7 @@ impl CExtractor {
             return;
         }
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -866,8 +860,7 @@ impl CExtractor {
             return;
         }
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -995,7 +988,7 @@ impl CExtractor {
         state.node_stack.pop();
     }
 
-    /// Create an Enum node with EnumVariant children.
+    /// Create an Enum node with `EnumVariant` children.
     fn create_enum_node(
         state: &mut ExtractionState,
         name: &str,
@@ -1059,8 +1052,7 @@ impl CExtractor {
     /// Extract a preprocessor #define.
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1116,13 +1108,15 @@ impl CExtractor {
         // The include path is in a string_literal or system_lib_string child
         let path = Self::find_child_by_kind(node, "string_literal")
             .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
-            .map(|n| {
-                let text = state.node_text(n);
-                // Strip quotes/angle brackets
-                text.trim_matches(|c| c == '"' || c == '<' || c == '>')
-                    .to_string()
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(
+                || "<unknown>".to_string(),
+                |n| {
+                    let text = state.node_text(n);
+                    // Strip quotes/angle brackets
+                    text.trim_matches(|c| c == '"' || c == '<' || c == '>')
+                        .to_string()
+                },
+            );
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1190,13 +1184,12 @@ impl CExtractor {
         }
     }
 
-    /// Extract a single field from a field_declaration node.
+    /// Extract a single field from a `field_declaration` node.
     fn extract_single_field(state: &mut ExtractionState, node: TsNode<'_>) {
         // In C, the field name is a field_identifier child of the field_declaration
         // or inside a field_declarator child.
         let name = Self::find_descendant_by_kind(node, "field_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1242,7 +1235,7 @@ impl CExtractor {
         }
     }
 
-    /// Extract enum variants from an enum_specifier node.
+    /// Extract enum variants from an `enum_specifier` node.
     fn extract_enum_variants(state: &mut ExtractionState, enum_spec: TsNode<'_>) {
         if let Some(enumerator_list) = Self::find_child_by_kind(enum_spec, "enumerator_list") {
             let mut cursor = enumerator_list.walk();
@@ -1260,11 +1253,10 @@ impl CExtractor {
         }
     }
 
-    /// Extract a single enumerator as an EnumVariant node.
+    /// Extract a single enumerator as an `EnumVariant` node.
     fn extract_single_enumerator(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1314,7 +1306,7 @@ impl CExtractor {
     // Call site extraction
     // -------------------------------------------------------
 
-    /// Recursively find call_expression nodes and create unresolved Calls references.
+    /// Recursively find `call_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1467,7 +1459,7 @@ impl CExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1484,7 +1476,7 @@ impl crate::extraction::LanguageExtractor for CExtractor {
         &["c", "h"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "C"
     }
 

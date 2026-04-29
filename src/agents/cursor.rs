@@ -131,7 +131,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
 
     let is_empty = settings.as_object().is_some_and(|o| {
         o.iter()
-            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty()))
+            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(serde_json::Map::is_empty))
     });
 
     if is_empty {

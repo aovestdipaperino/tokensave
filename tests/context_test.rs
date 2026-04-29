@@ -239,7 +239,7 @@ async fn test_get_code_reads_source_file() {
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).await.unwrap();
+    let code = builder.get_code(&node).unwrap();
     assert!(code.is_some());
     let content = code.unwrap();
     assert!(content.contains("fn main()"));
@@ -284,7 +284,7 @@ async fn test_get_code_returns_none_for_missing_file() {
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).await.unwrap();
+    let code = builder.get_code(&node).unwrap();
     assert!(code.is_none());
 }
 

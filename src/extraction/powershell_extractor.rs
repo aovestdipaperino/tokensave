@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -171,8 +171,7 @@ impl PowerShellExtractor {
     /// Extract a function definition.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "function_name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let kind = NodeKind::Function;
         let visibility = Visibility::Pub;
@@ -228,25 +227,22 @@ impl PowerShellExtractor {
     /// Extract a typed variable assignment at the top level as a Const.
     ///
     /// Matches patterns like `[int]$MaxRetries = 3`.
-    /// The AST is: pipeline > assignment_expression > left_assignment_expression > ... > cast_expression > variable.
+    /// The AST is: pipeline > `assignment_expression` > `left_assignment_expression` > ... > `cast_expression` > variable.
     fn visit_assignment(state: &mut ExtractionState, node: TsNode<'_>, pipeline_node: TsNode<'_>) {
         // Only treat top-level typed assignments as constants.
         // We detect a cast_expression inside the left_assignment_expression.
-        let left = match Self::find_child_by_kind(node, "left_assignment_expression") {
-            Some(l) => l,
-            None => return,
+        let Some(left) = Self::find_child_by_kind(node, "left_assignment_expression") else {
+            return;
         };
 
         // Look for a cast_expression recursively inside the left side.
-        let cast = match Self::find_descendant_by_kind(left, "cast_expression") {
-            Some(c) => c,
-            None => return,
+        let Some(cast) = Self::find_descendant_by_kind(left, "cast_expression") else {
+            return;
         };
 
         // The variable is a child of the cast_expression.
-        let var_node = match Self::find_descendant_by_kind(cast, "variable") {
-            Some(v) => v,
-            None => return,
+        let Some(var_node) = Self::find_descendant_by_kind(cast, "variable") else {
+            return;
         };
 
         let var_text = state.node_text(var_node);
@@ -491,7 +487,7 @@ impl PowerShellExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -508,7 +504,7 @@ impl crate::extraction::LanguageExtractor for PowerShellExtractor {
         &["ps1", "psm1"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "PowerShell"
     }
 

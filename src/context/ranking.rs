@@ -3,17 +3,32 @@ use crate::types::{NodeKind, SearchResult, Visibility};
 /// Boost factor based on node kind.
 pub fn kind_boost(kind: &NodeKind) -> f64 {
     match kind {
-        NodeKind::Function | NodeKind::Method | NodeKind::StructMethod => 2.0,
-        NodeKind::Constructor | NodeKind::AbstractMethod | NodeKind::Procedure => 2.0,
+        NodeKind::Function
+        | NodeKind::Method
+        | NodeKind::StructMethod
+        | NodeKind::Constructor
+        | NodeKind::AbstractMethod
+        | NodeKind::Procedure => 2.0,
         NodeKind::ArrowFunction => 1.8,
 
-        NodeKind::Struct | NodeKind::Class | NodeKind::Enum | NodeKind::Trait => 1.5,
-        NodeKind::Interface | NodeKind::InterfaceType => 1.5,
-        NodeKind::DataClass | NodeKind::SealedClass | NodeKind::CaseClass => 1.5,
-        NodeKind::Record | NodeKind::Union => 1.5,
+        NodeKind::Struct
+        | NodeKind::Class
+        | NodeKind::Enum
+        | NodeKind::Trait
+        | NodeKind::Interface
+        | NodeKind::InterfaceType
+        | NodeKind::DataClass
+        | NodeKind::SealedClass
+        | NodeKind::CaseClass
+        | NodeKind::Record
+        | NodeKind::Union => 1.5,
 
-        NodeKind::Module | NodeKind::Impl | NodeKind::Namespace => 1.2,
-        NodeKind::ScalaObject | NodeKind::CompanionObject | NodeKind::KotlinObject => 1.2,
+        NodeKind::Module
+        | NodeKind::Impl
+        | NodeKind::Namespace
+        | NodeKind::ScalaObject
+        | NodeKind::CompanionObject
+        | NodeKind::KotlinObject => 1.2,
 
         NodeKind::Field | NodeKind::Property | NodeKind::ValField | NodeKind::VarField => 0.5,
         NodeKind::EnumVariant => 0.3,
@@ -54,10 +69,10 @@ pub fn path_boost(file_path: &str) -> f64 {
 }
 
 /// Applies a log-scale connectivity boost based on incoming call counts.
-/// `call_counts` maps node_id → incoming "calls" edge count.
-pub fn apply_connectivity_boost(
+/// `call_counts` maps `node_id` → incoming "calls" edge count.
+pub fn apply_connectivity_boost<S: std::hash::BuildHasher>(
     candidates: &mut [SearchResult],
-    call_counts: &std::collections::HashMap<String, u64>,
+    call_counts: &std::collections::HashMap<String, u64, S>,
 ) {
     for candidate in candidates.iter_mut() {
         let count = call_counts.get(&candidate.node.id).copied().unwrap_or(0);

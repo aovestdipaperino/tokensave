@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -153,7 +153,7 @@ impl CSharpExtractor {
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
             "namespace_declaration" | "file_scoped_namespace_declaration" => {
-                Self::visit_namespace(state, node)
+                Self::visit_namespace(state, node);
             }
             "using_directive" => Self::visit_using(state, node),
             "class_declaration" => Self::visit_class(state, node),
@@ -199,7 +199,7 @@ impl CSharpExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("namespace {}", name)),
+            signature: Some(format!("namespace {name}")),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -309,7 +309,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -380,7 +380,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -441,7 +441,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -502,7 +502,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -553,7 +553,7 @@ impl CSharpExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract enum members from an enum_member_declaration_list.
+    /// Extract enum members from an `enum_member_declaration_list`.
     fn extract_enum_members(state: &mut ExtractionState, body: TsNode<'_>) {
         let mut cursor = body.walk();
         if cursor.goto_first_child() {
@@ -569,7 +569,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract a single enum member as an EnumVariant node.
+    /// Extract a single enum member as an `EnumVariant` node.
     fn extract_single_enum_member(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_name(state, node).unwrap_or_else(|| {
             // Fallback: try to get the identifier child directly
@@ -635,7 +635,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -703,7 +703,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -778,7 +778,7 @@ impl CSharpExtractor {
             .child_by_field_name("type")
             .map(|n| state.node_text(n))
             .unwrap_or_default();
-        let sig = format!("{} {}", type_str, name);
+        let sig = format!("{type_str} {name}");
 
         let graph_node = Node {
             id: id.clone(),
@@ -836,7 +836,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract variable declarators from a variable_declaration node.
+    /// Extract variable declarators from a `variable_declaration` node.
     fn extract_variable_declarators(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -871,8 +871,7 @@ impl CSharpExtractor {
                             }
                             None
                         })
-                        .map(|n| state.node_text(n))
-                        .unwrap_or_else(|| state.node_text(child));
+                        .map_or_else(|| state.node_text(child), |n| state.node_text(n));
 
                     let qualified_name = format!("{}::{}", state.qualified_prefix(), field_name);
                     let id = generate_node_id(
@@ -892,7 +891,7 @@ impl CSharpExtractor {
                         end_line,
                         start_column,
                         end_column,
-                        signature: Some(signature_text.to_string()),
+                        signature: Some(signature_text.clone()),
                         docstring: None,
                         visibility: visibility.clone(),
                         is_async: false,
@@ -929,7 +928,7 @@ impl CSharpExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -1091,7 +1090,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract attribute lists as AnnotationUsage nodes with Annotates edges.
+    /// Extract attribute lists as `AnnotationUsage` nodes with Annotates edges.
     fn visit_attribute_list(state: &mut ExtractionState, node: TsNode<'_>) {
         // Find the next declaration sibling - that's the declaration this attribute annotates.
         let target_id = Self::find_next_declaration_id(state, node);
@@ -1175,7 +1174,7 @@ impl CSharpExtractor {
         node.child_by_field_name("name").map(|n| state.node_text(n))
     }
 
-    /// Try to extract a qualified_name child for namespace declarations.
+    /// Try to extract a `qualified_name` child for namespace declarations.
     fn extract_qualified_name_child(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1287,12 +1286,12 @@ impl CSharpExtractor {
     }
 
     /// Extract the declaration signature (text from start up to the opening `{`).
-    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            Some(text.trim_end_matches(';').trim().to_string())
+            text.trim_end_matches(';').trim().to_string()
         }
     }
 
@@ -1378,7 +1377,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract types from a base_list node.
+    /// Extract types from a `base_list` node.
     fn extract_base_types(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1419,8 +1418,8 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract attributes from a declaration node's attribute_list children.
-    /// Creates AnnotationUsage nodes and Annotates edges pointing to the target declaration.
+    /// Extract attributes from a declaration node's `attribute_list` children.
+    /// Creates `AnnotationUsage` nodes and Annotates edges pointing to the target declaration.
     fn extract_attributes_from_declaration(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1440,7 +1439,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Visit an attribute_list node and create AnnotationUsage nodes targeting a known declaration.
+    /// Visit an `attribute_list` node and create `AnnotationUsage` nodes targeting a known declaration.
     fn visit_attribute_list_for_target(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1535,7 +1534,7 @@ impl CSharpExtractor {
         state.node_text(node).trim().to_string()
     }
 
-    /// Find the next declaration sibling after an attribute_list and compute its ID.
+    /// Find the next declaration sibling after an `attribute_list` and compute its ID.
     fn find_next_declaration_id(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut current = node.next_named_sibling();
         while let Some(sibling) = current {
@@ -1578,7 +1577,6 @@ impl CSharpExtractor {
                         }
                         "constructor_declaration" => NodeKind::Constructor,
                         "property_declaration" => NodeKind::CSharpProperty,
-                        "field_declaration" => return None, // Fields have complex ID generation
                         "record_declaration" | "record_struct_declaration" => NodeKind::Record,
                         "delegate_declaration" => NodeKind::Delegate,
                         "event_declaration" | "event_field_declaration" => NodeKind::Event,
@@ -1593,7 +1591,7 @@ impl CSharpExtractor {
         None
     }
 
-    /// Recursively find invocation_expression nodes and create unresolved Calls references.
+    /// Recursively find `invocation_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1638,7 +1636,7 @@ impl CSharpExtractor {
         }
     }
 
-    /// Extract the name from an invocation_expression node.
+    /// Extract the name from an `invocation_expression` node.
     fn extract_invocation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // invocation_expression: function + argument_list
         if let Some(func_node) = node.child_by_field_name("function") {
@@ -1653,7 +1651,7 @@ impl CSharpExtractor {
         state.node_text(node)
     }
 
-    /// Extract the type name from an object_creation_expression.
+    /// Extract the type name from an `object_creation_expression`.
     fn extract_object_creation_type(state: &ExtractionState, node: TsNode<'_>) -> String {
         if let Some(type_node) = node.child_by_field_name("type") {
             return state.node_text(type_node);
@@ -1678,7 +1676,7 @@ impl CSharpExtractor {
         "<unknown>".to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1695,7 +1693,7 @@ impl crate::extraction::LanguageExtractor for CSharpExtractor {
         &["cs"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "C#"
     }
 

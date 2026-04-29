@@ -21,7 +21,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -180,8 +180,7 @@ impl KotlinExtractor {
     /// Extract a package header.
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -241,7 +240,7 @@ impl KotlinExtractor {
     // Imports
     // -----------------------------------------------------------------------
 
-    /// Extract imports from an import_list node.
+    /// Extract imports from an `import_list` node.
     fn visit_import_list(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -259,16 +258,17 @@ impl KotlinExtractor {
 
     /// Extract a single import header as a Use node.
     fn visit_import(state: &mut ExtractionState, node: TsNode<'_>) {
-        let path = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| {
+        let path = Self::find_child_by_kind(node, "identifier").map_or_else(
+            || {
                 let text = state.node_text(node);
                 text.trim()
                     .strip_prefix("import ")
                     .unwrap_or(&text)
                     .trim()
                     .to_string()
-            });
+            },
+            |n| state.node_text(n),
+        );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -325,7 +325,7 @@ impl KotlinExtractor {
     // Class declarations (class, data class, sealed class, interface, enum)
     // -----------------------------------------------------------------------
 
-    /// Dispatch a class_declaration based on its modifiers and leading keywords.
+    /// Dispatch a `class_declaration` based on its modifiers and leading keywords.
     fn visit_class_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Determine if this is an interface, enum, data class, sealed class, or regular class
         // by checking the unnamed children and modifiers.
@@ -352,7 +352,7 @@ impl KotlinExtractor {
         let name = Self::extract_class_name(state, node);
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -418,7 +418,7 @@ impl KotlinExtractor {
         let name = Self::extract_class_name(state, node);
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -477,7 +477,7 @@ impl KotlinExtractor {
         let name = Self::extract_class_name(state, node);
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -535,7 +535,7 @@ impl KotlinExtractor {
         let name = Self::extract_class_name(state, node);
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -596,7 +596,7 @@ impl KotlinExtractor {
         let name = Self::extract_class_name(state, node);
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -671,9 +671,10 @@ impl KotlinExtractor {
 
     /// Extract a single enum entry.
     fn visit_enum_entry(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "simple_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| state.node_text(node).trim().to_string());
+        let name = Self::find_child_by_kind(node, "simple_identifier").map_or_else(
+            || state.node_text(node).trim().to_string(),
+            |n| state.node_text(n),
+        );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -724,11 +725,10 @@ impl KotlinExtractor {
     /// Extract an object declaration (Kotlin singleton).
     fn visit_object(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -789,8 +789,7 @@ impl KotlinExtractor {
     fn visit_companion_object(state: &mut ExtractionState, node: TsNode<'_>) {
         // Companion objects may have a name or be anonymous.
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "Companion".to_string());
+            .map_or_else(|| "Companion".to_string(), |n| state.node_text(n));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -861,15 +860,14 @@ impl KotlinExtractor {
     /// Extract a function or method declaration.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "simple_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Check if this is an extension function (has a receiver type before the dot and name).
         let is_extension = Self::is_extension_function(node);
 
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_kdoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -954,12 +952,10 @@ impl KotlinExtractor {
         let name = Self::extract_property_name(state, node);
 
         // Determine val vs var.
-        let is_var = Self::find_child_by_kind(node, "binding_pattern_kind")
-            .map(|bpk| {
-                let text = state.node_text(bpk);
-                text.trim() == "var"
-            })
-            .unwrap_or(false);
+        let is_var = Self::find_child_by_kind(node, "binding_pattern_kind").is_some_and(|bpk| {
+            let text = state.node_text(bpk);
+            text.trim() == "var"
+        });
 
         let visibility = Self::extract_visibility(node, state);
         let start_line = node.start_position().row as u32;
@@ -1089,14 +1085,13 @@ impl KotlinExtractor {
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// Extract the class name from a class_declaration node.
+    /// Extract the class name from a `class_declaration` node.
     fn extract_class_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
-    /// Extract the property name from a property_declaration node.
+    /// Extract the property name from a `property_declaration` node.
     fn extract_property_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // property_declaration has variable_declaration child which has simple_identifier
         if let Some(var_decl) = Self::find_child_by_kind(node, "variable_declaration") {
@@ -1111,8 +1106,8 @@ impl KotlinExtractor {
         "<anonymous>".to_string()
     }
 
-    /// Check if a function_declaration is an extension function.
-    /// Extension functions have a user_type child followed by a "." token before the name.
+    /// Check if a `function_declaration` is an extension function.
+    /// Extension functions have a `user_type` child followed by a "." token before the name.
     fn is_extension_function(node: TsNode<'_>) -> bool {
         let mut found_user_type = false;
         let mut cursor = node.walk();
@@ -1249,22 +1244,22 @@ impl KotlinExtractor {
     }
 
     /// Extract the declaration signature (everything before the body).
-    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         // Cut at first '{' for brace-delimited bodies.
         if let Some(brace_pos) = text.find('{') {
-            return Some(text[..brace_pos].trim().to_string());
+            return text[..brace_pos].trim().to_string();
         }
         // Cut at first '=' for expression-bodied definitions.
         if Self::find_child_by_kind(node, "function_body").is_some() {
             if let Some(eq_pos) = text.find('=') {
-                return Some(text[..eq_pos].trim().to_string());
+                return text[..eq_pos].trim().to_string();
             }
         }
-        Some(text.lines().next().unwrap_or("").trim().to_string())
+        text.lines().next().unwrap_or("").trim().to_string()
     }
 
-    /// Extract KDoc comments (/** ... */) preceding a declaration.
+    /// Extract `KDoc` comments (/** ... */) preceding a declaration.
     fn extract_kdoc(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut current = node.prev_named_sibling();
         while let Some(sibling) = current {
@@ -1285,7 +1280,7 @@ impl KotlinExtractor {
         None
     }
 
-    /// Clean a KDoc comment block, stripping markers.
+    /// Clean a `KDoc` comment block, stripping markers.
     fn clean_kdoc(comment: &str) -> String {
         let trimmed = comment.trim();
         let inner = if trimmed.starts_with("/**") && trimmed.ends_with("*/") {
@@ -1333,8 +1328,7 @@ impl KotlinExtractor {
         let type_name = Self::find_child_by_kind(node, "constructor_invocation")
             .and_then(|ci| Self::find_child_by_kind(ci, "user_type"))
             .or_else(|| Self::find_child_by_kind(node, "user_type"))
-            .map(|ut| state.node_text(ut))
-            .unwrap_or_else(|| state.node_text(node));
+            .map_or_else(|| state.node_text(node), |ut| state.node_text(ut));
 
         let base_name = type_name
             .split('<')
@@ -1356,7 +1350,7 @@ impl KotlinExtractor {
     }
 
     /// Extract annotations from the modifiers of a declaration and create
-    /// AnnotationUsage nodes and Annotates edges.
+    /// `AnnotationUsage` nodes and Annotates edges.
     fn extract_annotations_from_modifiers(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1516,11 +1510,7 @@ impl KotlinExtractor {
                 "function_value_parameters" => {
                     Self::extract_type_refs(state, child, fn_node_id);
                 }
-                "parameter" => {
-                    Self::collect_kotlin_type_ids(state, child, fn_node_id, kotlin_builtins);
-                }
-                // Return type annotation
-                "user_type" | "nullable_type" => {
+                "parameter" | "user_type" | "nullable_type" => {
                     Self::collect_kotlin_type_ids(state, child, fn_node_id, kotlin_builtins);
                 }
                 _ => {}
@@ -1563,7 +1553,7 @@ impl KotlinExtractor {
         }
     }
 
-    /// Recursively find call_expression nodes and create unresolved Calls references.
+    /// Recursively find `call_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1598,20 +1588,13 @@ impl KotlinExtractor {
         }
     }
 
-    /// Extract the callee name from a call_expression.
+    /// Extract the callee name from a `call_expression`.
     fn extract_call_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // call_expression's first named child is the function reference.
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             let child = cursor.node();
-            match child.kind() {
-                "navigation_expression" | "simple_identifier" => {
-                    return state.node_text(child);
-                }
-                _ => {
-                    return state.node_text(child);
-                }
-            }
+            return state.node_text(child);
         }
         let text = state.node_text(node);
         text.split('(').next().unwrap_or(&text).trim().to_string()
@@ -1634,7 +1617,7 @@ impl KotlinExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1651,7 +1634,7 @@ impl crate::extraction::LanguageExtractor for KotlinExtractor {
         &["kt", "kts"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Kotlin"
     }
 

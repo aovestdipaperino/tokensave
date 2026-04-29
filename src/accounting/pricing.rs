@@ -3,16 +3,16 @@
 //! Pricing lifecycle:
 //! 1. **Cached file** at `~/.tokensave/pricing.json` -- checked first.
 //! 2. **Embedded fallback** baked into the binary -- used when no cache exists.
-//! 3. **Remote refresh** from LiteLLM's public pricing JSON -- fetched at most
+//! 3. **Remote refresh** from `LiteLLM`'s public pricing JSON -- fetched at most
 //!    once every 24 hours, stored to the cache file.
 //!
-//! All prices are per million tokens (MTok).
+//! All prices are per million tokens (`MTok`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// LiteLLM pricing data URL. Public, no authentication required.
+/// `LiteLLM` pricing data URL. Public, no authentication required.
 /// See: <https://github.com/BerriAI/litellm>
 const LITELLM_PRICING_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -100,9 +100,9 @@ fn embedded_table() -> HashMap<String, ModelPricing> {
     m
 }
 
-/// Parse LiteLLM's JSON format into our pricing table.
+/// Parse `LiteLLM`'s JSON format into our pricing table.
 ///
-/// LiteLLM uses per-token costs (e.g. `3e-06` for $3/MTok). We filter to
+/// `LiteLLM` uses per-token costs (e.g. `3e-06` for $3/MTok). We filter to
 /// Claude models only and convert to per-MTok.
 fn parse_litellm_json(json: &str) -> Option<HashMap<String, ModelPricing>> {
     let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -126,19 +126,19 @@ fn parse_litellm_json(json: &str) -> Option<HashMap<String, ModelPricing>> {
 
         let input = entry
             .get("input_cost_per_token")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         let output = entry
             .get("output_cost_per_token")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         let cache_write = entry
             .get("cache_creation_input_token_cost")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         let cache_read = entry
             .get("cache_read_input_token_cost")
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
 
         // Skip entries with no pricing data
@@ -230,20 +230,18 @@ pub fn cost_of_turn(
         + (cache_read_tokens as f64 / mtok) * p.cache_read_per_mtok
 }
 
-/// Fetch fresh pricing from LiteLLM and save to the cache file.
+/// Fetch fresh pricing from `LiteLLM` and save to the cache file.
 ///
 /// Returns `true` if the cache was updated, `false` on any failure.
 /// Best-effort: never blocks longer than `FETCH_TIMEOUT`, failures
 /// are silently ignored.
 pub fn refresh_pricing() -> bool {
     let agent = crate::cloud::agent_with_timeout(FETCH_TIMEOUT);
-    let mut resp = match agent.get(LITELLM_PRICING_URL).call() {
-        Ok(r) => r,
-        Err(_) => return false,
+    let Ok(mut resp) = agent.get(LITELLM_PRICING_URL).call() else {
+        return false;
     };
-    let body: String = match resp.body_mut().read_to_string() {
-        Ok(s) => s,
-        Err(_) => return false,
+    let Ok(body) = resp.body_mut().read_to_string() else {
+        return false;
     };
 
     // Validate that it parses before writing
@@ -262,7 +260,7 @@ pub fn refresh_pricing() -> bool {
 }
 
 /// Refresh pricing if the cache is stale (older than 24 hours).
-/// Uses `last_pricing_fetch_at` in UserConfig for TTL tracking.
+/// Uses `last_pricing_fetch_at` in `UserConfig` for TTL tracking.
 pub fn refresh_if_stale() {
     let mut config = crate::user_config::UserConfig::load();
     let now = std::time::SystemTime::now()

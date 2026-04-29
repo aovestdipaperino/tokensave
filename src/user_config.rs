@@ -46,11 +46,11 @@ pub struct UserConfig {
     #[serde(default)]
     pub last_version_warning_at: i64,
 
-    /// Agent integrations that have been installed (e.g. ["claude", "gemini"]).
+    /// Agent integrations that have been installed (e.g. `["claude", "gemini"]`).
     #[serde(default)]
     pub installed_agents: Vec<String>,
 
-    /// Debounce duration for the daemon file watcher (e.g. "15s", "1m").
+    /// Debounce duration for the daemon file watcher (e.g. "2s", "15s", "1m").
     #[serde(default = "default_daemon_debounce")]
     pub daemon_debounce: String,
 
@@ -62,14 +62,14 @@ pub struct UserConfig {
     #[serde(default)]
     pub last_flags_fetch_at: i64,
 
+    /// UNIX timestamp of last `LiteLLM` pricing fetch.
+    #[serde(default)]
+    pub last_pricing_fetch_at: i64,
+
     /// Version that last ran `install` or `reinstall`. Used to trigger a
     /// silent reinstall when the binary is upgraded.
     #[serde(default)]
     pub last_installed_version: String,
-
-    /// UNIX timestamp of last LiteLLM pricing fetch.
-    #[serde(default)]
-    pub last_pricing_fetch_at: i64,
 }
 
 fn default_true() -> bool {
@@ -77,7 +77,7 @@ fn default_true() -> bool {
 }
 
 fn default_daemon_debounce() -> String {
-    "15s".to_string()
+    "2s".to_string()
 }
 
 impl Default for UserConfig {
@@ -96,8 +96,8 @@ impl Default for UserConfig {
             daemon_debounce: default_daemon_debounce(),
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
-            last_installed_version: String::new(),
             last_pricing_fetch_at: 0,
+            last_installed_version: String::new(),
         }
     }
 }

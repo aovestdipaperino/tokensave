@@ -54,19 +54,18 @@ pub fn explore_call_budget(total_nodes: u64) -> u8 {
     }
 }
 
-/// Generates the tokensave_context description with a dynamic call budget.
+/// Generates the `tokensave_context` description with a dynamic call budget.
 pub fn context_description(node_count: u64, budget: u8) -> String {
     format!(
         "Build an AI-ready context for a task description. Returns relevant symbols, \
          relationships, and optionally code snippets.\n\n\
-         CALL BUDGET: {} calls maximum for this project ({} nodes). \
-         Stop after {} calls. If the question is not fully answered, synthesise \
-         from what you have — do not exceed the budget.",
-        budget, node_count, budget
+         CALL BUDGET: {budget} calls maximum for this project ({node_count} nodes). \
+         Stop after {budget} calls. If the question is not fully answered, synthesise \
+         from what you have — do not exceed the budget."
     )
 }
 
-/// Returns tool definitions with a dynamic call budget for tokensave_context.
+/// Returns tool definitions with a dynamic call budget for `tokensave_context`.
 pub fn get_tool_definitions_with_budget(node_count: u64, budget: u8) -> Vec<ToolDefinition> {
     let mut defs = get_tool_definitions();
     // Replace the context tool's description with the budgeted version
@@ -118,6 +117,10 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_branch_search(),
         def_branch_diff(),
         def_branch_list(),
+        def_str_replace(),
+        def_multi_str_replace(),
+        def_insert_at(),
+        def_ast_grep_rewrite(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -961,6 +964,132 @@ fn def_branch_list() -> ToolDefinition {
             "properties": {}
         }),
     )
+}
+
+fn def_str_replace() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_str_replace".to_string(),
+        description: "Replace a unique string in a file with new content. Fails if the old string is not found or matches more than once. This is the safest edit primitive — use this instead of sed/awk.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path"
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": "Exact string to find and replace. Must match exactly once in the file."
+                },
+                "new_str": {
+                    "type": "string",
+                    "description": "Replacement string"
+                }
+            },
+            "required": ["path", "old_str", "new_str"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Edit File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_multi_str_replace() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_multi_str_replace".to_string(),
+        description: "Apply multiple string replacements atomically in a single file. All replacements must match exactly once. If any replacement fails (0 or >1 matches), the entire operation is aborted and no changes are made.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path"
+                },
+                "replacements": {
+                    "type": "array",
+                    "description": "Array of [old_str, new_str] pairs to replace",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 2
+                    }
+                }
+            },
+            "required": ["path", "replacements"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Multi-Edit File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_insert_at() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_insert_at".to_string(),
+        description: "Insert content before or after a unique anchor in a file. The anchor can be a unique string or a 1-indexed line number. Fails if the anchor matches more than one line.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path"
+                },
+                "anchor": {
+                    "type": "string",
+                    "description": "Unique string or line number (1-indexed) to insert at"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to insert"
+                },
+                "before": {
+                    "type": "boolean",
+                    "description": "If true, insert before the anchor line; if false, insert after (default: false)"
+                }
+            },
+            "required": ["path", "anchor", "content"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Insert Into File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_ast_grep_rewrite() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_ast_grep_rewrite".to_string(),
+        description: "Perform structural code rewrite using ast-grep. The pattern and rewrite use ast-grep's SGPattern syntax. Fails if ast-grep is not installed.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "ast-grep search pattern (SGPattern syntax)"
+                },
+                "rewrite": {
+                    "type": "string",
+                    "description": "ast-grep rewrite rule"
+                }
+            },
+            "required": ["path", "pattern", "rewrite"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "AST Structural Rewrite"
+        })),
+        meta: None,
+    }
 }
 
 #[cfg(test)]

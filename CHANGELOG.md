@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Edit primitives for code modification** — four new MCP tools enable Claude&friends to edit files without regex or shell quoting hazards:
+  - `tokensave_str_replace` — replaces a unique `old_str` with `new_str`; fails if 0 or >1 matches, protecting against multi-edit bugs
+  - `tokensave_multi_str_replace` — applies N `(old, new)` replacements atomically; all-or-nothing transaction
+  - `tokensave_insert_at` — inserts content before or after a unique anchor string or line number
+  - `tokensave_ast_grep_rewrite` — structural code rewrite via ast-grep CLI (`--rewrite` mode)
+- **Auto re-indexing** — all edit tools automatically re-index the modified file in the code graph after writing, so the graph stays in sync without manual steps
+
 ### Performance
 - **Fixed N+1 query patterns in graph traversal** — `traverse_bfs`, `traverse_dfs`, `get_callers`, `get_callees`, `get_file_dependencies`, `get_file_dependents`, and `find_dead_code` were each making a separate database query per node, causing excessive CPU usage on large codebases. All methods now batch-fetch nodes using a single `WHERE id IN (...)` query, reducing database roundtrips from O(N) to O(1).
+
+### Fixed
+
+- **Fixed** _dead_code for large codebase.
 
 ## [4.1.4] - 2026-04-25
 

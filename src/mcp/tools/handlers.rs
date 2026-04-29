@@ -5,6 +5,7 @@
 //! formats the result.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use serde_json::{json, Value};
 
@@ -116,9 +117,13 @@ pub async fn handle_tool_call(
         "tokensave_type_hierarchy" => handle_type_hierarchy(cg, args).await,
         "tokensave_branch_search" => handle_branch_search(cg, args).await,
         "tokensave_branch_diff" => handle_branch_diff(cg, args).await,
-        "tokensave_branch_list" => handle_branch_list(cg).await,
+        "tokensave_branch_list" => Ok(handle_branch_list(cg)),
+        "tokensave_str_replace" => handle_str_replace(cg, args).await,
+        "tokensave_multi_str_replace" => handle_multi_str_replace(cg, args).await,
+        "tokensave_insert_at" => handle_insert_at(cg, args).await,
+        "tokensave_ast_grep_rewrite" => handle_ast_grep_rewrite(cg, args).await,
         _ => Err(TokenSaveError::Config {
-            message: format!("unknown tool: {}", tool_name),
+            message: format!("unknown tool: {tool_name}"),
         }),
     }
 }
@@ -166,9 +171,8 @@ async fn handle_search(
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(500) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(500) as usize);
 
     let results = cg.search(query, limit).await?;
     let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
@@ -214,20 +218,18 @@ async fn handle_context(
 
     let max_nodes = args
         .get("max_nodes")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(20);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.min(100) as usize);
 
     let include_code = args
         .get("include_code")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let max_code_blocks = args
         .get("max_code_blocks")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(20) as usize)
-        .unwrap_or(5);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(20) as usize);
 
     let mode = args
         .get("mode")
@@ -256,12 +258,12 @@ async fn handle_context(
 
     let merge_adjacent = args
         .get("merge_adjacent")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let max_per_file: Option<usize> = args
         .get("max_per_file")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .map(|v| v as usize)
         .or(Some((max_nodes / 3).max(3)));
 
@@ -269,8 +271,8 @@ async fn handle_context(
 
     let options = BuildContextOptions {
         max_nodes,
-        include_code,
         max_code_blocks,
+        include_code,
         extra_keywords,
         exclude_node_ids,
         merge_adjacent,
@@ -286,7 +288,12 @@ async fn handle_context(
             .nodes
             .iter()
             .map(|n| n.file_path.as_str())
-            .chain(context.related_files.iter().map(|s| s.as_str())),
+            .chain(
+                context
+                    .related_files
+                    .iter()
+                    .map(std::string::String::as_str),
+            ),
     );
     let mut output = format_context_as_markdown(&context);
 
@@ -303,14 +310,15 @@ async fn handle_context(
                     .iter()
                     .filter(|(_, e)| matches!(e.kind, crate::types::EdgeKind::Implements))
                     .count();
-                output.push_str(&format!(
-                    "- **{}** ({}) - {}:{} ({} implementors)\n",
+                let _ = writeln!(
+                    output,
+                    "- **{}** ({}) - {}:{} ({} implementors)",
                     node.name,
                     node.kind.as_str(),
                     node.file_path,
                     node.start_line,
                     impl_count,
-                ));
+                );
                 found_extension = true;
             }
         }
@@ -347,17 +355,18 @@ async fn handle_context(
                 let mut sorted: Vec<_> = test_files.into_iter().collect();
                 sorted.sort();
                 for tf in &sorted {
-                    output.push_str(&format!("- {}\n", tf));
+                    let _ = writeln!(output, "- {tf}");
                 }
             }
         }
     }
 
     if !context.seen_node_ids.is_empty() {
-        output.push_str(&format!(
+        let _ = write!(
+            output,
             "\nseen_node_ids: {}\n",
             serde_json::to_string(&context.seen_node_ids).unwrap_or_default()
-        ));
+        );
     }
 
     Ok(ToolResult {
@@ -374,9 +383,8 @@ async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let max_depth = args
         .get("max_depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(3);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.min(10) as usize);
 
     let results = cg.get_callers(node_id, max_depth).await?;
 
@@ -411,9 +419,8 @@ async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let max_depth = args
         .get("max_depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(3);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.min(10) as usize);
 
     let results = cg.get_callees(node_id, max_depth).await?;
 
@@ -448,9 +455,8 @@ async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let max_depth = args
         .get("max_depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(3);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.min(10) as usize);
 
     let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
 
@@ -609,7 +615,7 @@ async fn handle_files(
         let prefix = if dir.ends_with('/') {
             dir.to_string()
         } else {
-            format!("{}/", dir)
+            format!("{dir}/")
         };
         files.retain(|f| f.path.starts_with(&prefix) || f.path == dir);
     }
@@ -640,12 +646,8 @@ async fn handle_files(
         let mut groups: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for f in &files {
-            let dir = f
-                .path
-                .rfind('/')
-                .map(|i| &f.path[..i])
-                .unwrap_or(".")
-                .to_string();
+            let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
+            #[allow(clippy::map_unwrap_or)]
             let name = f
                 .path
                 .rfind('/')
@@ -661,7 +663,7 @@ async fn handle_files(
         for (dir, entries) in &groups {
             lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
             for entry in entries {
-                lines.push(format!("  {}", entry));
+                lines.push(format!("  {entry}"));
             }
         }
         lines.join("\n")
@@ -682,7 +684,7 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                 .collect()
         })
         .ok_or_else(|| TokenSaveError::Config {
@@ -691,9 +693,8 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let max_depth = args
         .get("depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(5);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(10) as usize);
 
     let custom_filter = args.get("filter").and_then(|v| v.as_str());
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
@@ -761,15 +762,14 @@ async fn handle_dead_code(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let kinds: Vec<NodeKind> = args
-        .get("kinds")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
+    let kinds: Vec<NodeKind> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || vec![NodeKind::Function, NodeKind::Method],
+        |arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().and_then(NodeKind::from_str))
                 .collect()
-        })
-        .unwrap_or_else(|| vec![NodeKind::Function, NodeKind::Method]);
+        },
+    );
 
     let dead = cg.find_dead_code(&kinds).await?;
     let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
@@ -815,7 +815,7 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                 .collect()
         })
         .ok_or_else(|| TokenSaveError::Config {
@@ -824,9 +824,8 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
 
     let depth = args
         .get("depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(2);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(2, |v| v.min(10) as usize);
 
     let mut modified_symbols: Vec<Value> = Vec::new();
     let mut impacted_symbols: Vec<Value> = Vec::new();
@@ -898,8 +897,8 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
     let touched_files = unique_file_paths(
         all_touched_files
             .iter()
-            .map(|s| s.as_str())
-            .chain(files.iter().map(|s| s.as_str())),
+            .map(std::string::String::as_str)
+            .chain(files.iter().map(std::string::String::as_str)),
     );
 
     let output = json!({
@@ -935,7 +934,7 @@ async fn handle_module_api(
     let prefix = if path.ends_with('/') {
         path.to_string()
     } else {
-        format!("{}/", path)
+        format!("{path}/")
     };
 
     let mut pub_nodes: Vec<&crate::types::Node> = all_nodes
@@ -1011,9 +1010,8 @@ async fn handle_hotspots(
 ) -> Result<ToolResult> {
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
     debug_assert!(limit > 0, "handle_hotspots limit must be positive");
 
     let all_edges = cg.get_all_edges().await?;
@@ -1066,7 +1064,7 @@ async fn handle_hotspots(
         touched.retain(|f| f.starts_with(&with_slash) || f == prefix);
     }
 
-    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
 
     let output = json!({
         "hotspot_count": items.len(),
@@ -1097,9 +1095,8 @@ async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     // Use FTS search first
     let mut results = cg.search(symbol, limit).await?;
@@ -1224,7 +1221,7 @@ async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result<ToolResult
         }
     }
 
-    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
 
     let output = json!({
         "node": node_info,
@@ -1292,7 +1289,7 @@ async fn handle_unused_imports(
         }
     }
 
-    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
 
     let output = json!({
         "unused_import_count": unused.len(),
@@ -1314,8 +1311,8 @@ async fn handle_rank(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    debug_assert!(args.is_object(), "handle_rank expects an object argument");
     use crate::types::EdgeKind;
+    debug_assert!(args.is_object(), "handle_rank expects an object argument");
 
     let edge_kind_str = args
         .get("edge_kind")
@@ -1326,8 +1323,7 @@ async fn handle_rank(
 
     let edge_kind = EdgeKind::from_str(edge_kind_str).ok_or_else(|| TokenSaveError::Config {
         message: format!(
-            "invalid edge_kind '{}'. Valid values: implements, extends, calls, uses, contains, annotates, derives_macro",
-            edge_kind_str
+            "invalid edge_kind '{edge_kind_str}'. Valid values: implements, extends, calls, uses, contains, annotates, derives_macro"
         ),
     })?;
 
@@ -1342,8 +1338,7 @@ async fn handle_rank(
         _ => {
             return Err(TokenSaveError::Config {
                 message: format!(
-                    "invalid direction '{}'. Valid values: incoming, outgoing",
-                    direction
+                    "invalid direction '{direction}'. Valid values: incoming, outgoing"
                 ),
             });
         }
@@ -1356,9 +1351,8 @@ async fn handle_rank(
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -1412,9 +1406,8 @@ async fn handle_largest(
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -1470,19 +1463,15 @@ async fn handle_coupling(
         "fan_out" => false,
         _ => {
             return Err(TokenSaveError::Config {
-                message: format!(
-                    "invalid direction '{}'. Valid values: fan_in, fan_out",
-                    direction
-                ),
+                message: format!("invalid direction '{direction}'. Valid values: fan_in, fan_out"),
             });
         }
     };
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -1521,9 +1510,8 @@ async fn handle_inheritance_depth(
 ) -> Result<ToolResult> {
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -1572,7 +1560,7 @@ async fn handle_distribution(
     let path_prefix = effective_path(&args, scope_prefix);
     let summary = args
         .get("summary")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let results = cg.get_node_distribution(path_prefix).await?;
@@ -1603,7 +1591,7 @@ async fn handle_distribution(
         let mut current_file = String::new();
         for (file, kind, count) in &results {
             if *file != current_file {
-                current_file = file.clone();
+                current_file.clone_from(file);
                 by_file.push((file.clone(), Vec::new()));
             }
             if let Some(last) = by_file.last_mut() {
@@ -1644,9 +1632,8 @@ async fn handle_recursion(
 ) -> Result<ToolResult> {
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
     let path_prefix = effective_path(&args, scope_prefix);
 
     debug_assert!(limit > 0, "handle_recursion limit must be positive");
@@ -1748,7 +1735,7 @@ async fn handle_recursion(
         }));
     }
 
-    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
 
     let output = json!({
         "cycle_count": cycle_items.len(),
@@ -1777,9 +1764,8 @@ async fn handle_complexity(
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -1841,9 +1827,8 @@ async fn handle_doc_coverage(
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(500) as usize)
-        .unwrap_or(50);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.min(500) as usize);
 
     let results = cg
         .get_undocumented_public_symbols(path_prefix, limit)
@@ -1902,9 +1887,8 @@ async fn handle_god_class(
 ) -> Result<ToolResult> {
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(100) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
 
     let path_prefix = effective_path(&args, scope_prefix);
 
@@ -2084,15 +2068,19 @@ async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             message: "missing required parameter: target_dir".to_string(),
         })?;
 
-    let kind_strs: Vec<String> = args
-        .get("kinds")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
                 .collect()
-        })
-        .unwrap_or_else(|| PORT_DEFAULT_KINDS.iter().map(|s| s.to_string()).collect());
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
 
     let kinds: Vec<NodeKind> = kind_strs
         .iter()
@@ -2220,21 +2208,24 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             message: "missing required parameter: source_dir".to_string(),
         })?;
 
-    let kind_strs: Vec<String> = args
-        .get("kinds")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
                 .collect()
-        })
-        .unwrap_or_else(|| PORT_DEFAULT_KINDS.iter().map(|s| s.to_string()).collect());
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(500) as usize)
-        .unwrap_or(50);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.min(500) as usize);
 
     let kinds: Vec<NodeKind> = kind_strs
         .iter()
@@ -2274,7 +2265,7 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
     let node_map: HashMap<&str, &crate::types::Node> =
         nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let id_set: HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
+    let id_set: HashSet<&str> = node_ids.iter().map(std::string::String::as_str).collect();
 
     // Get internal edges (dependency edges between these nodes)
     let edges = cg.get_internal_edges(&node_ids).await?;
@@ -2387,7 +2378,7 @@ async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     // Detect cycles: any unsorted nodes form cycles
     let cycle_node_ids: Vec<&str> = node_ids
         .iter()
-        .map(|s| s.as_str())
+        .map(std::string::String::as_str)
         .filter(|id| !sorted_set.contains(id))
         .collect();
 
@@ -2635,7 +2626,7 @@ fn git_recent_commits(
             .to_string();
         commits.push(subject);
 
-        let parent_id = commit.parent_ids().next().map(|id| id.detach());
+        let parent_id = commit.parent_ids().next().map(gix::Id::detach);
         match parent_id {
             Some(pid) => current_id = pid,
             None => break,
@@ -2688,7 +2679,7 @@ fn git_commit_log(
         let short_id = format!("{:.7}", commit.id);
         commits.push(json!({"hash": short_id, "subject": subject}));
 
-        let parent_id = commit.parent_ids().next().map(|id| id.detach());
+        let parent_id = commit.parent_ids().next().map(gix::Id::detach);
         match parent_id {
             Some(pid) => current_id = pid,
             None => break,
@@ -2704,22 +2695,19 @@ fn classify_file_role(path: &str) -> &'static str {
         return "test";
     }
     let lower = path.to_lowercase();
+    let ext = std::path::Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str());
     // Config files
-    if lower.ends_with(".toml")
-        || lower.ends_with(".yaml")
-        || lower.ends_with(".yml")
-        || lower.ends_with(".json")
-        || lower.ends_with(".lock")
-        || lower.ends_with(".ini")
-        || lower.ends_with(".cfg")
-        || lower.contains("config")
+    if matches!(
+        ext,
+        Some("toml" | "yaml" | "yml" | "json" | "lock" | "ini" | "cfg")
+    ) || lower.contains("config")
     {
         return "config";
     }
     // Documentation
-    if lower.ends_with(".md")
-        || lower.ends_with(".rst")
-        || lower.ends_with(".txt")
+    if matches!(ext, Some("md" | "rst" | "txt"))
         || lower.starts_with("docs/")
         || lower.starts_with("doc/")
     {
@@ -2732,7 +2720,7 @@ fn classify_file_role(path: &str) -> &'static str {
 async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let staged_only = args
         .get("staged_only")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let changed_files = match git_changed_files(cg.project_root(), staged_only) {
@@ -2781,7 +2769,7 @@ async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult
 
     let recent_commits = git_recent_commits(cg.project_root(), 5).unwrap_or_default();
 
-    let total_symbols: usize = symbols_by_role.values().map(|v| v.len()).sum();
+    let total_symbols: usize = symbols_by_role.values().map(std::vec::Vec::len).sum();
     let output = json!({
         "changed_files": file_roles,
         "symbols_by_role": symbols_by_role,
@@ -2851,6 +2839,7 @@ async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
                 // Track impacted modules
                 for (caller, _) in &callers {
                     if !changed_files.contains(&caller.file_path) {
+                        #[allow(clippy::map_unwrap_or)]
                         let dir = caller
                             .file_path
                             .rfind('/')
@@ -3113,15 +3102,14 @@ async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result<ToolResult
     let node_id = require_node_id(&args)?;
     let max_depth = args
         .get("max_depth")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(10) as usize)
-        .unwrap_or(5);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(10) as usize);
 
     let root = cg
         .get_node(node_id)
         .await?
         .ok_or_else(|| TokenSaveError::Config {
-            message: format!("node not found: {}", node_id),
+            message: format!("node not found: {node_id}"),
         })?;
 
     let mut output = format!(
@@ -3136,7 +3124,7 @@ async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result<ToolResult
     // Recursively build the hierarchy
     build_type_tree(cg, &root.id, max_depth, 0, &mut output, &mut all_files).await;
 
-    let touched_files = unique_file_paths(all_files.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(all_files.iter().map(std::string::String::as_str));
     Ok(ToolResult {
         value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
         touched_files,
@@ -3168,15 +3156,16 @@ fn build_type_tree<'a>(
                 continue;
             }
             if let Ok(Some(child)) = cg.get_node(&edge.source).await {
-                output.push_str(&format!(
-                    "{}|- {} {} ({}) -- {}:{}\n",
+                let _ = writeln!(
+                    output,
+                    "{}|- {} {} ({}) -- {}:{}",
                     pad,
                     edge.kind.as_str(),
                     child.name,
                     child.kind.as_str(),
                     child.file_path,
                     child.start_line,
-                ));
+                );
                 all_files.push(child.file_path.clone());
                 build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
             }
@@ -3187,7 +3176,7 @@ fn build_type_tree<'a>(
 // ── Cross-branch tools ─────────────────────────────────────────────────
 
 /// Handles `tokensave_branch_list` tool calls.
-async fn handle_branch_list(cg: &TokenSave) -> Result<ToolResult> {
+fn handle_branch_list(cg: &TokenSave) -> ToolResult {
     let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
     let current = cg.active_branch();
 
@@ -3198,7 +3187,7 @@ async fn handle_branch_list(cg: &TokenSave) -> Result<ToolResult> {
             .iter()
             .map(|(name, entry)| {
                 let db_path = tokensave_dir.join(&entry.db_file);
-                let size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+                let size_bytes = db_path.metadata().map_or(0, |m| m.len());
                 json!({
                     "name": name,
                     "parent": entry.parent,
@@ -3219,12 +3208,12 @@ async fn handle_branch_list(cg: &TokenSave) -> Result<ToolResult> {
     });
 
     let output = serde_json::to_string_pretty(&result).unwrap_or_default();
-    Ok(ToolResult {
+    ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&output) }]
         }),
         touched_files: vec![],
-    })
+    }
 }
 
 /// Handles `tokensave_branch_search` tool calls.
@@ -3243,9 +3232,8 @@ async fn handle_branch_search(cg: &TokenSave, args: Value) -> Result<ToolResult>
             })?;
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v.min(500) as usize)
-        .unwrap_or(10);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(500) as usize);
 
     let branch_cg = TokenSave::open_branch(cg.project_root(), branch).await?;
     let results = branch_cg.search(query, limit).await?;
@@ -3438,10 +3426,159 @@ async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     });
 
     let output = serde_json::to_string_pretty(&result).unwrap_or_default();
-    let touched_files = unique_file_paths(touched.iter().map(|s| s.as_str()));
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
     Ok(ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+
+    let old_str = args
+        .get("old_str")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: old_str".to_string(),
+        })?;
+
+    let new_str = args
+        .get("new_str")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: new_str".to_string(),
+        })?;
+
+    let result = cg.str_replace(path, old_str, new_str).await?;
+    let touched_files = vec![result.file_path.clone()];
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
+async fn handle_multi_str_replace(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+
+    let replacements = args
+        .get("replacements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: replacements".to_string(),
+        })?;
+
+    let parsed_replacements: Vec<(&str, &str)> = replacements
+        .iter()
+        .filter_map(|pair| {
+            let arr = pair.as_array()?;
+            if arr.len() != 2 {
+                return None;
+            }
+            let old = arr[0].as_str()?;
+            let new = arr[1].as_str()?;
+            Some((old, new))
+        })
+        .collect();
+
+    if parsed_replacements.len() != replacements.len() {
+        return Err(TokenSaveError::Config {
+            message: "each replacement must be an array of exactly 2 strings".to_string(),
+        });
+    }
+
+    let result = cg.multi_str_replace(path, &parsed_replacements).await?;
+    let touched_files = vec![result.file_path.clone()];
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
+async fn handle_insert_at(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+
+    let anchor =
+        args.get("anchor")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: anchor".to_string(),
+            })?;
+
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: content".to_string(),
+        })?;
+
+    let before = args
+        .get("before")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let result = cg.insert_at(path, anchor, content, before).await?;
+    let touched_files = vec![result.file_path.clone()];
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
+async fn handle_ast_grep_rewrite(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: pattern".to_string(),
+        })?;
+
+    let rewrite = args
+        .get("rewrite")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: rewrite".to_string(),
+        })?;
+
+    let result = cg.ast_grep_rewrite(path, pattern, rewrite).await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        vec![]
+    };
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
         }),
         touched_files,
     })
@@ -3456,7 +3593,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 37);
+        assert_eq!(tools.len(), 41);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -3496,6 +3633,10 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_branch_search"));
         assert!(tool_names.contains(&"tokensave_branch_diff"));
         assert!(tool_names.contains(&"tokensave_branch_list"));
+        assert!(tool_names.contains(&"tokensave_str_replace"));
+        assert!(tool_names.contains(&"tokensave_multi_str_replace"));
+        assert!(tool_names.contains(&"tokensave_insert_at"));
+        assert!(tool_names.contains(&"tokensave_ast_grep_rewrite"));
     }
 
     #[test]
@@ -3512,16 +3653,30 @@ mod tests {
     #[test]
     fn test_tool_definitions_have_annotations() {
         let tools = get_tool_definitions();
+        let write_tools = [
+            "tokensave_str_replace",
+            "tokensave_multi_str_replace",
+            "tokensave_insert_at",
+            "tokensave_ast_grep_rewrite",
+        ];
         for tool in &tools {
             let ann = tool
                 .annotations
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} missing annotations", tool.name));
-            assert_eq!(
-                ann["readOnlyHint"], true,
-                "{} missing readOnlyHint",
-                tool.name
-            );
+            if write_tools.contains(&tool.name.as_str()) {
+                assert_eq!(
+                    ann["readOnlyHint"], false,
+                    "{} should have readOnlyHint=false",
+                    tool.name
+                );
+            } else {
+                assert_eq!(
+                    ann["readOnlyHint"], true,
+                    "{} missing readOnlyHint",
+                    tool.name
+                );
+            }
             assert!(
                 ann["title"].is_string(),
                 "{} missing title annotation",

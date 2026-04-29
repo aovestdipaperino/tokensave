@@ -190,7 +190,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
     if servers.is_empty() {
         settings.as_object_mut().map(|o| o.remove("mcpServers"));
     }
-    let is_empty = settings.as_object().is_some_and(|o| o.is_empty());
+    let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(settings_path).ok();
         eprintln!(
@@ -226,8 +226,7 @@ fn uninstall_prompt_rules(gemini_md: &Path) {
     let after_marker = start + marker.len();
     let end = contents[after_marker..]
         .find("\n## ")
-        .map(|pos| after_marker + pos)
-        .unwrap_or(contents.len());
+        .map_or(contents.len(), |pos| after_marker + pos);
     let mut new_contents = String::new();
     new_contents.push_str(contents[..start].trim_end());
     let remainder = &contents[end..];
@@ -295,7 +294,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     // Check trust flag
     let is_trusted = server
         .get("trust")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     if is_trusted {
         dc.pass("MCP server has trust: true (tools auto-approved)");

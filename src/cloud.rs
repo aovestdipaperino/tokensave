@@ -79,13 +79,11 @@ struct CountriesResponse {
 /// Returns a list of emoji flags, or an empty vec on failure.
 pub fn fetch_country_flags() -> Vec<String> {
     let agent = agent_with_timeout(Duration::from_millis(500));
-    let mut resp = match agent.get(&format!("{WORKER_URL}/countries")).call() {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
+    let Ok(mut resp) = agent.get(&format!("{WORKER_URL}/countries")).call() else {
+        return Vec::new();
     };
-    let parsed: CountriesResponse = match resp.body_mut().read_json() {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
+    let Ok(parsed): Result<CountriesResponse, _> = resp.body_mut().read_json() else {
+        return Vec::new();
     };
     parsed.flags
 }
@@ -177,7 +175,6 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
             }
             // Same base version, same channel
             match (cpre, lpre) {
-                (None, None) => false,
                 (Some(a), Some(b)) => b > a,
                 _ => false,
             }

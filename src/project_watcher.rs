@@ -93,11 +93,11 @@ impl ProjectWatcher {
         loop {
             let sleep_dur = match deadline {
                 Some(d) => d.saturating_duration_since(Instant::now()),
-                None => Duration::from_secs(3600),
+                None => Duration::from_hours(1),
             };
 
             tokio::select! {
-                _ = cancel.cancelled() => {
+                () = cancel.cancelled() => {
                     if deadline.is_some() {
                         sync_project(&self.project_root).await;
                     }
@@ -106,7 +106,7 @@ impl ProjectWatcher {
                 Some(()) = self.rx.recv() => {
                     deadline = Some(Instant::now() + self.debounce);
                 }
-                _ = tokio::time::sleep(sleep_dur), if deadline.is_some() => {
+                () = tokio::time::sleep(sleep_dur), if deadline.is_some() => {
                     deadline = None;
                     sync_project(&self.project_root).await;
                 }

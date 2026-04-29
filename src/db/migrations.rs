@@ -7,7 +7,7 @@
 //! cannot corrupt the schema.
 //!
 //! The current schema version is stored in `PRAGMA user_version`, which
-//! is an atomic integer built into SQLite. No extra table is needed.
+//! is an atomic integer built into `SQLite`. No extra table is needed.
 
 use libsql::Connection;
 
@@ -187,9 +187,7 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
     let current = get_version(conn).await?;
     debug_assert!(
         current <= LATEST_VERSION,
-        "database version {} is ahead of code version {}",
-        current,
-        LATEST_VERSION
+        "database version {current} is ahead of code version {LATEST_VERSION}"
     );
     if current >= LATEST_VERSION {
         return Ok(false);
@@ -423,7 +421,7 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
 // Migration V3: complexity metric columns on nodes
 // ---------------------------------------------------------------------------
 
-/// Adds branches, loops, returns, and max_nesting columns to the nodes table.
+/// Adds branches, loops, returns, and `max_nesting` columns to the nodes table.
 async fn migrate_v3(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
@@ -444,7 +442,7 @@ async fn migrate_v3(conn: &Connection) -> Result<()> {
 // Migration V4: unsafe_blocks, unchecked_calls, assertions columns on nodes
 // ---------------------------------------------------------------------------
 
-/// Adds unsafe_blocks, unchecked_calls, and assertions columns to the nodes table.
+/// Adds `unsafe_blocks`, `unchecked_calls`, and assertions columns to the nodes table.
 async fn migrate_v4(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
@@ -466,7 +464,7 @@ async fn migrate_v4(conn: &Connection) -> Result<()> {
 
 /// Removes duplicate edges accumulated by repeated reference resolution
 /// during incremental syncs, then adds a UNIQUE index to prevent future
-/// duplicates. See: https://github.com/…/issues/5
+/// duplicates. See: <https://github.com/…/issues/5>
 async fn migrate_v5(conn: &Connection) -> Result<()> {
     // Rebuild the edges table keeping only distinct rows. We use a temp
     // table + swap because DELETE with a self-join subquery can be very

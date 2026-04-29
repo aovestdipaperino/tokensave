@@ -49,7 +49,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -189,7 +189,7 @@ impl VbNetExtractor {
         }
     }
 
-    /// Visit a type_declaration node and dispatch to the inner block type.
+    /// Visit a `type_declaration` node and dispatch to the inner block type.
     fn visit_type_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Collect docstring from preceding comment siblings.
         let docstring = Self::extract_xml_docstring(state, node);
@@ -293,17 +293,17 @@ impl VbNetExtractor {
 
     /// Extract an imports statement as a Use node.
     fn visit_imports(state: &mut ExtractionState, node: TsNode<'_>) {
-        let path = node
-            .child_by_field_name("namespace")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| {
+        let path = node.child_by_field_name("namespace").map_or_else(
+            || {
                 let text = state.node_text(node);
                 text.trim()
                     .strip_prefix("Imports ")
                     .unwrap_or(&text)
                     .trim()
                     .to_string()
-            });
+            },
+            |n| state.node_text(n),
+        );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -358,7 +358,7 @@ impl VbNetExtractor {
         });
     }
 
-    /// Extract a class_block declaration.
+    /// Extract a `class_block` declaration.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
         let name =
             Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -375,7 +375,7 @@ impl VbNetExtractor {
         };
 
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
-        let signature = Self::extract_block_signature(state, node, "Class");
+        let signature = Some(Self::extract_block_signature(state, node, "Class"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -428,7 +428,7 @@ impl VbNetExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract a structure_block declaration.
+    /// Extract a `structure_block` declaration.
     fn visit_struct(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
         let name =
             Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -438,7 +438,7 @@ impl VbNetExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Struct, &name, start_line);
-        let signature = Self::extract_block_signature(state, node, "Structure");
+        let signature = Some(Self::extract_block_signature(state, node, "Structure"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -483,7 +483,7 @@ impl VbNetExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract an interface_block declaration.
+    /// Extract an `interface_block` declaration.
     fn visit_interface(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
         let name =
             Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -493,7 +493,7 @@ impl VbNetExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Interface, &name, start_line);
-        let signature = Self::extract_block_signature(state, node, "Interface");
+        let signature = Some(Self::extract_block_signature(state, node, "Interface"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -538,7 +538,7 @@ impl VbNetExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract an enum_block declaration with its members.
+    /// Extract an `enum_block` declaration with its members.
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
         let name =
             Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -559,7 +559,7 @@ impl VbNetExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(format!("Enum {}", name)),
+            signature: Some(format!("Enum {name}")),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -590,7 +590,7 @@ impl VbNetExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract a module_block declaration.
+    /// Extract a `module_block` declaration.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>, docstring: Option<String>) {
         let name =
             Self::extract_block_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
@@ -600,7 +600,7 @@ impl VbNetExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Module, &name, start_line);
-        let signature = Self::extract_block_signature(state, node, "Module");
+        let signature = Some(Self::extract_block_signature(state, node, "Module"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -645,7 +645,7 @@ impl VbNetExtractor {
         state.node_stack.pop();
     }
 
-    /// Visit the children of a block node (class_block, structure_block, etc.),
+    /// Visit the children of a block node (`class_block`, `structure_block`, etc.),
     /// dispatching to the appropriate handler for each child.
     fn visit_block_children(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
@@ -797,9 +797,9 @@ impl VbNetExtractor {
         // Extract type from as_clause
         let type_str = Self::extract_as_clause_type(state, node);
         let sig = if let Some(t) = &type_str {
-            format!("Property {} As {}", name, t)
+            format!("Property {name} As {t}")
         } else {
-            format!("Property {}", name)
+            format!("Property {name}")
         };
 
         let graph_node = Node {
@@ -859,10 +859,8 @@ impl VbNetExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "variable_declarator" {
-                    let field_name = child
-                        .child_by_field_name("name")
-                        .map(|n| state.node_text(n))
-                        .unwrap_or_else(|| {
+                    let field_name = child.child_by_field_name("name").map_or_else(
+                        || {
                             // Try direct identifier child
                             let mut inner = child.walk();
                             if inner.goto_first_child() {
@@ -877,7 +875,9 @@ impl VbNetExtractor {
                                 }
                             }
                             state.node_text(child)
-                        });
+                        },
+                        |n| state.node_text(n),
+                    );
 
                     // Skip field names that look like mis-parsed Inherits/Implements
                     if field_name == "Inherits" || field_name.starts_with("erializable") {
@@ -938,7 +938,7 @@ impl VbNetExtractor {
         }
     }
 
-    /// Extract enum members from an enum_block.
+    /// Extract enum members from an `enum_block`.
     fn extract_enum_members(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -954,12 +954,10 @@ impl VbNetExtractor {
         }
     }
 
-    /// Extract a single enum member as an EnumVariant node.
+    /// Extract a single enum member as an `EnumVariant` node.
     fn extract_single_enum_member(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = node
-            .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| {
+        let name = node.child_by_field_name("name").map_or_else(
+            || {
                 // Fallback: try identifier child
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
@@ -974,7 +972,9 @@ impl VbNetExtractor {
                     }
                 }
                 "<anonymous>".to_string()
-            });
+            },
+            |n| state.node_text(n),
+        );
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -1022,7 +1022,7 @@ impl VbNetExtractor {
     // Helper extraction methods
     // ----------------------------
 
-    /// Extract the name from a block node (class_block, etc.) via the first identifier child.
+    /// Extract the name from a block node (`class_block`, etc.) via the first identifier child.
     fn extract_block_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // Block nodes in VB.NET grammar use `name` field
         if let Some(name_node) = node.child_by_field_name("name") {
@@ -1066,22 +1066,18 @@ impl VbNetExtractor {
     }
 
     /// Extract a simple block signature like "Class Foo" or "Module Bar".
-    fn extract_block_signature(
-        state: &ExtractionState,
-        node: TsNode<'_>,
-        keyword: &str,
-    ) -> Option<String> {
+    fn extract_block_signature(state: &ExtractionState, node: TsNode<'_>, keyword: &str) -> String {
         let text = state.node_text(node);
         // Take the first line which contains the declaration keyword and name.
         let first_line = text.lines().next().unwrap_or("").trim();
         if first_line.is_empty() {
-            Some(format!(
+            format!(
                 "{} {}",
                 keyword,
                 Self::extract_block_name(state, node).unwrap_or_default()
-            ))
+            )
         } else {
-            Some(first_line.to_string())
+            first_line.to_string()
         }
     }
 
@@ -1091,7 +1087,7 @@ impl VbNetExtractor {
         text.lines().next().map(|l| l.trim().to_string())
     }
 
-    /// Extract the type from an as_clause child.
+    /// Extract the type from an `as_clause` child.
     fn extract_as_clause_type(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1162,7 +1158,7 @@ impl VbNetExtractor {
     }
 
     /// Extract Inherits and Implements references from the text of a class block.
-    /// The VB.NET tree-sitter grammar mis-parses these as field_declaration/ERROR,
+    /// The VB.NET tree-sitter grammar mis-parses these as `field_declaration/ERROR`,
     /// so we do text-based extraction from the full block text.
     fn extract_inherits_implements(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         let text = state.node_text(node);
@@ -1320,7 +1316,7 @@ impl VbNetExtractor {
     // -----------------------------------------------------------------------
 
     /// Extract VB.NET attributes from a node's children (for methods,
-    /// constructors, properties) and create AnnotationUsage nodes and
+    /// constructors, properties) and create `AnnotationUsage` nodes and
     /// Annotates edges.
     ///
     /// VB.NET attributes appear as `attribute_block` children containing
@@ -1345,7 +1341,7 @@ impl VbNetExtractor {
     }
 
     /// Extract VB.NET attributes from previous siblings (for classes, structs,
-    /// etc. where attribute_block appears before the type_declaration).
+    /// etc. where `attribute_block` appears before the `type_declaration`).
     fn extract_annotations_from_prev_siblings(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1363,7 +1359,7 @@ impl VbNetExtractor {
         }
     }
 
-    /// Walk an attribute_block node to create AnnotationUsage nodes.
+    /// Walk an `attribute_block` node to create `AnnotationUsage` nodes.
     fn extract_annotations_from_block(
         state: &mut ExtractionState,
         attr_block: TsNode<'_>,
@@ -1457,7 +1453,7 @@ impl VbNetExtractor {
         text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1474,7 +1470,7 @@ impl crate::extraction::LanguageExtractor for VbNetExtractor {
         &["vb"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "VB.NET"
     }
 

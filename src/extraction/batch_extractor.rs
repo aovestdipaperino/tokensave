@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -142,12 +142,9 @@ impl BatchExtractor {
         let mut i: usize = 0;
 
         while i < child_count {
-            let child = match root.child(i as u32) {
-                Some(c) => c,
-                None => {
-                    i += 1;
-                    continue;
-                }
+            let Some(child) = root.child(i as u32) else {
+                i += 1;
+                continue;
             };
 
             match child.kind() {
@@ -168,9 +165,8 @@ impl BatchExtractor {
     /// In Batch, labels (:Name) serve as subroutine entry points.
     /// The body extends from the label to the next label or end of file.
     fn visit_label(state: &mut ExtractionState, root: TsNode<'_>, label_index: usize) {
-        let label_node = match root.child(label_index as u32) {
-            Some(n) => n,
-            None => return,
+        let Some(label_node) = root.child(label_index as u32) else {
+            return;
         };
 
         let label_text = state.node_text(label_node);
@@ -387,7 +383,7 @@ impl BatchExtractor {
         }
     }
 
-    /// Recursively find call_stmt nodes and create unresolved Calls references.
+    /// Recursively find `call_stmt` nodes and create unresolved Calls references.
     fn extract_call_sites_recursive(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -441,7 +437,7 @@ impl BatchExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -458,7 +454,7 @@ impl crate::extraction::LanguageExtractor for BatchExtractor {
         &["bat", "cmd"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Batch"
     }
 

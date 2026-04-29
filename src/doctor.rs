@@ -73,7 +73,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
 /// Check database health: report size and run VACUUM to reclaim space.
 async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     let db_path = crate::config::get_tokensave_dir(project_path).join("tokensave.db");
-    let size_before = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let size_before = std::fs::metadata(&db_path).map_or(0, |m| m.len());
 
     let ts = match TokenSave::open(project_path).await {
         Ok(ts) => ts,
@@ -88,9 +88,7 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     eprintln!("    Compacting database (VACUUM)…");
     match ts.optimize().await {
         Ok(()) => {
-            let size_after = std::fs::metadata(&db_path)
-                .map(|m| m.len())
-                .unwrap_or(size_before);
+            let size_after = std::fs::metadata(&db_path).map_or(size_before, |m| m.len());
             if size_before > size_after {
                 let reclaimed = size_before - size_after;
                 dc.pass(&format!(

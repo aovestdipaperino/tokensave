@@ -88,8 +88,10 @@ pub async fn find_new_files(db: &Database, current_files: &[String]) -> Result<V
 /// Find files that are in the database but no longer exist on disk.
 pub async fn find_removed_files(db: &Database, current_files: &[String]) -> Result<Vec<String>> {
     let all_db_files = db.get_all_files().await?;
-    let current_set: std::collections::HashSet<&str> =
-        current_files.iter().map(|s| s.as_str()).collect();
+    let current_set: std::collections::HashSet<&str> = current_files
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     let mut removed = Vec::new();
     for file_record in &all_db_files {
         if !current_set.contains(file_record.path.as_str()) {

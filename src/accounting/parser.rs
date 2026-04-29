@@ -107,11 +107,11 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
     let output_tokens = usage.get("output_tokens")?.as_u64().unwrap_or(0);
     let cache_write_tokens = usage
         .get("cache_creation_input_tokens")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let cache_read_tokens = usage
         .get("cache_read_input_tokens")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
 
     // Parse timestamp from the outer object (ISO 8601)
@@ -142,8 +142,14 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
     }
 
     // Classify
-    let tool_refs: Vec<&str> = tool_names_vec.iter().map(|s| s.as_str()).collect();
-    let bash_refs: Vec<&str> = bash_commands.iter().map(|s| s.as_str()).collect();
+    let tool_refs: Vec<&str> = tool_names_vec
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
+    let bash_refs: Vec<&str> = bash_commands
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     let category = classifier::classify(&tool_refs, &bash_refs);
 
     // Compute cost
@@ -228,16 +234,14 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
         let path_str = file_path.to_string_lossy().to_string();
 
         // Check file mtime
-        let meta = match fs::metadata(file_path) {
-            Ok(m) => m,
-            Err(_) => continue,
+        let Ok(meta) = fs::metadata(file_path) else {
+            continue;
         };
         let mtime = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
 
         // Check if we've already parsed this file up to this mtime
         let (prev_offset, prev_mtime) = gdb.get_parse_offset(&path_str).await.unwrap_or((0, 0));
@@ -259,9 +263,8 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
 
         let (project_hash, session_id) = extract_path_parts(file_path);
 
-        let f = match fs::File::open(file_path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(f) = fs::File::open(file_path) else {
+            continue;
         };
         let mut reader = BufReader::new(f);
 
@@ -276,7 +279,7 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
         loop {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     current_offset += n as u64;
                     let trimmed = line.trim();
@@ -293,7 +296,6 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
                         }
                     }
                 }
-                Err(_) => break,
             }
         }
 

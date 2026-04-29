@@ -21,7 +21,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -75,13 +75,11 @@ impl ExtractionState {
         let line_start = self.source[..byte_offset]
             .iter()
             .rposition(|&b| b == b'\n')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+            .map_or(0, |p| p + 1);
         let line_end = self.source[byte_offset..]
             .iter()
             .position(|&b| b == b'\n')
-            .map(|p| byte_offset + p)
-            .unwrap_or(self.source.len());
+            .map_or(self.source.len(), |p| byte_offset + p);
         String::from_utf8_lossy(&self.source[line_start..line_end]).to_string()
     }
 }
@@ -173,7 +171,7 @@ impl CobolExtractor {
         }
     }
 
-    /// Visit a program_definition node, which contains all four divisions.
+    /// Visit a `program_definition` node, which contains all four divisions.
     fn visit_program_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -433,7 +431,7 @@ impl CobolExtractor {
         }
     }
 
-    /// Gather preceding comment lines before a paragraph_header.
+    /// Gather preceding comment lines before a `paragraph_header`.
     fn gather_preceding_comments(
         state: &ExtractionState,
         children: &[TsNode<'_>],
@@ -617,7 +615,7 @@ impl CobolExtractor {
         }
     }
 
-    /// Extract the label name from a perform_procedure node.
+    /// Extract the label name from a `perform_procedure` node.
     fn extract_label_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // perform_procedure -> label -> qualified_word -> WORD
         let label = Self::find_child_by_kind(node, "label")?;
@@ -643,7 +641,7 @@ impl CobolExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -660,7 +658,7 @@ impl crate::extraction::LanguageExtractor for CobolExtractor {
         &["cob", "cbl", "cpy"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "COBOL"
     }
 

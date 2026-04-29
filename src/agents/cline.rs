@@ -102,7 +102,7 @@ impl AgentIntegration for ClineIntegration {
 // Uninstall helpers
 // ---------------------------------------------------------------------------
 
-/// Remove MCP server entry from Cline's cline_mcp_settings.json.
+/// Remove MCP server entry from Cline's `cline_mcp_settings.json`.
 fn uninstall_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
         eprintln!("  {} not found, skipping", settings_path.display());
@@ -137,7 +137,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
 
     let is_empty = settings.as_object().is_some_and(|o| {
         o.iter()
-            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(|m| m.is_empty()))
+            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(serde_json::Map::is_empty))
     });
 
     if is_empty {
@@ -160,7 +160,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check Cline's cline_mcp_settings.json has tokensave MCP server registered.
+/// Check Cline's `cline_mcp_settings.json` has tokensave MCP server registered.
 fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     let settings_path = cline_ext_dir(home).join("settings/cline_mcp_settings.json");
 

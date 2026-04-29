@@ -283,6 +283,9 @@ enum Commands {
         /// Remove autostart service
         #[arg(long)]
         disable_autostart: bool,
+        /// Override debounce duration (e.g. "2s", "15s", "1m"). Overrides config.
+        #[arg(long)]
+        debounce: Option<String>,
     },
     /// Token cost summary from Claude Code sessions
     Cost {
@@ -418,7 +421,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: bin.clone(),
-                            tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                            tool_permissions: tokensave::agents::expected_tool_perms(),
                         };
                         if ag.install(&ctx).is_err() {
                             all_ok = false;
@@ -860,12 +863,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let mut changed: Vec<String> = files;
             if stdin {
                 let stdin_handle = io::stdin();
-                for line in stdin_handle.lock().lines() {
-                    if let Ok(line) = line {
-                        let trimmed = line.trim().to_string();
-                        if !trimmed.is_empty() {
-                            changed.push(trimmed);
-                        }
+                for line in stdin_handle.lock().lines().map_while(Result::ok) {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        changed.push(trimmed);
                     }
                 }
             }
@@ -928,7 +929,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let ctx = tokensave::agents::InstallContext {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
-                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    tool_permissions: tokensave::agents::expected_tool_perms(),
                 };
                 ag.install(&ctx)?;
                 if !user_cfg.installed_agents.contains(&id) {
@@ -947,7 +948,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        tool_permissions: tokensave::agents::expected_tool_perms(),
                     };
                     ag.uninstall(&ctx)?;
                     removed_names.push(ag.name().to_string());
@@ -958,7 +959,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        tool_permissions: tokensave::agents::expected_tool_perms(),
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
@@ -1015,7 +1016,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        tool_permissions: tokensave::agents::expected_tool_perms(),
                     };
                     ag.install(&ctx)?;
                 }
@@ -1038,7 +1039,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let ctx = tokensave::agents::InstallContext {
                     home,
                     tokensave_bin: String::new(),
-                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    tool_permissions: tokensave::agents::expected_tool_perms(),
                 };
                 ag.uninstall(&ctx)?;
                 user_cfg.installed_agents.retain(|a| a != &id);
@@ -1049,7 +1050,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: String::new(),
-                            tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                            tool_permissions: tokensave::agents::expected_tool_perms(),
                         };
                         ag.uninstall(&ctx).ok();
                     }
@@ -1182,6 +1183,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             status,
             enable_autostart,
             disable_autostart,
+            debounce,
         } => {
             if stop {
                 tokensave::daemon::stop()?;
@@ -1193,7 +1195,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else if disable_autostart {
                 tokensave::daemon::disable_autostart()?;
             } else {
-                let upgraded = tokensave::daemon::run(foreground).await?;
+                let upgraded = tokensave::daemon::run(foreground, debounce).await?;
                 if upgraded {
                     // Exit with non-zero code so the service manager (launchd
                     // KeepAlive / systemd Restart=on-failure / Windows SCM

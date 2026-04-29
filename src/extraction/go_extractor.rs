@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -166,8 +166,7 @@ impl GoExtractor {
     /// Extract a package clause node.
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "package_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -308,10 +307,9 @@ impl GoExtractor {
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
         // In Go, function name is an `identifier` child.
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
-        let signature = Self::extract_signature(state, node);
+        let signature = Some(Self::extract_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -369,10 +367,9 @@ impl GoExtractor {
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>) {
         // In Go, method name is a `field_identifier` child.
         let name = Self::find_child_by_kind(node, "field_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
-        let signature = Self::extract_signature(state, node);
+        let signature = Some(Self::extract_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -445,11 +442,10 @@ impl GoExtractor {
         }
     }
 
-    /// Extract a type_spec node, dispatching on whether it defines a struct or interface.
+    /// Extract a `type_spec` node, dispatching on whether it defines a struct or interface.
     fn visit_type_spec(state: &mut ExtractionState, spec_node: TsNode<'_>, decl_node: TsNode<'_>) {
         let name = Self::find_child_by_kind(spec_node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Check what type is being defined.
         if let Some(struct_type) = Self::find_child_by_kind(spec_node, "struct_type") {
@@ -522,7 +518,7 @@ impl GoExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract fields from a struct_type node.
+    /// Extract fields from a `struct_type` node.
     fn extract_struct_fields(state: &mut ExtractionState, struct_type: TsNode<'_>) {
         if let Some(field_list) = Self::find_child_by_kind(struct_type, "field_declaration_list") {
             let mut cursor = field_list.walk();
@@ -540,11 +536,10 @@ impl GoExtractor {
         }
     }
 
-    /// Extract a single field from a field_declaration node.
+    /// Extract a single field from a `field_declaration` node.
     fn extract_single_field(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "field_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -595,7 +590,7 @@ impl GoExtractor {
         }
     }
 
-    /// Extract a struct tag from a raw_string_literal node.
+    /// Extract a struct tag from a `raw_string_literal` node.
     fn extract_struct_tag(
         state: &mut ExtractionState,
         tag_node: TsNode<'_>,
@@ -607,7 +602,7 @@ impl GoExtractor {
         let end_line = tag_node.end_position().row as u32;
         let start_column = tag_node.start_position().column as u32;
         let end_column = tag_node.end_position().column as u32;
-        let tag_name = format!("{}:tag", field_name);
+        let tag_name = format!("{field_name}:tag");
         let qualified_name = format!("{}::{}", state.qualified_prefix(), tag_name);
         let id = generate_node_id(
             &state.file_path,
@@ -707,7 +702,7 @@ impl GoExtractor {
         Self::extract_interface_embeddings(state, iface_type, &id);
     }
 
-    /// Extract embedded interface types from an interface_type node.
+    /// Extract embedded interface types from an `interface_type` node.
     fn extract_interface_embeddings(
         state: &mut ExtractionState,
         iface_type: TsNode<'_>,
@@ -747,8 +742,7 @@ impl GoExtractor {
         decl_node: TsNode<'_>,
     ) {
         let name = Self::find_child_by_kind(alias_node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
         let docstring = Self::extract_docstring(state, decl_node);
         let text = state.node_text(decl_node);
@@ -843,7 +837,7 @@ impl GoExtractor {
         }
     }
 
-    /// Extract a const declaration. May contain multiple const_spec children.
+    /// Extract a const declaration. May contain multiple `const_spec` children.
     fn visit_const_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -862,8 +856,7 @@ impl GoExtractor {
     /// Extract a single const spec.
     fn visit_const_spec(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -909,7 +902,7 @@ impl GoExtractor {
         }
     }
 
-    /// Extract a var declaration. May contain multiple var_spec children.
+    /// Extract a var declaration. May contain multiple `var_spec` children.
     fn visit_var_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -928,8 +921,7 @@ impl GoExtractor {
     /// Extract a single var spec as a Static node (Go vars are package-level state).
     fn visit_var_spec(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::go_visibility(&name);
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -979,7 +971,7 @@ impl GoExtractor {
     // Helper extraction methods
     // ----------------------------
 
-    /// Extract the receiver type from a method_declaration and create a Receives edge.
+    /// Extract the receiver type from a `method_declaration` and create a Receives edge.
     fn extract_receiver(state: &mut ExtractionState, node: TsNode<'_>, method_id: &str) {
         // The first parameter_list child is the receiver.
         let mut cursor = node.walk();
@@ -1029,7 +1021,7 @@ impl GoExtractor {
         }
     }
 
-    /// Extract the type name from a receiver parameter_declaration.
+    /// Extract the type name from a receiver `parameter_declaration`.
     /// Handles both `c Circle` and `c *Circle` forms.
     fn extract_receiver_type_name(state: &ExtractionState, param: TsNode<'_>) -> Option<String> {
         // Look for type_identifier directly or inside pointer_type.
@@ -1110,7 +1102,7 @@ impl GoExtractor {
         }
     }
 
-    /// Recursively find call_expression and selector_expression nodes inside a
+    /// Recursively find `call_expression` and `selector_expression` nodes inside a
     /// given node and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -1149,12 +1141,12 @@ impl GoExtractor {
     }
 
     /// Extract the function/method signature (everything up to the body `{`).
-    fn extract_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            Some(text.trim().to_string())
+            text.trim().to_string()
         }
     }
 
@@ -1236,7 +1228,7 @@ impl GoExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1253,7 +1245,7 @@ impl crate::extraction::LanguageExtractor for GoExtractor {
         &["go"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Go"
     }
 

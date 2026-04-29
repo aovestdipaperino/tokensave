@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -305,7 +305,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -378,7 +378,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -442,7 +442,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -493,7 +493,7 @@ impl JavaExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract enum constants from an enum_body node.
+    /// Extract enum constants from an `enum_body` node.
     fn extract_enum_constants(state: &mut ExtractionState, body: TsNode<'_>) {
         let mut cursor = body.walk();
         if cursor.goto_first_child() {
@@ -509,7 +509,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Extract a single enum constant as an EnumVariant node.
+    /// Extract a single enum constant as an `EnumVariant` node.
     fn extract_single_enum_constant(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let start_line = node.start_position().row as u32;
@@ -560,7 +560,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -609,7 +609,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -686,7 +686,7 @@ impl JavaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_java_visibility(node, state);
         let docstring = Self::extract_java_docstring(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -737,7 +737,7 @@ impl JavaExtractor {
         Self::extract_call_sites(state, node, &id);
     }
 
-    /// Extract field declarations. Each variable_declarator in the field becomes a Field node.
+    /// Extract field declarations. Each `variable_declarator` in the field becomes a Field node.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
         let visibility = Self::extract_java_visibility(node, state);
         let start_line = node.start_position().row as u32;
@@ -753,13 +753,13 @@ impl JavaExtractor {
                 let child = cursor.node();
                 if child.kind() == "variable_declarator" {
                     // The variable_declarator contains an identifier as its "name" field.
-                    let field_name = child
-                        .child_by_field_name("name")
-                        .map(|n| state.node_text(n))
-                        .unwrap_or_else(|| {
+                    let field_name = child.child_by_field_name("name").map_or_else(
+                        || {
                             Self::extract_name(state, child)
                                 .unwrap_or_else(|| "<anonymous>".to_string())
-                        });
+                        },
+                        |n| state.node_text(n),
+                    );
 
                     let qualified_name = format!("{}::{}", state.qualified_prefix(), field_name);
                     let id = generate_node_id(
@@ -928,13 +928,13 @@ impl JavaExtractor {
     }
 
     /// Extract the declaration signature (text from start up to the opening `{`).
-    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
             // For declarations without a body (e.g., abstract methods ending with `;`).
-            Some(text.trim_end_matches(';').trim().to_string())
+            text.trim_end_matches(';').trim().to_string()
         }
     }
 
@@ -984,7 +984,7 @@ impl JavaExtractor {
             .to_string()
     }
 
-    /// Extract superclass (extends) from a class_declaration.
+    /// Extract superclass (extends) from a `class_declaration`.
     fn extract_superclass(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         // In tree-sitter-java, `superclass` is a named child of class_declaration.
         let mut cursor = node.walk();
@@ -1025,7 +1025,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Extract super_interfaces (implements) from a class_declaration.
+    /// Extract `super_interfaces` (implements) from a `class_declaration`.
     fn extract_super_interfaces(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1042,7 +1042,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Extract types from a type_list as Implements unresolved refs.
+    /// Extract types from a `type_list` as Implements unresolved refs.
     fn extract_type_list_as_implements(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1091,7 +1091,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Extract individual type_parameter nodes from a type_parameters node.
+    /// Extract individual `type_parameter` nodes from a `type_parameters` node.
     fn extract_type_params_from_list(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1158,7 +1158,7 @@ impl JavaExtractor {
     }
 
     /// Extract annotations from the modifiers of a declaration and create
-    /// AnnotationUsage nodes and Annotates edges/refs.
+    /// `AnnotationUsage` nodes and Annotates edges/refs.
     fn extract_annotations_from_modifiers(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1178,7 +1178,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Search inside a modifiers node for marker_annotation and annotation nodes.
+    /// Search inside a modifiers node for `marker_annotation` and annotation nodes.
     fn extract_annotations_from_node(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -1277,7 +1277,7 @@ impl JavaExtractor {
     /// Extract type references from parameter types and return type.
     ///
     /// In Java, `formal_parameter` children contain a `type_identifier` (or
-    /// generic_type wrapping one). The method's return type also appears as a
+    /// `generic_type` wrapping one). The method's return type also appears as a
     /// `type_identifier` direct child.
     fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let java_builtins: &[&str] = &[
@@ -1313,11 +1313,7 @@ impl JavaExtractor {
                 "formal_parameters" => {
                     Self::extract_type_refs(state, child, fn_node_id);
                 }
-                "formal_parameter" | "spread_parameter" => {
-                    Self::collect_java_type_ids(state, child, fn_node_id, java_builtins);
-                }
-                // Return type
-                "type_identifier" | "generic_type" => {
+                "formal_parameter" | "spread_parameter" | "type_identifier" | "generic_type" => {
                     Self::collect_java_type_ids(state, child, fn_node_id, java_builtins);
                 }
                 _ => {}
@@ -1360,7 +1356,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Recursively find method_invocation and object_creation_expression nodes inside a
+    /// Recursively find `method_invocation` and `object_creation_expression` nodes inside a
     /// given node and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -1407,7 +1403,7 @@ impl JavaExtractor {
         }
     }
 
-    /// Extract the method name from a method_invocation node.
+    /// Extract the method name from a `method_invocation` node.
     fn extract_method_invocation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // method_invocation can be like:
         //   identifier "helper" + argument_list
@@ -1427,7 +1423,7 @@ impl JavaExtractor {
         text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
-    /// Extract the type name from an object_creation_expression.
+    /// Extract the type name from an `object_creation_expression`.
     fn extract_object_creation_type(state: &ExtractionState, node: TsNode<'_>) -> String {
         // object_creation_expression: "new" type argument_list
         // The "type" field gives the type name.
@@ -1454,7 +1450,7 @@ impl JavaExtractor {
         "<unknown>".to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1471,7 +1467,7 @@ impl crate::extraction::LanguageExtractor for JavaExtractor {
         &["java"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Java"
     }
 

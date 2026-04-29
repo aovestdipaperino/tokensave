@@ -227,7 +227,7 @@ impl LanguageRegistry {
         self.extractors
             .iter()
             .find(|e| e.extensions().contains(&ext))
-            .map(|e| e.as_ref())
+            .map(std::convert::AsRef::as_ref)
     }
 
     /// Returns all supported file extensions across all extractors.

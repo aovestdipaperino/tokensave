@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, DART_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, DART_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -136,7 +136,7 @@ impl DartExtractor {
     }
 
     /// Visit children of the program node. In Dart's grammar, top-level items
-    /// like function_signature + function_body appear as siblings at the program level.
+    /// like `function_signature` + `function_body` appear as siblings at the program level.
     fn visit_program_children(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if !cursor.goto_first_child() {
@@ -174,9 +174,10 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_library(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "dotted_identifier_list")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| state.node_text(node).trim().to_string());
+        let name = Self::find_child_by_kind(node, "dotted_identifier_list").map_or_else(
+            || state.node_text(node).trim().to_string(),
+            |n| state.node_text(n),
+        );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -297,8 +298,8 @@ impl DartExtractor {
     // Top-level function
     // ----------------------------------
 
-    /// Visit a top-level function. In Dart's grammar, function_signature and
-    /// function_body are siblings at the program level.
+    /// Visit a top-level function. In Dart's grammar, `function_signature` and
+    /// `function_body` are siblings at the program level.
     fn visit_top_level_function(
         state: &mut ExtractionState,
         sig_node: TsNode<'_>,
@@ -306,8 +307,7 @@ impl DartExtractor {
     ) {
         let name = sig_node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, sig_node);
@@ -333,7 +333,7 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
-        let metrics = body.map_or(Default::default(), |b| {
+        let metrics = body.map_or(ComplexityMetrics::default(), |b| {
             count_complexity(b, &DART_COMPLEXITY, &state.source)
         });
 
@@ -389,12 +389,11 @@ impl DartExtractor {
 
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_signature_to_brace(state, node);
+        let signature = Some(Self::extract_signature_to_brace(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -476,12 +475,11 @@ impl DartExtractor {
 
     fn visit_mixin(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_signature_to_brace(state, node);
+        let signature = Some(Self::extract_signature_to_brace(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -542,12 +540,11 @@ impl DartExtractor {
 
     fn visit_extension(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_signature_to_brace(state, node);
+        let signature = Some(Self::extract_signature_to_brace(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -606,12 +603,11 @@ impl DartExtractor {
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_signature_to_brace(state, node);
+        let signature = Some(Self::extract_signature_to_brace(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -687,8 +683,7 @@ impl DartExtractor {
     fn visit_enum_constant(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -739,8 +734,7 @@ impl DartExtractor {
     fn visit_type_alias(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "type_identifier")
             .or_else(|| Self::find_child_by_kind(node, "identifier"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
@@ -843,11 +837,7 @@ impl DartExtractor {
                         Self::visit_constructor(state, node, child);
                         return;
                     }
-                    "getter_signature" => {
-                        Self::visit_getter_or_setter(state, node, child);
-                        return;
-                    }
-                    "setter_signature" => {
+                    "getter_signature" | "setter_signature" => {
                         Self::visit_getter_or_setter(state, node, child);
                         return;
                     }
@@ -892,11 +882,7 @@ impl DartExtractor {
                     Self::visit_constructor(state, node, child);
                     return;
                 }
-                "getter_signature" => {
-                    Self::visit_getter_or_setter(state, node, child);
-                    return;
-                }
-                "setter_signature" => {
+                "getter_signature" | "setter_signature" => {
                     Self::visit_getter_or_setter(state, node, child);
                     return;
                 }
@@ -934,7 +920,7 @@ impl DartExtractor {
         }
     }
 
-    /// Visit a method from a function_signature node (inside a class body).
+    /// Visit a method from a `function_signature` node (inside a class body).
     fn visit_method_from_sig(
         state: &mut ExtractionState,
         sig_node: TsNode<'_>,
@@ -942,8 +928,7 @@ impl DartExtractor {
     ) {
         let name = sig_node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, sig_node);
@@ -965,7 +950,7 @@ impl DartExtractor {
         });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Method, &name, start_line);
-        let metrics = body.map_or(Default::default(), |b| {
+        let metrics = body.map_or(ComplexityMetrics::default(), |b| {
             count_complexity(b, &DART_COMPLEXITY, &state.source)
         });
 
@@ -1102,8 +1087,7 @@ impl DartExtractor {
         sig_node: TsNode<'_>,
     ) {
         let name = Self::find_child_by_kind(sig_node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
         let docstring = Self::extract_docstring(state, decl_node);
@@ -1167,9 +1151,9 @@ impl DartExtractor {
 
     fn visit_operator(state: &mut ExtractionState, decl_node: TsNode<'_>, _sig_node: TsNode<'_>) {
         let text = state.node_text(decl_node);
-        let name = text
-            .find("operator")
-            .map(|pos| {
+        let name = text.find("operator").map_or_else(
+            || "operator".to_string(),
+            |pos| {
                 let after = &text[pos + 8..];
                 after
                     .trim()
@@ -1178,9 +1162,9 @@ impl DartExtractor {
                     .unwrap_or("")
                     .trim()
                     .to_string()
-            })
-            .unwrap_or_else(|| "operator".to_string());
-        let name = format!("operator {}", name);
+            },
+        );
+        let name = format!("operator {name}");
 
         let docstring = Self::extract_docstring(state, decl_node);
         let signature = text.find('{').map_or_else(
@@ -1235,27 +1219,26 @@ impl DartExtractor {
     // Fields
     // ----------------------------------
 
-    /// Visit initialized_variable_definition: `Type name = value;`
+    /// Visit `initialized_variable_definition`: `Type name = value;`
     fn visit_initialized_var_def(
         state: &mut ExtractionState,
         decl_node: TsNode<'_>,
         var_def: TsNode<'_>,
         _has_static: bool,
     ) {
-        let name = var_def
-            .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| {
+        let name = var_def.child_by_field_name("name").map_or_else(
+            || {
                 Self::find_child_by_kind(var_def, "identifier")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string())
-            });
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
+            },
+            |n| state.node_text(n),
+        );
 
         Self::emit_field(state, decl_node, &name);
     }
 
-    /// Visit initialized_identifier_list field: `Type name;` pattern
-    /// where declaration has type_identifier + initialized_identifier_list children.
+    /// Visit `initialized_identifier_list` field: `Type name;` pattern
+    /// where declaration has `type_identifier` + `initialized_identifier_list` children.
     fn visit_identifier_list_field(
         state: &mut ExtractionState,
         decl_node: TsNode<'_>,
@@ -1279,7 +1262,7 @@ impl DartExtractor {
         }
     }
 
-    /// Visit static_final_declaration_list fields.
+    /// Visit `static_final_declaration_list` fields.
     fn visit_static_final_declarations(
         state: &mut ExtractionState,
         decl_node: TsNode<'_>,
@@ -1476,16 +1459,16 @@ impl DartExtractor {
     // ----------------------------
 
     /// Extract a signature by trimming at the first `{`.
-    fn extract_signature_to_brace(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_signature_to_brace(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            Some(text.trim().to_string())
+            text.trim().to_string()
         }
     }
 
-    /// Extract docstrings from preceding documentation_comment or `///` comment nodes.
+    /// Extract docstrings from preceding `documentation_comment` or `///` comment nodes.
     fn extract_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut comments = Vec::new();
         let mut current = node.prev_named_sibling();
@@ -1705,7 +1688,7 @@ impl DartExtractor {
             .to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1722,7 +1705,7 @@ impl crate::extraction::LanguageExtractor for DartExtractor {
         &["dart"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Dart"
     }
 

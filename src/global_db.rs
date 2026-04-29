@@ -1,4 +1,4 @@
-//! User-level database that tracks all TokenSave projects and their saved tokens.
+//! User-level database that tracks all `TokenSave` projects and their saved tokens.
 //!
 //! Stored at `~/.tokensave/global.db`, this DB holds one row per project with
 //! the project's DB path and its cumulative tokens-saved count. All operations
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
 
-/// User-level database tracking all TokenSave projects.
+/// User-level database tracking all `TokenSave` projects.
 pub struct GlobalDb {
     conn: Connection,
     _db: LibsqlDatabase,
@@ -93,19 +93,18 @@ impl GlobalDb {
             .await;
     }
 
-    /// Returns the stored tokens_saved count for a specific project, or 0 if not found.
+    /// Returns the stored `tokens_saved` count for a specific project, or 0 if not found.
     pub async fn get_project_tokens(&self, project_path: &Path) -> u64 {
         let path_str = project_path.to_string_lossy().to_string();
-        let mut rows = match self
+        let Ok(mut rows) = self
             .conn
             .query(
                 "SELECT tokens_saved FROM projects WHERE path = ?1",
                 params![path_str],
             )
             .await
-        {
-            Ok(r) => r,
-            Err(_) => return 0,
+        else {
+            return 0;
         };
         match rows.next().await {
             Ok(Some(row)) => row.get::<i64>(0).unwrap_or(0) as u64,
@@ -113,7 +112,7 @@ impl GlobalDb {
         }
     }
 
-    /// Returns the sum of tokens_saved across all tracked projects.
+    /// Returns the sum of `tokens_saved` across all tracked projects.
     pub async fn global_tokens_saved(&self) -> Option<u64> {
         let mut rows = self
             .conn
@@ -127,9 +126,8 @@ impl GlobalDb {
 
     /// Returns all tracked project paths.
     pub async fn list_project_paths(&self) -> Vec<String> {
-        let mut rows = match self.conn.query("SELECT path FROM projects", ()).await {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
+        let Ok(mut rows) = self.conn.query("SELECT path FROM projects", ()).await else {
+            return Vec::new();
         };
         let mut paths = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
@@ -167,8 +165,7 @@ impl GlobalDb {
                 ],
             )
             .await
-            .map(|n| n > 0)
-            .unwrap_or(false)
+            .is_ok_and(|n| n > 0)
     }
 
     /// Total cost in USD since a given unix timestamp.
@@ -199,7 +196,7 @@ impl GlobalDb {
         Some(row.get::<i64>(0).unwrap_or(0) as u64)
     }
 
-    /// Token breakdown (input, output, cache_read) since a given timestamp.
+    /// Token breakdown (input, output, `cache_read`) since a given timestamp.
     pub async fn token_breakdown_since(&self, since: u64) -> Option<(u64, u64, u64)> {
         let mut rows = self
             .conn
@@ -223,7 +220,7 @@ impl GlobalDb {
     /// Cost grouped by model since a given timestamp.
     /// Returns `(model, cost, total_tokens)`.
     pub async fn cost_by_model_since(&self, since: u64) -> Vec<(String, f64, u64)> {
-        let mut rows = match self
+        let Ok(mut rows) = self
             .conn
             .query(
                 "SELECT model, SUM(cost_usd), SUM(input_tokens + output_tokens)
@@ -232,9 +229,8 @@ impl GlobalDb {
                 params![since as i64],
             )
             .await
-        {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
+        else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
@@ -249,7 +245,7 @@ impl GlobalDb {
     /// Cost grouped by category since a given timestamp.
     /// Returns `(category, cost, turn_count)`.
     pub async fn cost_by_category_since(&self, since: u64) -> Vec<(String, f64, u64)> {
-        let mut rows = match self
+        let Ok(mut rows) = self
             .conn
             .query(
                 "SELECT category, SUM(cost_usd), COUNT(*)
@@ -258,9 +254,8 @@ impl GlobalDb {
                 params![since as i64],
             )
             .await
-        {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
+        else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {

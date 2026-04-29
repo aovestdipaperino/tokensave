@@ -9,8 +9,8 @@ use super::migrations;
 
 /// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
 ///
-/// - **cache_size**: 25% of DB size, clamped to \[2 MB, 64 MB\] (in KiB).
-/// - **mmap_size**: 2× DB size, clamped to \[0, 256 MB\].
+/// - **`cache_size`**: 25% of DB size, clamped to \[2 MB, 64 MB\] (in KiB).
+/// - **`mmap_size`**: 2× DB size, clamped to \[0, 256 MB\].
 ///
 /// This avoids the fixed 320 MB memory baseline for small/medium projects.
 pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
@@ -27,7 +27,7 @@ pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
     (cache_kb, mmap)
 }
 
-/// SQLite database backing the code graph, powered by libsql.
+/// `SQLite` database backing the code graph, powered by libsql.
 pub struct Database {
     conn: Connection,
     /// Kept alive so the underlying database is not dropped.
@@ -88,7 +88,7 @@ impl Database {
             operation: "open".to_string(),
         })?;
 
-        let file_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+        let file_size = std::fs::metadata(db_path).map_or(0, |m| m.len());
         Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
 
@@ -206,7 +206,7 @@ impl Database {
         Ok(())
     }
 
-    /// Applies performance-oriented SQLite pragmas.
+    /// Applies performance-oriented `SQLite` pragmas.
     ///
     /// `cache_size` and `mmap_size` are scaled to the on-disk DB size so
     /// small projects don't pay the 320 MB baseline of a large project.

@@ -4,7 +4,7 @@
 //! tool calls, redirect exploration work to tokensave MCP tools, and
 //! track per-session token savings.
 
-/// PreToolUse hook handler for Claude Code's Agent tool matcher.
+/// `PreToolUse` hook handler for Claude Code's Agent tool matcher.
 ///
 /// Reads the `TOOL_INPUT` environment variable (JSON), inspects the
 /// `subagent_type` and `prompt` fields, and prints a JSON decision to
@@ -14,11 +14,11 @@ pub fn hook_pre_tool_use() {
     let tool_input = std::env::var("TOOL_INPUT").unwrap_or_default();
     let decision = evaluate_hook_decision(&tool_input);
     if !decision.is_empty() {
-        println!("{}", decision);
+        println!("{decision}");
     }
 }
 
-/// Pure decision logic for the PreToolUse hook.
+/// Pure decision logic for the `PreToolUse` hook.
 ///
 /// Takes the raw `TOOL_INPUT` JSON string and returns the JSON decision
 /// string to print to stdout.

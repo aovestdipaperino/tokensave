@@ -5,7 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, NIX_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, NIX_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -153,16 +153,10 @@ impl NixExtractor {
             "binding" => Self::visit_binding(state, node),
             "inherit" | "inherit_from" => Self::visit_inherit(state, node),
             // Recurse through structural nodes that wrap definitions.
-            "function_expression" | "binding_set" => {
-                Self::visit_children(state, node);
-            }
-            // Recurse through apply_expression to find nested definitions
-            // (e.g., flake outputs wrapped in eachDefaultSystem calls).
-            "apply_expression" => {
-                Self::visit_children(state, node);
-            }
-            // Recurse through parenthesized expressions.
-            "parenthesized_expression" => {
+            "function_expression"
+            | "binding_set"
+            | "apply_expression"
+            | "parenthesized_expression" => {
                 Self::visit_children(state, node);
             }
             // Recurse into top-level attrset expressions (e.g., flake.nix root).
@@ -173,7 +167,7 @@ impl NixExtractor {
         }
     }
 
-    /// Visit a let expression. Process bindings inside binding_set and the body.
+    /// Visit a let expression. Process bindings inside `binding_set` and the body.
     fn visit_let_expression(state: &mut ExtractionState, node: TsNode<'_>) {
         // Process binding_set for definitions
         let mut cursor = node.walk();
@@ -202,9 +196,8 @@ impl NixExtractor {
     fn visit_binding(state: &mut ExtractionState, node: TsNode<'_>) {
         // Extract name from attrpath child
         let name = Self::extract_binding_name(state, node);
-        let name = match name {
-            Some(n) => n,
-            None => return,
+        let Some(name) = name else {
+            return;
         };
 
         // Get the expression (value) child
@@ -247,10 +240,10 @@ impl NixExtractor {
                     if expr_node.child_count() > 0 {
                         count_complexity(expr_node, &NIX_COMPLEXITY, &state.source)
                     } else {
-                        Default::default()
+                        ComplexityMetrics::default()
                     }
                 } else {
-                    Default::default()
+                    ComplexityMetrics::default()
                 };
 
                 let graph_node = Node {
@@ -433,7 +426,7 @@ impl NixExtractor {
         }
     }
 
-    /// Visit bindings inside an attrset_expression (used for module bodies).
+    /// Visit bindings inside an `attrset_expression` (used for module bodies).
     fn visit_attrset_bindings(state: &mut ExtractionState, node: TsNode<'_>) {
         // attrset_expression contains binding_set
         let mut cursor = node.walk();
@@ -464,7 +457,7 @@ impl NixExtractor {
         }
     }
 
-    /// Visit an inherit or inherit_from node. Creates Use nodes for imported attributes.
+    /// Visit an inherit or `inherit_from` node. Creates Use nodes for imported attributes.
     fn visit_inherit(state: &mut ExtractionState, node: TsNode<'_>) {
         // inherit has `inherited_attrs` with attr children
         // inherit_from has `expression` and `inherited_attrs`
@@ -573,7 +566,7 @@ impl NixExtractor {
         }
     }
 
-    /// Check if an attrset_expression has named bindings (making it a module-like structure).
+    /// Check if an `attrset_expression` has named bindings (making it a module-like structure).
     fn attrset_has_named_bindings(node: TsNode<'_>) -> bool {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -602,8 +595,8 @@ impl NixExtractor {
     }
 
     /// Recurse into a function body to find nested definitions.
-    /// This walks through function_expression, apply_expression, let_expression, etc.
-    /// to find attrset_expression and let_expression nodes that contain bindings.
+    /// This walks through `function_expression`, `apply_expression`, `let_expression`, etc.
+    /// to find `attrset_expression` and `let_expression` nodes that contain bindings.
     fn visit_function_body_for_defs(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
             "function_expression" => {
@@ -835,7 +828,7 @@ impl NixExtractor {
         Some(comments.join("\n"))
     }
 
-    /// Recursively find call nodes (apply_expression) and create unresolved Calls references.
+    /// Recursively find call nodes (`apply_expression`) and create unresolved Calls references.
     /// Also handles Enhancement 2: import path resolution.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -970,7 +963,7 @@ impl NixExtractor {
         });
     }
 
-    /// Extract the callee name from a function position in an apply_expression.
+    /// Extract the callee name from a function position in an `apply_expression`.
     fn extract_callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         match node.kind() {
             "variable_expression" => {
@@ -991,7 +984,7 @@ impl NixExtractor {
         }
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1038,7 +1031,7 @@ impl crate::extraction::LanguageExtractor for NixExtractor {
         &["nix"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Nix"
     }
 

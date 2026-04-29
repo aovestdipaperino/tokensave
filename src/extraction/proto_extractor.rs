@@ -17,7 +17,7 @@ struct ExtractionState {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -157,8 +157,7 @@ impl ProtoExtractor {
         // package -> fullIdent -> ident
         let name = Self::find_child_by_kind(node, "fullIdent")
             .and_then(|fi| Self::find_child_by_kind(fi, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -212,13 +211,14 @@ impl ProtoExtractor {
     /// Extract an `import` statement.
     fn visit_import(state: &mut ExtractionState, node: TsNode<'_>) {
         // import -> strLit (the quoted path)
-        let name = Self::find_child_by_kind(node, "strLit")
-            .map(|n| {
+        let name = Self::find_child_by_kind(node, "strLit").map_or_else(
+            || "<unknown>".to_string(),
+            |n| {
                 let text = state.node_text(n);
                 // Strip surrounding quotes
                 text.trim_matches('"').trim_matches('\'').to_string()
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
+            },
+        );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -274,8 +274,7 @@ impl ProtoExtractor {
         // message -> messageName -> ident, messageBody -> (field | message | oneof | enum | ...)
         let name = Self::find_child_by_kind(node, "messageName")
             .and_then(|mn| Self::find_child_by_kind(mn, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -284,7 +283,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::ProtoMessage, &name, start_line);
-        let signature = Some(format!("message {}", name));
+        let signature = Some(format!("message {name}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -353,17 +352,14 @@ impl ProtoExtractor {
         // field -> type, fieldName -> ident, fieldNumber -> intLit
         let name = Self::find_child_by_kind(node, "fieldName")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let type_text = Self::find_child_by_kind(node, "type")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |n| state.node_text(n));
 
         let field_number = Self::find_child_by_kind(node, "fieldNumber")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "intLit"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "?".to_string());
+            .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -371,7 +367,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Field, &name, start_line);
-        let signature = Some(format!("{} {} = {}", type_text, name, field_number));
+        let signature = Some(format!("{type_text} {name} = {field_number}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -413,8 +409,7 @@ impl ProtoExtractor {
         // enum -> enumName -> ident, enumBody -> enumField*
         let name = Self::find_child_by_kind(node, "enumName")
             .and_then(|en| Self::find_child_by_kind(en, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -423,7 +418,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Enum, &name, start_line);
-        let signature = Some(format!("enum {}", name));
+        let signature = Some(format!("enum {name}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -487,12 +482,10 @@ impl ProtoExtractor {
     fn visit_enum_field(state: &mut ExtractionState, node: TsNode<'_>) {
         // enumField -> ident, intLit
         let name = Self::find_child_by_kind(node, "ident")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let value = Self::find_child_by_kind(node, "intLit")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "?".to_string());
+            .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -500,7 +493,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, &name, start_line);
-        let signature = Some(format!("{} = {}", name, value));
+        let signature = Some(format!("{name} = {value}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -542,8 +535,7 @@ impl ProtoExtractor {
         // service -> serviceName -> ident, rpc*
         let name = Self::find_child_by_kind(node, "serviceName")
             .and_then(|sn| Self::find_child_by_kind(sn, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -552,7 +544,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::ProtoService, &name, start_line);
-        let signature = Some(format!("service {}", name));
+        let signature = Some(format!("service {name}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -615,8 +607,7 @@ impl ProtoExtractor {
         // rpc -> rpcName -> ident, enumMessageType (request), enumMessageType (response)
         let name = Self::find_child_by_kind(node, "rpcName")
             .and_then(|rn| Self::find_child_by_kind(rn, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -692,17 +683,14 @@ impl ProtoExtractor {
         // oneofField -> type, fieldName -> ident, fieldNumber -> intLit
         let name = Self::find_child_by_kind(node, "fieldName")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let type_text = Self::find_child_by_kind(node, "type")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |n| state.node_text(n));
 
         let field_number = Self::find_child_by_kind(node, "fieldNumber")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "intLit"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "?".to_string());
+            .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -710,7 +698,7 @@ impl ProtoExtractor {
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Field, &name, start_line);
-        let signature = Some(format!("{} {} = {}", type_text, name, field_number));
+        let signature = Some(format!("{type_text} {name} = {field_number}"));
 
         let graph_node = Node {
             id: id.clone(),
@@ -792,7 +780,7 @@ impl ProtoExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -809,7 +797,7 @@ impl crate::extraction::LanguageExtractor for ProtoExtractor {
         &["proto"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Protobuf"
     }
 

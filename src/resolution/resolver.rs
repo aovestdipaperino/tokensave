@@ -61,7 +61,7 @@ pub struct ReferenceResolver<'a> {
     qualified_name_cache: HashMap<String, Vec<Node>>,
     /// Suffix index: maps every `::suffix` of a qualified name to the full
     /// qualified name(s). Enables O(1) suffix lookups instead of scanning
-    /// the entire qualified_name_cache.
+    /// the entire `qualified_name_cache`.
     suffix_cache: HashMap<String, Vec<String>>,
     /// All known symbol names (short + qualified + suffixes) for pre-filtering.
     known_names: HashSet<String>,
@@ -154,6 +154,16 @@ impl<'a> ReferenceResolver<'a> {
             if let Some(resolved) = self.try_qualified_match(uref) {
                 return Some(resolved);
             }
+            // Fall through to try exact name match with the simple name
+            let simple_name = uref
+                .reference_name
+                .rsplit("::")
+                .next()
+                .unwrap_or(&uref.reference_name);
+            if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name) {
+                return Some(resolved);
+            }
+            return None;
         }
 
         // Strategy 2: exact name match
@@ -258,7 +268,6 @@ impl<'a> ReferenceResolver<'a> {
         let candidates = self.name_cache.get(&uref.reference_name)?;
 
         if candidates.len() == 1 {
-            // Reduce confidence for cross-language single matches.
             let ref_lang = lang_from_path(&uref.file_path);
             let candidate_lang = lang_from_path(&candidates[0].file_path);
             let confidence = if ref_lang != "unknown"
@@ -278,13 +287,49 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         // Multiple candidates -- score them and pick the best.
-        let best = self.find_best_match(uref, candidates)?;
+        let best = Self::find_best_match(uref, candidates)?;
 
         Some(ResolvedRef {
             original: uref.clone(),
             target_node_id: best.id.clone(),
             confidence: 0.7,
             resolved_by: "exact-match".to_string(),
+        })
+    }
+
+    fn try_exact_name_match_simple(
+        &self,
+        uref: &UnresolvedRef,
+        simple_name: &str,
+    ) -> Option<ResolvedRef> {
+        let candidates = self.name_cache.get(simple_name)?;
+
+        if candidates.len() == 1 {
+            let ref_lang = lang_from_path(&uref.file_path);
+            let candidate_lang = lang_from_path(&candidates[0].file_path);
+            let confidence = if ref_lang != "unknown"
+                && candidate_lang != "unknown"
+                && ref_lang != candidate_lang
+            {
+                0.5
+            } else {
+                0.9
+            };
+            return Some(ResolvedRef {
+                original: uref.clone(),
+                target_node_id: candidates[0].id.clone(),
+                confidence,
+                resolved_by: "simple-name-match".to_string(),
+            });
+        }
+
+        let best = Self::find_best_match(uref, candidates)?;
+
+        Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id: best.id.clone(),
+            confidence: 0.7,
+            resolved_by: "simple-name-match".to_string(),
         })
     }
 
@@ -296,8 +341,8 @@ impl<'a> ReferenceResolver<'a> {
     /// - Same language: +50, cross-language: -80
     /// - Exported / pub visibility: +10
     /// - Callable kind (function/method) when the ref kind is `Calls`: +25
-    /// - Line proximity (same file only): +20 - (line_distance / 10)
-    fn find_best_match(&self, uref: &UnresolvedRef, candidates: &[Node]) -> Option<Node> {
+    /// - Line proximity (same file only): +20 - (`line_distance` / 10)
+    fn find_best_match(uref: &UnresolvedRef, candidates: &[Node]) -> Option<Node> {
         if candidates.is_empty() {
             return None;
         }

@@ -501,7 +501,7 @@ pub struct BuildContextOptions {
     pub traversal_depth: usize,
     pub min_score: f64,
     /// Additional keywords to search for beyond those extracted from the query.
-    /// Enables agent-driven synonym expansion (e.g. "authentication" → ["login", "session"]).
+    /// Enables agent-driven synonym expansion (e.g. `"authentication"` → `["login", "session"]`).
     pub extra_keywords: Vec<String>,
     /// Node IDs to exclude from results (for session deduplication across calls).
     pub exclude_node_ids: HashSet<String>,
@@ -554,7 +554,7 @@ pub struct TaskContext {
     pub entry_points: Vec<Node>,
     pub code_blocks: Vec<CodeBlock>,
     pub related_files: Vec<String>,
-    /// IDs of all nodes returned as entry points (pass to next call's exclude_node_ids for dedup).
+    /// IDs of all nodes returned as entry points (pass to next call's `exclude_node_ids` for dedup).
     pub seen_node_ids: Vec<String>,
 }
 
@@ -601,4 +601,44 @@ pub struct ResolvedRef {
     pub target_node_id: String,
     pub confidence: f64,
     pub resolved_by: String,
+}
+
+/// Result of a single string replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditResult {
+    pub success: bool,
+    pub file_path: String,
+    pub matched_str: String,
+    pub new_str: String,
+    pub message: String,
+}
+
+/// Result of a multi-string replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiEditResult {
+    pub success: bool,
+    pub file_path: String,
+    pub applied_count: usize,
+    pub message: String,
+}
+
+/// Result of an insert-at operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertResult {
+    pub success: bool,
+    pub file_path: String,
+    pub anchor_line: u32,
+    pub content: String,
+    pub before: bool,
+    pub message: String,
+}
+
+/// Result of an ast-grep rewrite operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstGrepResult {
+    pub success: bool,
+    pub file_path: String,
+    pub pattern: String,
+    pub rewrite: String,
+    pub message: String,
 }

@@ -190,7 +190,7 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
         let servers_empty = mcp
             .get("servers")
             .and_then(|v| v.as_object())
-            .is_some_and(|o| o.is_empty());
+            .is_some_and(serde_json::Map::is_empty);
         if servers_empty {
             mcp.as_object_mut().map(|o| o.remove("servers"));
         }
@@ -199,7 +199,7 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
         let mcp_empty = settings
             .get("mcp")
             .and_then(|v| v.as_object())
-            .is_some_and(|o| o.is_empty());
+            .is_some_and(serde_json::Map::is_empty);
         if mcp_empty {
             settings.as_object_mut().map(|o| o.remove("mcp"));
         }
@@ -241,7 +241,7 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
     if servers.is_empty() {
         settings.as_object_mut().map(|o| o.remove("mcpServers"));
     }
-    let is_empty = settings.as_object().is_some_and(|o| o.is_empty());
+    let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(settings_path).ok();
         eprintln!(

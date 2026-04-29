@@ -317,8 +317,7 @@ impl PascalExtractor {
     /// Extract a single uses reference as a Use node.
     fn visit_single_use(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| state.node_text(node));
+            .map_or_else(|| state.node_text(node), |n| state.node_text(n));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -392,8 +391,7 @@ impl PascalExtractor {
     /// Dispatches based on whether it's a class, record, interface, or type alias.
     fn visit_type_decl(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Look for the type body: declClass, declIntf, or plain type.
         if let Some(class_node) = Self::find_child_by_kind(node, "declClass") {
@@ -725,7 +723,7 @@ impl PascalExtractor {
         }
     }
 
-    /// Visit a visibility section (public, private, protected) and update current_visibility.
+    /// Visit a visibility section (public, private, protected) and update `current_visibility`.
     fn visit_visibility_section(state: &mut ExtractionState, node: TsNode<'_>) {
         // First child should be the visibility keyword.
         let mut cursor = node.walk();
@@ -751,8 +749,7 @@ impl PascalExtractor {
     /// Extract a field declaration.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -899,8 +896,7 @@ impl PascalExtractor {
     /// Extract a property declaration.
     fn visit_property(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -964,8 +960,7 @@ impl PascalExtractor {
     /// Extract a single constant declaration.
     fn visit_const(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -1035,8 +1030,7 @@ impl PascalExtractor {
     /// Extract a single variable declaration.
     fn visit_var(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -1112,10 +1106,10 @@ impl PascalExtractor {
             };
 
             let actual_kind = if is_method {
-                match kind_str {
-                    "constructor" => NodeKind::Constructor,
-                    "destructor" => NodeKind::Method,
-                    _ => NodeKind::Method,
+                if kind_str == "constructor" {
+                    NodeKind::Constructor
+                } else {
+                    NodeKind::Method
                 }
             } else {
                 node_kind.clone()
@@ -1201,7 +1195,7 @@ impl PascalExtractor {
     }
 
     /// Determine the procedure kind from a declProc node.
-    /// Returns (kind_str, NodeKind).
+    /// Returns (`kind_str`, `NodeKind`).
     fn determine_proc_kind(node: TsNode<'_>) -> (&'static str, NodeKind) {
         if Self::find_child_by_kind(node, "kConstructor").is_some() {
             ("constructor", NodeKind::Constructor)
@@ -1225,12 +1219,11 @@ impl PascalExtractor {
         }
         // Otherwise look for a simple identifier.
         Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Parse a dotted name from a declProc node.
-    /// Returns (is_method, class_name, method_name).
+    /// Returns (`is_method`, `class_name`, `method_name`).
     fn parse_dotted_name(state: &ExtractionState, decl_node: TsNode<'_>) -> (bool, String, String) {
         if let Some(dot_node) = Self::find_child_by_kind(decl_node, "genericDot") {
             // genericDot has identifiers separated by kDot.
@@ -1364,7 +1357,7 @@ impl PascalExtractor {
             let inner = &trimmed[2..trimmed.len() - 2];
             inner
                 .lines()
-                .map(|line| line.trim())
+                .map(str::trim)
                 .collect::<Vec<_>>()
                 .join("\n")
                 .trim()
@@ -1391,7 +1384,7 @@ impl PascalExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1408,7 +1401,7 @@ impl crate::extraction::LanguageExtractor for PascalExtractor {
         &["pas", "pp", "dpr", "lpr"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Pascal"
     }
 

@@ -3,6 +3,8 @@
 //! All the formatting and layout logic for `tokensave status` output,
 //! extracted from main.rs to keep the CLI entry point focused on dispatch.
 
+use std::fmt::Write as _;
+
 use crate::types::GraphStats;
 
 /// Formats a token count as a compact string (e.g. "1.2M", "45.3k").
@@ -186,11 +188,11 @@ pub fn print_status_table(
 const MAX_CELL_WIDTH: usize = 32;
 
 /// Maximum number of country flags to display in the title row.
-/// Derived from MAX_CELL_WIDTH: available = 3*32 = 96, title ~16, gap 2 → 78 cols for flags.
+/// Derived from `MAX_CELL_WIDTH`: available = 3*32 = 96, title ~16, gap 2 → 78 cols for flags.
 /// Each flag = 3 cols (2 emoji + 1 space), first = 2 → fits 26; use 25 for margin.
 const MAX_DISPLAY_FLAGS: usize = 25;
 
-/// Compute cell width from the widest node-kind entry, capped at MAX_CELL_WIDTH.
+/// Compute cell width from the widest node-kind entry, capped at `MAX_CELL_WIDTH`.
 fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
     let max_kind_len = sorted_kinds
         .iter()
@@ -303,13 +305,13 @@ fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, inner_width: usize)
     );
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(sync_text.len());
-    println!("│ {}\x1b[2m{}\x1b[0m │", " ".repeat(pad), sync_text,);
+    println!("│ {}\x1b[2m{}\x1b[0m │", " ".repeat(pad), sync_text);
 }
 
 fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     let mut text = format!("Branch: {}", info.branch);
     if let Some(ref parent) = info.parent {
-        text.push_str(&format!("  (from {parent})"));
+        let _ = write!(text, "  (from {parent})");
     }
     if info.is_fallback {
         text.push_str("  \x1b[33m[fallback]\x1b[0m");
@@ -339,7 +341,7 @@ fn print_cost_row(cost_info: &CostRow, inner_width: usize) {
     let text = parts.join("  ");
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(text.len());
-    println!("│ {}\x1b[36m{}\x1b[0m │", " ".repeat(pad), text,);
+    println!("│ {}\x1b[36m{}\x1b[0m │", " ".repeat(pad), text);
 }
 
 /// Build the stats rows (files/nodes/edges, DB size, languages).

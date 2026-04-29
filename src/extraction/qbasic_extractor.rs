@@ -1,7 +1,7 @@
-/// Tree-sitter based QBasic source code extractor.
+/// Tree-sitter based `QBasic` source code extractor.
 ///
-/// Parses QBasic source files and emits nodes and edges for the code graph.
-/// QBasic has proper structured programming constructs: SUB/END SUB,
+/// Parses `QBasic` source files and emits nodes and edges for the code graph.
+/// `QBasic` has proper structured programming constructs: SUB/END SUB,
 /// FUNCTION/END FUNCTION, TYPE/END TYPE, SELECT CASE, DO/LOOP. This
 /// extractor maps SUB and FUNCTION definitions to Function nodes, TYPE
 /// definitions to Struct nodes with Field children, CONST statements to
@@ -11,12 +11,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, QBASIC_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, QBASIC_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
-/// Extracts code graph nodes and edges from QBasic source files using tree-sitter.
+/// Extracts code graph nodes and edges from `QBasic` source files using tree-sitter.
 pub struct QBasicExtractor;
 
 /// Internal state used during AST traversal.
@@ -25,7 +25,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -73,10 +73,10 @@ impl ExtractionState {
 }
 
 impl QBasicExtractor {
-    /// Extract code graph nodes and edges from a QBasic source file.
+    /// Extract code graph nodes and edges from a `QBasic` source file.
     ///
     /// `file_path` is used for qualified names and node IDs (not for I/O).
-    /// `source` is the QBasic source code to parse.
+    /// `source` is the `QBasic` source code to parse.
     pub fn extract_qbasic(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
@@ -134,20 +134,24 @@ impl QBasicExtractor {
                             // Accumulate comments as potential docstrings.
                             pending_comment = Some(comment);
                         } else {
-                            Self::visit_line(&mut state, node, &pending_comment);
+                            Self::visit_line(&mut state, node, pending_comment.as_deref());
                             pending_comment = None;
                         }
                     }
                     "type_definition" => {
-                        Self::visit_type_definition(&mut state, node, &pending_comment);
+                        Self::visit_type_definition(&mut state, node, pending_comment.as_deref());
                         pending_comment = None;
                     }
                     "sub_definition" => {
-                        Self::visit_sub_definition(&mut state, node, &pending_comment);
+                        Self::visit_sub_definition(&mut state, node, pending_comment.as_deref());
                         pending_comment = None;
                     }
                     "function_definition" => {
-                        Self::visit_function_definition(&mut state, node, &pending_comment);
+                        Self::visit_function_definition(
+                            &mut state,
+                            node,
+                            pending_comment.as_deref(),
+                        );
                         pending_comment = None;
                     }
                     _ => {
@@ -189,14 +193,12 @@ impl QBasicExtractor {
     }
 
     /// Visit a top-level `line` node, extracting CONST, DIM SHARED, CALL, etc.
-    fn visit_line(state: &mut ExtractionState, line: TsNode<'_>, pending_comment: &Option<String>) {
-        let stmt_list = match Self::find_child_by_kind(line, "statement_list") {
-            Some(sl) => sl,
-            None => return,
+    fn visit_line(state: &mut ExtractionState, line: TsNode<'_>, pending_comment: Option<&str>) {
+        let Some(stmt_list) = Self::find_child_by_kind(line, "statement_list") else {
+            return;
         };
-        let stmt = match Self::find_child_by_kind(stmt_list, "statement") {
-            Some(s) => s,
-            None => return,
+        let Some(stmt) = Self::find_child_by_kind(stmt_list, "statement") else {
+            return;
         };
 
         // Get the first named child to determine the statement kind.
@@ -217,12 +219,6 @@ impl QBasicExtractor {
             "call_statement" => {
                 Self::extract_call_from_call_statement(state, child);
             }
-            "declare_statement" => {
-                // Skip forward declarations.
-            }
-            "let_statement" => {
-                // Top-level assignments — extract calls from within if any.
-            }
             _ => {}
         }
     }
@@ -232,13 +228,13 @@ impl QBasicExtractor {
         state: &mut ExtractionState,
         line: TsNode<'_>,
         const_stmt: TsNode<'_>,
-        pending_comment: &Option<String>,
+        pending_comment: Option<&str>,
     ) {
         // Find the identifier child of const_statement.
-        let name = match Self::find_child_by_kind(const_stmt, "identifier") {
-            Some(id_node) => state.node_text(id_node),
-            None => return,
+        let Some(id_node) = Self::find_child_by_kind(const_stmt, "identifier") else {
+            return;
         };
+        let name = state.node_text(id_node);
 
         let start_line = line.start_position().row as u32;
         let end_line = line.end_position().row as u32;
@@ -259,7 +255,7 @@ impl QBasicExtractor {
             start_column,
             end_column,
             signature: Some(text.trim().to_string()),
-            docstring: pending_comment.clone(),
+            docstring: pending_comment.map(std::string::ToString::to_string),
             visibility: Visibility::Pub,
             is_async: false,
             branches: 0,
@@ -288,7 +284,7 @@ impl QBasicExtractor {
         state: &mut ExtractionState,
         line: TsNode<'_>,
         dim_stmt: TsNode<'_>,
-        pending_comment: &Option<String>,
+        pending_comment: Option<&str>,
     ) {
         // Check if this is DIM SHARED by looking at the text.
         let text = state.node_text(line);
@@ -297,14 +293,13 @@ impl QBasicExtractor {
         }
 
         // Find the dim_variable child, then get its identifier.
-        let dim_var = match Self::find_child_by_kind(dim_stmt, "dim_variable") {
-            Some(dv) => dv,
-            None => return,
+        let Some(dim_var) = Self::find_child_by_kind(dim_stmt, "dim_variable") else {
+            return;
         };
-        let name = match Self::find_child_by_kind(dim_var, "identifier") {
-            Some(id_node) => state.node_text(id_node),
-            None => return,
+        let Some(id_node) = Self::find_child_by_kind(dim_var, "identifier") else {
+            return;
         };
+        let name = state.node_text(id_node);
 
         let start_line = line.start_position().row as u32;
         let end_line = line.end_position().row as u32;
@@ -324,7 +319,7 @@ impl QBasicExtractor {
             start_column,
             end_column,
             signature: Some(text.trim().to_string()),
-            docstring: pending_comment.clone(),
+            docstring: pending_comment.map(std::string::ToString::to_string),
             visibility: Visibility::Pub,
             is_async: false,
             branches: 0,
@@ -352,12 +347,11 @@ impl QBasicExtractor {
     fn visit_type_definition(
         state: &mut ExtractionState,
         node: TsNode<'_>,
-        pending_comment: &Option<String>,
+        pending_comment: Option<&str>,
     ) {
         // type_definition has name: (identifier) and type_member children.
-        let name_node = match node.child_by_field_name("name") {
-            Some(n) => n,
-            None => return,
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
         };
         let name = state.node_text(name_node);
 
@@ -381,7 +375,7 @@ impl QBasicExtractor {
             start_column,
             end_column,
             signature: Some(signature),
-            docstring: pending_comment.clone(),
+            docstring: pending_comment.map(std::string::ToString::to_string),
             visibility: Visibility::Pub,
             is_async: false,
             branches: 0,
@@ -422,7 +416,7 @@ impl QBasicExtractor {
         state.node_stack.pop();
     }
 
-    /// Visit a type_member inside a TYPE block and emit a Field node.
+    /// Visit a `type_member` inside a TYPE block and emit a Field node.
     fn visit_type_member(state: &mut ExtractionState, member: TsNode<'_>) {
         let name = match Self::find_child_by_kind(member, "identifier") {
             Some(id_node) => state.node_text(id_node),
@@ -476,11 +470,10 @@ impl QBasicExtractor {
     fn visit_sub_definition(
         state: &mut ExtractionState,
         node: TsNode<'_>,
-        pending_comment: &Option<String>,
+        pending_comment: Option<&str>,
     ) {
-        let name_node = match node.child_by_field_name("name") {
-            Some(n) => n,
-            None => return,
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
         };
         let name = state.node_text(name_node);
 
@@ -499,7 +492,7 @@ impl QBasicExtractor {
         let metrics = if node.child_count() > 0 {
             count_complexity(node, &QBASIC_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {
@@ -513,7 +506,7 @@ impl QBasicExtractor {
             start_column,
             end_column,
             signature: Some(signature),
-            docstring: pending_comment.clone(),
+            docstring: pending_comment.map(std::string::ToString::to_string),
             visibility: Visibility::Pub,
             is_async: false,
             branches: metrics.branches,
@@ -546,11 +539,10 @@ impl QBasicExtractor {
     fn visit_function_definition(
         state: &mut ExtractionState,
         node: TsNode<'_>,
-        pending_comment: &Option<String>,
+        pending_comment: Option<&str>,
     ) {
-        let name_node = match node.child_by_field_name("name") {
-            Some(n) => n,
-            None => return,
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
         };
         let name = state.node_text(name_node);
 
@@ -567,7 +559,7 @@ impl QBasicExtractor {
         let metrics = if node.child_count() > 0 {
             count_complexity(node, &QBASIC_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {
@@ -581,7 +573,7 @@ impl QBasicExtractor {
             start_column,
             end_column,
             signature: Some(signature),
-            docstring: pending_comment.clone(),
+            docstring: pending_comment.map(std::string::ToString::to_string),
             visibility: Visibility::Pub,
             is_async: false,
             branches: metrics.branches,
@@ -610,7 +602,7 @@ impl QBasicExtractor {
         state.node_stack.pop();
     }
 
-    /// Extract a call reference from a call_statement node.
+    /// Extract a call reference from a `call_statement` node.
     fn extract_call_from_call_statement(state: &mut ExtractionState, call_stmt: TsNode<'_>) {
         let target_name = match Self::find_child_by_kind(call_stmt, "identifier") {
             Some(id_node) => state.node_text(id_node),
@@ -633,7 +625,7 @@ impl QBasicExtractor {
         });
     }
 
-    /// Recursively walk AST nodes looking for call_statement and function_call nodes.
+    /// Recursively walk AST nodes looking for `call_statement` and `function_call` nodes.
     fn walk_for_calls(state: &mut ExtractionState, node: TsNode<'_>) {
         let kind = node.kind();
         if kind == "call_statement" {
@@ -673,7 +665,7 @@ impl QBasicExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -690,7 +682,7 @@ impl crate::extraction::LanguageExtractor for QBasicExtractor {
         &["qb"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "QBasic"
     }
 

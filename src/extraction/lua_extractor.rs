@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -162,13 +162,11 @@ impl LuaExtractor {
     /// - `function Foo.bar(...)` → name is `dot_index_expression`, public function with class context
     /// - `function Foo:bar(...)` → name is `method_index_expression`, method
     fn visit_function_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name_node = node.child_by_field_name("name");
-        let name_node = match name_node {
-            Some(n) => n,
-            None => return,
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
         };
 
-        let is_local = node.child(0).map(|c| c.kind() == "local").unwrap_or(false);
+        let is_local = node.child(0).is_some_and(|c| c.kind() == "local");
 
         let (name, kind, visibility, class_context) = match name_node.kind() {
             "identifier" => {
@@ -191,8 +189,7 @@ impl LuaExtractor {
                     .map(|n| state.node_text(n));
                 let field_name = name_node
                     .child_by_field_name("field")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string());
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
                 (field_name, NodeKind::Function, Visibility::Pub, table_name)
             }
             "method_index_expression" => {
@@ -202,15 +199,14 @@ impl LuaExtractor {
                     .map(|n| state.node_text(n));
                 let method_name = name_node
                     .child_by_field_name("method")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string());
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
                 (method_name, NodeKind::Method, Visibility::Pub, table_name)
             }
             _ => return,
         };
 
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_function_signature(state, node, &class_context);
+        let signature = Self::extract_function_signature(state, node, class_context.as_deref());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -271,9 +267,8 @@ impl LuaExtractor {
     /// - `local CONST = <literal>` → Const node (uppercase names)
     fn visit_variable_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // variable_declaration contains an assignment_statement child.
-        let assignment = match Self::find_child_by_kind(node, "assignment_statement") {
-            Some(a) => a,
-            None => return,
+        let Some(assignment) = Self::find_child_by_kind(node, "assignment_statement") else {
+            return;
         };
 
         // Get the variable name from the variable_list.
@@ -284,10 +279,10 @@ impl LuaExtractor {
             // The first named child of variable_list should be the identifier.
             Self::find_child_by_kind(vl, "identifier")
         });
-        let name = match name_node {
-            Some(n) => state.node_text(n),
-            None => return,
+        let Some(n) = name_node else {
+            return;
         };
+        let name = state.node_text(n);
 
         // Get the value from the expression_list.
         let expr_list = assignment
@@ -295,9 +290,8 @@ impl LuaExtractor {
             .or_else(|| Self::find_child_by_kind(assignment, "expression_list"));
         let value_node = expr_list.and_then(|el| el.named_child(0));
 
-        let value_node = match value_node {
-            Some(v) => v,
-            None => return,
+        let Some(value_node) = value_node else {
+            return;
         };
 
         // Check if this is a require call → Use node.
@@ -457,7 +451,7 @@ impl LuaExtractor {
     fn extract_function_signature(
         state: &ExtractionState,
         node: TsNode<'_>,
-        _class_context: &Option<String>,
+        _class_context: Option<&str>,
     ) -> Option<String> {
         let text = state.node_text(node);
         let first_line = text.lines().next()?.trim().to_string();
@@ -470,7 +464,7 @@ impl LuaExtractor {
 
     /// Extract docstrings from `--` or `---` comment lines preceding definitions.
     ///
-    /// Lua uses comment lines (-- or --- for LDoc) as documentation. We look for
+    /// Lua uses comment lines (-- or --- for `LDoc`) as documentation. We look for
     /// `comment` sibling nodes that immediately precede the given definition node.
     fn extract_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut comments: Vec<String> = Vec::new();
@@ -494,7 +488,7 @@ impl LuaExtractor {
         Some(comments.join("\n"))
     }
 
-    /// Recursively find function_call nodes inside a given node and create unresolved Calls references.
+    /// Recursively find `function_call` nodes inside a given node and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -557,7 +551,7 @@ impl LuaExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -574,7 +568,7 @@ impl crate::extraction::LanguageExtractor for LuaExtractor {
         &["lua"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Lua"
     }
 

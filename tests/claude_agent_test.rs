@@ -2,8 +2,8 @@ use std::path::Path;
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    EXPECTED_TOOL_PERMS,
+    expected_tool_perms, AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext,
+    InstallContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ fn make_install_ctx(home: &Path) -> InstallContext {
     InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
+        tool_permissions: expected_tool_perms(),
     }
 }
 
@@ -33,7 +33,7 @@ fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
     InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
+        tool_permissions: expected_tool_perms(),
     }
 }
 
@@ -123,9 +123,9 @@ fn test_install_creates_settings_with_permissions() {
         .expect("permissions.allow should be an array");
     let allow_strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
 
-    for perm in EXPECTED_TOOL_PERMS {
+    for perm in expected_tool_perms() {
         assert!(
-            allow_strs.contains(perm),
+            allow_strs.contains(&perm.as_str()),
             "permissions.allow should contain {perm}"
         );
     }

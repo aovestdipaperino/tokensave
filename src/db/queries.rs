@@ -13,11 +13,11 @@ use crate::types::*;
 
 /// Maps a row from the `nodes` table to a `Node`.
 ///
-/// Expected column order: id(0), kind(1), name(2), qualified_name(3),
-/// file_path(4), start_line(5), end_line(6), start_column(7), end_column(8),
-/// docstring(9), signature(10), visibility(11), is_async(12),
-/// branches(13), loops(14), returns(15), max_nesting(16),
-/// unsafe_blocks(17), unchecked_calls(18), assertions(19), updated_at(20).
+/// Expected column order: id(0), kind(1), name(2), `qualified_name(3)`,
+/// `file_path(4)`, `start_line(5)`, `end_line(6)`, `start_column(7)`, `end_column(8)`,
+/// docstring(9), signature(10), visibility(11), `is_async(12)`,
+/// branches(13), loops(14), returns(15), `max_nesting(16)`,
+/// `unsafe_blocks(17)`, `unchecked_calls(18)`, assertions(19), `updated_at(20)`.
 fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
     let kind_str = get_string_lossy(row, 1)?;
     let vis_str = get_string_lossy(row, 11)?;
@@ -97,8 +97,8 @@ fn row_to_edge(row: &libsql::Row) -> std::result::Result<Edge, libsql::Error> {
 
 /// Maps a row from the `files` table to a `FileRecord`.
 ///
-/// Expected column order: path(0), content_hash(1), size(2), modified_at(3),
-/// indexed_at(4), node_count(5).
+/// Expected column order: path(0), `content_hash(1)`, size(2), `modified_at(3)`,
+/// `indexed_at(4)`, `node_count(5)`.
 fn row_to_file(row: &libsql::Row) -> std::result::Result<FileRecord, libsql::Error> {
     Ok(FileRecord {
         path: row.get::<String>(0)?,
@@ -112,8 +112,8 @@ fn row_to_file(row: &libsql::Row) -> std::result::Result<FileRecord, libsql::Err
 
 /// Maps a row from the `unresolved_refs` table to an `UnresolvedRef`.
 ///
-/// Expected column order: from_node_id(0), reference_name(1),
-/// reference_kind(2), line(3), col(4), file_path(5).
+/// Expected column order: `from_node_id(0)`, `reference_name(1)`,
+/// `reference_kind(2)`, line(3), col(4), `file_path(5)`.
 fn row_to_unresolved_ref(row: &libsql::Row) -> std::result::Result<UnresolvedRef, libsql::Error> {
     let kind_str = row.get::<String>(2)?;
 
@@ -149,21 +149,21 @@ impl Database {
                     node.name.as_str(),
                     node.qualified_name.as_str(),
                     node.file_path.as_str(),
-                    node.start_line as i64,
-                    node.end_line as i64,
-                    node.start_column as i64,
-                    node.end_column as i64,
-                    opt_str(&node.docstring),
-                    opt_str(&node.signature),
+                    i64::from(node.start_line),
+                    i64::from(node.end_line),
+                    i64::from(node.start_column),
+                    i64::from(node.end_column),
+                    opt_str(node.docstring.as_deref()),
+                    opt_str(node.signature.as_deref()),
                     node.visibility.as_str(),
-                    node.is_async as i64,
-                    node.branches as i64,
-                    node.loops as i64,
-                    node.returns as i64,
-                    node.max_nesting as i64,
-                    node.unsafe_blocks as i64,
-                    node.unchecked_calls as i64,
-                    node.assertions as i64,
+                    i64::from(node.is_async),
+                    i64::from(node.branches),
+                    i64::from(node.loops),
+                    i64::from(node.returns),
+                    i64::from(node.max_nesting),
+                    i64::from(node.unsafe_blocks),
+                    i64::from(node.unchecked_calls),
+                    i64::from(node.assertions),
                     node.updated_at as i64,
                 ],
             )
@@ -175,7 +175,7 @@ impl Database {
         Ok(())
     }
 
-    /// Inserts all nodes, edges, and file records in a single execute_batch call.
+    /// Inserts all nodes, edges, and file records in a single `execute_batch` call.
     /// This minimizes transaction overhead by combining everything into one SQL string.
     pub async fn insert_all(
         &self,
@@ -212,35 +212,35 @@ impl Database {
                 sql.push(',');
                 push_quoted(&mut sql, &node.file_path);
                 sql.push(',');
-                push_int(&mut sql, node.start_line as i64);
+                push_int(&mut sql, i64::from(node.start_line));
                 sql.push(',');
-                push_int(&mut sql, node.end_line as i64);
+                push_int(&mut sql, i64::from(node.end_line));
                 sql.push(',');
-                push_int(&mut sql, node.start_column as i64);
+                push_int(&mut sql, i64::from(node.start_column));
                 sql.push(',');
-                push_int(&mut sql, node.end_column as i64);
+                push_int(&mut sql, i64::from(node.end_column));
                 sql.push(',');
-                push_opt_quoted(&mut sql, &node.docstring);
+                push_opt_quoted(&mut sql, node.docstring.as_deref());
                 sql.push(',');
-                push_opt_quoted(&mut sql, &node.signature);
+                push_opt_quoted(&mut sql, node.signature.as_deref());
                 sql.push(',');
                 push_quoted(&mut sql, node.visibility.as_str());
                 sql.push(',');
-                push_int(&mut sql, node.is_async as i64);
+                push_int(&mut sql, i64::from(node.is_async));
                 sql.push(',');
-                push_int(&mut sql, node.branches as i64);
+                push_int(&mut sql, i64::from(node.branches));
                 sql.push(',');
-                push_int(&mut sql, node.loops as i64);
+                push_int(&mut sql, i64::from(node.loops));
                 sql.push(',');
-                push_int(&mut sql, node.returns as i64);
+                push_int(&mut sql, i64::from(node.returns));
                 sql.push(',');
-                push_int(&mut sql, node.max_nesting as i64);
+                push_int(&mut sql, i64::from(node.max_nesting));
                 sql.push(',');
-                push_int(&mut sql, node.unsafe_blocks as i64);
+                push_int(&mut sql, i64::from(node.unsafe_blocks));
                 sql.push(',');
-                push_int(&mut sql, node.unchecked_calls as i64);
+                push_int(&mut sql, i64::from(node.unchecked_calls));
                 sql.push(',');
-                push_int(&mut sql, node.assertions as i64);
+                push_int(&mut sql, i64::from(node.assertions));
                 sql.push(',');
                 push_int(&mut sql, node.updated_at as i64);
                 sql.push(')');
@@ -263,7 +263,7 @@ impl Database {
                 push_quoted(&mut sql, edge.kind.as_str());
                 sql.push(',');
                 match edge.line {
-                    Some(l) => push_int(&mut sql, l as i64),
+                    Some(l) => push_int(&mut sql, i64::from(l)),
                     None => sql.push_str("NULL"),
                 }
                 sql.push(')');
@@ -292,7 +292,7 @@ impl Database {
                 sql.push(',');
                 push_int(&mut sql, file.indexed_at);
                 sql.push(',');
-                push_int(&mut sql, file.node_count as i64);
+                push_int(&mut sql, i64::from(file.node_count));
                 sql.push(')');
             }
             sql.push_str(";\n");
@@ -348,21 +348,21 @@ impl Database {
                 node.name.as_str(),
                 node.qualified_name.as_str(),
                 node.file_path.as_str(),
-                node.start_line as i64,
-                node.end_line as i64,
-                node.start_column as i64,
-                node.end_column as i64,
-                opt_str(&node.docstring),
-                opt_str(&node.signature),
+                i64::from(node.start_line),
+                i64::from(node.end_line),
+                i64::from(node.start_column),
+                i64::from(node.end_column),
+                opt_str(node.docstring.as_deref()),
+                opt_str(node.signature.as_deref()),
                 node.visibility.as_str(),
-                node.is_async as i64,
-                node.branches as i64,
-                node.loops as i64,
-                node.returns as i64,
-                node.max_nesting as i64,
-                node.unsafe_blocks as i64,
-                node.unchecked_calls as i64,
-                node.assertions as i64,
+                i64::from(node.is_async),
+                i64::from(node.branches),
+                i64::from(node.loops),
+                i64::from(node.returns),
+                i64::from(node.max_nesting),
+                i64::from(node.unsafe_blocks),
+                i64::from(node.unchecked_calls),
+                i64::from(node.assertions),
                 node.updated_at as i64,
             ])
             .await
@@ -614,7 +614,7 @@ impl Database {
                     edge.source.as_str(),
                     edge.target.as_str(),
                     edge.kind.as_str(),
-                    edge.line.map(|l| l as i64)
+                    edge.line.map(i64::from)
                 ],
             )
             .await
@@ -653,7 +653,7 @@ impl Database {
                 edge.source.as_str(),
                 edge.target.as_str(),
                 edge.kind.as_str(),
-                edge.line.map(|l| l as i64),
+                edge.line.map(i64::from),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -868,7 +868,7 @@ impl Database {
         Ok(items)
     }
 
-    /// Returns nodes ranked by line span (end_line - start_line + 1), optionally
+    /// Returns nodes ranked by line span (`end_line` - `start_line` + 1), optionally
     /// filtered by node kind. Results are ordered by size descending.
     pub async fn get_largest_nodes(
         &self,
@@ -1005,7 +1005,7 @@ impl Database {
     /// Returns the maximum inheritance depth for classes/interfaces reachable
     /// via `extends` edges. Uses a recursive CTE to walk the hierarchy.
     ///
-    /// Each result is a (leaf_node, depth) pair where depth is the number of
+    /// Each result is a (`leaf_node`, depth) pair where depth is the number of
     /// `extends` hops from the leaf to the root of its hierarchy.
     pub async fn get_inheritance_depth(
         &self,
@@ -1072,7 +1072,7 @@ impl Database {
     /// Returns node kind counts grouped by file or directory prefix.
     ///
     /// If `path_prefix` is provided, only files under that path are included.
-    /// Results are grouped by (file_path, kind) and ordered by file then count.
+    /// Results are grouped by (`file_path`, kind) and ordered by file then count.
     pub async fn get_node_distribution(
         &self,
         path_prefix: Option<&str>,
@@ -1084,7 +1084,7 @@ impl Database {
                  WHERE file_path LIKE ?1
                  GROUP BY file_path, kind
                  ORDER BY file_path, cnt DESC",
-                vec![libsql::Value::Text(format!("{}%", prefix))],
+                vec![libsql::Value::Text(format!("{prefix}%"))],
             ),
             None => (
                 "SELECT file_path, kind, COUNT(*) AS cnt
@@ -1176,7 +1176,7 @@ impl Database {
 
     /// Returns functions/methods ranked by a composite complexity score.
     ///
-    /// Complexity = line_count + (call_fan_out * 3) + call_fan_in.
+    /// Complexity = `line_count` + (`call_fan_out` * 3) + `call_fan_in`.
     /// Line count reflects size, fan-out reflects cognitive load, fan-in
     /// reflects coupling. Results are ordered by score descending.
     pub async fn get_complexity_ranked(
@@ -1288,7 +1288,7 @@ impl Database {
                  LIMIT ?2"
                     .to_string(),
                 vec![
-                    libsql::Value::Text(format!("{}%", prefix)),
+                    libsql::Value::Text(format!("{prefix}%")),
                     libsql::Value::Integer(limit as i64),
                 ],
             ),
@@ -1450,7 +1450,7 @@ impl Database {
                 file.size as i64,
                 file.modified_at,
                 file.indexed_at,
-                file.node_count as i64,
+                i64::from(file.node_count),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -1482,7 +1482,7 @@ impl Database {
                     file.size as i64,
                     file.modified_at,
                     file.indexed_at,
-                    file.node_count as i64,
+                    i64::from(file.node_count),
                 ],
             )
             .await
@@ -1570,8 +1570,8 @@ impl Database {
                     uref.from_node_id.as_str(),
                     uref.reference_name.as_str(),
                     uref.reference_kind.as_str(),
-                    uref.line as i64,
-                    uref.column as i64,
+                    i64::from(uref.line),
+                    i64::from(uref.column),
                     uref.file_path.as_str(),
                 ],
             )
@@ -1610,8 +1610,8 @@ impl Database {
                 uref.from_node_id.as_str(),
                 uref.reference_name.as_str(),
                 uref.reference_kind.as_str(),
-                uref.line as i64,
-                uref.column as i64,
+                i64::from(uref.line),
+                i64::from(uref.column),
                 uref.file_path.as_str(),
             ])
             .await
@@ -1784,7 +1784,7 @@ impl Database {
         Ok(results)
     }
 
-    /// Returns a map of node_id → incoming "calls" edge count for the given IDs.
+    /// Returns a map of `node_id` → incoming "calls" edge count for the given IDs.
     /// IDs not found in any edge target are omitted from the result.
     pub async fn batch_incoming_call_counts(
         &self,
@@ -1864,7 +1864,7 @@ impl Database {
         collect_rows(&mut rows, row_to_node, "search_nodes_by_exact_name").await
     }
 
-    /// Returns `true` if the error indicates SQLite database corruption.
+    /// Returns `true` if the error indicates `SQLite` database corruption.
     pub fn is_corruption_error(e: &TokenSaveError) -> bool {
         match e {
             TokenSaveError::Database { message, .. } => {
@@ -2108,16 +2108,16 @@ impl Database {
     ///
     /// Batches queries in groups of 500 IDs to avoid SQL parameter limits.
     pub async fn get_internal_edges(&self, node_ids: &[String]) -> Result<Vec<Edge>> {
+        const BATCH_SIZE: usize = 500;
         if node_ids.is_empty() {
             return Ok(Vec::new());
         }
 
         // Build a set of IDs for filtering targets in memory, then query
         // edges from each batch of sources.
-        let id_set: std::collections::HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
+        let id_set: std::collections::HashSet<&str> =
+            node_ids.iter().map(std::string::String::as_str).collect();
         let mut all_edges = Vec::new();
-
-        const BATCH_SIZE: usize = 500;
         let mut offset = 0;
         while offset < node_ids.len() {
             let end = (offset + BATCH_SIZE).min(node_ids.len());
@@ -2169,9 +2169,9 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 /// Converts `Option<String>` to a `libsql::Value` for use in params.
-fn opt_str(opt: &Option<String>) -> libsql::Value {
+fn opt_str(opt: Option<&str>) -> libsql::Value {
     match opt {
-        Some(s) => libsql::Value::Text(s.clone()),
+        Some(s) => libsql::Value::Text(s.to_string()),
         None => libsql::Value::Null,
     }
 }
@@ -2190,7 +2190,7 @@ fn push_quoted(buf: &mut String, s: &str) {
 }
 
 /// Appends a SQL-safe quoted string or NULL for Option<String>.
-fn push_opt_quoted(buf: &mut String, opt: &Option<String>) {
+fn push_opt_quoted(buf: &mut String, opt: Option<&str>) {
     match opt {
         Some(s) => push_quoted(buf, s),
         None => buf.push_str("NULL"),

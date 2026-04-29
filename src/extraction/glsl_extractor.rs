@@ -20,7 +20,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -155,7 +155,7 @@ impl GlslExtractor {
     fn visit_function_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         let name =
             Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -214,12 +214,12 @@ impl GlslExtractor {
         None
     }
 
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            Some(text.trim().trim_end_matches(';').trim().to_string())
+            text.trim().trim_end_matches(';').trim().to_string()
         }
     }
 
@@ -395,8 +395,7 @@ impl GlslExtractor {
         }
 
         let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -537,8 +536,7 @@ impl GlslExtractor {
 
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -586,8 +584,7 @@ impl GlslExtractor {
     fn visit_preproc_include(state: &mut ExtractionState, node: TsNode<'_>) {
         let include_path = Self::find_child_by_kind(node, "string_literal")
             .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let line = node.start_position().row as u32;
         let column = node.start_position().column as u32;
@@ -777,7 +774,7 @@ impl crate::extraction::LanguageExtractor for GlslExtractor {
         &["glsl", "vert", "frag", "geom", "comp", "tesc", "tese"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "GLSL"
     }
 

@@ -102,7 +102,7 @@ fn make_install_ctx(home: &Path) -> InstallContext {
     InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
+        tool_permissions: expected_tool_perms(),
     }
 }
 
@@ -602,7 +602,7 @@ fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
     InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
+        tool_permissions: expected_tool_perms(),
     }
 }
 
@@ -1260,8 +1260,9 @@ fn test_gemini_install_preserves_existing_settings() {
 
 #[test]
 fn test_tool_names_not_empty() {
-    assert!(!TOOL_NAMES.is_empty());
-    for name in TOOL_NAMES {
+    let names = tool_names();
+    assert!(!names.is_empty());
+    for name in &names {
         assert!(
             name.starts_with("tokensave_"),
             "tool name should start with tokensave_: {name}"
@@ -1271,8 +1272,9 @@ fn test_tool_names_not_empty() {
 
 #[test]
 fn test_expected_tool_perms_not_empty() {
-    assert!(!EXPECTED_TOOL_PERMS.is_empty());
-    for perm in EXPECTED_TOOL_PERMS {
+    let perms = expected_tool_perms();
+    assert!(!perms.is_empty());
+    for perm in &perms {
         assert!(
             perm.starts_with("mcp__tokensave__"),
             "tool perm should start with mcp__tokensave__: {perm}"
@@ -1282,16 +1284,17 @@ fn test_expected_tool_perms_not_empty() {
 
 #[test]
 fn test_tool_perms_match_tool_names() {
-    // Each tool name should have a corresponding permission
+    let names = tool_names();
+    let perms = expected_tool_perms();
     assert_eq!(
-        TOOL_NAMES.len(),
-        EXPECTED_TOOL_PERMS.len(),
-        "TOOL_NAMES and EXPECTED_TOOL_PERMS should have same length"
+        names.len(),
+        perms.len(),
+        "tool_names and expected_tool_perms should have same length"
     );
-    for name in TOOL_NAMES {
+    for name in &names {
         let expected_perm = format!("mcp__tokensave__{name}");
         assert!(
-            EXPECTED_TOOL_PERMS.contains(&expected_perm.as_str()),
+            perms.contains(&expected_perm),
             "missing permission for tool {name}: expected {expected_perm}"
         );
     }

@@ -2,8 +2,8 @@ use std::path::Path;
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    AgentIntegration, CopilotIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    EXPECTED_TOOL_PERMS,
+    expected_tool_perms, AgentIntegration, CopilotIntegration, DoctorCounters, HealthcheckContext,
+    InstallContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ fn make_ctx(home: &Path) -> InstallContext {
     InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
+        tool_permissions: expected_tool_perms(),
     }
 }
 

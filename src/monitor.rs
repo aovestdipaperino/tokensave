@@ -6,9 +6,11 @@
 //!
 //! Entry format is generic: each entry carries a **prefix** (tool suite
 //! name, e.g. "tokensave"), a **project** (folder name), and a
-//! **tool_name** (the specific MCP call).
+//! **`tool_name`** (the specific MCP call).
 
 use std::path::{Path, PathBuf};
+
+use fs2::FileExt;
 
 // ── Layout constants ────────────────────────────────────────────────
 const HEADER_SIZE: usize = 32;
@@ -118,7 +120,6 @@ fn write_entry_inner(
         .open(mmap_path)?;
 
     // Exclusive lock for concurrent writer safety.
-    use fs2::FileExt;
     file.lock_exclusive()?;
 
     let len = file.metadata()?.len() as usize;
@@ -270,6 +271,10 @@ use std::io::Write;
 
 /// Run the monitor TUI. Blocks until Ctrl+C.
 pub fn run() -> std::io::Result<()> {
+    use crossterm::{
+        cursor, execute, terminal,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+    };
     let dir = global_tokensave_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -287,7 +292,6 @@ pub fn run() -> std::io::Result<()> {
         .truncate(false)
         .open(&lock_path)?;
 
-    use fs2::FileExt;
     if lock_file.try_lock_exclusive().is_err() {
         eprintln!("Monitor already running.");
         return Ok(());
@@ -323,10 +327,6 @@ pub fn run() -> std::io::Result<()> {
     }
 
     // Enter raw mode + alternate screen.
-    use crossterm::{
-        cursor, execute, terminal,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
-    };
     let mut stdout = std::io::stdout();
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
@@ -363,7 +363,9 @@ impl CostCache {
             efficiency_pct: 0.0,
             top_model: String::new(),
             top_model_cost: 0.0,
-            last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(999),
+            last_refresh: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(999))
+                .unwrap_or_else(std::time::Instant::now),
         }
     }
 
@@ -373,7 +375,7 @@ impl CostCache {
 }
 
 /// Refresh cost data from the global DB. Best-effort, non-blocking.
-/// Uses a tokio runtime because GlobalDb is async.
+/// Uses a tokio runtime because `GlobalDb` is async.
 fn refresh_cost_cache(cache: &mut CostCache) {
     let future = async {
         let Some(gdb) = crate::global_db::GlobalDb::open().await else {
@@ -404,7 +406,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
 
         let models = gdb.cost_by_model_since(today_start).await;
         if let Some((model, cost, _)) = models.first() {
-            cache.top_model = model.clone();
+            cache.top_model.clone_from(model);
             cache.top_model_cost = *cost;
         }
     };
@@ -422,6 +424,7 @@ fn monitor_loop(
     stdout: &mut std::io::Stdout,
 ) -> std::io::Result<()> {
     use crossterm::{cursor, event, execute, terminal};
+    use std::collections::HashMap;
 
     let mut cost_cache = CostCache::new();
 
@@ -502,35 +505,55 @@ fn monitor_loop(
                 line2,
                 " ".repeat(w.saturating_sub(line2.len()))
             )?;
-            write!(stdout, "\r{}\r\n", sep)?;
+            write!(stdout, "\r{sep}\r\n")?;
         }
 
-        // ── Log entries (most recent at bottom of log area) ──
-        let visible: Vec<&MonitorEntry> = entries
-            .iter()
-            .rev()
-            .take(log_lines)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let blank_lines = log_lines.saturating_sub(visible.len());
+        // ── Grouped log entries ──
+        let mut grouped: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        for entry in entries.iter() {
+            let project = &entry.project;
+            let method = &entry.tool_name;
+            *grouped
+                .entry(project.clone())
+                .or_default()
+                .entry(method.clone())
+                .or_default() += entry.delta;
+        }
+
+        let mut projects: Vec<String> = grouped.keys().cloned().collect();
+        projects.sort();
+
+        let mut all_lines: Vec<String> = Vec::new();
+        let mut grand_total: u64 = 0;
+
+        for project in &projects {
+            let Some(methods) = grouped.get(project) else {
+                continue;
+            };
+            let mut method_lines: Vec<String> = methods.keys().cloned().collect();
+            method_lines.sort();
+
+            let project_total: u64 = methods.values().sum::<u64>();
+            grand_total += project_total;
+
+            all_lines.push(format!("{} ({})", project, format_number(project_total)));
+            for method in &method_lines {
+                let delta = *methods.get(method).unwrap_or(&0);
+                all_lines.push(format!("  {}  {}", method, format_number(delta)));
+            }
+        }
+        all_lines.push(format!("TOTAL  {}", format_number(grand_total)));
+
+        let visible_lines: Vec<&String> = all_lines.iter().rev().take(log_lines).collect();
+        let blank_lines = log_lines.saturating_sub(visible_lines.len());
 
         for _ in 0..blank_lines {
             write!(stdout, "\r{}\r\n", " ".repeat(w))?;
         }
 
-        for entry in &visible {
-            let label = entry.label();
-            let delta_str = format_number(entry.delta);
-            let padding = w.saturating_sub(label.len() + delta_str.len() + 2);
-            write!(
-                stdout,
-                "\r{}{}{}\r\n",
-                label,
-                " ".repeat(padding),
-                delta_str
-            )?;
+        for line in visible_lines.into_iter().rev() {
+            let padding = w.saturating_sub(line.len());
+            write!(stdout, "\r{}{}\r\n", line, " ".repeat(padding))?;
         }
 
         // ── Footer ──
@@ -539,12 +562,12 @@ fn monitor_loop(
         let total_str = format_number(total_saved);
         let label = "TokenSave Monitor";
         let suffix = "saved tokens";
-        let footer_content = format!("{}  {} {}", label, total_str, suffix);
+        let footer_content = format!("{label}  {total_str} {suffix}");
         let footer_padding = w.saturating_sub(footer_content.len());
         let hint = "Ctrl+R reset | Ctrl+C quit";
         let hint_padding = w.saturating_sub(hint.len());
 
-        write!(stdout, "\r{}\r\n", sep)?;
+        write!(stdout, "\r{sep}\r\n")?;
         write!(
             stdout,
             "\r{}{}\r\n",
@@ -552,7 +575,7 @@ fn monitor_loop(
             footer_content
         )?;
         write!(stdout, "\r{}{}\r\n", " ".repeat(hint_padding), hint)?;
-        write!(stdout, "\r{}", sep)?;
+        write!(stdout, "\r{sep}")?;
 
         stdout.flush()?;
     }

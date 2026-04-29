@@ -22,7 +22,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -184,8 +184,7 @@ impl ScalaExtractor {
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -316,7 +315,7 @@ impl ScalaExtractor {
         let is_case = Self::has_modifier_keyword(node, state, "case");
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -390,7 +389,7 @@ impl ScalaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -457,7 +456,7 @@ impl ScalaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -520,7 +519,7 @@ impl ScalaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -604,8 +603,10 @@ impl ScalaExtractor {
         let name = node
             .child_by_field_name("name")
             .or_else(|| Self::find_child_by_kind(node, "identifier"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| state.node_text(node).trim().to_string());
+            .map_or_else(
+                || state.node_text(node).trim().to_string(),
+                |n| state.node_text(n),
+            );
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -658,7 +659,7 @@ impl ScalaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -721,7 +722,7 @@ impl ScalaExtractor {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
         let docstring = Self::extract_scaladoc(state, node);
-        let signature = Self::extract_declaration_signature(state, node);
+        let signature = Some(Self::extract_declaration_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -777,7 +778,7 @@ impl ScalaExtractor {
     // Val / Var
     // -----------------------------------------------------------------------
 
-    /// Extract a val definition or declaration as a ValField node.
+    /// Extract a val definition or declaration as a `ValField` node.
     fn visit_val(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_val_var_name(state, node);
         let visibility = Self::extract_visibility(node, state);
@@ -838,7 +839,7 @@ impl ScalaExtractor {
         }
     }
 
-    /// Extract a var definition or declaration as a VarField node.
+    /// Extract a var definition or declaration as a `VarField` node.
     fn visit_var(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_val_var_name(state, node);
         let visibility = Self::extract_visibility(node, state);
@@ -906,8 +907,7 @@ impl ScalaExtractor {
     fn visit_type_def(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::extract_visibility(node, state);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -962,7 +962,7 @@ impl ScalaExtractor {
 
     /// Extract the name from a val/var definition.
     ///
-    /// val_definition uses a "pattern" field; val_declaration uses "name".
+    /// `val_definition` uses a "pattern" field; `val_declaration` uses "name".
     fn extract_val_var_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         if let Some(name_node) = node.child_by_field_name("name") {
             return state.node_text(name_node);
@@ -976,7 +976,7 @@ impl ScalaExtractor {
         "<anonymous>".to_string()
     }
 
-    /// Extract Scala visibility from access_modifier or modifiers children.
+    /// Extract Scala visibility from `access_modifier` or modifiers children.
     fn extract_visibility(node: TsNode<'_>, state: &ExtractionState) -> Visibility {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1047,21 +1047,21 @@ impl ScalaExtractor {
     }
 
     /// Extract the declaration signature (everything before the body).
-    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_declaration_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         // Cut at first '{' for brace-delimited bodies.
         if let Some(brace_pos) = text.find('{') {
-            return Some(text[..brace_pos].trim().to_string());
+            return text[..brace_pos].trim().to_string();
         }
         // Cut at first '=' for expression-bodied definitions (but not inside type bounds).
         // Only if there's a body field (function_definition, val_definition).
         if node.child_by_field_name("body").is_some() || node.child_by_field_name("value").is_some()
         {
             if let Some(eq_pos) = text.find('=') {
-                return Some(text[..eq_pos].trim().to_string());
+                return text[..eq_pos].trim().to_string();
             }
         }
-        Some(text.lines().next().unwrap_or("").trim().to_string())
+        text.lines().next().unwrap_or("").trim().to_string()
     }
 
     /// Extract Scaladoc comments (/** ... */) preceding a declaration.
@@ -1142,7 +1142,7 @@ impl ScalaExtractor {
         }
     }
 
-    /// Extract type parameters and create GenericParam nodes.
+    /// Extract type parameters and create `GenericParam` nodes.
     fn extract_type_parameters(state: &mut ExtractionState, node: TsNode<'_>, owner_id: &str) {
         let tp_node = node
             .child_by_field_name("type_parameters")
@@ -1155,8 +1155,7 @@ impl ScalaExtractor {
                     if child.is_named() && child.kind().contains("type_parameter") {
                         let param_name = Self::find_child_by_kind(child, "identifier")
                             .or_else(|| Self::find_child_by_kind(child, "type_identifier"))
-                            .map(|n| state.node_text(n))
-                            .unwrap_or_else(|| state.node_text(child));
+                            .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                         let start_line = child.start_position().row as u32;
                         let id = generate_node_id(
                             &state.file_path,
@@ -1220,8 +1219,7 @@ impl ScalaExtractor {
                     if child.kind() == "class_parameter" {
                         let param_name = child
                             .child_by_field_name("name")
-                            .map(|n| state.node_text(n))
-                            .unwrap_or_else(|| "<param>".to_string());
+                            .map_or_else(|| "<param>".to_string(), |n| state.node_text(n));
 
                         let text = state.node_text(child);
                         let is_val = text.contains("val ");
@@ -1278,7 +1276,7 @@ impl ScalaExtractor {
         }
     }
 
-    /// Recursively find call_expression nodes and create unresolved Calls references.
+    /// Recursively find `call_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1326,7 +1324,7 @@ impl ScalaExtractor {
         }
     }
 
-    /// Extract the callee name from a call_expression.
+    /// Extract the callee name from a `call_expression`.
     fn extract_call_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // call_expression's first named child is usually the function reference.
         let mut cursor = node.walk();
@@ -1351,7 +1349,7 @@ impl ScalaExtractor {
         text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
-    /// Extract the type name from an instance_expression (new Foo(...)).
+    /// Extract the type name from an `instance_expression` (new Foo(...)).
     fn extract_instance_type(state: &ExtractionState, node: TsNode<'_>) -> String {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1376,11 +1374,11 @@ impl ScalaExtractor {
     // Annotations
     // -----------------------------------------------------------------------
 
-    /// Extract annotations from a declaration node and create AnnotationUsage
+    /// Extract annotations from a declaration node and create `AnnotationUsage`
     /// nodes and Annotates edges.
     ///
     /// Scala annotations appear as direct `"annotation"` children of the
-    /// declaration node (class_definition, function_definition, etc.).
+    /// declaration node (`class_definition`, `function_definition`, etc.).
     fn extract_annotations(state: &mut ExtractionState, node: TsNode<'_>, target_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1487,7 +1485,7 @@ impl ScalaExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1504,7 +1502,7 @@ impl crate::extraction::LanguageExtractor for ScalaExtractor {
         &["scala", "sc"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Scala"
     }
 

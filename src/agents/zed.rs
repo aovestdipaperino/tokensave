@@ -139,7 +139,7 @@ fn uninstall_context_server(settings_path: &Path) {
     let cs_empty = settings
         .get("context_servers")
         .and_then(|v| v.as_object())
-        .is_some_and(|o| o.is_empty());
+        .is_some_and(serde_json::Map::is_empty);
     if cs_empty {
         settings
             .as_object_mut()

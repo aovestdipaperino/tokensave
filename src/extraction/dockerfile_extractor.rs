@@ -17,7 +17,7 @@ struct ExtractionState {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -289,7 +289,7 @@ impl DockerfileExtractor {
         }
     }
 
-    /// Extract a single env_pair as a Const node.
+    /// Extract a single `env_pair` as a Const node.
     fn extract_env_pair(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = match node.child_by_field_name("name") {
             Some(n) => state.node_text(n),
@@ -463,14 +463,13 @@ impl DockerfileExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "label_pair" {
-                    let key = match child.child_by_field_name("key") {
-                        Some(n) => state.node_text(n),
-                        None => {
-                            if !cursor.goto_next_sibling() {
-                                break;
-                            }
-                            continue;
+                    let key = if let Some(n) = child.child_by_field_name("key") {
+                        state.node_text(n)
+                    } else {
+                        if !cursor.goto_next_sibling() {
+                            break;
                         }
+                        continue;
                     };
 
                     let start_line = child.start_position().row as u32;
@@ -594,7 +593,7 @@ impl DockerfileExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -611,7 +610,7 @@ impl crate::extraction::LanguageExtractor for DockerfileExtractor {
         &["dockerfile", "Dockerfile"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Dockerfile"
     }
 

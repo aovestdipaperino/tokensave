@@ -2,6 +2,7 @@
 //! changes and runs incremental syncs automatically.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,8 +38,6 @@ pub fn query_daemon_info() -> Option<DaemonInfo> {
     )
     .ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-
-    use std::io::{Read, Write};
     stream.write_all(b"GET /status HTTP/1.0\r\n\r\n").ok()?;
     let mut buf = String::new();
     stream.read_to_string(&mut buf).ok()?;
@@ -176,7 +175,7 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
         watchers.len(),
     ));
 
-    let mut discovery_interval = time::interval(Duration::from_secs(60));
+    let mut discovery_interval = time::interval(Duration::from_mins(1));
     discovery_interval.tick().await; // consume first immediate tick
 
     // Set up ctrl-c handler
@@ -193,7 +192,7 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
         let next_deadline = dirty.values().copied().min();
         let sleep_dur = match next_deadline {
             Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            None => Duration::from_secs(3600),
+            None => Duration::from_hours(1),
         };
 
         tokio::select! {
@@ -204,7 +203,7 @@ async fn run_loop(debounce: Duration) -> Result<bool> {
             Some(project_root) = rx.recv() => {
                 dirty.insert(project_root, Instant::now() + debounce);
             }
-            _ = tokio::time::sleep(sleep_dur), if next_deadline.is_some() => {
+            () = tokio::time::sleep(sleep_dur), if next_deadline.is_some() => {
                 let now = Instant::now();
                 let ready: Vec<PathBuf> = dirty
                     .iter()
@@ -267,6 +266,7 @@ fn start_status_api(
     start_time: std::time::SystemTime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
         let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
             Ok(l) => l,
             Err(e) => {
@@ -294,7 +294,7 @@ fn start_status_api(
                 continue;
             };
             let count = project_count.load(std::sync::atomic::Ordering::Relaxed);
-            let uptime = start_time.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+            let uptime = start_time.elapsed().map_or(0, |d| d.as_secs());
             let info = DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 pid: std::process::id(),
@@ -307,7 +307,6 @@ fn start_status_api(
                 body.len(),
                 body,
             );
-            use tokio::io::AsyncWriteExt;
             let _ = stream.write_all(response.as_bytes()).await;
         }
     })
@@ -448,11 +447,15 @@ fn daemon_log(msg: &str) {
 /// Returns `true` if the daemon exited due to an upgrade (binary changed on
 /// disk). The caller should exit with a non-zero code so the service manager
 /// restarts with the new version.
-pub async fn run(foreground: bool) -> Result<bool> {
+pub async fn run(foreground: bool, debounce_override: Option<String>) -> Result<bool> {
     let daemon = build_daemon()?;
 
     let config = crate::user_config::UserConfig::load();
-    let debounce = parse_duration(&config.daemon_debounce).unwrap_or(Duration::from_secs(15));
+    let debounce = if let Some(ref override_str) = debounce_override {
+        parse_duration(override_str).unwrap_or(Duration::from_secs(2))
+    } else {
+        parse_duration(&config.daemon_debounce).unwrap_or(Duration::from_secs(2))
+    };
 
     if foreground {
         // Already inside a tokio runtime — call run_loop directly.
@@ -520,26 +523,23 @@ pub fn stop() -> Result<()> {
 
 /// Print daemon status and return exit code (0 = running, 1 = not running).
 pub fn status() -> i32 {
-    match running_daemon_pid() {
-        Some(pid) => {
-            if let Some(info) = query_daemon_info() {
-                eprintln!(
-                    "tokensave daemon v{} is running (PID: {}, uptime: {}, watching {} projects)",
-                    info.version,
-                    info.pid,
-                    format_uptime(info.uptime_secs),
-                    info.projects_watched,
-                );
-                check_daemon_version_mismatch(&info.version);
-            } else {
-                eprintln!("tokensave daemon is running (PID: {pid})");
-            }
-            0
+    if let Some(pid) = running_daemon_pid() {
+        if let Some(info) = query_daemon_info() {
+            eprintln!(
+                "tokensave daemon v{} is running (PID: {}, uptime: {}, watching {} projects)",
+                info.version,
+                info.pid,
+                format_uptime(info.uptime_secs),
+                info.projects_watched,
+            );
+            check_daemon_version_mismatch(&info.version);
+        } else {
+            eprintln!("tokensave daemon is running (PID: {pid})");
         }
-        None => {
-            eprintln!("tokensave daemon is not running");
-            1
-        }
+        0
+    } else {
+        eprintln!("tokensave daemon is not running");
+        1
     }
 }
 

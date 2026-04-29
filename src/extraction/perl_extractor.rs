@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -162,12 +162,11 @@ impl PerlExtractor {
 
     /// Extract a function/method definition (`sub name { ... }`).
     ///
-    /// If class_depth > 0, this is a method inside a package; otherwise it is a top-level function.
+    /// If `class_depth` > 0, this is a method inside a package; otherwise it is a top-level function.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let kind = if state.class_depth > 0 {
             NodeKind::Method
@@ -232,11 +231,10 @@ impl PerlExtractor {
     /// belong to this package until another package statement or end of file.
     /// Since Perl packages don't have explicit end markers (no `end` keyword),
     /// we handle them by scanning ahead through siblings until the next
-    /// package_statement or end of the source_file children.
+    /// `package_statement` or end of the `source_file` children.
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "package_name")
-            .map(|pn| state.node_text(pn))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |pn| state.node_text(pn));
 
         // Skip `package main;` — it just returns to the top-level scope.
         if name == "main" {
@@ -318,7 +316,7 @@ impl PerlExtractor {
     }
 
     /// Find the end line of a package scope by looking at the next sibling
-    /// that is a package_statement, or the last sibling in the source_file.
+    /// that is a `package_statement`, or the last sibling in the `source_file`.
     fn find_package_end_line(node: TsNode<'_>, _state: &ExtractionState) -> u32 {
         let mut sibling = node.next_named_sibling();
         let mut last_end = node.end_position().row as u32;
@@ -337,8 +335,7 @@ impl PerlExtractor {
     fn visit_use(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("package_name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -386,17 +383,15 @@ impl PerlExtractor {
 
     /// Check if a binary expression is an `our $CAPS_VAR = value` constant declaration.
     ///
-    /// In tree-sitter-perl, `our $MAX_RETRIES = 3` is a binary_expression with:
-    ///   - left child: variable_declaration { scope("our"), scalar_variable("$MAX_RETRIES") }
+    /// In tree-sitter-perl, `our $MAX_RETRIES = 3` is a `binary_expression` with:
+    ///   - left child: `variable_declaration` { scope("our"), `scalar_variable("$MAX_RETRIES`") }
     ///   - right child: integer(3)
     fn visit_binary_expression_for_const(state: &mut ExtractionState, node: TsNode<'_>) {
         let left = node.child_by_field_name("variable");
         if let Some(left_node) = left {
             if left_node.kind() == "variable_declaration" {
                 let scope_node = Self::find_child_by_kind(left_node, "scope");
-                let is_our = scope_node
-                    .map(|s| state.node_text(s) == "our")
-                    .unwrap_or(false);
+                let is_our = scope_node.is_some_and(|s| state.node_text(s) == "our");
 
                 if is_our {
                     // Get the variable name from scalar_variable child.
@@ -545,7 +540,7 @@ impl PerlExtractor {
                                 let pkg_name = state.node_text(pkg);
                                 if let Some(fn_name) = ceb.child_by_field_name("function_name") {
                                     let fn_text = state.node_text(fn_name);
-                                    let qualified = format!("{}::{}", pkg_name, fn_text);
+                                    let qualified = format!("{pkg_name}::{fn_text}");
                                     state.unresolved_refs.push(UnresolvedRef {
                                         from_node_id: fn_node_id.to_string(),
                                         reference_name: qualified,
@@ -571,7 +566,7 @@ impl PerlExtractor {
                                 .map(|n| state.node_text(n));
 
                             if let Some(obj) = obj_name {
-                                let qualified = format!("{}->{}", obj, name);
+                                let qualified = format!("{obj}->{name}");
                                 state.unresolved_refs.push(UnresolvedRef {
                                     from_node_id: fn_node_id.to_string(),
                                     reference_name: qualified,
@@ -678,7 +673,7 @@ impl PerlExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -695,7 +690,7 @@ impl crate::extraction::LanguageExtractor for PerlExtractor {
         &["pl", "pm"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Perl"
     }
 

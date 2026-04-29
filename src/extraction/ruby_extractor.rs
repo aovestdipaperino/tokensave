@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -166,11 +166,10 @@ impl RubyExtractor {
     /// Extract a regular method definition (`def method_name`).
     ///
     /// `is_singleton` controls whether this becomes a Method regardless of class depth
-    /// (singleton methods are always NodeKind::Method).
+    /// (singleton methods are always `NodeKind::Method`).
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>, is_singleton: bool) {
         let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0 || is_singleton;
         let kind = if in_class {
@@ -290,8 +289,7 @@ impl RubyExtractor {
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
         // In tree-sitter-ruby, class node children include: "class", constant (name), superclass?, body
         let name = Self::find_child_by_kind(node, "constant")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
         let docstring = Self::extract_docstring(state, node);
@@ -354,8 +352,7 @@ impl RubyExtractor {
     /// Extract a module definition.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "constant")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
         let docstring = Self::extract_docstring(state, node);
@@ -481,7 +478,7 @@ impl RubyExtractor {
 
     /// Extract the superclass from a class definition (`class Foo < Bar`).
     ///
-    /// Creates an Extends UnresolvedRef from the class to its superclass.
+    /// Creates an Extends `UnresolvedRef` from the class to its superclass.
     fn extract_superclass(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         // In tree-sitter-ruby, the superclass is a child node with field name "superclass"
         // or a "superclass" kind node. The superclass node contains the constant name.
@@ -602,7 +599,7 @@ impl RubyExtractor {
     /// Find the method name identifier in a singleton method.
     ///
     /// In `def self.foo(args)`, we want "foo" (the identifier after the dot).
-    /// tree-sitter-ruby's singleton_method has: "def", object, ".", name (identifier), parameters?, body
+    /// tree-sitter-ruby's `singleton_method` has: "def", object, ".", name (identifier), parameters?, body
     fn find_last_identifier_before_params(
         state: &ExtractionState,
         node: TsNode<'_>,
@@ -692,7 +689,7 @@ impl RubyExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -709,7 +706,7 @@ impl crate::extraction::LanguageExtractor for RubyExtractor {
         &["rb"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Ruby"
     }
 

@@ -38,7 +38,7 @@ impl ServerStats {
 }
 
 /// Cache duration for version checks (15 minutes).
-const VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(900);
+const VERSION_CHECK_INTERVAL: Duration = Duration::from_mins(15);
 
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
@@ -52,7 +52,7 @@ pub struct McpServer {
     cg: TokenSave,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
-    /// Approximate token count per indexed file (file_path -> tokens).
+    /// Approximate token count per indexed file (`file_path` -> tokens).
     file_token_map: std::sync::Mutex<HashMap<String, u64>>,
     /// Running total of tokens saved by serving from the graph.
     tokens_saved: AtomicU64,
@@ -117,9 +117,8 @@ impl McpServer {
             "accumulate_tokens_saved received empty file path"
         );
         let delta = {
-            let map = match self.file_token_map.lock() {
-                Ok(m) => m,
-                Err(_) => return 0,
+            let Ok(map) = self.file_token_map.lock() else {
+                return 0;
             };
             let mut total: u64 = 0;
             for path in file_paths {
@@ -219,7 +218,7 @@ impl McpServer {
 
         // Update cache regardless of fetch outcome so we don't retry immediately.
         if let Ok(mut cache) = self.version_cache.lock() {
-            cache.latest = latest.clone();
+            cache.latest.clone_from(&latest);
             cache.checked_at = Some(Instant::now());
         }
 
@@ -289,7 +288,7 @@ impl McpServer {
                 Err(e) => Some(JsonRpcResponse::error(
                     Value::Null,
                     ErrorCode::ParseError,
-                    format!("failed to parse JSON-RPC request: {}", e),
+                    format!("failed to parse JSON-RPC request: {e}"),
                 )),
             };
 
@@ -302,7 +301,7 @@ impl McpServer {
                     .unwrap_or_default();
                 for notification in notifications {
                     if let Ok(s) = serde_json::to_string(&notification) {
-                        let _ = transport.write_line(&format!("{}\n", s)).await;
+                        let _ = transport.write_line(&format!("{s}\n")).await;
                         let _ = transport.flush().await;
                     }
                 }
@@ -313,17 +312,17 @@ impl McpServer {
                 let json_line = match serde_json::to_string(&resp) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("failed to serialize response: {}", e);
+                        eprintln!("failed to serialize response: {e}");
                         continue;
                     }
                 };
-                let output = format!("{}\n", json_line);
+                let output = format!("{json_line}\n");
                 if let Err(e) = transport.write_line(&output).await {
-                    eprintln!("failed to write response: {}", e);
+                    eprintln!("failed to write response: {e}");
                     break;
                 }
                 if let Err(e) = transport.flush().await {
-                    eprintln!("failed to flush stdout: {}", e);
+                    eprintln!("failed to flush stdout: {e}");
                     break;
                 }
             }
@@ -396,7 +395,7 @@ impl McpServer {
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(self.handle_initialize(id)),
+            "initialize" => Some(Self::handle_initialize(id)),
             "initialized" => {
                 // Notification - no response required
                 None
@@ -406,9 +405,12 @@ impl McpServer {
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id).await),
-            "tools/call" => Some(self.handle_tools_call(id, &request.params).await),
-            "resources/list" => Some(self.handle_resources_list(id)),
-            "resources/read" => Some(self.handle_resources_read(id, &request.params).await),
+            "tools/call" => Some(self.handle_tools_call(id, request.params.as_ref()).await),
+            "resources/list" => Some(Self::handle_resources_list(id)),
+            "resources/read" => Some(
+                self.handle_resources_read(id, request.params.as_ref())
+                    .await,
+            ),
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
             _ => Some(JsonRpcResponse::error(
                 id,
@@ -428,7 +430,7 @@ impl McpServer {
     }
 
     /// Handles the `initialize` method, returning server capabilities.
-    fn handle_initialize(&self, id: Value) -> JsonRpcResponse {
+    fn handle_initialize(id: Value) -> JsonRpcResponse {
         JsonRpcResponse::success(
             id,
             json!({
@@ -456,14 +458,14 @@ impl McpServer {
 
     /// Handles the `tools/list` method, returning all available tool definitions.
     async fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let node_count = self.cg.get_stats().await.map(|s| s.node_count).unwrap_or(0);
+        let node_count = self.cg.get_stats().await.map_or(0, |s| s.node_count);
         let budget = explore_call_budget(node_count);
         let tools = get_tool_definitions_with_budget(node_count, budget);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 
     /// Handles the `resources/list` method, returning available resources.
-    fn handle_resources_list(&self, id: Value) -> JsonRpcResponse {
+    fn handle_resources_list(id: Value) -> JsonRpcResponse {
         JsonRpcResponse::success(
             id,
             json!({
@@ -498,21 +500,15 @@ impl McpServer {
     }
 
     /// Handles the `resources/read` method, returning resource contents.
-    async fn handle_resources_read(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
-        let uri = params
-            .as_ref()
-            .and_then(|p| p.get("uri"))
-            .and_then(|v| v.as_str());
+    async fn handle_resources_read(&self, id: Value, params: Option<&Value>) -> JsonRpcResponse {
+        let uri = params.and_then(|p| p.get("uri")).and_then(|v| v.as_str());
 
-        let uri = match uri {
-            Some(u) => u,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing 'uri' in resources/read params".to_string(),
-                );
-            }
+        let Some(uri) = uri else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing 'uri' in resources/read params".to_string(),
+            );
         };
 
         match uri {
@@ -523,7 +519,7 @@ impl McpServer {
             _ => JsonRpcResponse::error(
                 id,
                 ErrorCode::InvalidParams,
-                format!("unknown resource URI: {}", uri),
+                format!("unknown resource URI: {uri}"),
             ),
         }
     }
@@ -547,7 +543,7 @@ impl McpServer {
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("failed to read graph stats: {}", e),
+                format!("failed to read graph stats: {e}"),
             ),
         }
     }
@@ -560,12 +556,8 @@ impl McpServer {
                 let mut groups: std::collections::BTreeMap<String, Vec<String>> =
                     std::collections::BTreeMap::new();
                 for f in &files {
-                    let dir = f
-                        .path
-                        .rfind('/')
-                        .map(|i| &f.path[..i])
-                        .unwrap_or(".")
-                        .to_string();
+                    let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
+                    #[allow(clippy::map_unwrap_or)]
                     let name = f
                         .path
                         .rfind('/')
@@ -581,7 +573,7 @@ impl McpServer {
                 for (dir, entries) in &groups {
                     lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
                     for entry in entries {
-                        lines.push(format!("  {}", entry));
+                        lines.push(format!("  {entry}"));
                     }
                 }
                 let text = lines.join("\n");
@@ -599,7 +591,7 @@ impl McpServer {
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("failed to read file list: {}", e),
+                format!("failed to read file list: {e}"),
             ),
         }
     }
@@ -612,7 +604,7 @@ impl McpServer {
                 return JsonRpcResponse::error(
                     id,
                     ErrorCode::InternalError,
-                    format!("failed to read graph stats: {}", e),
+                    format!("failed to read graph stats: {e}"),
                 );
             }
         };
@@ -630,7 +622,7 @@ impl McpServer {
             let mut langs: Vec<_> = stats.files_by_language.iter().collect();
             langs.sort_by(|a, b| b.1.cmp(a.1));
             for (lang, count) in &langs {
-                lines.push(format!("  {} ({} files)", lang, count));
+                lines.push(format!("  {lang} ({count} files)"));
             }
         }
 
@@ -640,7 +632,7 @@ impl McpServer {
             let mut kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
             kinds.sort_by(|a, b| b.1.cmp(a.1));
             for (kind, count) in kinds.iter().take(10) {
-                lines.push(format!("  {} ({})", kind, count));
+                lines.push(format!("  {kind} ({count})"));
             }
         }
 
@@ -667,7 +659,7 @@ impl McpServer {
                 .iter()
                 .map(|(name, entry)| {
                     let db_path = tokensave_dir.join(&entry.db_file);
-                    let size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+                    let size_bytes = db_path.metadata().map_or(0, |m| m.len());
                     json!({
                         "name": name,
                         "db_file": entry.db_file,
@@ -700,37 +692,31 @@ impl McpServer {
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
-    async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
+    async fn handle_tools_call(&self, id: Value, params: Option<&Value>) -> JsonRpcResponse {
         debug_assert!(
             !id.is_null(),
             "handle_tools_call called with null request id"
         );
-        let params = match params {
-            Some(p) => p,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing params for tools/call".to_string(),
-                );
-            }
+        let Some(params) = params else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing params for tools/call".to_string(),
+            );
         };
 
-        let tool_name = match params.get("name").and_then(|v| v.as_str()) {
-            Some(name) => name,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing 'name' in tools/call params".to_string(),
-                );
-            }
+        let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing 'name' in tools/call params".to_string(),
+            );
         };
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
-        eprintln!("[tokensave] tool call: {}", tool_name);
+        eprintln!("[tokensave] tool call: {tool_name}");
         if let Ok(mut counts) = self.tool_call_counts.lock() {
             *counts.entry(tool_name.to_string()).or_insert(0) += 1;
         }
@@ -766,15 +752,14 @@ impl McpServer {
                     .value
                     .get("content")
                     .and_then(|c| c.as_array())
-                    .map(|arr| {
+                    .map_or(0, |arr| {
                         let total_chars: usize = arr
                             .iter()
                             .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                            .map(|text| text.len())
+                            .map(str::len)
                             .sum();
                         (total_chars / 4) as u64
-                    })
-                    .unwrap_or(0);
+                    });
 
                 // Append per-call token savings to the response content.
                 if raw_file_tokens > 0 {
@@ -812,20 +797,30 @@ impl McpServer {
                 }
 
                 // Check per-file staleness for files touched by this tool call.
+                // If stale files exist, attempt an incremental sync first to keep
+                // the index up-to-date before returning the response.
                 if !result.touched_files.is_empty() {
                     let stale_files = self.cg.check_file_staleness(&result.touched_files).await;
                     if !stale_files.is_empty() {
-                        let warning = format!(
-                            "WARNING: STALE INDEX — {} file(s) modified since last sync: {}. Run `tokensave sync` to update.",
-                            stale_files.len(),
-                            stale_files.join(", ")
-                        );
-                        if let Some(content) = result
-                            .value
-                            .get_mut("content")
-                            .and_then(|c| c.as_array_mut())
-                        {
-                            content.insert(0, json!({"type": "text", "text": &warning}));
+                        // Try to sync before responding. If sync fails (e.g., lock
+                        // held by another process), we still warn the user.
+                        let still_stale = match self.cg.sync_if_stale(&stale_files).await {
+                            Ok(false) => false,        // Sync completed and files are no longer stale
+                            Ok(true) | Err(_) => true, // Files still stale or sync failed
+                        };
+                        if still_stale {
+                            let warning = format!(
+                                "WARNING: STALE INDEX — {} file(s) modified since last sync: {}. Run `tokensave sync` to update.",
+                                stale_files.len(),
+                                stale_files.join(", ")
+                            );
+                            if let Some(content) = result
+                                .value
+                                .get_mut("content")
+                                .and_then(|c| c.as_array_mut())
+                            {
+                                content.insert(0, json!({"type": "text", "text": &warning}));
+                            }
                         }
                     }
                 }
@@ -859,8 +854,7 @@ impl McpServer {
                             )
                         } else {
                             format!(
-                                "WARNING: Index last synced {}h {}m ago. Run `tokensave sync` to update.",
-                                hours, mins
+                                "WARNING: Index last synced {hours}h {mins}m ago. Run `tokensave sync` to update."
                             )
                         };
                         if let Some(content) = result
@@ -878,7 +872,7 @@ impl McpServer {
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("tool execution failed: {}", e),
+                format!("tool execution failed: {e}"),
             ),
         }
     }

@@ -69,7 +69,7 @@ impl TaskCategory {
 
 /// Classify a turn based on tool names and Bash command content.
 ///
-/// `tool_names`: names of all tool_use blocks in the turn (e.g. "Edit", "Bash").
+/// `tool_names`: names of all `tool_use` blocks in the turn (e.g. "Edit", "Bash").
 /// `bash_commands`: content of Bash tool inputs (the `command` field).
 pub fn classify(tool_names: &[&str], bash_commands: &[&str]) -> TaskCategory {
     if tool_names.is_empty() {

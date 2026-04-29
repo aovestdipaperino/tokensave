@@ -16,7 +16,7 @@ pub struct ComplexityConfig {
     pub loop_types: &'static [&'static str],
     /// Node types that count as early exits (return, break, continue, throw).
     pub return_types: &'static [&'static str],
-    /// Node types that introduce a new nesting level (block, compound_statement).
+    /// Node types that introduce a new nesting level (block, `compound_statement`).
     pub nesting_types: &'static [&'static str],
     /// Node types representing unsafe blocks (e.g. `unsafe_block` in Rust, `unsafe_statement` in C#).
     pub unsafe_types: &'static [&'static str],
@@ -25,7 +25,7 @@ pub struct ComplexityConfig {
     /// Method names that represent unchecked/force-unwrap calls (e.g. `unwrap`, `get`).
     /// Matched against the method name in call expressions.
     pub unchecked_methods: &'static [&'static str],
-    /// Node types representing method/function call expressions, used for unchecked_methods matching.
+    /// Node types representing method/function call expressions, used for `unchecked_methods` matching.
     pub call_expression_types: &'static [&'static str],
     /// Field name used to extract the method name from a call expression node.
     /// e.g. "function" for TS, "method" for Rust. Empty to skip.
@@ -48,7 +48,7 @@ pub struct ComplexityMetrics {
     pub unsafe_blocks: u32,
     /// Number of unchecked/force-unwrap calls or assertions.
     pub unchecked_calls: u32,
-    /// Number of assertion calls (assert, debug_assert, assertEquals, etc.).
+    /// Number of assertion calls (assert, `debug_assert`, assertEquals, etc.).
     pub assertions: u32,
 }
 
@@ -64,6 +64,7 @@ pub fn count_complexity(
     config: &ComplexityConfig,
     source: &[u8],
 ) -> ComplexityMetrics {
+    const MAX_ITERATIONS: usize = 500_000;
     debug_assert!(
         !config.branch_types.is_empty() || !config.loop_types.is_empty(),
         "count_complexity called with config that has no branch or loop types"
@@ -88,7 +89,6 @@ pub fn count_complexity(
         idx += 1;
     }
 
-    const MAX_ITERATIONS: usize = 500_000;
     let mut iterations: usize = 0;
 
     while let Some((current, depth)) = stack.pop() {

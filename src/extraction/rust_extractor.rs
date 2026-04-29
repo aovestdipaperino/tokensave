@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -184,7 +184,7 @@ impl RustExtractor {
             NodeKind::Function
         };
         let visibility = Self::extract_visibility(node, state);
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let is_async = Self::detect_async(state, node);
         let start_line = node.start_position().row as u32;
@@ -241,7 +241,7 @@ impl RustExtractor {
     fn visit_struct(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
-        let signature = Self::extract_struct_signature(state, node);
+        let signature = Some(Self::extract_struct_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -765,14 +765,14 @@ impl RustExtractor {
 
     /// Record a macro invocation as an unresolved call reference.
     fn visit_macro_invocation(state: &mut ExtractionState, node: TsNode<'_>) {
-        let macro_name = node
-            .child_by_field_name("macro")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| {
+        let macro_name = node.child_by_field_name("macro").map_or_else(
+            || {
                 // Fallback: first named child is typically the macro name.
                 let text = state.node_text(node);
                 text.split('!').next().unwrap_or("").trim().to_string()
-            });
+            },
+            |n| state.node_text(n),
+        );
         let start_line = node.start_position().row as u32;
         let start_column = node.start_position().column as u32;
 
@@ -797,12 +797,12 @@ impl RustExtractor {
         node.child_by_field_name("name").map(|n| state.node_text(n))
     }
 
-    /// Extract the type name from an impl_item (the "type" field).
+    /// Extract the type name from an `impl_item` (the "type" field).
     fn extract_impl_type_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         node.child_by_field_name("type").map(|n| state.node_text(n))
     }
 
-    /// Extract the trait name from an impl_item, if it is a trait impl.
+    /// Extract the trait name from an `impl_item`, if it is a trait impl.
     ///
     /// For `impl Trait for Type`, tree-sitter gives us a "trait" field.
     fn extract_impl_trait_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
@@ -834,25 +834,25 @@ impl RustExtractor {
     }
 
     /// Extract the function signature (everything from `fn` up to the body `{`).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         // Find the opening brace and take everything before it.
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
             // For trait method declarations without a body (ending with `;`).
-            Some(text.trim_end_matches(';').trim().to_string())
+            text.trim_end_matches(';').trim().to_string()
         }
     }
 
     /// Extract the struct signature (the header line).
-    fn extract_struct_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_struct_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         // Take the first line, or up to the opening brace.
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            text[..brace_pos].trim().to_string()
         } else {
-            Some(text.lines().next().unwrap_or("").trim().to_string())
+            text.lines().next().unwrap_or("").trim().to_string()
         }
     }
 
@@ -928,7 +928,7 @@ impl RustExtractor {
             || trimmed.starts_with("pub(super) async ")
     }
 
-    /// Extract fields from a struct's field_declaration_list.
+    /// Extract fields from a struct's `field_declaration_list`.
     fn extract_fields(state: &mut ExtractionState, struct_node: TsNode<'_>) {
         if let Some(body) = struct_node.child_by_field_name("body") {
             let mut cursor = body.walk();
@@ -946,7 +946,7 @@ impl RustExtractor {
         }
     }
 
-    /// Extract a single field_declaration node.
+    /// Extract a single `field_declaration` node.
     fn extract_single_field(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let visibility = Self::extract_visibility(node, state);
@@ -1059,7 +1059,7 @@ impl RustExtractor {
         }
     }
 
-    /// Recursively find call_expression nodes inside a given node and create
+    /// Recursively find `call_expression` nodes inside a given node and create
     /// unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -1083,13 +1083,13 @@ impl RustExtractor {
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
                     "macro_invocation" => {
-                        let macro_name = child
-                            .child_by_field_name("macro")
-                            .map(|n| state.node_text(n))
-                            .unwrap_or_else(|| {
+                        let macro_name = child.child_by_field_name("macro").map_or_else(
+                            || {
                                 let text = state.node_text(child);
                                 text.split('!').next().unwrap_or("").trim().to_string()
-                            });
+                            },
+                            |n| state.node_text(n),
+                        );
                         state.unresolved_refs.push(UnresolvedRef {
                             from_node_id: fn_node_id.to_string(),
                             reference_name: macro_name,
@@ -1131,7 +1131,7 @@ impl RustExtractor {
         }
     }
 
-    /// Parse a derive attribute list and emit DerivesMacro edges.
+    /// Parse a derive attribute list and emit `DerivesMacro` edges.
     fn parse_derive_list(
         state: &mut ExtractionState,
         attr_text: &str,
@@ -1154,7 +1154,7 @@ impl RustExtractor {
                             reference_kind: EdgeKind::DerivesMacro,
                             line,
                             column: attr_node.start_position().column as u32,
-                            file_path: state.file_path.to_string(),
+                            file_path: state.file_path.clone(),
                         });
                     }
                 }
@@ -1250,7 +1250,7 @@ impl RustExtractor {
         });
     }
 
-    /// Extract the name from a Rust attribute_item node.
+    /// Extract the name from a Rust `attribute_item` node.
     ///
     /// Trims `#[` and `]`, then takes everything before `(` as the name.
     /// E.g. `#[cfg(test)]` -> `cfg`, `#[inline]` -> `inline`.
@@ -1265,7 +1265,7 @@ impl RustExtractor {
         inner.split('(').next().unwrap_or(inner).trim().to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -1282,7 +1282,7 @@ impl crate::extraction::LanguageExtractor for RustExtractor {
         &["rs"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Rust"
     }
 

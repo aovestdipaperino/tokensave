@@ -45,7 +45,7 @@ impl<'a> GraphTraverser<'a> {
         // Optionally include the start node.
         if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
-            if opts.include_start && self.node_matches_filter(&start_node, opts) {
+            if opts.include_start && Self::node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
                 result_nodes.push(start_node);
             }
@@ -75,7 +75,7 @@ impl<'a> GraphTraverser<'a> {
 
             let neighbor_ids: Vec<String> = edges
                 .iter()
-                .map(|edge| self.neighbor_id(edge, &current_id, &opts.direction))
+                .map(|edge| Self::neighbor_id(edge, &current_id, &opts.direction))
                 .filter(|id| !visited.contains(id))
                 .collect();
 
@@ -90,7 +90,7 @@ impl<'a> GraphTraverser<'a> {
                 .collect();
 
             for edge in edges {
-                let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
+                let neighbor_id = Self::neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
@@ -102,7 +102,7 @@ impl<'a> GraphTraverser<'a> {
 
                 visited.insert(neighbor_id.clone());
 
-                if self.node_matches_filter(neighbor_node, opts) {
+                if Self::node_matches_filter(neighbor_node, opts) {
                     if opts.direction == TraversalDirection::Incoming
                         && is_container_kind(&neighbor_node.kind)
                     {
@@ -114,7 +114,7 @@ impl<'a> GraphTraverser<'a> {
                             )
                             .await?;
                         for child_edge in children {
-                            let child_id = self.neighbor_id(
+                            let child_id = Self::neighbor_id(
                                 &child_edge,
                                 &neighbor_id,
                                 &TraversalDirection::Outgoing,
@@ -172,7 +172,7 @@ impl<'a> GraphTraverser<'a> {
 
         if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
-            if opts.include_start && self.node_matches_filter(&start_node, opts) {
+            if opts.include_start && Self::node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
                 result_nodes.push(start_node);
             }
@@ -204,7 +204,7 @@ impl<'a> GraphTraverser<'a> {
 
             let neighbor_ids: Vec<String> = edges
                 .iter()
-                .map(|edge| self.neighbor_id(edge, &current_id, &opts.direction))
+                .map(|edge| Self::neighbor_id(edge, &current_id, &opts.direction))
                 .filter(|id| !visited.contains(id))
                 .collect();
 
@@ -219,7 +219,7 @@ impl<'a> GraphTraverser<'a> {
                 .collect();
 
             for edge in edges {
-                let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
+                let neighbor_id = Self::neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
@@ -231,7 +231,7 @@ impl<'a> GraphTraverser<'a> {
 
                 visited.insert(neighbor_id.clone());
 
-                if self.node_matches_filter(neighbor_node, opts) {
+                if Self::node_matches_filter(neighbor_node, opts) {
                     result_nodes.push(neighbor_node.clone());
                     result_edges.push(edge.clone());
                     stack.push((neighbor_id, depth + 1));
@@ -610,7 +610,7 @@ impl<'a> GraphTraverser<'a> {
     /// For outgoing: the neighbor is `edge.target`.
     /// For incoming: the neighbor is `edge.source`.
     /// For both: whichever end is not `current_id`.
-    fn neighbor_id(&self, edge: &Edge, current_id: &str, direction: &TraversalDirection) -> String {
+    fn neighbor_id(edge: &Edge, current_id: &str, direction: &TraversalDirection) -> String {
         match direction {
             TraversalDirection::Outgoing => edge.target.clone(),
             TraversalDirection::Incoming => edge.source.clone(),
@@ -625,7 +625,7 @@ impl<'a> GraphTraverser<'a> {
     }
 
     /// Checks whether a node passes the optional `node_kinds` filter.
-    fn node_matches_filter(&self, node: &Node, opts: &TraversalOptions) -> bool {
+    fn node_matches_filter(node: &Node, opts: &TraversalOptions) -> bool {
         if let Some(ref kinds) = opts.node_kinds {
             if !kinds.is_empty() {
                 return kinds.contains(&node.kind);

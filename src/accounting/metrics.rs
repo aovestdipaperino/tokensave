@@ -81,11 +81,10 @@ pub fn parse_range(range: &str) -> u64 {
     let now = now_epoch();
     match range {
         "today" => today_start_epoch(now),
-        "7d" => now.saturating_sub(7 * 86400),
         "30d" => now.saturating_sub(30 * 86400),
         "month" => month_start_epoch(now),
         "all" => 0,
-        _ => now.saturating_sub(7 * 86400), // default to 7d
+        _ => now.saturating_sub(7 * 86400),
     }
 }
 

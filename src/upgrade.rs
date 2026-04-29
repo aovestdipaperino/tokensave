@@ -1,7 +1,7 @@
 //! Self-update for the tokensave binary.
 //!
 //! Downloads the latest release asset directly from GitHub, extracts the
-//! binary, and replaces the running executable using self_replace.
+//! binary, and replaces the running executable using `self_replace`.
 //! Beta and stable are separate channels — a beta build only sees beta
 //! releases and vice versa. The daemon is stopped before the binary is
 //! replaced and restarted afterwards if it was running.
@@ -111,7 +111,7 @@ fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf>
     ));
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(300)))
+        .timeout_global(Some(std::time::Duration::from_mins(5)))
         .build()
         .into();
 
@@ -309,21 +309,18 @@ fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
         Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("bin") => p,
         _ => return replace_default(new_exe),
     };
-    let version_dir = match bin_dir.parent() {
-        Some(p) => p,
-        None => return replace_default(new_exe),
+    let Some(version_dir) = bin_dir.parent() else {
+        return replace_default(new_exe);
     };
-    let formula_dir = match version_dir.parent() {
-        Some(p) => p,
-        None => return replace_default(new_exe),
+    let Some(formula_dir) = version_dir.parent() else {
+        return replace_default(new_exe);
     };
     let cellar_dir = match formula_dir.parent() {
         Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("Cellar") => p,
         _ => return replace_default(new_exe),
     };
-    let prefix = match cellar_dir.parent() {
-        Some(p) => p,
-        None => return replace_default(new_exe),
+    let Some(prefix) = cellar_dir.parent() else {
+        return replace_default(new_exe);
     };
 
     let Some(bin_name) = canonical.file_name() else {

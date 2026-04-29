@@ -19,7 +19,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -458,7 +458,7 @@ impl FortranExtractor {
         state.node_stack.pop();
     }
 
-    /// Visit variable_declaration children inside a derived_type_definition to extract fields.
+    /// Visit `variable_declaration` children inside a `derived_type_definition` to extract fields.
     fn visit_derived_type_fields(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -474,13 +474,12 @@ impl FortranExtractor {
         }
     }
 
-    /// Extract a field from a variable_declaration inside a derived type.
+    /// Extract a field from a `variable_declaration` inside a derived type.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
         // The field name is in the `declarator` field, which is an `identifier`.
         let name = node
             .child_by_field_name("declarator")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -580,9 +579,9 @@ impl FortranExtractor {
         }
     }
 
-    /// Extract a variable_declaration at module/program scope.
+    /// Extract a `variable_declaration` at module/program scope.
     ///
-    /// If it has a `parameter` type_qualifier and an init_declarator, treat it as a Const.
+    /// If it has a `parameter` `type_qualifier` and an `init_declarator`, treat it as a Const.
     fn visit_variable_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Check for `parameter` attribute (Fortran constant).
         if !Self::has_parameter_attribute(state, node) {
@@ -595,8 +594,7 @@ impl FortranExtractor {
             if decl.kind() == "init_declarator" {
                 let name = decl
                     .child_by_field_name("left")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string());
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
                 let docstring = Self::extract_docstring(state, node);
                 let start_line = node.start_position().row as u32;
@@ -648,8 +646,7 @@ impl FortranExtractor {
     /// Extract a use statement.
     fn visit_use_statement(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::find_child_by_kind(node, "module_name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -699,43 +696,39 @@ impl FortranExtractor {
     // ----------------------------
 
     /// Find the module name from a module node.
-    /// Structure: module -> module_statement -> name
+    /// Structure: module -> `module_statement` -> name
     fn find_module_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "module_statement")
             .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the program name from a program node.
-    /// Structure: program -> program_statement -> name
+    /// Structure: program -> `program_statement` -> name
     fn find_program_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "program_statement")
             .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the subroutine name from a subroutine node.
-    /// Structure: subroutine -> subroutine_statement (field name="name")
+    /// Structure: subroutine -> `subroutine_statement` (field name="name")
     fn find_subroutine_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "subroutine_statement")
             .and_then(|stmt| stmt.child_by_field_name("name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the function name from a function node.
-    /// Structure: function -> function_statement (field name="name")
+    /// Structure: function -> `function_statement` (field name="name")
     fn find_function_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "function_statement")
             .and_then(|stmt| stmt.child_by_field_name("name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the derived type name and optional base type.
-    /// Structure: derived_type_definition -> derived_type_statement -> type_name, optional base_type_specifier
+    /// Structure: `derived_type_definition` -> `derived_type_statement` -> `type_name`, optional `base_type_specifier`
     fn find_derived_type_info(
         state: &ExtractionState,
         node: TsNode<'_>,
@@ -743,8 +736,7 @@ impl FortranExtractor {
         let stmt = Self::find_child_by_kind(node, "derived_type_statement");
         let name = stmt
             .and_then(|s| Self::find_child_by_kind(s, "type_name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let base_type = stmt
             .and_then(|s| s.child_by_field_name("base"))
@@ -755,15 +747,14 @@ impl FortranExtractor {
     }
 
     /// Find the interface name.
-    /// Structure: interface -> interface_statement -> name
+    /// Structure: interface -> `interface_statement` -> name
     fn find_interface_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         Self::find_child_by_kind(node, "interface_statement")
             .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string())
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
-    /// Check if a variable_declaration has a `parameter` attribute.
+    /// Check if a `variable_declaration` has a `parameter` attribute.
     fn has_parameter_attribute(state: &ExtractionState, node: TsNode<'_>) -> bool {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -894,7 +885,7 @@ impl FortranExtractor {
         None
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -911,7 +902,7 @@ impl crate::extraction::LanguageExtractor for FortranExtractor {
         &["f90", "f95", "f03", "f08", "f18", "f", "for"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Fortran"
     }
 

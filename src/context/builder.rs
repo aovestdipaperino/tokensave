@@ -43,9 +43,9 @@ impl<'a> ContextBuilder<'a> {
 
         // Step 4: extract code blocks from source files
         let code_blocks = if options.include_code {
-            let blocks = self.extract_code_blocks(&entry_points, options).await?;
+            let blocks = self.extract_code_blocks(&entry_points, options)?;
             if options.merge_adjacent {
-                self.merge_adjacent_blocks(blocks).await
+                self.merge_adjacent_blocks(blocks)
             } else {
                 blocks
             }
@@ -54,10 +54,10 @@ impl<'a> ContextBuilder<'a> {
         };
 
         // Collect unique related files
-        let related_files = self.collect_related_files(&subgraph);
+        let related_files = Self::collect_related_files(&subgraph);
 
         // Build summary
-        let summary = self.build_summary(query, &entry_points, &subgraph);
+        let summary = Self::build_summary(query, &entry_points, &subgraph);
 
         let seen_node_ids: Vec<String> = entry_points.iter().map(|n| n.id.clone()).collect();
 
@@ -89,7 +89,7 @@ impl<'a> ContextBuilder<'a> {
     /// Reads the source file and extracts the code for a node.
     ///
     /// Returns `None` if the file cannot be read or the line range is invalid.
-    pub async fn get_code(&self, node: &Node) -> Result<Option<String>> {
+    pub fn get_code(&self, node: &Node) -> Result<Option<String>> {
         debug_assert!(
             !node.file_path.is_empty(),
             "get_code called with empty file_path"
@@ -104,9 +104,8 @@ impl<'a> ContextBuilder<'a> {
                 return Ok(None);
             }
         }
-        let content = match fs::read_to_string(&file_path) {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
+        let Ok(content) = fs::read_to_string(&file_path) else {
+            return Ok(None);
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -165,7 +164,8 @@ impl<'a> ContextBuilder<'a> {
         // --- FTS search: full query ---
         let search_results = self.db.search_nodes(query, options.search_limit).await?;
         for sr in search_results {
-            if self.score_passes(sr.score, options.min_score) && seen_ids.insert(sr.node.id.clone())
+            if Self::score_passes(sr.score, options.min_score)
+                && seen_ids.insert(sr.node.id.clone())
             {
                 candidates.push(sr);
             }
@@ -178,7 +178,7 @@ impl<'a> ContextBuilder<'a> {
             }
             let results = self.db.search_nodes(symbol, options.search_limit).await?;
             for sr in results {
-                if self.score_passes(sr.score, options.min_score)
+                if Self::score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
                 {
                     candidates.push(sr);
@@ -194,7 +194,7 @@ impl<'a> ContextBuilder<'a> {
             }
             let results = self.db.search_nodes(stem, options.search_limit).await?;
             for sr in results {
-                if self.score_passes(sr.score, options.min_score)
+                if Self::score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
                 {
                     candidates.push(sr);
@@ -209,7 +209,7 @@ impl<'a> ContextBuilder<'a> {
             }
             let results = self.db.search_nodes(keyword, options.search_limit).await?;
             for sr in results {
-                if self.score_passes(sr.score, options.min_score)
+                if Self::score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
                 {
                     candidates.push(sr);
@@ -261,7 +261,7 @@ impl<'a> ContextBuilder<'a> {
         // --- Co-occurrence boost for multi-term queries ---
         let query_terms: Vec<String> = query
             .split_whitespace()
-            .map(|w| w.to_lowercase())
+            .map(str::to_lowercase)
             .filter(|w| w.len() >= 3)
             .collect();
         if query_terms.len() >= 2 {
@@ -362,7 +362,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     /// Extracts code blocks for the entry-point nodes.
-    async fn extract_code_blocks(
+    fn extract_code_blocks(
         &self,
         entry_points: &[Node],
         options: &BuildContextOptions,
@@ -382,7 +382,7 @@ impl<'a> ContextBuilder<'a> {
                 break;
             }
 
-            if let Some(code) = self.get_code(node).await? {
+            if let Some(code) = self.get_code(node)? {
                 let truncated = if code.len() > options.max_code_block_size {
                     let mut end = options.max_code_block_size;
                     // Ensure we land on a valid UTF-8 boundary
@@ -413,7 +413,7 @@ impl<'a> ContextBuilder<'a> {
 
     /// Merges code blocks from the same file that are adjacent or overlapping.
     /// Two blocks are "adjacent" if the gap between them is <= 5 lines.
-    async fn merge_adjacent_blocks(&self, blocks: Vec<CodeBlock>) -> Vec<CodeBlock> {
+    fn merge_adjacent_blocks(&self, blocks: Vec<CodeBlock>) -> Vec<CodeBlock> {
         if blocks.len() <= 1 {
             return blocks;
         }
@@ -460,7 +460,7 @@ impl<'a> ContextBuilder<'a> {
                         assertions: 0,
                         updated_at: 0,
                     };
-                    if let Ok(Some(code)) = self.get_code(&merged_node).await {
+                    if let Ok(Some(code)) = self.get_code(&merged_node) {
                         current.content = code;
                         current.end_line = new_end;
                     } else {
@@ -487,12 +487,12 @@ impl<'a> ContextBuilder<'a> {
     /// threshold. We accept any result whose score is positive (i.e. the FTS
     /// engine considered it a match) unless the caller explicitly set a
     /// non-default threshold above 0.
-    fn score_passes(&self, score: f64, min_score: f64) -> bool {
+    fn score_passes(score: f64, min_score: f64) -> bool {
         score > 0.0 && score >= min_score
     }
 
     /// Collects unique file paths from all nodes in the subgraph.
-    fn collect_related_files(&self, subgraph: &Subgraph) -> Vec<String> {
+    fn collect_related_files(subgraph: &Subgraph) -> Vec<String> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut files: Vec<String> = Vec::new();
 
@@ -506,7 +506,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     /// Builds a human-readable summary string.
-    fn build_summary(&self, query: &str, entry_points: &[Node], subgraph: &Subgraph) -> String {
+    fn build_summary(query: &str, entry_points: &[Node], subgraph: &Subgraph) -> String {
         let ep_count = entry_points.len();
         let node_count = subgraph.nodes.len();
         let edge_count = subgraph.edges.len();
@@ -525,8 +525,8 @@ impl<'a> ContextBuilder<'a> {
 ///
 /// Recognizes the following patterns:
 /// - CamelCase words (e.g. `UserService`, `processRequest`)
-/// - snake_case words (e.g. `process_request`, `user_service`)
-/// - SCREAMING_SNAKE_CASE words (e.g. `MAX_RETRIES`)
+/// - `snake_case` words (e.g. `process_request`, `user_service`)
+/// - `SCREAMING_SNAKE_CASE` words (e.g. `MAX_RETRIES`)
 /// - Qualified paths with `::` separators (e.g. `crate::types::Node` yields `Node`)
 ///
 /// Common English stop words are filtered out.
@@ -725,7 +725,7 @@ fn classify_token(
 
 /// Split a compound name into individual words.
 ///
-/// Handles camelCase, PascalCase, and snake_case:
+/// Handles camelCase, `PascalCase`, and `snake_case`:
 /// - `getUserName` → `["get", "User", "Name"]`
 /// - `process_request` → `["process", "request"]`
 /// - `MAX_RETRIES` → `["MAX", "RETRIES"]`

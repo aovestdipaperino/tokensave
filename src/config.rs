@@ -10,10 +10,10 @@ use crate::errors::{Result, TokenSaveError};
 /// Name of the configuration file stored inside the `.tokensave` directory.
 pub const CONFIG_FILENAME: &str = "config.json";
 
-/// Name of the hidden directory used to store TokenSave metadata.
+/// Name of the hidden directory used to store `TokenSave` metadata.
 pub const TOKENSAVE_DIR: &str = ".tokensave";
 
-/// Configuration for a TokenSave project.
+/// Configuration for a `TokenSave` project.
 ///
 /// Controls which files are indexed, size limits, and feature toggles.
 /// Language inclusion is derived automatically from the installed
@@ -124,7 +124,7 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
     let tmp_path = config_path.with_extension("tmp");
 
     let json = serde_json::to_string_pretty(config).map_err(|e| TokenSaveError::Config {
-        message: format!("failed to serialize config: {}", e),
+        message: format!("failed to serialize config: {e}"),
     })?;
 
     fs::write(&tmp_path, &json).map_err(|e| TokenSaveError::Config {
@@ -225,7 +225,7 @@ pub fn resolve_path(path: Option<String>) -> PathBuf {
 /// Walks from `start` upward looking for a `.tokensave/tokensave.db`.
 ///
 /// Returns the first ancestor directory (inclusive) that contains an
-/// initialised TokenSave project, or `None` if the filesystem root is
+/// initialised `TokenSave` project, or `None` if the filesystem root is
 /// reached without finding one.
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
@@ -240,18 +240,17 @@ pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Like [`resolve_path`], but when `path` is `None` it walks up from `cwd`
-/// to find the nearest initialised TokenSave project before falling back to
+/// to find the nearest initialised `TokenSave` project before falling back to
 /// `cwd` itself.
 ///
 /// Used by `serve`, `sync`, and `status`. NOT used by `init` (which must
 /// create a fresh project at the target directory).
 pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
-    match path {
-        Some(p) => PathBuf::from(p),
-        None => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            discover_project_root(&cwd).unwrap_or(cwd)
-        }
+    if let Some(p) = path {
+        PathBuf::from(p)
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        discover_project_root(&cwd).unwrap_or(cwd)
     }
 }
 
