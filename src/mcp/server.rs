@@ -412,6 +412,7 @@ impl McpServer {
                     .await,
             ),
             "ping" => Some(JsonRpcResponse::success(id, json!({}))),
+            "logging/setLevel" => Some(JsonRpcResponse::success(id, json!({}))),
             _ => Some(JsonRpcResponse::error(
                 id,
                 ErrorCode::MethodNotFound,

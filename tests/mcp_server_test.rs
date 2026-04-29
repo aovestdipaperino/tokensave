@@ -745,7 +745,7 @@ async fn test_resources_list() {
     let resources = resp["result"]["resources"]
         .as_array()
         .expect("should have resources array");
-    assert_eq!(resources.len(), 3, "should expose 3 resources");
+    assert_eq!(resources.len(), 4, "should expose 4 resources");
 
     let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
     assert!(
@@ -759,6 +759,10 @@ async fn test_resources_list() {
     assert!(
         uris.contains(&"tokensave://overview"),
         "should have overview resource"
+    );
+    assert!(
+        uris.contains(&"tokensave://branches"),
+        "should have branches resource"
     );
 
     // All resources should have name, description, and mimeType.
@@ -976,5 +980,129 @@ async fn test_resources_read_missing_uri() {
     assert_eq!(
         resp["error"]["code"], -32602,
         "should be InvalidParams error"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: logging/setLevel must be handled (not return MethodNotFound)
+// ---------------------------------------------------------------------------
+
+/// The MCP client sends `logging/setLevel` immediately after initialisation
+/// whenever the server advertises the `logging` capability. Before the fix the
+/// server returned -32601 (MethodNotFound), which Claude Code logged as an
+/// error on every session start.
+#[tokio::test]
+async fn test_logging_set_level_returns_success() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(500),
+            "logging/setLevel",
+            json!({"level": "info"}),
+        )],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 500)
+        .expect("should have response for id=500");
+    let resp = parse_response(resp_str);
+    assert!(
+        resp["error"].is_null(),
+        "logging/setLevel must not return an error, got: {resp}"
+    );
+    assert!(
+        resp["result"].is_object(),
+        "logging/setLevel must return an object result"
+    );
+}
+
+/// Verify every log level accepted by RFC 5424 is handled without error.
+#[tokio::test]
+async fn test_logging_set_level_all_levels() {
+    let levels = [
+        "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency",
+    ];
+    for (idx, level) in levels.iter().enumerate() {
+        let id = json!(600 + idx as u64);
+        let (server, _dir) = setup_server().await;
+        let responses = run_server_with_messages(
+            server,
+            vec![jsonrpc_request(
+                id.clone(),
+                "logging/setLevel",
+                json!({"level": level}),
+            )],
+        )
+        .await;
+        let resp_str = responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == id)
+            .unwrap_or_else(|| panic!("no response for level={level}"));
+        let resp = parse_response(resp_str);
+        assert!(
+            resp["error"].is_null(),
+            "logging/setLevel with level={level} must not error, got: {resp}"
+        );
+    }
+}
+
+/// `logging/setLevel` mid-session must not disrupt subsequent tool calls.
+#[tokio::test]
+async fn test_logging_set_level_does_not_break_session() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(
+                json!(700),
+                "logging/setLevel",
+                json!({"level": "warning"}),
+            ),
+            jsonrpc_request(json!(701), "ping", json!({})),
+        ],
+    )
+    .await;
+
+    let set_level = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 700)
+        .expect("missing response for logging/setLevel");
+    assert!(
+        parse_response(set_level)["error"].is_null(),
+        "logging/setLevel should succeed"
+    );
+
+    let ping = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 701)
+        .expect("missing response for ping after logging/setLevel");
+    assert!(
+        parse_response(ping)["result"].is_object(),
+        "ping after setLevel should succeed"
+    );
+}
+
+/// The `initialize` response must advertise the `logging` capability so that
+/// clients know they may send `logging/setLevel`.
+#[tokio::test]
+async fn test_initialize_advertises_logging_capability() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(800), "initialize", json!({}))],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 800)
+        .expect("missing initialize response");
+    let resp = parse_response(resp_str);
+    assert!(
+        resp["result"]["capabilities"]["logging"].is_object(),
+        "initialize must advertise logging capability, got: {resp}"
     );
 }
