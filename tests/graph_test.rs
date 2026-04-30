@@ -1,7 +1,9 @@
+use std::fs;
 use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::graph::queries::GraphQueryManager;
 use tokensave::graph::traversal::GraphTraverser;
+use tokensave::tokensave::TokenSave;
 use tokensave::types::*;
 
 /// Helper: create a temp database and return (Database, TempDir).
@@ -686,4 +688,63 @@ async fn test_node_metrics_depth() {
 
     let func_metrics = qm.get_node_metrics("n-func").await.expect("metrics failed");
     assert_eq!(func_metrics.depth, 2, "function should be at depth 2");
+}
+
+// ---------------------------------------------------------------------------
+// File-level DAG tests
+// ---------------------------------------------------------------------------
+
+/// Creates a temporary Rust project with cross-file calls and indexes it.
+async fn setup_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).expect("failed to create src dir");
+
+    fs::write(
+        project.join("src/main.rs"),
+        r#"
+use crate::utils::helper;
+mod utils;
+
+fn main() {
+    let result = helper();
+    println!("{}", result);
+}
+"#,
+    )
+    .expect("failed to write main.rs");
+
+    fs::write(
+        project.join("src/utils.rs"),
+        r#"
+/// Returns a greeting string.
+pub fn helper() -> String {
+    format!("Hello, world!")
+}
+"#,
+    )
+    .expect("failed to write utils.rs");
+
+    let cg = TokenSave::init(project).await.expect("failed to init TokenSave");
+    cg.index_all().await.expect("failed to index project");
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_build_file_adjacency() {
+    let (cg, _dir) = setup_project().await;
+    let qm = GraphQueryManager::new(cg.db());
+    let adj = qm.build_file_adjacency(None).await.unwrap();
+
+    // src/main.rs depends on src/utils.rs (calls helper)
+    assert!(
+        adj.get("src/main.rs")
+            .map_or(false, |deps| deps.contains("src/utils.rs")),
+        "main.rs should depend on utils.rs"
+    );
+
+    // Self-edges should be excluded
+    for (file, deps) in &adj {
+        assert!(!deps.contains(file), "file {file} should not have a self-edge");
+    }
 }

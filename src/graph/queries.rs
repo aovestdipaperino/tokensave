@@ -333,6 +333,75 @@ impl<'a> GraphQueryManager<'a> {
         Ok(cycles)
     }
 
+    /// Builds a file-level directed adjacency map from the code graph.
+    ///
+    /// For each file, collects all files it depends on via `calls`, `uses`,
+    /// `extends`, or `implements` edges. Self-edges are excluded.
+    ///
+    /// When `path_prefix` is `Some`, only files under that prefix are included
+    /// (both as sources and targets).
+    pub async fn build_file_adjacency(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<HashMap<String, HashSet<String>>> {
+        let sql = "SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file \
+                   FROM edges e \
+                   JOIN nodes n1 ON e.source = n1.id \
+                   JOIN nodes n2 ON e.target = n2.id \
+                   WHERE e.kind IN ('calls', 'uses', 'extends', 'implements') \
+                   AND n1.file_path != n2.file_path";
+
+        let mut rows = self
+            .db
+            .conn()
+            .query(sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file adjacency: {e}"),
+                operation: "build_file_adjacency".to_string(),
+            })?;
+
+        // Normalise the prefix once: ensure it ends with '/'.
+        let prefix: Option<String> = path_prefix.map(|p| {
+            if p.ends_with('/') {
+                p.to_string()
+            } else {
+                format!("{p}/")
+            }
+        });
+
+        let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read adjacency row: {e}"),
+            operation: "build_file_adjacency".to_string(),
+        })? {
+            let src: String = row.get(0).unwrap_or_default();
+            let tgt: String = row.get(1).unwrap_or_default();
+
+            if let Some(ref pfx) = prefix {
+                if !src.starts_with(pfx.as_str()) || !tgt.starts_with(pfx.as_str()) {
+                    continue;
+                }
+            }
+
+            adj.entry(src).or_default().insert(tgt);
+        }
+
+        // Ensure every known file appears as a key (even leaf nodes with no deps).
+        let all_files = self.db.get_all_files().await?;
+        for file in all_files {
+            if let Some(ref pfx) = prefix {
+                if !file.path.starts_with(pfx.as_str()) {
+                    continue;
+                }
+            }
+            adj.entry(file.path).or_default();
+        }
+
+        Ok(adj)
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------

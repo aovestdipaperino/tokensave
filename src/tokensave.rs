@@ -117,6 +117,11 @@ impl TokenSave {
         })
     }
 
+    /// Returns a reference to the underlying database.
+    pub fn db(&self) -> &Database {
+        &self.db
+    }
+
     /// Opens an existing `TokenSave` project at the given root.
     ///
     /// If branch metadata exists, resolves the current git branch and opens
