@@ -204,6 +204,23 @@ fn check_network(dc: &mut DoctorCounters) {
     }
 }
 
+/// Print final summary.
+fn print_summary(dc: &DoctorCounters) {
+    eprintln!();
+    if dc.issues == 0 && dc.warnings == 0 {
+        eprintln!("\x1b[32mAll checks passed.\x1b[0m");
+    } else if dc.issues == 0 {
+        eprintln!("\x1b[33m{} warning(s), no issues.\x1b[0m", dc.warnings);
+    } else {
+        eprintln!(
+            "\x1b[31m{} issue(s), {} warning(s).\x1b[0m",
+            dc.issues, dc.warnings
+        );
+        eprintln!("Run \x1b[1mtokensave install\x1b[0m to fix most issues.");
+    }
+    eprintln!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,21 +245,4 @@ mod tests {
         // 1536 = 1.5 KB
         assert_eq!(format_bytes(1536), "1.5 KB");
     }
-}
-
-/// Print final summary.
-fn print_summary(dc: &DoctorCounters) {
-    eprintln!();
-    if dc.issues == 0 && dc.warnings == 0 {
-        eprintln!("\x1b[32mAll checks passed.\x1b[0m");
-    } else if dc.issues == 0 {
-        eprintln!("\x1b[33m{} warning(s), no issues.\x1b[0m", dc.warnings);
-    } else {
-        eprintln!(
-            "\x1b[31m{} issue(s), {} warning(s).\x1b[0m",
-            dc.issues, dc.warnings
-        );
-        eprintln!("Run \x1b[1mtokensave install\x1b[0m to fix most issues.");
-    }
-    eprintln!();
 }

@@ -31,7 +31,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl"]
+full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-markdown"]
 
 # Language features (all grammars provided by tokensave-large-treesitters)
 lang-dart = []
@@ -55,6 +55,7 @@ lang-gwbasic = []
 lang-qbasic = []
 lang-dockerfile = []
 lang-glsl = []
+lang-markdown = []
 test-transport = []
 
 [lib]
@@ -67,7 +68,7 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tokensave-large-treesitters = "0.3.1"
+tokensave-large-treesitters = "0.3.2"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }

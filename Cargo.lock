@@ -4049,9 +4049,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-large-treesitters"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff714f76e7f495d13f007eb312b4583dafb20d1f3fc2f5a16e29e1d41e9646d"
+checksum = "6cb4fb3d591e64dbf1b67a3786c6ef5bd7d366d7b4e6d300c06afaa078470384"
 dependencies = [
  "cc",
  "tokensave-medium-treesitters",

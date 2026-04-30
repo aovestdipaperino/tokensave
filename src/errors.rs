@@ -118,8 +118,11 @@ mod tests {
 
     #[test]
     fn json_error_from_serde() {
-        let serde_err = serde_json::from_str::<serde_json::Value>("bad json").unwrap_err();
-        let err: TokenSaveError = serde_err.into();
+        let serde_err = serde_json::from_str::<serde_json::Value>("bad json");
+        let err: TokenSaveError = match serde_err {
+            Err(e) => e.into(),
+            Ok(_) => panic!("expected JSON parse error"),
+        };
         assert!(err.to_string().contains("json error"));
     }
 }
