@@ -3845,100 +3845,24 @@ async fn handle_health(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let adj = GraphQueryManager::new(cg.db())
-        .build_file_adjacency(path_prefix)
-        .await?;
-
-    let files_analyzed = adj.len();
-
-    // 1. Acyclicity
-    let (acyclicity, _) = acyclicity_score(&adj);
-
-    // 2. Depth
-    let depth_result = dependency_depth(&adj, 1);
-    let depth = depth_score(depth_result.max_depth, depth_result.ideal_depth);
-
-    // 3. Equality: per-file complexity → gini → equality = 1 - gini
-    let all_nodes = cg.get_all_nodes().await?;
-    let nodes: Vec<_> = all_nodes
-        .iter()
-        .filter(|n| {
-            path_prefix.is_none_or(|pfx| {
-                let with_slash = if pfx.ends_with('/') {
-                    pfx.to_string()
-                } else {
-                    format!("{pfx}/")
-                };
-                n.file_path.starts_with(&with_slash) || n.file_path == pfx
-            })
-        })
-        .collect();
-
-    let mut per_file_complexity: HashMap<String, f64> = HashMap::new();
-    for n in &nodes {
-        let c = f64::from(n.branches) * 2.0
-            + f64::from(n.loops) * 2.0
-            + f64::from(n.max_nesting) * 3.0
-            + f64::from(n.end_line.saturating_sub(n.start_line) + 1);
-        *per_file_complexity.entry(n.file_path.clone()).or_insert(0.0) += c;
-    }
-    let complexity_values: Vec<f64> = per_file_complexity.values().copied().collect();
-    let gini = gini_coefficient(&complexity_values);
-    let equality = (1.0 - gini).clamp(0.0, 1.0);
-
-    // 4. Redundancy: dead code ratio
-    let dead = cg
-        .find_dead_code(&[NodeKind::Function, NodeKind::Method])
-        .await?;
-    let dead_in_scope = dead.iter().filter(|n| {
-        path_prefix.is_none_or(|pfx| {
-            let with_slash = if pfx.ends_with('/') {
-                pfx.to_string()
-            } else {
-                format!("{pfx}/")
-            };
-            n.file_path.starts_with(&with_slash) || n.file_path == pfx
-        })
-    });
-    let dead_count = dead_in_scope.count();
-    let total_fns = nodes
-        .iter()
-        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
-        .count();
-    let redundancy = if total_fns == 0 {
-        1.0
-    } else {
-        (1.0 - dead_count as f64 / total_fns as f64).clamp(0.0, 1.0)
-    };
-
-    // 5. Modularity
-    let (modularity, _) = modularity_score(&adj);
-
-    let dims = HealthDimensions {
-        acyclicity,
-        depth,
-        equality,
-        redundancy,
-        modularity,
-    };
-    let quality_signal = compute_composite_health(&dims);
+    let snap = compute_health_snapshot(cg, path_prefix).await?;
 
     let output = if details {
         json!({
-            "quality_signal": quality_signal,
-            "files_analyzed": files_analyzed,
+            "quality_signal": snap.quality_signal,
+            "files_analyzed": snap.files_analyzed,
             "dimensions": {
-                "acyclicity": (dims.acyclicity * 10000.0).round() / 10000.0,
-                "depth": (dims.depth * 10000.0).round() / 10000.0,
-                "equality": (dims.equality * 10000.0).round() / 10000.0,
-                "redundancy": (dims.redundancy * 10000.0).round() / 10000.0,
-                "modularity": (dims.modularity * 10000.0).round() / 10000.0,
+                "acyclicity": (snap.acyclicity * 10000.0).round() / 10000.0,
+                "depth": (snap.depth * 10000.0).round() / 10000.0,
+                "equality": (snap.equality * 10000.0).round() / 10000.0,
+                "redundancy": (snap.redundancy * 10000.0).round() / 10000.0,
+                "modularity": (snap.modularity * 10000.0).round() / 10000.0,
             }
         })
     } else {
         json!({
-            "quality_signal": quality_signal,
-            "files_analyzed": files_analyzed,
+            "quality_signal": snap.quality_signal,
+            "files_analyzed": snap.files_analyzed,
         })
     };
 
