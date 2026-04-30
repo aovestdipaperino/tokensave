@@ -209,6 +209,9 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Extraction worker (spawned by tokensave itself; not for direct use).
+    #[command(name = "extract-worker", hide = true)]
+    ExtractWorker,
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
     HookPreToolUse,
@@ -363,6 +366,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Some(cmd) => cmd,
         None => return handle_no_command().await,
     };
+
+    // Worker mode bypasses every normal startup path (no config load, no
+    // worldwide-counter ping, no agent checks). The token handshake inside
+    // run_worker is the only authentication; this dispatch must happen
+    // before anything else can side-effect on disk or network.
+    if matches!(command, Commands::ExtractWorker) {
+        tokensave::extraction_worker::run_worker();
+    }
 
     // First-run notice (check BEFORE any config save creates the file)
     let is_first_run = tokensave::user_config::UserConfig::is_fresh();
@@ -1059,6 +1070,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 user_cfg.save();
                 eprintln!("All agent integrations removed.");
             }
+        }
+        Commands::ExtractWorker => {
+            // Handled by the early dispatch at the top of run(); this arm
+            // exists only for clap match exhaustiveness.
+            unreachable!("extract-worker handled by early dispatch")
         }
         Commands::HookPreToolUse => {
             tokensave::hooks::hook_pre_tool_use();

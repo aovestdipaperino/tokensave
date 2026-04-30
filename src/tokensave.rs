@@ -36,6 +36,76 @@ fn safe_extract(
     .ok()
 }
 
+/// Tuple shape produced per file by both extraction paths.
+type ExtractTuple = (String, ExtractionResult, String, u64, i64);
+
+/// Extract every file in `files`, isolating each extraction in a subprocess
+/// when possible. Subprocess isolation contains C/C++ grammar aborts that
+/// `catch_unwind` cannot intercept; it is the primary defense against
+/// tree-sitter scanners that call `abort()` (issue #49).
+///
+/// Falls back to in-process extraction with `safe_extract` if the worker
+/// pool cannot start (e.g. when running under `cargo test`, where
+/// `current_exe()` points at the test harness rather than the tokensave
+/// binary). Either way, returns one tuple per successfully-processed file;
+/// crashed and unreadable files are skipped.
+fn extract_files_isolated(
+    project_root: &Path,
+    registry: &crate::extraction::LanguageRegistry,
+    files: Vec<String>,
+) -> Vec<ExtractTuple> {
+    if should_use_subprocess() {
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(4);
+        match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
+            Ok(pool) => return pool.extract_files(files, |_, _, _| {}),
+            Err(e) => eprintln!(
+                "[tokensave] could not spawn extraction worker pool ({e}), \
+                 falling back to in-process extraction"
+            ),
+        }
+    }
+    extract_files_in_process(project_root, registry, &files)
+}
+
+fn extract_files_in_process(
+    project_root: &Path,
+    registry: &crate::extraction::LanguageRegistry,
+    files: &[String],
+) -> Vec<ExtractTuple> {
+    files
+        .par_iter()
+        .filter_map(|file_path| {
+            let abs_path = project_root.join(file_path);
+            let source = sync::read_source_file(&abs_path).ok()?;
+            let extractor = registry.extractor_for_file(file_path)?;
+            let mut result = safe_extract(extractor, file_path, &source)?;
+            result.sanitize();
+            let hash = sync::content_hash(&source);
+            let size = source.len() as u64;
+            let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
+            Some((file_path.clone(), result, hash, size, mtime))
+        })
+        .collect()
+}
+
+/// Subprocess extraction is the production path. Tests and any environment
+/// where `current_exe()` does not point at the real `tokensave` binary
+/// transparently fall back to in-process extraction.
+fn should_use_subprocess() -> bool {
+    if std::env::var_os("TOKENSAVE_DISABLE_SUBPROCESS").is_some() {
+        return false;
+    }
+    let Ok(path) = std::env::current_exe() else {
+        return false;
+    };
+    matches!(
+        path.file_stem().and_then(|s| s.to_str()),
+        Some("tokensave")
+    )
+}
+
 /// Central orchestrator that coordinates all subsystems of the code graph.
 ///
 /// Provides a high-level API for initializing, indexing, querying, and
@@ -600,24 +670,11 @@ impl TokenSave {
         ));
 
         // 3. Parallel extraction: read + parse + hash on all cores
-        let project_root = &self.project_root;
+        let project_root = self.project_root.clone();
         let registry = &self.registry;
 
         let phase_start = Instant::now();
-        let extractions: Vec<_> = files
-            .par_iter()
-            .filter_map(|file_path| {
-                let abs_path = project_root.join(file_path);
-                let source = std::fs::read_to_string(&abs_path).ok()?;
-                let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = safe_extract(extractor, file_path, &source)?;
-                result.sanitize();
-                let hash = sync::content_hash(&source);
-                let size = source.len() as u64;
-                let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
-                Some((file_path.clone(), result, hash, size, mtime))
-            })
-            .collect();
+        let extractions: Vec<_> = extract_files_isolated(&project_root, registry, files.clone());
 
         // 4. Collect all data
         let mut all_nodes = Vec::new();
@@ -792,24 +849,10 @@ impl TokenSave {
             }
         }
 
-        // Extract graph data from the files in parallel
-        let sync_extractions: Vec<_> = file_paths
-            .par_iter()
-            .filter_map(|file_path| {
-                let abs_path = project_root.join(file_path);
-                let source = sync_mod::read_source_file(&abs_path).ok()?;
-                let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = safe_extract(extractor, file_path, &source)?;
-                result.sanitize();
-                let hash = sync_mod::content_hash(&source);
-                let size = source.len() as u64;
-                let mtime = stat_map
-                    .get(file_path)
-                    .copied()
-                    .map_or_else(current_timestamp, |(m, _)| m);
-                Some((file_path.clone(), result, hash, size, mtime))
-            })
-            .collect();
+        // Extract graph data from the files in parallel (subprocess-isolated)
+        let _ = stat_map; // worker re-stats internally; map kept for potential future use
+        let sync_extractions: Vec<_> =
+            extract_files_isolated(project_root, registry, file_paths.to_vec());
 
         // Insert into database
         for (file_path, result, hash, size, mtime) in &sync_extractions {
@@ -1030,22 +1073,9 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
-        let sync_extractions: Vec<_> = to_index
-            .par_iter()
-            .filter_map(|file_path| {
-                let abs_path = project_root.join(file_path);
-                let source = sync::read_source_file(&abs_path).ok()?;
-                let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = safe_extract(extractor, file_path, &source)?;
-                result.sanitize();
-                let hash = sync::content_hash(&source);
-                let size = source.len() as u64;
-                let mtime = stat_map
-                    .get(file_path)
-                    .map_or_else(current_timestamp, |&(m, _)| m);
-                Some((file_path.clone(), result, hash, size, mtime))
-            })
-            .collect();
+        let _ = stat_map; // worker re-stats internally
+        let sync_extractions: Vec<_> =
+            extract_files_isolated(project_root, registry, to_index.clone());
 
         let total = sync_extractions.len();
         let mut total_nodes = 0usize;

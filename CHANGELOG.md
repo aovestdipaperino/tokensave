@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-04-30
+
+### Added
+- **Subprocess-isolated extraction** — every file is now parsed inside a short-lived worker process rather than in the sync process itself. If a tree-sitter grammar segfaults, calls `abort()`, or otherwise terminates by a path Rust cannot intercept, only the worker dies; the pool respawns it, the offending file is logged and skipped, and sync continues. This is a stronger guarantee than the v4.2.1 `catch_unwind` defense, which could only catch Rust panics.
+  - The worker is exposed via a hidden subcommand (`tokensave extract-worker`) that authenticates against the parent through a 256-bit per-spawn token: required as both an env var and as the first 32 bytes on stdin. A user invoking the binary directly hits the missing-env check and exits non-zero. The subcommand is also hidden from `--help`.
+  - When `current_exe()` does not point at a real `tokensave` binary (e.g. under `cargo test`, where the test harness is the running binary), extraction transparently falls back to the in-process path. Tests therefore continue to exercise extractors directly without needing to spawn subprocesses.
+  - Defaults to `available_parallelism()` workers; opt out via `TOKENSAVE_DISABLE_SUBPROCESS=1` if needed.
+
+### Changed
+- Single-file extraction (used by the `tokensave_str_replace`, `tokensave_insert_at`, etc. edit tools) still runs in-process — the subprocess overhead is unjustified for one-shot operations and these tools are interactive enough that an extractor crash is immediately visible.
+
 ## [4.2.1] - 2026-04-30
 
 ### Fixed
