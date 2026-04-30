@@ -20,6 +20,22 @@ use crate::resolution::ReferenceResolver;
 use crate::sync;
 use crate::types::*;
 
+/// Run `extractor.extract()` inside `catch_unwind` so a panic (e.g. from a
+/// malformed file or an extractor bug) skips the file instead of aborting sync.
+fn safe_extract(
+    extractor: &dyn crate::extraction::LanguageExtractor,
+    file_path: &str,
+    source: &str,
+) -> Option<ExtractionResult> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        extractor.extract(file_path, source)
+    }))
+    .map_err(|_| {
+        eprintln!("[tokensave] extraction panicked for {file_path}, skipping");
+    })
+    .ok()
+}
+
 /// Central orchestrator that coordinates all subsystems of the code graph.
 ///
 /// Provides a high-level API for initializing, indexing, querying, and
@@ -594,7 +610,7 @@ impl TokenSave {
                 let abs_path = project_root.join(file_path);
                 let source = std::fs::read_to_string(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = extractor.extract(file_path, &source);
+                let mut result = safe_extract(extractor, file_path, &source)?;
                 result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
@@ -783,7 +799,7 @@ impl TokenSave {
                 let abs_path = project_root.join(file_path);
                 let source = sync_mod::read_source_file(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = extractor.extract(file_path, &source);
+                let mut result = safe_extract(extractor, file_path, &source)?;
                 result.sanitize();
                 let hash = sync_mod::content_hash(&source);
                 let size = source.len() as u64;
@@ -1020,7 +1036,7 @@ impl TokenSave {
                 let abs_path = project_root.join(file_path);
                 let source = sync::read_source_file(&abs_path).ok()?;
                 let extractor = registry.extractor_for_file(file_path)?;
-                let mut result = extractor.extract(file_path, &source);
+                let mut result = safe_extract(extractor, file_path, &source)?;
                 result.sanitize();
                 let hash = sync::content_hash(&source);
                 let size = source.len() as u64;
@@ -1304,7 +1320,10 @@ impl TokenSave {
                     message: format!("unsupported file type: {file_path}"),
                 })?;
 
-        let mut result = extractor.extract(file_path, &source);
+        let mut result = safe_extract(extractor, file_path, &source)
+            .ok_or_else(|| TokenSaveError::Config {
+                message: format!("extraction panicked for {file_path}"),
+            })?;
         result.sanitize();
 
         let hash = sync::content_hash(&source);

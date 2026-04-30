@@ -1,0 +1,7 @@
+[env]
+# Disable C/C++ assertions in vendored tree-sitter grammars so that grammar
+# bugs (e.g. the tree-sitter-markdown autolink assertion) produce a failed
+# parse rather than aborting the process.  NDEBUG is the standard production
+# setting; it has no effect on Rust code.
+CFLAGS = { value = "-DNDEBUG", force = false }
+CXXFLAGS = { value = "-DNDEBUG", force = false }

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-04-30
+
+### Fixed
+- **Sync no longer aborts when a tree-sitter grammar hits an internal assertion (issue #49)** — the vendored `tree-sitter-markdown` C++ scanner contains `assert()` calls that, on certain autolink constructs, called `abort()` and killed the entire `tokensave sync` process (core-dumped on Linux). Two layers of defense:
+  - Added `.cargo/config.toml` with `CFLAGS=-DNDEBUG` and `CXXFLAGS=-DNDEBUG`. `cc-rs` reads these env vars when compiling vendored grammars in `tokensave-large-treesitters`'s build script, disabling C/C++ assertions in release builds. A failed assertion now degrades to a malformed parse tree (which the extractor handles gracefully) instead of `SIGABRT`.
+  - Added a `safe_extract` helper that wraps every `extractor.extract()` call site with `std::panic::catch_unwind`. A Rust panic from any extractor (malformed input, future bugs) now logs the file path and skips it instead of bringing down the whole sync.
+- See issue #50 for the broader follow-up: migrating to pure-Rust generated parsers via the `--rust` fork of tree-sitter to eliminate this class of failure entirely.
+
 ## [4.2.0] - 2026-04-30
 
 ### Added
