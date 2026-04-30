@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
 ### Added
 - **Markdown extraction** — tree-sitter based markdown parser that extracts headers as `Module` nodes with hierarchical `Contains` edges, and code links as `Uses` edges for cross-reference tracking (PR #47)
 
+## [4.1.7] - 2026-04-29
+
 ### Fixed
-- `java_extraction` avoid panic when parsing empty Java docstrings (fixes #44)
+- **Nested `.gitignore` files were silently ignored** — `git_ignore(true)` in the `ignore` crate relies on git repository detection (walking up to find `.git`) to build the gitignore rule stack. When the walk root was outside a git repo — or in a subdirectory that the crate couldn't trace back to a `.git` — rules in nested `.gitignore` files were never applied. Added `add_custom_ignore_filename(".gitignore")` to the `WalkBuilder`, which makes the crate read every `.gitignore` it encounters as a standalone ignore source regardless of git repo presence. Five regression tests cover: subdirectory exclusion, scope isolation, negation overrides, deep descendant exclusion, and a direct `ignore`-crate sanity check.
+
+## [4.1.6] - 2026-04-29
+
+### Fixed
+- **`logging/setLevel` returned MethodNotFound on every session start** — the server correctly advertised the `logging` capability in its `initialize` response (required for the `notifications/message` version-warning feature), but had no handler for the `logging/setLevel` request that MCP clients send immediately after. Every session produced a `-32601` error in the client log. The handler now returns an empty success as required by the MCP spec (RFC 5424 log-level filtering is advisory; the server continues to emit notifications at its own discretion).
+- **`java_extraction` panic on empty Javadoc** — parsing a Java file containing a docstring with no content caused a panic (fixes #44).
 
 ## [4.1.5] - 2026-04-29
 

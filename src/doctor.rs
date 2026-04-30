@@ -204,6 +204,32 @@ fn check_network(dc: &mut DoctorCounters) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bytes_boundaries() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 512), "512.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 * 2), "2.0 GB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_kb() {
+        // 2048 bytes = 2.0 KB
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        // 1536 = 1.5 KB
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+}
+
 /// Print final summary.
 fn print_summary(dc: &DoctorCounters) {
     eprintln!();
