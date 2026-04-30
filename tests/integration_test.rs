@@ -32,7 +32,7 @@ fn test_ignore_crate_nested_gitignore_direct() {
             e.path()
                 .strip_prefix(project)
                 .ok()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
         })
         .collect();
 
