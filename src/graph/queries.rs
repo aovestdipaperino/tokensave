@@ -351,15 +351,15 @@ impl<'a> GraphQueryManager<'a> {
                    WHERE e.kind IN ('calls', 'uses', 'extends', 'implements') \
                    AND n1.file_path != n2.file_path";
 
-        let mut rows = self
-            .db
-            .conn()
-            .query(sql, ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file adjacency: {e}"),
-                operation: "build_file_adjacency".to_string(),
-            })?;
+        let mut rows =
+            self.db
+                .conn()
+                .query(sql, ())
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query file adjacency: {e}"),
+                    operation: "build_file_adjacency".to_string(),
+                })?;
 
         // Normalise the prefix once: ensure it ends with '/'.
         let prefix: Option<String> = path_prefix.map(|p| {

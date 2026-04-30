@@ -3606,10 +3606,7 @@ async fn handle_gini(
         .get("metric")
         .and_then(|v| v.as_str())
         .unwrap_or("complexity");
-    let scope = args
-        .get("scope")
-        .and_then(|v| v.as_str())
-        .unwrap_or("file");
+    let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("file");
     let limit = args
         .get("limit")
         .and_then(serde_json::Value::as_u64)
@@ -3657,8 +3654,10 @@ async fn handle_gini(
             per_file.into_iter().collect()
         }
         ("fan_in", "file") => {
-            let node_to_file: HashMap<String, String> =
-                nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+            let node_to_file: HashMap<String, String> = nodes
+                .iter()
+                .map(|n| (n.id.clone(), n.file_path.clone()))
+                .collect();
             let mut per_file: HashMap<String, f64> = HashMap::new();
             // Initialize all files
             for n in &nodes {
@@ -3676,8 +3675,10 @@ async fn handle_gini(
             per_file.into_iter().collect()
         }
         ("fan_out", "file") => {
-            let node_to_file: HashMap<String, String> =
-                nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+            let node_to_file: HashMap<String, String> = nodes
+                .iter()
+                .map(|n| (n.id.clone(), n.file_path.clone()))
+                .collect();
             let mut per_file: HashMap<String, f64> = HashMap::new();
             for n in &nodes {
                 per_file.entry(n.file_path.clone()).or_insert(0.0);
@@ -3876,11 +3877,7 @@ async fn handle_health(
 }
 
 /// Handles `tokensave_dsm` tool calls.
-async fn handle_dsm(
-    cg: &TokenSave,
-    args: Value,
-    scope_prefix: Option<&str>,
-) -> Result<ToolResult> {
+async fn handle_dsm(cg: &TokenSave, args: Value, scope_prefix: Option<&str>) -> Result<ToolResult> {
     let path_prefix = effective_path(&args, scope_prefix);
     let format = args
         .get("format")
@@ -3906,7 +3903,9 @@ async fn handle_dsm(
     // Group files by parent directory
     let mut dir_to_files: HashMap<String, Vec<String>> = HashMap::new();
     for file in adj.keys() {
-        let dir = file.rfind('/').map_or_else(|| ".".to_string(), |i| file[..i].to_string());
+        let dir = file
+            .rfind('/')
+            .map_or_else(|| ".".to_string(), |i| file[..i].to_string());
         dir_to_files.entry(dir).or_default().push(file.clone());
     }
 
@@ -3959,8 +3958,7 @@ async fn handle_dsm(
                     (f.clone(), out + inc)
                 })
                 .collect();
-            file_edge_counts
-                .sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            file_edge_counts.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
             file_edge_counts.truncate(max_files);
 
             let selected: Vec<String> = file_edge_counts.into_iter().map(|(f, _)| f).collect();
@@ -3969,7 +3967,10 @@ async fn handle_dsm(
             // Build short filenames (last component)
             let short_names: Vec<String> = selected
                 .iter()
-                .map(|f| f.rfind('/').map_or_else(|| f.clone(), |i| f[i + 1..].to_string()))
+                .map(|f| {
+                    f.rfind('/')
+                        .map_or_else(|| f.clone(), |i| f[i + 1..].to_string())
+                })
                 .collect();
 
             // Build NxN matrix
@@ -4045,8 +4046,10 @@ async fn handle_test_risk(
     let all_edges = cg.get_all_edges().await?;
 
     // Build a map from node_id to file_path for fast lookup
-    let node_to_file: HashMap<String, String> =
-        all_nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+    let node_to_file: HashMap<String, String> = all_nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.file_path.clone()))
+        .collect();
 
     // Source functions/methods (exclude test files, exclude test-named nodes)
     let source_fns: Vec<_> = all_nodes
@@ -4118,7 +4121,9 @@ async fn handle_test_risk(
         .collect();
 
     // Overlay git churn data: multiply risk by log2(churn + 1) for churned files
-    let churn_map = crate::graph::git::file_churn(cg.project_root(), 90).await.unwrap_or_default();
+    let churn_map = crate::graph::git::file_churn(cg.project_root(), 90)
+        .await
+        .unwrap_or_default();
     for r in &mut risks {
         let churn = churn_map.get(&r.file).copied().unwrap_or(0);
         r.churn = churn;
@@ -4127,7 +4132,11 @@ async fn handle_test_risk(
         }
     }
 
-    risks.sort_by(|a, b| b.risk.partial_cmp(&a.risk).unwrap_or(std::cmp::Ordering::Equal));
+    risks.sort_by(|a, b| {
+        b.risk
+            .partial_cmp(&a.risk)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let top_risk_untested = risks
         .iter()
@@ -4228,7 +4237,9 @@ async fn compute_health_snapshot(
             + f64::from(n.loops) * 2.0
             + f64::from(n.max_nesting) * 3.0
             + f64::from(n.end_line.saturating_sub(n.start_line) + 1);
-        *per_file_complexity.entry(n.file_path.clone()).or_insert(0.0) += c;
+        *per_file_complexity
+            .entry(n.file_path.clone())
+            .or_insert(0.0) += c;
     }
     let complexity_values: Vec<f64> = per_file_complexity.values().copied().collect();
     let gini = gini_coefficient(&complexity_values);
@@ -4312,10 +4323,13 @@ async fn handle_session_start(
         message: format!("failed to create .tokensave dir: {e}"),
     })?;
     let baseline_path = tokensave_dir.join("session_baseline.json");
-    std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default())
-        .map_err(|e| crate::errors::TokenSaveError::Config {
-            message: format!("failed to write session baseline: {e}"),
-        })?;
+    std::fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&baseline).unwrap_or_default(),
+    )
+    .map_err(|e| crate::errors::TokenSaveError::Config {
+        message: format!("failed to write session baseline: {e}"),
+    })?;
 
     let output = json!({
         "status": "baseline_saved",
@@ -4361,11 +4375,10 @@ async fn handle_session_end(
             message: format!("failed to read session baseline: {e}"),
         }
     })?;
-    let baseline: Value = serde_json::from_str(&baseline_raw).map_err(|e| {
-        crate::errors::TokenSaveError::Config {
+    let baseline: Value =
+        serde_json::from_str(&baseline_raw).map_err(|e| crate::errors::TokenSaveError::Config {
             message: format!("failed to parse session baseline: {e}"),
-        }
-    })?;
+        })?;
 
     let signal_before = baseline["quality_signal"].as_u64().unwrap_or(0) as u32;
     let dims_before = &baseline["dimensions"];
@@ -4382,8 +4395,20 @@ async fn handle_session_end(
     let pass = signal_after >= signal_before;
 
     // Compute per-dimension deltas
-    let dim_names = ["acyclicity", "depth", "equality", "redundancy", "modularity"];
-    let after_vals = [snap.acyclicity, snap.depth, snap.equality, snap.redundancy, snap.modularity];
+    let dim_names = [
+        "acyclicity",
+        "depth",
+        "equality",
+        "redundancy",
+        "modularity",
+    ];
+    let after_vals = [
+        snap.acyclicity,
+        snap.depth,
+        snap.equality,
+        snap.redundancy,
+        snap.modularity,
+    ];
 
     let mut dimensions = serde_json::Map::new();
     let mut degraded_dimensions: Vec<String> = vec![];

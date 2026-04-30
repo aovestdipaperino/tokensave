@@ -727,7 +727,9 @@ pub fn helper() -> String {
     )
     .expect("failed to write utils.rs");
 
-    let cg = TokenSave::init(project).await.expect("failed to init TokenSave");
+    let cg = TokenSave::init(project)
+        .await
+        .expect("failed to init TokenSave");
     cg.index_all().await.expect("failed to index project");
     (cg, dir)
 }
@@ -747,7 +749,10 @@ async fn test_build_file_adjacency() {
 
     // Self-edges should be excluded
     for (file, deps) in &adj {
-        assert!(!deps.contains(file), "file {file} should not have a self-edge");
+        assert!(
+            !deps.contains(file),
+            "file {file} should not have a self-edge"
+        );
     }
 }
 
@@ -776,7 +781,10 @@ fn test_gini_perfect_equality() {
 fn test_gini_perfect_inequality() {
     let values = vec![0.0, 0.0, 0.0, 1000.0];
     let g = gini_coefficient(&values);
-    assert!(g > 0.7, "extreme inequality should give Gini > 0.7, got {g}");
+    assert!(
+        g > 0.7,
+        "extreme inequality should give Gini > 0.7, got {g}"
+    );
 }
 
 #[test]
@@ -814,7 +822,9 @@ fn test_gini_label_thresholds() {
 fn make_adj(edges: &[(&str, &str)]) -> HashMap<String, HashSet<String>> {
     let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
     for &(src, tgt) in edges {
-        adj.entry(src.to_string()).or_default().insert(tgt.to_string());
+        adj.entry(src.to_string())
+            .or_default()
+            .insert(tgt.to_string());
         // ensure target node key exists
         adj.entry(tgt.to_string()).or_default();
     }
@@ -833,8 +843,14 @@ fn test_acyclicity_no_cycles() {
 fn test_acyclicity_with_cycle() {
     let adj = make_adj(&[("a", "b"), ("b", "a")]);
     let (score, cycles) = acyclicity_score(&adj);
-    assert!(score < 1.0, "graph with cycle should have score < 1.0, got {score}");
-    assert!(cycles > 0, "graph with cycle should have > 0 cycle edges, got {cycles}");
+    assert!(
+        score < 1.0,
+        "graph with cycle should have score < 1.0, got {score}"
+    );
+    assert!(
+        cycles > 0,
+        "graph with cycle should have > 0 cycle edges, got {cycles}"
+    );
 }
 
 #[test]
@@ -851,13 +867,13 @@ fn test_acyclicity_empty() {
 fn test_depth_linear_chain() {
     let adj = make_adj(&[("a", "b"), ("b", "c"), ("c", "d")]);
     let result = dependency_depth(&adj, 10);
-    assert_eq!(result.max_depth, 3, "linear chain a→b→c→d should have max_depth=3");
+    assert_eq!(
+        result.max_depth, 3,
+        "linear chain a→b→c→d should have max_depth=3"
+    );
     // The deepest chain should contain 4 nodes (a,b,c,d)
     let deepest = result.chains.iter().find(|ch| ch.depth == 3);
-    assert!(
-        deepest.is_some(),
-        "should find a chain with depth 3"
-    );
+    assert!(deepest.is_some(), "should find a chain with depth 3");
     assert_eq!(
         deepest.unwrap().chain.len(),
         4,
@@ -890,9 +906,13 @@ fn test_depth_with_cycle_breaks() {
 fn test_modularity_independent_clusters() {
     // Two disconnected clusters: {a,b} and {c,d}
     let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
-    adj.entry("a".to_string()).or_default().insert("b".to_string());
+    adj.entry("a".to_string())
+        .or_default()
+        .insert("b".to_string());
     adj.entry("b".to_string()).or_default();
-    adj.entry("c".to_string()).or_default().insert("d".to_string());
+    adj.entry("c".to_string())
+        .or_default()
+        .insert("d".to_string());
     adj.entry("d".to_string()).or_default();
 
     let (score, components) = modularity_score(&adj);
@@ -911,8 +931,14 @@ fn test_modularity_single_blob() {
     // Tight cycle: a→b→c→a
     let adj = make_adj(&[("a", "b"), ("b", "c"), ("c", "a")]);
     let (score, components) = modularity_score(&adj);
-    assert_eq!(components, 1, "fully connected cycle should have 1 component");
-    assert!(score < 0.5, "single blob should have low modularity score, got {score}");
+    assert_eq!(
+        components, 1,
+        "fully connected cycle should have 1 component"
+    );
+    assert!(
+        score < 0.5,
+        "single blob should have low modularity score, got {score}"
+    );
 }
 
 #[test]
@@ -1021,8 +1047,14 @@ async fn test_file_churn() {
 
 #[tokio::test]
 async fn test_file_churn_nonexistent_dir() {
-    let churn = file_churn(std::path::Path::new("/nonexistent/path/that/does/not/exist"), 90)
-        .await
-        .expect("file_churn should not error for nonexistent dir");
-    assert!(churn.is_empty(), "should return empty map for nonexistent dir");
+    let churn = file_churn(
+        std::path::Path::new("/nonexistent/path/that/does/not/exist"),
+        90,
+    )
+    .await
+    .expect("file_churn should not error for nonexistent dir");
+    assert!(
+        churn.is_empty(),
+        "should return empty map for nonexistent dir"
+    );
 }

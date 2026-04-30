@@ -274,9 +274,7 @@ pub fn dependency_depth<S1: BuildHasher, S2: BuildHasher>(
         }
     }
 
-    let mut queue: VecDeque<usize> = (0..scc_count)
-        .filter(|&i| in_degree[i] == 0)
-        .collect();
+    let mut queue: VecDeque<usize> = (0..scc_count).filter(|&i| in_degree[i] == 0).collect();
 
     let mut topo_order: Vec<usize> = Vec::new();
     while let Some(node) = queue.pop_front() {
@@ -331,10 +329,7 @@ pub fn dependency_depth<S1: BuildHasher, S2: BuildHasher>(
             chain_sccs.reverse();
 
             // Map SCC indices back to representative file names
-            let chain: Vec<String> = chain_sccs
-                .iter()
-                .map(|&si| sccs[si][0].clone())
-                .collect();
+            let chain: Vec<String> = chain_sccs.iter().map(|&si| sccs[si][0].clone()).collect();
 
             let representative = sccs[scc_idx][0].clone();
             results.push(DepthChain {
@@ -496,8 +491,7 @@ pub struct HealthDimensions {
 /// Formula: `(product of all 5).powf(1.0/5.0) * 10000.0`, rounded.
 /// Zero in any dimension → 0.
 pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
-    let product =
-        dims.acyclicity * dims.depth * dims.equality * dims.redundancy * dims.modularity;
+    let product = dims.acyclicity * dims.depth * dims.equality * dims.redundancy * dims.modularity;
 
     if product <= 0.0 {
         return 0;

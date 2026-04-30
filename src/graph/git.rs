@@ -23,7 +23,9 @@ pub async fn file_churn(project_root: &Path, days: u32) -> Result<HashMap<String
         .await;
 
     // git not found or other OS error → return empty map gracefully
-    let Ok(output) = output else { return Ok(HashMap::new()) };
+    let Ok(output) = output else {
+        return Ok(HashMap::new());
+    };
 
     if !output.status.success() {
         // Not a git repo, or another non-fatal git error

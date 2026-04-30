@@ -2032,10 +2032,7 @@ async fn test_test_risk() {
         "total_functions should be > 0, got: {}",
         text
     );
-    assert!(
-        parsed.get("risks").is_some(),
-        "risks array should exist"
-    );
+    assert!(parsed.get("risks").is_some(), "risks array should exist");
 }
 
 // ---------------------------------------------------------------------------
@@ -2071,7 +2068,10 @@ async fn test_session_end() {
     assert!(output["signal_after"].as_u64().is_some());
     assert!(output["delta"].is_number());
     let baseline_path = dir.path().join(".tokensave/session_baseline.json");
-    assert!(!baseline_path.exists(), "baseline should be removed after session_end");
+    assert!(
+        !baseline_path.exists(),
+        "baseline should be removed after session_end"
+    );
 }
 
 #[tokio::test]
