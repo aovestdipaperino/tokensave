@@ -83,12 +83,7 @@ impl MarkdownExtractor {
                 Self::visit_children(&mut state, root);
             }
             Err(_msg) => {
-                state.edges.push(Edge {
-                    source: state.node_stack[0].1.clone(),
-                    target: state.node_stack[0].1.clone(),
-                    kind: EdgeKind::Contains,
-                    line: Some(0),
-                });
+                // Parse failed; skip extraction rather than creating a self-loop
             }
         }
 
@@ -132,6 +127,7 @@ impl MarkdownExtractor {
             "atx_heading" => {
                 Self::visit_heading(state, node);
             }
+            // TODO: Add support for setext_heading (H1\n===, H2\n---)
             "link" => {
                 Self::visit_link(state, node);
             }
@@ -142,6 +138,9 @@ impl MarkdownExtractor {
     }
 
     fn visit_heading(state: &mut ExtractionState, node: TsNode<'_>) {
+        // TODO: Count '#' characters in marker text instead of parsing
+        // tree-sitter node kind string (atx_h2_marker -> extract "2").
+        // Counting '#' chars is simpler and more robust.
         let marker = node
             .children(&mut node.walk())
             .find(|n| n.kind().starts_with("atx_h") && n.kind().contains("_marker"));
@@ -254,7 +253,7 @@ impl MarkdownExtractor {
             .find(|n| n.kind() == "link_text");
         let link_text = text_node.map_or_else(|| target_path.to_string(), |n| state.node_text(n));
 
-        let target_id = generate_node_id(target_path, &NodeKind::Use, &link_text, 0);
+        let target_id = generate_node_id(target_path, &NodeKind::File, target_path, 0);
 
         if let Some((_, parent_id, _)) = state.node_stack.last() {
             state.edges.push(Edge {
@@ -268,6 +267,9 @@ impl MarkdownExtractor {
 }
 
 fn is_code_extension(ext: &str) -> bool {
+    // Only include actual programming-language source files.
+    // Config (yaml, toml, json), markup (html, css, markdown), and
+    // notebook (ipynb) files are excluded to avoid low-signal edges.
     matches!(
         ext,
         "rs" | "py"
@@ -308,28 +310,13 @@ fn is_code_extension(ext: &str) -> bool {
             | "pm"
             | "t"
             | "nix"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "json"
-            | "xml"
-            | "html"
-            | "htm"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "md"
-            | "markdown"
             | "sql"
-            | "db"
             | "proto"
             | "v"
             | "vhd"
             | "vhdl"
             | "sage"
             | "sagews"
-            | "ipynb"
     )
 }
 
