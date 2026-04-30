@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.8] - 2026-04-30
+
 ### Added
+- **`include` config glob** — new `include` field in `.tokensave/config.json` lets users whitelist hidden (dot-prefixed) paths for indexing. By default, all dot-directories are skipped during sync; paths matching an `include` glob (e.g. `[".github/**"]`) are now walked and indexed. The `exclude` list still applies after inclusion, so `.git/**` and `.tokensave/**` remain filtered even with broad include patterns.
 - **Markdown extraction** — tree-sitter based markdown parser that extracts headers as `Module` nodes with hierarchical `Contains` edges, and code links as `Uses` edges for cross-reference tracking (PR #47)
 
 ## [4.1.7] - 2026-04-29

@@ -26,6 +26,11 @@ pub struct TokenSaveConfig {
     pub root_dir: String,
     /// Glob patterns for files to exclude during indexing.
     pub exclude: Vec<String>,
+    /// Glob patterns for hidden (dot-prefixed) paths to include despite the
+    /// default hidden-directory filter.  For example, `[".github/**"]` indexes
+    /// files under `.github/` that would otherwise be skipped.
+    #[serde(default)]
+    pub include: Vec<String>,
     /// Maximum file size in bytes; files larger than this are skipped.
     pub max_file_size: u64,
     /// Whether to extract doc comments from source files.
@@ -54,6 +59,7 @@ impl Default for TokenSaveConfig {
                 "out/**".to_string(),
                 ".gradle/**".to_string(),
             ],
+            include: Vec::new(),
             max_file_size: 1_048_576,
             extract_docstrings: true,
             track_call_sites: true,
@@ -254,6 +260,28 @@ pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     }
 }
 
+/// Returns `true` if the path matches any of the configured `include` patterns.
+///
+/// This is used to allow hidden (dot-prefixed) directories that would
+/// otherwise be skipped by the file walker.
+pub fn is_included(path: &str, config: &TokenSaveConfig) -> bool {
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+
+    for pattern_str in &config.include {
+        if let Ok(pattern) = Pattern::new(pattern_str) {
+            if pattern.matches_with(path, match_opts) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Returns `true` if the file matches any of the configured exclude patterns.
 pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     let match_opts = glob::MatchOptions {
@@ -276,10 +304,41 @@ pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::is_ignored_by_git;
+    use super::{is_excluded, is_ignored_by_git, is_included, TokenSaveConfig};
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_is_included_matches_glob() {
+        let config = TokenSaveConfig {
+            include: vec![".github/**".to_string()],
+            ..TokenSaveConfig::default()
+        };
+        assert!(is_included(".github/workflows/ci.yml", &config));
+        assert!(is_included(".github/scripts/build.sh", &config));
+        assert!(!is_included(".vscode/settings.json", &config));
+        assert!(!is_included("src/main.rs", &config));
+    }
+
+    #[test]
+    fn test_is_included_empty_matches_nothing() {
+        let config = TokenSaveConfig::default();
+        assert!(!is_included(".github/workflows/ci.yml", &config));
+    }
+
+    #[test]
+    fn test_include_does_not_override_exclude() {
+        let config = TokenSaveConfig {
+            include: vec![".config/**".to_string()],
+            exclude: vec![".config/secret/**".to_string()],
+            ..TokenSaveConfig::default()
+        };
+        // Included by include glob
+        assert!(is_included(".config/secret/key.rs", &config));
+        // But also matched by exclude glob
+        assert!(is_excluded(".config/secret/key.rs", &config));
+    }
 
     #[test]
     fn test_is_in_gitignore_respects_global_excludes_file() {

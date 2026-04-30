@@ -8,7 +8,9 @@ use walkdir::WalkDir;
 
 use crate::branch;
 use crate::branch_meta::{self, BranchMeta};
-use crate::config::{get_tokensave_dir, is_excluded, load_config, save_config, TokenSaveConfig};
+use crate::config::{
+    get_tokensave_dir, is_excluded, is_included, load_config, save_config, TokenSaveConfig,
+};
 use crate::context::ContextBuilder;
 use crate::db::Database;
 use crate::errors::{Result, TokenSaveError};
@@ -1151,9 +1153,14 @@ impl TokenSave {
     }
 
     /// Walk using `walkdir`, skipping hidden directories and `target/`.
+    ///
+    /// Hidden (dot-prefixed) entries that match a configured `include` glob
+    /// are allowed through despite the default filter.
     fn scan_files_walkdir(&self, supported_exts: &[&str]) -> Vec<String> {
         let mut files = Vec::new();
-        for entry in WalkDir::new(&self.project_root)
+        let root = &self.project_root;
+        let config = &self.config;
+        for entry in WalkDir::new(root)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
@@ -1161,7 +1168,15 @@ impl TokenSave {
                     return true;
                 }
                 let name = e.file_name().to_string_lossy();
-                !name.starts_with('.') && name != "target"
+                if name.starts_with('.') || name == "target" {
+                    // Allow if the relative path matches an include glob.
+                    if let Ok(rel) = e.path().strip_prefix(root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        return is_included(&rel_str, config);
+                    }
+                    return false;
+                }
+                true
             })
         {
             let Ok(entry) = entry else { continue };
@@ -1183,11 +1198,16 @@ impl TokenSave {
     /// discovery). `add_custom_ignore_filename(".gitignore")` makes the crate
     /// additionally treat every `.gitignore` it encounters as a standalone
     /// ignore file, ensuring nested rules are applied even outside a git repo.
+    ///
+    /// When `include` globs are configured, the crate's built-in hidden filter
+    /// is disabled and hidden entries are filtered manually so that included
+    /// dot-paths can pass through.
     fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Vec<String> {
+        let has_includes = !self.config.include.is_empty();
         let mut files = Vec::new();
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
-            .hidden(true) // skip hidden files/dirs
+            .hidden(!has_includes) // disable when we need to check includes
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
@@ -1199,6 +1219,23 @@ impl TokenSave {
             let Some(ft) = entry.file_type() else {
                 continue;
             };
+
+            // When we disabled the crate's hidden filter, manually skip hidden
+            // entries that don't match an include glob.
+            if has_includes && entry.depth() > 0 {
+                let name = entry.file_name().to_string_lossy();
+                if name.starts_with('.') {
+                    if let Ok(rel) = entry.path().strip_prefix(&self.project_root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if !is_included(&rel_str, &self.config) {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+            }
+
             if !ft.is_file() {
                 continue;
             }
