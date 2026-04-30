@@ -70,10 +70,12 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **37 MCP Tools** | **31 Languages** | **9 Agent Integrations** |
-| From call graph traversal to dead code detection, test mapping, rename preview, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 22 more. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed. |
+| **48 MCP Tools** | **34 Languages** | **9 Agent Integrations** |
+| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 26 more, including Markdown header extraction. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
 | Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Background daemon syncs the index automatically. Survives reboots. Restarts after upgrades. |
+| **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
+| A native crash in any tree-sitter grammar (abort, segfault, anything) kills only the worker; the pool respawns it and sync continues. Sync never dies on a malformed file. | Composite health score (0-10000), Gini inequality, file-DAG depth, design-structure matrix, risk-weighted test gaps, and session deltas. | Edit files without regex or shell-quoting hazards: unique-anchor `str_replace`, atomic multi-replace, AST-rewrite, anchored insert. Auto re-indexes after writes. |
 
 ---
 
@@ -97,7 +99,7 @@ scoop install tokensave
 **Cargo (any platform):**
 
 ```bash
-cargo install tokensave                          # full (31 languages, default)
+cargo install tokensave                          # full (34 languages, default)
 cargo install tokensave --features medium        # medium (20 languages)
 cargo install tokensave --no-default-features    # lite (11 languages, smallest binary)
 ```
@@ -171,6 +173,16 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 
 ---
 
+## Crash-Resilient Sync
+
+Tree-sitter grammars are compiled C/C++ code. They occasionally hit an internal assertion or otherwise terminate the process by paths that Rust panic handling cannot intercept. As of v4.3.0, every file is parsed inside a short-lived worker subprocess: if a grammar segfaults, calls `abort()`, or hits a stack overflow, only the worker dies. The pool respawns it, the offending file is logged and skipped, and `sync` keeps going.
+
+The worker is a hidden `extract-worker` subcommand authenticated against the parent via a 256-bit per-spawn token, required as both a `TOKENSAVE_WORKER_TOKEN` env var and as the first 32 bytes received on stdin. Direct invocation by users fails. Defaults to `available_parallelism()` workers; opt out with `TOKENSAVE_DISABLE_SUBPROCESS=1`.
+
+Edit primitives (`tokensave_str_replace`, `tokensave_insert_at`, etc.) still run in-process: they target one file at a time where subprocess overhead would dominate, and an extractor crash there is immediately visible to the agent.
+
+---
+
 ## Multi-Branch Indexing (Optional)
 
 tokensave can optionally maintain a separate code graph per git branch. When enabled, switching branches never gives you stale results and never re-indexes files you already parsed on another branch. Multi-branch tracking is opt-in -- without it, tokensave uses a single database for all branches.
@@ -205,9 +217,9 @@ See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full gu
 
 ---
 
-## 37 MCP Tools
+## 48 MCP Tools
 
-Every tool is read-only, safe to call in parallel, and annotated with `readOnlyHint`. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+The discovery and analysis tools are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The four edit primitives (the only writers) are scoped to single files and re-index in place. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Discovery
 
@@ -246,6 +258,38 @@ Every tool is read-only, safe to call in parallel, and annotated with `readOnlyH
 | `tokensave_unused_imports` | Import statements never referenced |
 | `tokensave_doc_coverage` | Public symbols missing documentation |
 | `tokensave_simplify_scan` | Quality analysis of changed files (duplications, dead code, complexity) |
+
+### Code-Health Analytics
+
+Five tools surface structural quality signals from the existing graph. The composite score uses a geometric mean over independent dimensions so no single one can be gamed.
+
+| Tool | Purpose |
+|------|---------|
+| `tokensave_health` | Composite quality signal (0-10000) from acyclicity, depth, equality, redundancy, and modularity |
+| `tokensave_gini` | Gini inequality coefficient for any metric (complexity, lines, fan-in/out, members) -- finds god files and uneven distribution |
+| `tokensave_dependency_depth` | Longest file-level dependency chains (Lakos levelization) with full chain reconstruction after Tarjan SCC cycle-breaking |
+| `tokensave_dsm` | Design Structure Matrix in `stats`, `clusters`, or `matrix` form -- reveals layering violations and hidden coupling |
+| `tokensave_test_risk` | Risk-weighted test-gap analysis combining complexity, fan-in, coverage, and 90-day git churn into a single score |
+
+### Sessions
+
+Snapshot health metrics at the start of an AI coding session, then diff at the end to see what improved or regressed.
+
+| Tool | Purpose |
+|------|---------|
+| `tokensave_session_start` | Save current health metrics as a JSON baseline for later comparison |
+| `tokensave_session_end` | Recompute and diff against the baseline -- per-dimension deltas, pass/fail, automatic cleanup |
+
+### Edit Primitives
+
+Four writer tools that let agents modify files without regex or shell-quoting hazards. Each is single-file, anchored, and triggers an in-place re-index after writing so the graph never goes stale.
+
+| Tool | Purpose |
+|------|---------|
+| `tokensave_str_replace` | Replace a unique `old_str` with `new_str`; fails if 0 or >1 matches (protects against multi-edit bugs) |
+| `tokensave_multi_str_replace` | Apply N `(old, new)` replacements atomically -- all-or-nothing transaction |
+| `tokensave_insert_at` | Insert content before or after a unique anchor string or line number |
+| `tokensave_ast_grep_rewrite` | Structural code rewrite via the `ast-grep` CLI in `--rewrite` mode |
 
 ### Git & Workflow
 
@@ -418,7 +462,7 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 
 | Layer | What it does | Why it matters |
 |-------|-------------|----------------|
-| **MCP server** | Exposes 37 `tokensave_*` tools to Claude | Claude can query the graph directly |
+| **MCP server** | Exposes 48 `tokensave_*` tools to Claude | Claude can query the graph directly |
 | **CLAUDE.md rules** | Tells Claude to prefer tokensave over agents/file reads | Prevents the model from falling back to expensive patterns |
 | **PreToolUse hook** | Native Rust hook blocks Explore agents | Catches cases where the model ignores the CLAUDE.md rules |
 | **UserPromptSubmit hook** | Runs at prompt submission | Lifecycle tracking for token accounting |
@@ -445,9 +489,9 @@ The model pricing refresh fetches a public JSON file from GitHub (`raw.githubuse
 
 ---
 
-## 31 Languages
+## 34 Languages
 
-tokensave supports 31 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it.
+tokensave supports 34 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it. As of v4.1.8, Markdown headers are also extracted (in the full tier) as `Module` nodes with hierarchical `Contains` edges, so document structure participates in graph queries alongside source code.
 
 ### Lite (11 languages) -- `--no-default-features`
 
@@ -482,7 +526,7 @@ Always compiled. The smallest binary for the most popular languages.
 | Nix | `.nix` | `lang-nix` |
 | VB.NET | `.vb` | `lang-vbnet` |
 
-### Full (Medium + 11 = 31 languages) -- default
+### Full (Medium + 14 = 34 languages) -- default
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
@@ -497,6 +541,9 @@ Always compiled. The smallest binary for the most popular languages.
 | GW-BASIC | `.gw` | `lang-gwbasic` |
 | QBasic | `.qb` | `lang-qbasic` |
 | QuickBASIC 4.5 | `.bi`, `.bm` | `lang-qbasic` |
+| Dockerfile | `Dockerfile`, `.dockerfile` | `lang-dockerfile` |
+| GLSL | `.glsl`, `.vert`, `.frag`, `.comp` | `lang-glsl` |
+| Markdown | `.md`, `.markdown` | `lang-markdown` |
 
 Individual languages can also be cherry-picked without a full tier:
 
@@ -516,8 +563,8 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 |---|---|---|
 | **Runtime** | Native binary (Rust) | Node.js 18+ |
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
-| **Languages** | 31 (3 tiers: lite/medium/full) | 19+ |
-| **MCP tools** | 37 | 9 |
+| **Languages** | 34 (3 tiers: lite/medium/full) | 19+ |
+| **MCP tools** | 48 | 9 |
 | **Agent integrations** | 9 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed) | 1 (Claude Code) |
 | **Background daemon** | Yes (launchd/systemd/Windows Service) | No (hook-based sync only) |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
@@ -535,6 +582,9 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Test mapping** | Yes | No |
 | **Rename preview** | Yes | No |
 | **Token tracking** | Per-call metrics, live TUI monitor, session + lifetime counters | No |
+| **Code-health analytics** | Composite score, Gini, dependency depth, DSM, risk-weighted test gaps, session deltas | No |
+| **Edit primitives** | 4 atomic writers (`str_replace`, `multi_str_replace`, `insert_at`, `ast_grep_rewrite`) with auto re-indexing | No |
+| **Crash resilience** | Subprocess-isolated extraction; native grammar aborts skip the file, sync continues | No |
 | **Self-upgrade** | `tokensave upgrade` with stable/beta channels | `npm update` |
 | **DB engine** | libsql (SQLite fork, WAL, async) | better-sqlite3 / wa-sqlite (WASM) |
 | **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
@@ -552,11 +602,11 @@ Several tools reduce token usage for AI coding agents. Here's why tokensave stan
 
 ### Single native binary, zero dependencies
 
-Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 31 tree-sitter grammars bundled. Nothing else to install.
+Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 34 tree-sitter grammars bundled. Nothing else to install.
 
 ### Deepest code intelligence
 
-tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 37 specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
+tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 48 specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
 
 ### Broadest agent support
 
@@ -632,7 +682,7 @@ This project is a Rust port of the original [CodeGraph](https://github.com/colby
 ## Building
 
 ```bash
-cargo build --release                          # full (31 languages, default)
+cargo build --release                          # full (34 languages, default)
 cargo build --release --features medium        # medium (20 languages)
 cargo build --release --no-default-features    # lite (11 languages)
 
