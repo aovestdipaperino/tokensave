@@ -11,8 +11,13 @@ use serde_json::{json, Value};
 
 use crate::context::format_context_as_markdown;
 use crate::errors::{Result, TokenSaveError};
+use crate::graph::health::{
+    acyclicity_score, compute_composite_health, dependency_depth, depth_score, gini_coefficient,
+    gini_label, modularity_score, HealthDimensions,
+};
+use crate::graph::queries::GraphQueryManager;
 use crate::tokensave::TokenSave;
-use crate::types::{BuildContextOptions, NodeKind, Visibility};
+use crate::types::{BuildContextOptions, EdgeKind, NodeKind, Visibility};
 
 use super::{ToolResult, MAX_RESPONSE_CHARS};
 
@@ -122,6 +127,11 @@ pub async fn handle_tool_call(
         "tokensave_multi_str_replace" => handle_multi_str_replace(cg, args).await,
         "tokensave_insert_at" => handle_insert_at(cg, args).await,
         "tokensave_ast_grep_rewrite" => handle_ast_grep_rewrite(cg, args).await,
+        "tokensave_gini" => handle_gini(cg, args, scope_prefix).await,
+        "tokensave_dependency_depth" => handle_dependency_depth(cg, args, scope_prefix).await,
+        "tokensave_health" => handle_health(cg, args, scope_prefix).await,
+        "tokensave_dsm" => handle_dsm(cg, args, scope_prefix).await,
+        "tokensave_test_risk" => handle_test_risk(cg, args, scope_prefix).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -3584,6 +3594,652 @@ async fn handle_ast_grep_rewrite(cg: &TokenSave, args: Value) -> Result<ToolResu
     })
 }
 
+/// Handles `tokensave_gini` tool calls.
+async fn handle_gini(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let metric = args
+        .get("metric")
+        .and_then(|v| v.as_str())
+        .unwrap_or("complexity");
+    let scope = args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("file");
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let all_nodes = cg.get_all_nodes().await?;
+    let all_edges = if metric == "fan_in" || metric == "fan_out" {
+        cg.get_all_edges().await?
+    } else {
+        vec![]
+    };
+
+    // Apply path filter
+    let nodes: Vec<_> = all_nodes
+        .into_iter()
+        .filter(|n| {
+            path_prefix.is_none_or(|pfx| {
+                let with_slash = if pfx.ends_with('/') {
+                    pfx.to_string()
+                } else {
+                    format!("{pfx}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == pfx
+            })
+        })
+        .collect();
+
+    // Build named_values per metric+scope
+    let named_values: Vec<(String, f64)> = match (metric, scope) {
+        ("complexity", "file") => {
+            let mut per_file: HashMap<String, f64> = HashMap::new();
+            for n in &nodes {
+                let c = f64::from(n.branches + n.loops + n.returns + n.max_nesting);
+                *per_file.entry(n.file_path.clone()).or_insert(0.0) += c;
+            }
+            per_file.into_iter().collect()
+        }
+        ("lines", "file") => {
+            let mut per_file: HashMap<String, f64> = HashMap::new();
+            for n in &nodes {
+                let lines = f64::from(n.end_line.saturating_sub(n.start_line) + 1);
+                *per_file.entry(n.file_path.clone()).or_insert(0.0) += lines;
+            }
+            per_file.into_iter().collect()
+        }
+        ("fan_in", "file") => {
+            let node_to_file: HashMap<String, String> =
+                nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+            let mut per_file: HashMap<String, f64> = HashMap::new();
+            // Initialize all files
+            for n in &nodes {
+                per_file.entry(n.file_path.clone()).or_insert(0.0);
+            }
+            for e in &all_edges {
+                if let (Some(src_file), Some(tgt_file)) =
+                    (node_to_file.get(&e.source), node_to_file.get(&e.target))
+                {
+                    if src_file != tgt_file {
+                        *per_file.entry(tgt_file.clone()).or_insert(0.0) += 1.0;
+                    }
+                }
+            }
+            per_file.into_iter().collect()
+        }
+        ("fan_out", "file") => {
+            let node_to_file: HashMap<String, String> =
+                nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+            let mut per_file: HashMap<String, f64> = HashMap::new();
+            for n in &nodes {
+                per_file.entry(n.file_path.clone()).or_insert(0.0);
+            }
+            for e in &all_edges {
+                if let (Some(src_file), Some(tgt_file)) =
+                    (node_to_file.get(&e.source), node_to_file.get(&e.target))
+                {
+                    if src_file != tgt_file {
+                        *per_file.entry(src_file.clone()).or_insert(0.0) += 1.0;
+                    }
+                }
+            }
+            per_file.into_iter().collect()
+        }
+        ("members", _) => {
+            // Count contains-edges from Class/Struct nodes
+            let all_edges_for_members = if all_edges.is_empty() {
+                cg.get_all_edges().await?
+            } else {
+                all_edges
+            };
+            let class_nodes: HashSet<String> = nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Class | NodeKind::Struct))
+                .map(|n| n.id.clone())
+                .collect();
+            let mut per_class: HashMap<String, (String, f64)> = nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Class | NodeKind::Struct))
+                .map(|n| (n.id.clone(), (n.name.clone(), 0.0)))
+                .collect();
+            for e in &all_edges_for_members {
+                if e.kind == EdgeKind::Contains && class_nodes.contains(&e.source) {
+                    if let Some(entry) = per_class.get_mut(&e.source) {
+                        entry.1 += 1.0;
+                    }
+                }
+            }
+            per_class.into_values().collect()
+        }
+        (_, "symbol") => {
+            // Per-function/method complexity
+            nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+                .map(|n| {
+                    let c = f64::from(n.branches + n.loops + n.returns + n.max_nesting);
+                    (format!("{}:{}", n.file_path, n.name), c)
+                })
+                .collect()
+        }
+        _ => {
+            // Default: file-level complexity
+            let mut per_file: HashMap<String, f64> = HashMap::new();
+            for n in &nodes {
+                let c = f64::from(n.branches + n.loops + n.returns + n.max_nesting);
+                *per_file.entry(n.file_path.clone()).or_insert(0.0) += c;
+            }
+            per_file.into_iter().collect()
+        }
+    };
+
+    let values: Vec<f64> = named_values.iter().map(|(_, v)| *v).collect();
+    let gini = gini_coefficient(&values);
+    let interpretation = gini_label(gini);
+
+    // Sort descending, take top limit as outliers with percentiles
+    let total_items = named_values.len();
+    let mut sorted = named_values;
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.truncate(limit);
+
+    let max_val = sorted.first().map_or(0.0, |(_, v)| *v);
+    let outliers: Vec<Value> = sorted
+        .iter()
+        .map(|(name, val)| {
+            let pct = if max_val > 0.0 {
+                (val / max_val * 100.0).round()
+            } else {
+                0.0
+            };
+            json!({
+                "name": name,
+                "value": val,
+                "pct_of_max": pct,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "gini": (gini * 10000.0).round() / 10000.0,
+        "interpretation": interpretation,
+        "total_items": total_items,
+        "metric": metric,
+        "scope": scope,
+        "outliers": outliers,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_dependency_depth` tool calls.
+async fn handle_dependency_depth(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let adj = GraphQueryManager::new(cg.db())
+        .build_file_adjacency(path_prefix)
+        .await?;
+
+    let result = dependency_depth(&adj, limit);
+    let score = depth_score(result.max_depth, result.ideal_depth);
+
+    let chains: Vec<Value> = result
+        .chains
+        .iter()
+        .map(|ch| {
+            json!({
+                "file": ch.file,
+                "depth": ch.depth,
+                "chain": ch.chain,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "max_depth": result.max_depth,
+        "ideal_depth": result.ideal_depth,
+        "depth_score": (score * 10000.0).round() / 10000.0,
+        "chains": chains,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_health` tool calls.
+async fn handle_health(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
+    let details = args
+        .get("details")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let adj = GraphQueryManager::new(cg.db())
+        .build_file_adjacency(path_prefix)
+        .await?;
+
+    let files_analyzed = adj.len();
+
+    // 1. Acyclicity
+    let (acyclicity, _) = acyclicity_score(&adj);
+
+    // 2. Depth
+    let depth_result = dependency_depth(&adj, 1);
+    let depth = depth_score(depth_result.max_depth, depth_result.ideal_depth);
+
+    // 3. Equality: per-file complexity → gini → equality = 1 - gini
+    let all_nodes = cg.get_all_nodes().await?;
+    let nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| {
+            path_prefix.is_none_or(|pfx| {
+                let with_slash = if pfx.ends_with('/') {
+                    pfx.to_string()
+                } else {
+                    format!("{pfx}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == pfx
+            })
+        })
+        .collect();
+
+    let mut per_file_complexity: HashMap<String, f64> = HashMap::new();
+    for n in &nodes {
+        let c = f64::from(n.branches) * 2.0
+            + f64::from(n.loops) * 2.0
+            + f64::from(n.max_nesting) * 3.0
+            + f64::from(n.end_line.saturating_sub(n.start_line) + 1);
+        *per_file_complexity.entry(n.file_path.clone()).or_insert(0.0) += c;
+    }
+    let complexity_values: Vec<f64> = per_file_complexity.values().copied().collect();
+    let gini = gini_coefficient(&complexity_values);
+    let equality = (1.0 - gini).clamp(0.0, 1.0);
+
+    // 4. Redundancy: dead code ratio
+    let dead = cg
+        .find_dead_code(&[NodeKind::Function, NodeKind::Method])
+        .await?;
+    let dead_in_scope = dead.iter().filter(|n| {
+        path_prefix.is_none_or(|pfx| {
+            let with_slash = if pfx.ends_with('/') {
+                pfx.to_string()
+            } else {
+                format!("{pfx}/")
+            };
+            n.file_path.starts_with(&with_slash) || n.file_path == pfx
+        })
+    });
+    let dead_count = dead_in_scope.count();
+    let total_fns = nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .count();
+    let redundancy = if total_fns == 0 {
+        1.0
+    } else {
+        (1.0 - dead_count as f64 / total_fns as f64).clamp(0.0, 1.0)
+    };
+
+    // 5. Modularity
+    let (modularity, _) = modularity_score(&adj);
+
+    let dims = HealthDimensions {
+        acyclicity,
+        depth,
+        equality,
+        redundancy,
+        modularity,
+    };
+    let quality_signal = compute_composite_health(&dims);
+
+    let output = if details {
+        json!({
+            "quality_signal": quality_signal,
+            "files_analyzed": files_analyzed,
+            "dimensions": {
+                "acyclicity": (dims.acyclicity * 10000.0).round() / 10000.0,
+                "depth": (dims.depth * 10000.0).round() / 10000.0,
+                "equality": (dims.equality * 10000.0).round() / 10000.0,
+                "redundancy": (dims.redundancy * 10000.0).round() / 10000.0,
+                "modularity": (dims.modularity * 10000.0).round() / 10000.0,
+            }
+        })
+    } else {
+        json!({
+            "quality_signal": quality_signal,
+            "files_analyzed": files_analyzed,
+        })
+    };
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_dsm` tool calls.
+async fn handle_dsm(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("stats");
+    let max_files = args
+        .get("max_files")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(30, |v| v.min(200) as usize);
+
+    let adj = GraphQueryManager::new(cg.db())
+        .build_file_adjacency(path_prefix)
+        .await?;
+
+    let file_count = adj.len();
+    let edge_count: usize = adj.values().map(std::collections::HashSet::len).sum();
+    let density = if file_count > 1 {
+        edge_count as f64 / (file_count * (file_count - 1)) as f64
+    } else {
+        0.0
+    };
+
+    // Group files by parent directory
+    let mut dir_to_files: HashMap<String, Vec<String>> = HashMap::new();
+    for file in adj.keys() {
+        let dir = file.rfind('/').map_or_else(|| ".".to_string(), |i| file[..i].to_string());
+        dir_to_files.entry(dir).or_default().push(file.clone());
+    }
+
+    let output = match format {
+        "clusters" => {
+            // For each dir, compute internal/outgoing/incoming edges
+            let mut clusters: Vec<Value> = dir_to_files
+                .iter()
+                .map(|(dir, files)| {
+                    let file_set: HashSet<&str> = files.iter().map(String::as_str).collect();
+                    let mut internal = 0usize;
+                    let mut outgoing = 0usize;
+                    let mut incoming = 0usize;
+                    for file in files {
+                        if let Some(targets) = adj.get(file) {
+                            for tgt in targets {
+                                if file_set.contains(tgt.as_str()) {
+                                    internal += 1;
+                                } else {
+                                    outgoing += 1;
+                                }
+                            }
+                        }
+                        // Incoming: edges pointing to this file from outside the cluster
+                        for (src, targets) in &adj {
+                            if !file_set.contains(src.as_str()) && targets.contains(file) {
+                                incoming += 1;
+                            }
+                        }
+                    }
+                    json!({
+                        "directory": dir,
+                        "file_count": files.len(),
+                        "internal_edges": internal,
+                        "outgoing_edges": outgoing,
+                        "incoming_edges": incoming,
+                    })
+                })
+                .collect();
+            clusters.sort_by_key(|c| std::cmp::Reverse(c["file_count"].as_u64().unwrap_or(0)));
+            json!({ "clusters": clusters })
+        }
+        "matrix" => {
+            // Select top max_files by total edge count
+            let mut file_edge_counts: Vec<(String, usize)> = adj
+                .iter()
+                .map(|(f, targets)| {
+                    let out = targets.len();
+                    let inc = adj.values().filter(|t| t.contains(f)).count();
+                    (f.clone(), out + inc)
+                })
+                .collect();
+            file_edge_counts
+                .sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            file_edge_counts.truncate(max_files);
+
+            let selected: Vec<String> = file_edge_counts.into_iter().map(|(f, _)| f).collect();
+            let _selected_set: HashSet<&str> = selected.iter().map(String::as_str).collect();
+
+            // Build short filenames (last component)
+            let short_names: Vec<String> = selected
+                .iter()
+                .map(|f| f.rfind('/').map_or_else(|| f.clone(), |i| f[i + 1..].to_string()))
+                .collect();
+
+            // Build NxN matrix
+            let n = selected.len();
+            let mut matrix: Vec<Vec<u8>> = vec![vec![0u8; n]; n];
+            for (i, src) in selected.iter().enumerate() {
+                if let Some(targets) = adj.get(src) {
+                    for (j, tgt) in selected.iter().enumerate() {
+                        if i != j && targets.contains(tgt) {
+                            matrix[i][j] = 1;
+                        }
+                    }
+                }
+            }
+
+            json!({
+                "files": short_names,
+                "matrix": matrix,
+                "note": format!("Top {} files by edge count shown", n),
+            })
+        }
+        _ => {
+            // stats (default)
+            let largest_cluster = dir_to_files.values().map(Vec::len).max().unwrap_or(0);
+            json!({
+                "files": file_count,
+                "edges": edge_count,
+                "density": (density * 10000.0).round() / 10000.0,
+                "clusters": dir_to_files.len(),
+                "largest_cluster": largest_cluster,
+            })
+        }
+    };
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+struct RiskEntry {
+    id: String,
+    name: String,
+    file: String,
+    line: u32,
+    complexity: u32,
+    fan_in: usize,
+    has_test: bool,
+    risk: f64,
+}
+
+/// Handles `tokensave_test_risk` tool calls.
+async fn handle_test_risk(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.min(200) as usize);
+    let path_prefix = effective_path(&args, scope_prefix);
+    let include_tested = args
+        .get("include_tested")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let all_nodes = cg.get_all_nodes().await?;
+    let all_edges = cg.get_all_edges().await?;
+
+    // Build a map from node_id to file_path for fast lookup
+    let node_to_file: HashMap<String, String> =
+        all_nodes.iter().map(|n| (n.id.clone(), n.file_path.clone())).collect();
+
+    // Source functions/methods (exclude test files, exclude test-named nodes)
+    let source_fns: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| {
+            matches!(n.kind, NodeKind::Function | NodeKind::Method)
+                && !crate::tokensave::is_test_file(&n.file_path)
+                && !n.name.starts_with("test_")
+                && !n.name.starts_with("test")
+                && !n.file_path.contains("/test")
+        })
+        .filter(|n| {
+            path_prefix.is_none_or(|pfx| {
+                let with_slash = if pfx.ends_with('/') {
+                    pfx.to_string()
+                } else {
+                    format!("{pfx}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == pfx
+            })
+        })
+        .collect();
+
+    // Count fan_in (calls edges targeting each node)
+    let mut fan_in: HashMap<String, usize> = HashMap::new();
+    for e in &all_edges {
+        if e.kind == EdgeKind::Calls {
+            *fan_in.entry(e.target.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Determine which nodes are tested: called by nodes in test files
+    let mut tested: HashSet<String> = HashSet::new();
+    for e in &all_edges {
+        if e.kind == EdgeKind::Calls {
+            if let Some(caller_file) = node_to_file.get(&e.source) {
+                if crate::tokensave::is_test_file(caller_file) {
+                    tested.insert(e.target.clone());
+                }
+            }
+        }
+    }
+
+    let total_functions = source_fns.len();
+    let tested_count = source_fns.iter().filter(|n| tested.contains(&n.id)).count();
+
+    // Compute risk scores
+    let mut risks: Vec<RiskEntry> = source_fns
+        .iter()
+        .map(|n| {
+            let complexity = n.branches + n.loops + n.returns + n.max_nesting;
+            let fi = *fan_in.get(&n.id).unwrap_or(&0);
+            let has_test = tested.contains(&n.id);
+            let multiplier = if has_test { 0.1 } else { 1.0 };
+            let risk = (f64::from(complexity) + 1.0) * (fi as f64 + 1.0) * multiplier;
+            RiskEntry {
+                id: n.id.clone(),
+                name: n.name.clone(),
+                file: n.file_path.clone(),
+                line: n.start_line,
+                complexity,
+                fan_in: fi,
+                has_test,
+                risk,
+            }
+        })
+        .filter(|r| include_tested || !r.has_test)
+        .collect();
+
+    risks.sort_by(|a, b| b.risk.partial_cmp(&a.risk).unwrap_or(std::cmp::Ordering::Equal));
+
+    let top_risk_untested = risks
+        .iter()
+        .find(|r| !r.has_test)
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+
+    let coverage_pct = if total_functions == 0 {
+        0.0
+    } else {
+        (tested_count as f64 / total_functions as f64 * 100.0).round()
+    };
+
+    risks.truncate(limit);
+
+    let risk_items: Vec<Value> = risks
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "name": r.name,
+                "file": r.file,
+                "line": r.line,
+                "complexity": r.complexity,
+                "fan_in": r.fan_in,
+                "has_test": r.has_test,
+                "risk": (r.risk * 100.0).round() / 100.0,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "risks": risk_items,
+        "summary": {
+            "total_functions": total_functions,
+            "tested": tested_count,
+            "coverage_pct": coverage_pct,
+            "top_risk_untested": top_risk_untested,
+        }
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -3593,7 +4249,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 41);
+        assert_eq!(tools.len(), 46);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -3637,6 +4293,11 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_multi_str_replace"));
         assert!(tool_names.contains(&"tokensave_insert_at"));
         assert!(tool_names.contains(&"tokensave_ast_grep_rewrite"));
+        assert!(tool_names.contains(&"tokensave_gini"));
+        assert!(tool_names.contains(&"tokensave_dependency_depth"));
+        assert!(tool_names.contains(&"tokensave_health"));
+        assert!(tool_names.contains(&"tokensave_dsm"));
+        assert!(tool_names.contains(&"tokensave_test_risk"));
     }
 
     #[test]

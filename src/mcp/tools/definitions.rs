@@ -121,6 +121,11 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_multi_str_replace(),
         def_insert_at(),
         def_ast_grep_rewrite(),
+        def_gini(),
+        def_dependency_depth(),
+        def_health(),
+        def_dsm(),
+        def_test_risk(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -1060,6 +1065,130 @@ fn def_insert_at() -> ToolDefinition {
         })),
         meta: None,
     }
+}
+
+fn def_gini() -> ToolDefinition {
+    def(
+        "tokensave_gini",
+        "Gini Inequality",
+        "Compute inequality (Gini coefficient) for any metric across files or symbols. Detects god files and uneven complexity distribution.",
+        json!({
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["complexity", "lines", "fan_in", "fan_out", "members"],
+                    "description": "Metric to measure inequality for (default: complexity)"
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["file", "symbol"],
+                    "description": "Aggregate per file or per symbol (default: file)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Number of top outliers to return (default: 10)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_dependency_depth() -> ToolDefinition {
+    def(
+        "tokensave_dependency_depth",
+        "Dependency Depth",
+        "Show the longest file-level dependency chains. Files at the end of long chains are fragile to upstream changes.",
+        json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of chains to return (default: 10)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                }
+            }
+        }),
+    )
+}
+
+fn def_health() -> ToolDefinition {
+    def(
+        "tokensave_health",
+        "Health Score",
+        "Get quality signal (0-10000) with root cause breakdown (acyclicity, depth, equality, redundancy, modularity). Quality signal = geometric mean of 5 dimensions — maximize this ONE number.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "details": {
+                    "type": "boolean",
+                    "description": "If true, include full dimension breakdown (default: false)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_dsm() -> ToolDefinition {
+    def(
+        "tokensave_dsm",
+        "Design Structure Matrix",
+        "Get the Design Structure Matrix: file dependency summary showing clusters, density, and layering violations.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["stats", "clusters", "matrix"],
+                    "description": "Output format (default: stats)"
+                },
+                "max_files": {
+                    "type": "number",
+                    "description": "Maximum files in matrix format (default: 30)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_test_risk() -> ToolDefinition {
+    def(
+        "tokensave_test_risk",
+        "Test Risk",
+        "Find high-risk source symbols with weak or no test coverage. Risk = (complexity + 1) × (fan_in + 1) × untested_multiplier. Answers: where should the next test go?",
+        json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 20)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "include_tested": {
+                    "type": "boolean",
+                    "description": "Include already-tested functions in results (default: false)"
+                }
+            }
+        }),
+    )
 }
 
 fn def_ast_grep_rewrite() -> ToolDefinition {

@@ -1831,3 +1831,209 @@ async fn test_insert_at_ambiguous_anchor() {
         .unwrap()
         .contains("matches 2 lines"));
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_gini
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_gini() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_gini",
+        json!({ "metric": "lines" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("gini").is_some(),
+        "gini field should exist, got: {}",
+        text
+    );
+    assert!(
+        parsed.get("interpretation").is_some(),
+        "interpretation field should exist"
+    );
+}
+
+#[tokio::test]
+async fn test_gini_default_metric() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_gini", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("gini").is_some(),
+        "gini field should exist with default args, got: {}",
+        text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_dependency_depth
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dependency_depth() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dependency_depth",
+        json!({ "limit": 5 }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("max_depth").is_some(),
+        "max_depth field should exist, got: {}",
+        text
+    );
+    assert!(
+        parsed.get("ideal_depth").is_some(),
+        "ideal_depth field should exist"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_health
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_health_summary() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_health", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("quality_signal").is_some(),
+        "quality_signal field should exist, got: {}",
+        text
+    );
+    assert!(
+        parsed.get("files_analyzed").is_some(),
+        "files_analyzed field should exist"
+    );
+}
+
+#[tokio::test]
+async fn test_health_detailed() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_health",
+        json!({ "details": true }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("quality_signal").is_some(),
+        "quality_signal should exist, got: {}",
+        text
+    );
+    let dims = parsed.get("dimensions").expect("dimensions should exist");
+    assert!(dims.get("acyclicity").is_some(), "acyclicity score missing");
+    assert!(dims.get("depth").is_some(), "depth score missing");
+    assert!(dims.get("equality").is_some(), "equality score missing");
+    assert!(dims.get("redundancy").is_some(), "redundancy score missing");
+    assert!(dims.get("modularity").is_some(), "modularity score missing");
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_dsm
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dsm_stats() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dsm",
+        json!({ "format": "stats" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("files").is_some(),
+        "files field should exist, got: {}",
+        text
+    );
+    assert!(
+        parsed.get("density").is_some(),
+        "density field should exist"
+    );
+}
+
+#[tokio::test]
+async fn test_dsm_clusters() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dsm",
+        json!({ "format": "clusters" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed.get("clusters").is_some(),
+        "clusters array should exist, got: {}",
+        text
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_test_risk
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_test_risk() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_test_risk",
+        json!({ "limit": 10 }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    let summary = parsed.get("summary").expect("summary should exist");
+    assert!(
+        summary
+            .get("total_functions")
+            .and_then(|v| v.as_u64())
+            .map_or(false, |v| v > 0),
+        "total_functions should be > 0, got: {}",
+        text
+    );
+    assert!(
+        parsed.get("risks").is_some(),
+        "risks array should exist"
+    );
+}
