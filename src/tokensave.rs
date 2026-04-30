@@ -100,10 +100,7 @@ fn should_use_subprocess() -> bool {
     let Ok(path) = std::env::current_exe() else {
         return false;
     };
-    matches!(
-        path.file_stem().and_then(|s| s.to_str()),
-        Some("tokensave")
-    )
+    matches!(path.file_stem().and_then(|s| s.to_str()), Some("tokensave"))
 }
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
@@ -1350,8 +1347,8 @@ impl TokenSave {
                     message: format!("unsupported file type: {file_path}"),
                 })?;
 
-        let mut result = safe_extract(extractor, file_path, &source)
-            .ok_or_else(|| TokenSaveError::Config {
+        let mut result =
+            safe_extract(extractor, file_path, &source).ok_or_else(|| TokenSaveError::Config {
                 message: format!("extraction panicked for {file_path}"),
             })?;
         result.sanitize();

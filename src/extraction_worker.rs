@@ -65,10 +65,11 @@ struct ExtractData {
     mtime: i64,
 }
 
-fn generate_token() -> [u8; TOKEN_LEN] {
+fn generate_token() -> io::Result<[u8; TOKEN_LEN]> {
     let mut buf = [0u8; TOKEN_LEN];
-    getrandom::getrandom(&mut buf).expect("getrandom failed");
-    buf
+    getrandom::getrandom(&mut buf)
+        .map_err(|e| io::Error::other(format!("getrandom failed: {e}")))?;
+    Ok(buf)
 }
 
 // =============================================================================
@@ -88,12 +89,13 @@ pub fn run_worker() -> ! {
 }
 
 fn worker_main() -> io::Result<()> {
-    let token_hex = std::env::var(TOKEN_ENV_VAR)
-        .map_err(|_| io::Error::other("worker token not set; cannot run extract-worker directly"))?;
+    let token_hex = std::env::var(TOKEN_ENV_VAR).map_err(|_| {
+        io::Error::other("worker token not set; cannot run extract-worker directly")
+    })?;
     // Scrub immediately so a child of a child cannot inherit it.
     std::env::remove_var(TOKEN_ENV_VAR);
-    let expected = hex::decode(token_hex.trim())
-        .map_err(|_| io::Error::other("worker token malformed"))?;
+    let expected =
+        hex::decode(token_hex.trim()).map_err(|_| io::Error::other("worker token malformed"))?;
     if expected.len() != TOKEN_LEN {
         return Err(io::Error::other("worker token wrong length"));
     }
@@ -127,22 +129,33 @@ fn worker_main() -> io::Result<()> {
 fn process_request(registry: &LanguageRegistry, req: &ExtractRequest) -> ExtractResponse {
     let abs_path = req.project_root.join(&req.file_path);
     let Ok(source) = sync::read_source_file(&abs_path) else {
-        return ExtractResponse { file_path: req.file_path.clone(), data: None };
+        return ExtractResponse {
+            file_path: req.file_path.clone(),
+            data: None,
+        };
     };
     let Some(extractor) = registry.extractor_for_file(&req.file_path) else {
-        return ExtractResponse { file_path: req.file_path.clone(), data: None };
+        return ExtractResponse {
+            file_path: req.file_path.clone(),
+            data: None,
+        };
     };
 
     let mut result = extractor.extract(&req.file_path, &source);
     result.sanitize();
     let content_hash = sync::content_hash(&source);
     let size = source.len() as u64;
-    let mtime = sync::file_stat(&abs_path)
-        .map_or_else(crate::tokensave::current_timestamp, |(m, _)| m);
+    let mtime =
+        sync::file_stat(&abs_path).map_or_else(crate::tokensave::current_timestamp, |(m, _)| m);
 
     ExtractResponse {
         file_path: req.file_path.clone(),
-        data: Some(ExtractData { result, content_hash, size, mtime }),
+        data: Some(ExtractData {
+            result,
+            content_hash,
+            size,
+            mtime,
+        }),
     }
 }
 
@@ -183,29 +196,29 @@ impl WorkerPool {
     /// token is generated once per pool.
     pub fn new(num_workers: usize, project_root: PathBuf) -> io::Result<Self> {
         let self_path = std::env::current_exe()?;
-        let token = generate_token();
+        let token = generate_token()?;
         let mut workers = Vec::with_capacity(num_workers);
         for _ in 0..num_workers {
             workers.push(spawn_worker(&self_path, &token)?);
         }
-        Ok(Self { workers, self_path, project_root, token })
+        Ok(Self {
+            workers,
+            self_path,
+            project_root,
+            token,
+        })
     }
 
     /// Process every entry in `files`, calling `on_progress(n, total, path)`
     /// once per file. Returns one tuple per successfully-processed file;
     /// files whose worker crashed or that had no extractor / read error are
     /// silently skipped (logged to stderr).
-    pub fn extract_files<F>(
-        self,
-        files: Vec<String>,
-        on_progress: F,
-    ) -> Vec<ExtractTuple>
+    pub fn extract_files<F>(self, files: Vec<String>, on_progress: F) -> Vec<ExtractTuple>
     where
         F: Fn(usize, usize, &str) + Send + Sync + 'static,
     {
         let total = files.len();
-        let queue: Arc<Mutex<VecDeque<String>>> =
-            Arc::new(Mutex::new(files.into_iter().collect()));
+        let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(files.into_iter().collect()));
         let results: Arc<Mutex<Vec<ExtractTuple>>> =
             Arc::new(Mutex::new(Vec::with_capacity(total)));
         let progress_count = Arc::new(AtomicUsize::new(0));
@@ -243,11 +256,13 @@ impl WorkerPool {
             let _ = h.join();
         }
 
-        // SAFETY: all worker threads have joined, so we hold the only Arc.
-        Arc::try_unwrap(results)
-            .unwrap_or_else(|_| panic!("results arc still has refs"))
-            .into_inner()
-            .unwrap()
+        // All worker threads have joined, so we hold the only Arc strong
+        // reference. `into_inner` returns `Some` in that case; if it ever
+        // returns `None` (concurrent leak), prefer an empty result over a
+        // panic — the sync continues and the user just sees zero changes.
+        Arc::into_inner(results)
+            .and_then(|m| m.into_inner().ok())
+            .unwrap_or_default()
     }
 }
 
@@ -266,7 +281,11 @@ fn worker_thread<F>(
     F: Fn(usize, usize, &str) + Send + Sync,
 {
     loop {
-        let Some(file_path) = queue.lock().unwrap().pop_front() else {
+        let next = queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front();
+        let Some(file_path) = next else {
             break;
         };
 
@@ -282,19 +301,20 @@ fn worker_thread<F>(
         match outcome {
             Ok(resp) => {
                 if let Some(data) = resp.data {
-                    results.lock().unwrap().push((
-                        resp.file_path,
-                        data.result,
-                        data.content_hash,
-                        data.size,
-                        data.mtime,
-                    ));
+                    results
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((
+                            resp.file_path,
+                            data.result,
+                            data.content_hash,
+                            data.size,
+                            data.mtime,
+                        ));
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "[tokensave] extraction worker crashed on {file_path}: {e}, respawning"
-                );
+                eprintln!("[tokensave] extraction worker crashed on {file_path}: {e}, respawning");
                 // Old `worker` is dropped here, reaping the dead child.
                 match spawn_worker(&self_path, &token) {
                     Ok(new_worker) => worker = new_worker,
@@ -330,8 +350,14 @@ fn spawn_worker(self_path: &Path, token: &[u8; TOKEN_LEN]) -> io::Result<WorkerH
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let stdin = child.stdin.take().expect("piped");
-    let stdout = child.stdout.take().expect("piped");
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("stdin unexpectedly None despite Stdio::piped"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("stdout unexpectedly None despite Stdio::piped"))?;
     let mut stdin = BufWriter::new(stdin);
     let stdout = BufReader::new(stdout);
 
@@ -383,6 +409,7 @@ fn slices_eq(a: &[u8], b: &[u8]) -> bool {
 // =============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
