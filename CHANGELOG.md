@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-04-30
+
+### Added
+- **Health & structural analysis tools** — seven new MCP tools that expose quality insights from the existing code graph:
+  - `tokensave_health` — composite quality signal (0–10000) from five independent dimensions: acyclicity, depth, equality, redundancy, and modularity. Uses geometric mean so no single dimension can be gamed. Supports `details: true` for per-dimension breakdown.
+  - `tokensave_gini` — Gini inequality coefficient for any metric (complexity, lines, fan_in, fan_out, members) across files or symbols. Identifies god files and uneven complexity distribution with interpretive labels and ranked outliers.
+  - `tokensave_dependency_depth` — longest file-level dependency chains (Lakos levelization). Shows transitive fragility that direct coupling metrics miss, with full chain reconstruction after cycle-breaking via Tarjan's SCC.
+  - `tokensave_dsm` — Design Structure Matrix in three output formats: `stats` (density, cluster count), `clusters` (per-directory edge analysis), and `matrix` (NxN grid with short filenames). Reveals hidden coupling patterns and layering violations.
+  - `tokensave_test_risk` — risk-weighted test gap analysis combining complexity, fan-in, test coverage, and git churn (90-day window) into a single score. Answers "where should the next test go?" with `include_tested` option for finding weak-test candidates.
+  - `tokensave_session_start` — saves current health metrics as a JSON baseline for later comparison. Call before starting an AI coding session.
+  - `tokensave_session_end` — re-computes health and diffs against the session baseline. Reports per-dimension deltas with improved/degraded/unchanged labels, overall pass/fail, and cleans up the baseline file.
+- **Git churn integration** — new `src/graph/git.rs` module shells out to `git log` at runtime to compute per-file commit frequency. Used by `tokensave_test_risk` as a risk multiplier (log2-scaled) without persisting any data to the tokensave DB.
+- **File-level DAG builder** — new `build_file_adjacency` method on `GraphQueryManager` constructs a directed file dependency graph from the existing edge data in a single SQL query. Shared foundation for health, depth, DSM, and modularity computations.
+
 ## [4.1.8] - 2026-04-30
 
 ### Added

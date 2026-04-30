@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 37 tokensave MCP tools. Run these in a Claude Code session after `tokensave init` and `tokensave install`.
+Manual test queries for verifying all 44 tokensave MCP tools. Run these in a Claude Code session after `tokensave init` and `tokensave install`.
 
 ### Staleness warnings
 
@@ -528,3 +528,159 @@ Test same branch error:
 tokensave_branch_diff(base="main", head="main")
 ```
 Expected: Returns an error: `base and head are the same branch: 'main'`.
+
+---
+
+## tokensave_health
+
+> How healthy is this codebase? Show the quality signal with details.
+
+Test with defaults:
+```
+tokensave_health()
+```
+Expected: Returns `{quality_signal: N, files_analyzed: N}` where `quality_signal` is a composite score from 0 to 10000.
+
+Test with details:
+```
+tokensave_health(details=true)
+```
+Expected: Same response plus a `dimensions` breakdown with five named dimensions — `acyclicity`, `depth`, `equality`, `redundancy`, `modularity` — each with a score (0.0–1.0) and supporting metrics explaining the rating.
+
+Test with path filter:
+```
+tokensave_health(path="src/mcp", details=true)
+```
+Expected: Same structure but scoped to files under `src/mcp/` only.
+
+---
+
+## tokensave_gini
+
+> How evenly is complexity distributed across files? Are there any god files?
+
+Test default:
+```
+tokensave_gini()
+```
+Expected: Returns `{gini: 0.XX, interpretation: "...", total_items: N, metric: "complexity", scope: "file", outliers: [...]}`. A Gini coefficient close to 1.0 indicates high inequality (a few files dominate).
+
+Test alternative metrics:
+```
+tokensave_gini(metric="lines")
+tokensave_gini(metric="fan_in")
+```
+Expected: Same structure ranked by lines or fan-in instead of complexity.
+
+Test per-symbol scope:
+```
+tokensave_gini(metric="complexity", scope="symbol")
+```
+Expected: Same structure but computes inequality across individual symbols rather than files.
+
+Test members:
+```
+tokensave_gini(metric="members")
+```
+Expected: Scope is forced to `symbol`; counts methods and fields per class/struct to surface god-class candidates.
+
+---
+
+## tokensave_dependency_depth
+
+> What are the longest dependency chains in the codebase?
+
+Test with limit:
+```
+tokensave_dependency_depth(limit=5)
+```
+Expected: Returns `{max_depth: N, ideal_depth: N, depth_score: 0.XX, chains: [{file, depth, chain: [...]}]}` showing the five deepest transitive import chains.
+
+Test with path filter:
+```
+tokensave_dependency_depth(path="src/mcp")
+```
+Expected: Same structure but only considers files under `src/mcp/` as roots.
+
+---
+
+## tokensave_dsm
+
+> Show me the design structure matrix — how do files depend on each other?
+
+Test stats (default):
+```
+tokensave_dsm()
+tokensave_dsm(format="stats")
+```
+Expected: Returns `{files: N, edges: N, density: 0.XXX, clusters: N, largest_cluster: {name, files}}` — a high-level summary of file coupling.
+
+Test clusters:
+```
+tokensave_dsm(format="clusters")
+```
+Expected: Returns `{clusters: [{name, files: [...], internal_edges, outgoing_edges, incoming_edges}]}` — each strongly-connected cluster listed with its coupling metrics.
+
+Test matrix:
+```
+tokensave_dsm(format="matrix", max_files=15)
+```
+Expected: Returns `{files: [...short names...], matrix: [[NxN]], note: "..."}` — a compact NxN adjacency matrix where entry `[i][j]` is non-zero when file `i` depends on file `j`.
+
+---
+
+## tokensave_test_risk
+
+> Where should I write the next test? What's the riskiest untested code?
+
+Test with limit:
+```
+tokensave_test_risk(limit=10)
+```
+Expected: Returns `{risks: [{symbol, file, line, complexity, fan_in, has_test, risk_score, churn}], summary: {total_functions, tested, coverage_pct, top_risk_untested}}`. Results are sorted by `risk_score` descending; untested symbols appear first by default.
+
+Test with path filter:
+```
+tokensave_test_risk(path="src/mcp", limit=5)
+```
+Expected: Same structure but scoped to functions under `src/mcp/`.
+
+Test include tested:
+```
+tokensave_test_risk(include_tested=true, limit=5)
+```
+Expected: Also returns already-tested symbols ranked by risk score — useful for identifying weak-test candidates (high-risk code that has a test but may need more coverage).
+
+---
+
+## tokensave_session_start
+
+> Save a health baseline before I start working.
+
+Test:
+```
+tokensave_session_start()
+```
+Expected: Returns `{status: "baseline_saved", quality_signal: N, files_analyzed: N}`. Also writes `.tokensave/session_baseline.json` in the project root with the full health snapshot for later comparison.
+
+---
+
+## tokensave_session_end
+
+> Compare current health against the baseline — did my changes degrade the codebase?
+
+Test after a prior `tokensave_session_start`:
+```
+tokensave_session_end()
+```
+Expected: Returns `{pass: true/false, signal_before: N, signal_after: N, delta: N, files_analyzed: N, degraded_dimensions: [...], dimensions: {per_dim with before/after/delta/direction}}`. The baseline file is removed after `session_end` completes.
+
+Test without a baseline:
+```
+tokensave_session_end()
+```
+Expected: Returns `{status: "no_baseline", message: "No session baseline found. Call tokensave_session_start first."}`.
+
+---
+
+> **Note:** All tools except `tokensave_session_start` are read-only and safe to call in parallel. `tokensave_session_start` writes `.tokensave/session_baseline.json` to the project root.

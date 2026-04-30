@@ -408,7 +408,7 @@ tokensave affected src/lib.rs --quiet            # just file paths, no decoratio
 
 ## MCP Tools for AI Agents
 
-When running as an MCP server, tokensave exposes 34 tools that AI agents can call. Here's what they do, grouped by purpose.
+When running as an MCP server, tokensave exposes 41 tools that AI agents can call. Here's what they do, grouped by purpose.
 
 ### Core exploration
 
@@ -445,6 +445,16 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_doc_coverage` | Find public symbols missing documentation. |
 | `tokensave_simplify_scan` | Quality analysis of changed files: duplications, dead code, complexity, coupling. |
 
+### Health & quality signals
+
+| Tool | What it does |
+|------|-------------|
+| `tokensave_health` | Composite quality signal (0–10000) from five dimensions: acyclicity, depth, equality, redundancy, modularity. The single number to track over time. |
+| `tokensave_gini` | Gini inequality coefficient for any metric (complexity, lines, fan-in, fan-out, members). Finds god files and uneven distributions. |
+| `tokensave_dependency_depth` | Longest file-level dependency chains — the critical paths where upstream changes ripple through the most layers. |
+| `tokensave_dsm` | Design Structure Matrix showing file dependencies as clusters, density stats, or an NxN grid. Reveals hidden coupling patterns. |
+| `tokensave_test_risk` | Risk-weighted test gaps combining complexity, coupling, git churn, and test coverage. Answers "where should the next test go?" |
+
 ### Structural analysis
 
 | Tool | What it does |
@@ -474,7 +484,14 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_port_status` | Compare symbols between source/target directories to track cross-language porting progress. |
 | `tokensave_port_order` | Topological sort of symbols for porting — tells you what to port first based on dependencies. |
 
-All tools are read-only and safe to call in parallel.
+### Session management
+
+| Tool | What it does |
+|------|-------------|
+| `tokensave_session_start` | Save current health metrics as a baseline before starting work. |
+| `tokensave_session_end` | Compare current health against the baseline to detect structural degradation during the session. |
+
+All tools are read-only and safe to call in parallel, except `tokensave_session_start` which writes a baseline file.
 
 ---
 
