@@ -411,8 +411,7 @@ impl McpServer {
                 self.handle_resources_read(id, request.params.as_ref())
                     .await,
             ),
-            "ping" => Some(JsonRpcResponse::success(id, json!({}))),
-            "logging/setLevel" => Some(JsonRpcResponse::success(id, json!({}))),
+            "ping" | "logging/setLevel" => Some(JsonRpcResponse::success(id, json!({}))),
             _ => Some(JsonRpcResponse::error(
                 id,
                 ErrorCode::MethodNotFound,

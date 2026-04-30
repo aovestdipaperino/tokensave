@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use tempfile::TempDir;
 use tokensave::db::Database;
@@ -747,4 +748,217 @@ async fn test_build_file_adjacency() {
     for (file, deps) in &adj {
         assert!(!deps.contains(file), "file {file} should not have a self-edge");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Health algorithm tests
+// ---------------------------------------------------------------------------
+
+use tokensave::graph::health::{
+    acyclicity_score, compute_composite_health, dependency_depth, depth_score, gini_coefficient,
+    gini_label, modularity_score, HealthDimensions,
+};
+
+// --- Gini coefficient ---
+
+#[test]
+fn test_gini_perfect_equality() {
+    let values = vec![5.0, 5.0, 5.0, 5.0];
+    let g = gini_coefficient(&values);
+    assert!(
+        g.abs() < 1e-9,
+        "all-equal values should give Gini ~0.0, got {g}"
+    );
+}
+
+#[test]
+fn test_gini_perfect_inequality() {
+    let values = vec![0.0, 0.0, 0.0, 1000.0];
+    let g = gini_coefficient(&values);
+    assert!(g > 0.7, "extreme inequality should give Gini > 0.7, got {g}");
+}
+
+#[test]
+fn test_gini_moderate() {
+    let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let g = gini_coefficient(&values);
+    assert!(
+        (0.1..0.5).contains(&g),
+        "moderate distribution should give Gini between 0.1 and 0.5, got {g}"
+    );
+}
+
+#[test]
+fn test_gini_empty() {
+    let g = gini_coefficient(&[]);
+    assert_eq!(g, 0.0, "empty slice should give Gini 0.0");
+}
+
+#[test]
+fn test_gini_single() {
+    let g = gini_coefficient(&[42.0]);
+    assert_eq!(g, 0.0, "single-element slice should give Gini 0.0");
+}
+
+#[test]
+fn test_gini_label_thresholds() {
+    assert_eq!(gini_label(0.10), "low inequality (healthy)");
+    assert_eq!(gini_label(0.30), "moderate inequality");
+    assert_eq!(gini_label(0.50), "high inequality");
+    assert_eq!(gini_label(0.70), "extreme inequality (god files likely)");
+}
+
+// --- Acyclicity score ---
+
+fn make_adj(edges: &[(&str, &str)]) -> HashMap<String, HashSet<String>> {
+    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+    for &(src, tgt) in edges {
+        adj.entry(src.to_string()).or_default().insert(tgt.to_string());
+        // ensure target node key exists
+        adj.entry(tgt.to_string()).or_default();
+    }
+    adj
+}
+
+#[test]
+fn test_acyclicity_no_cycles() {
+    let adj = make_adj(&[("a", "b"), ("b", "c")]);
+    let (score, cycles) = acyclicity_score(&adj);
+    assert_eq!(score, 1.0, "DAG should have acyclicity score 1.0");
+    assert_eq!(cycles, 0, "DAG should have 0 cycle edges");
+}
+
+#[test]
+fn test_acyclicity_with_cycle() {
+    let adj = make_adj(&[("a", "b"), ("b", "a")]);
+    let (score, cycles) = acyclicity_score(&adj);
+    assert!(score < 1.0, "graph with cycle should have score < 1.0, got {score}");
+    assert!(cycles > 0, "graph with cycle should have > 0 cycle edges, got {cycles}");
+}
+
+#[test]
+fn test_acyclicity_empty() {
+    let adj: HashMap<String, HashSet<String>> = HashMap::new();
+    let (score, cycles) = acyclicity_score(&adj);
+    assert_eq!(score, 1.0, "empty graph should have acyclicity score 1.0");
+    assert_eq!(cycles, 0);
+}
+
+// --- Dependency depth ---
+
+#[test]
+fn test_depth_linear_chain() {
+    let adj = make_adj(&[("a", "b"), ("b", "c"), ("c", "d")]);
+    let result = dependency_depth(&adj, 10);
+    assert_eq!(result.max_depth, 3, "linear chain a→b→c→d should have max_depth=3");
+    // The deepest chain should contain 4 nodes (a,b,c,d)
+    let deepest = result.chains.iter().find(|ch| ch.depth == 3);
+    assert!(
+        deepest.is_some(),
+        "should find a chain with depth 3"
+    );
+    assert_eq!(
+        deepest.unwrap().chain.len(),
+        4,
+        "chain for depth-3 path should have 4 nodes"
+    );
+}
+
+#[test]
+fn test_depth_empty() {
+    let adj: HashMap<String, HashSet<String>> = HashMap::new();
+    let result = dependency_depth(&adj, 10);
+    assert_eq!(result.max_depth, 0, "empty graph should have max_depth=0");
+}
+
+#[test]
+fn test_depth_with_cycle_breaks() {
+    // a→b→a forms a cycle; b→c is an outgoing edge from the SCC
+    let adj = make_adj(&[("a", "b"), ("b", "a"), ("b", "c")]);
+    let result = dependency_depth(&adj, 10);
+    assert!(
+        result.max_depth >= 1,
+        "should find depth >= 1 even when cycle is present, got {}",
+        result.max_depth
+    );
+}
+
+// --- Modularity score ---
+
+#[test]
+fn test_modularity_independent_clusters() {
+    // Two disconnected clusters: {a,b} and {c,d}
+    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+    adj.entry("a".to_string()).or_default().insert("b".to_string());
+    adj.entry("b".to_string()).or_default();
+    adj.entry("c".to_string()).or_default().insert("d".to_string());
+    adj.entry("d".to_string()).or_default();
+
+    let (score, components) = modularity_score(&adj);
+    assert!(
+        components >= 2,
+        "two disconnected clusters should give >= 2 components, got {components}"
+    );
+    assert!(
+        score > 0.0,
+        "two-cluster graph should have modularity > 0, got {score}"
+    );
+}
+
+#[test]
+fn test_modularity_single_blob() {
+    // Tight cycle: a→b→c→a
+    let adj = make_adj(&[("a", "b"), ("b", "c"), ("c", "a")]);
+    let (score, components) = modularity_score(&adj);
+    assert_eq!(components, 1, "fully connected cycle should have 1 component");
+    assert!(score < 0.5, "single blob should have low modularity score, got {score}");
+}
+
+#[test]
+fn test_modularity_empty() {
+    let adj: HashMap<String, HashSet<String>> = HashMap::new();
+    let (score, _components) = modularity_score(&adj);
+    assert_eq!(score, 1.0, "empty graph should have modularity score 1.0");
+}
+
+// --- Composite health score ---
+
+#[test]
+fn test_composite_health_all_perfect() {
+    let dims = HealthDimensions {
+        acyclicity: 1.0,
+        depth: 1.0,
+        equality: 1.0,
+        redundancy: 1.0,
+        modularity: 1.0,
+    };
+    assert_eq!(compute_composite_health(&dims), 10000);
+}
+
+#[test]
+fn test_composite_health_one_zero() {
+    let dims = HealthDimensions {
+        acyclicity: 0.0,
+        depth: 1.0,
+        equality: 1.0,
+        redundancy: 1.0,
+        modularity: 1.0,
+    };
+    assert_eq!(compute_composite_health(&dims), 0);
+}
+
+#[test]
+fn test_composite_health_mixed() {
+    let dims = HealthDimensions {
+        acyclicity: 0.8,
+        depth: 0.7,
+        equality: 0.9,
+        redundancy: 0.6,
+        modularity: 0.5,
+    };
+    let score = compute_composite_health(&dims);
+    assert!(
+        score > 0 && score < 10000,
+        "mixed health should give score between 0 and 10000, got {score}"
+    );
 }
