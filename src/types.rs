@@ -487,6 +487,8 @@ pub struct GraphStats {
     pub last_sync_at: u64,
     /// Timestamp of the most recent full (re)index (0 if never indexed).
     pub last_full_sync_at: u64,
+    /// Duration in milliseconds of the most recent sync (0 if unknown).
+    pub last_sync_duration_ms: u64,
 }
 
 /// Options for building an LLM context from the graph.

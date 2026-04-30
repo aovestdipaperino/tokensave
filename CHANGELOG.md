@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Sync duration is now tracked and displayed** — `GraphStats` gains a `last_sync_duration_ms` field persisted to the metadata store. All three sync paths (full index, `sync_single_files`, `sync_with_progress_verbose`) write this value. The status table's sync row now shows the duration inline: `Last sync 2m ago (1.2s)  Full sync 1d ago`. Duration is omitted when the value is unknown (existing databases before this change).
+
 ## [4.3.0] - 2026-04-30
 
 ### Added

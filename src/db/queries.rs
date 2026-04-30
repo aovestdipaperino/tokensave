@@ -1963,6 +1963,11 @@ impl Database {
             .await?
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
+        let last_sync_duration_ms = self
+            .get_metadata("last_sync_duration_ms")
+            .await?
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
 
         Ok(GraphStats {
             node_count,
@@ -1976,6 +1981,7 @@ impl Database {
             files_by_language,
             last_sync_at,
             last_full_sync_at,
+            last_sync_duration_ms,
         })
     }
 

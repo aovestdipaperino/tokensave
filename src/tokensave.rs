@@ -746,15 +746,19 @@ impl TokenSave {
             phase_start.elapsed().as_secs_f64()
         ));
 
+        let duration_ms = start.elapsed().as_millis() as u64;
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
         self.db.set_metadata("last_sync_at", &now_str).await?;
+        self.db
+            .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
+            .await?;
 
         let result = IndexResult {
             file_count: files.len(),
             node_count: total_nodes,
             edge_count: total_edges,
-            duration_ms: start.elapsed().as_millis() as u64,
+            duration_ms,
         };
         debug_assert!(
             result.node_count >= result.file_count || result.file_count == 0,
@@ -828,6 +832,7 @@ impl TokenSave {
     async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
         use crate::sync as sync_mod;
 
+        let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
 
@@ -888,6 +893,12 @@ impl TokenSave {
 
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
+            .await?;
+        self.db
+            .set_metadata(
+                "last_sync_duration_ms",
+                &start.elapsed().as_millis().to_string(),
+            )
             .await?;
 
         clear_dirty_sentinel(&self.project_root);
@@ -1134,8 +1145,12 @@ impl TokenSave {
             ));
         }
 
+        let duration_ms = start.elapsed().as_millis() as u64;
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
+            .await?;
+        self.db
+            .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
             .await?;
 
         clear_dirty_sentinel(&self.project_root);
@@ -1143,7 +1158,7 @@ impl TokenSave {
             files_added: new_files.len(),
             files_modified: stale.len(),
             files_removed: removed.len(),
-            duration_ms: start.elapsed().as_millis() as u64,
+            duration_ms,
             added_paths: new_files,
             modified_paths: stale,
             skipped_paths: skipped,

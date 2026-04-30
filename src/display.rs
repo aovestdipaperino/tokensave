@@ -125,7 +125,7 @@ pub fn print_status_header(
     if let Some(ci) = cost_info {
         print_cost_row(ci, inner_width);
     }
-    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
+    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, stats.last_sync_duration_ms, inner_width);
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
     }
@@ -167,7 +167,7 @@ pub fn print_status_table(
     if let Some(ci) = cost_info {
         print_cost_row(ci, inner_width);
     }
-    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
+    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, stats.last_sync_duration_ms, inner_width);
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
     }
@@ -296,13 +296,26 @@ fn print_tokens_row(
     println!("│ {}\x1b[32m{}\x1b[0m │", " ".repeat(pad), tokens_text);
 }
 
+fn format_duration_ms(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
 /// Print the third title row: last sync and full sync timestamps, right-aligned in dim.
-fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, inner_width: usize) {
-    let sync_text = format!(
-        "Last sync {}  Full sync {}",
-        format_relative_time(last_sync_at),
-        format_relative_time(last_full_sync_at),
-    );
+fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, last_sync_duration_ms: u64, inner_width: usize) {
+    let duration = format_duration_ms(last_sync_duration_ms);
+    let sync_part = if duration.is_empty() {
+        format!("Last sync {}", format_relative_time(last_sync_at))
+    } else {
+        format!("Last sync {} ({})", format_relative_time(last_sync_at), duration)
+    };
+    let sync_text = format!("{}  Full sync {}", sync_part, format_relative_time(last_full_sync_at));
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(sync_text.len());
     println!("│ {}\x1b[2m{}\x1b[0m │", " ".repeat(pad), sync_text);
