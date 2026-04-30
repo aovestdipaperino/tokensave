@@ -1023,7 +1023,14 @@ async fn test_logging_set_level_returns_success() {
 #[tokio::test]
 async fn test_logging_set_level_all_levels() {
     let levels = [
-        "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency",
+        "debug",
+        "info",
+        "notice",
+        "warning",
+        "error",
+        "critical",
+        "alert",
+        "emergency",
     ];
     for (idx, level) in levels.iter().enumerate() {
         let id = json!(600 + idx as u64);
@@ -1056,11 +1063,7 @@ async fn test_logging_set_level_does_not_break_session() {
     let responses = run_server_with_messages(
         server,
         vec![
-            jsonrpc_request(
-                json!(700),
-                "logging/setLevel",
-                json!({"level": "warning"}),
-            ),
+            jsonrpc_request(json!(700), "logging/setLevel", json!({"level": "warning"})),
             jsonrpc_request(json!(701), "ping", json!({})),
         ],
     )

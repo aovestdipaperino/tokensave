@@ -357,10 +357,21 @@ fn extraction_result_sanitize_no_empty_names() {
     result.sanitize();
 
     assert_eq!(result.nodes.len(), 1, "empty-name node should be removed");
-    assert_eq!(result.edges.len(), 1, "edge referencing bad node should be removed");
+    assert_eq!(
+        result.edges.len(),
+        1,
+        "edge referencing bad node should be removed"
+    );
     assert_eq!(edge_good_to_good.source, result.edges[0].source);
-    assert!(result.unresolved_refs.is_empty(), "unresolved ref from bad node should be removed");
-    assert_eq!(result.errors.len(), 1, "sanitize should log a stripped-node error");
+    assert!(
+        result.unresolved_refs.is_empty(),
+        "unresolved ref from bad node should be removed"
+    );
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "sanitize should log a stripped-node error"
+    );
 }
 
 #[test]

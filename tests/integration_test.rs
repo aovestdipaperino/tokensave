@@ -36,7 +36,10 @@ fn test_ignore_crate_nested_gitignore_direct() {
         })
         .collect();
 
-    assert!(files.contains(&"src/lib.rs".to_string()), "lib.rs must be found");
+    assert!(
+        files.contains(&"src/lib.rs".to_string()),
+        "lib.rs must be found"
+    );
     assert!(
         !files.iter().any(|f| f.contains("vendor")),
         "nested .gitignore (*) must exclude vendor/gen.rs; got: {files:?}"
@@ -474,7 +477,10 @@ async fn test_nested_gitignore_excludes_files_in_subdir() {
     let cg = setup_gitignore_project(project).await;
     let result = cg.index_all().await.unwrap();
 
-    assert_eq!(result.file_count, 1, "vendor/ should be excluded by nested .gitignore");
+    assert_eq!(
+        result.file_count, 1,
+        "vendor/ should be excluded by nested .gitignore"
+    );
 
     let files = cg.get_all_files().await.unwrap();
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
@@ -494,7 +500,11 @@ async fn test_nested_gitignore_scope_is_limited_to_its_directory() {
 
     fs::create_dir_all(project.join("src/internal")).unwrap();
     fs::write(project.join("src/lib.rs"), "pub fn public_api() {}\n").unwrap();
-    fs::write(project.join("src/internal/secret.rs"), "pub fn secret() {}\n").unwrap();
+    fs::write(
+        project.join("src/internal/secret.rs"),
+        "pub fn secret() {}\n",
+    )
+    .unwrap();
     // The nested .gitignore only covers files within src/internal/.
     fs::write(project.join("src/internal/.gitignore"), "*.rs\n").unwrap();
 
@@ -532,7 +542,11 @@ async fn test_nested_gitignore_negation_overrides_parent_rule() {
     )
     .unwrap();
     // This sibling file stays excluded by the root rule.
-    fs::write(project.join("src/exceptions/ignored.rs"), "pub fn ignored() {}\n").unwrap();
+    fs::write(
+        project.join("src/exceptions/ignored.rs"),
+        "pub fn ignored() {}\n",
+    )
+    .unwrap();
 
     let cg = setup_gitignore_project(project).await;
     cg.index_all().await.unwrap();
@@ -571,7 +585,10 @@ async fn test_nested_gitignore_applies_to_deeper_descendants() {
     let files = cg.get_all_files().await.unwrap();
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     assert!(paths.contains(&"src/lib.rs"), "src/lib.rs must be indexed");
-    assert!(paths.contains(&"src/mid/mid.rs"), "src/mid/mid.rs must be indexed");
+    assert!(
+        paths.contains(&"src/mid/mid.rs"),
+        "src/mid/mid.rs must be indexed"
+    );
     assert!(
         !paths.iter().any(|p| p.contains("deep")),
         "src/mid/deep/leaf.rs must be excluded by mid-level .gitignore"
