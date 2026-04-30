@@ -2037,3 +2037,50 @@ async fn test_test_risk() {
         "risks array should exist"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session start / end tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_session_start() {
+    let (cg, dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_session_start", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(output["quality_signal"].as_u64().is_some());
+    assert_eq!(output["status"].as_str().unwrap(), "baseline_saved");
+    let baseline_path = dir.path().join(".tokensave/session_baseline.json");
+    assert!(baseline_path.exists(), "baseline file should exist");
+}
+
+#[tokio::test]
+async fn test_session_end() {
+    let (cg, dir) = setup_project().await;
+    handle_tool_call(&cg, "tokensave_session_start", json!({}), None, None)
+        .await
+        .unwrap();
+    let result = handle_tool_call(&cg, "tokensave_session_end", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(output["signal_before"].as_u64().is_some());
+    assert!(output["signal_after"].as_u64().is_some());
+    assert!(output["delta"].is_number());
+    let baseline_path = dir.path().join(".tokensave/session_baseline.json");
+    assert!(!baseline_path.exists(), "baseline should be removed after session_end");
+}
+
+#[tokio::test]
+async fn test_session_end_no_baseline() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_session_end", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["status"].as_str().unwrap(), "no_baseline");
+}

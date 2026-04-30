@@ -7,5 +7,8 @@ pub mod queries;
 /// Structural health analysis algorithms.
 pub mod health;
 
+/// Git integration helpers for churn analysis.
+pub mod git;
+
 pub use queries::{GraphQueryManager, NodeMetrics};
 pub use traversal::GraphTraverser;

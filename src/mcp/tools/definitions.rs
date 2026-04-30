@@ -126,6 +126,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_health(),
         def_dsm(),
         def_test_risk(),
+        def_session_start(),
+        def_session_end(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -1219,6 +1221,34 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
         })),
         meta: None,
     }
+}
+
+fn def_session_start() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_session_start".to_string(),
+        description: "Save current health metrics as baseline for later comparison via session_end. Call this before starting work.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Session Start"
+        })),
+        meta: None,
+    }
+}
+
+fn def_session_end() -> ToolDefinition {
+    def(
+        "tokensave_session_end",
+        "Session End",
+        "Re-scan and compare current health against session baseline (saved by session_start). Returns diff showing what improved or degraded.",
+        json!({
+            "type": "object",
+            "properties": {}
+        }),
+    )
 }
 
 #[cfg(test)]

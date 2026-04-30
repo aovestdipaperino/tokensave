@@ -132,6 +132,8 @@ pub async fn handle_tool_call(
         "tokensave_health" => handle_health(cg, args, scope_prefix).await,
         "tokensave_dsm" => handle_dsm(cg, args, scope_prefix).await,
         "tokensave_test_risk" => handle_test_risk(cg, args, scope_prefix).await,
+        "tokensave_session_start" => handle_session_start(cg, args, scope_prefix).await,
+        "tokensave_session_end" => handle_session_end(cg, args, scope_prefix).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -4096,6 +4098,7 @@ struct RiskEntry {
     fan_in: usize,
     has_test: bool,
     risk: f64,
+    churn: usize,
 }
 
 /// Handles `tokensave_test_risk` tool calls.
@@ -4184,10 +4187,21 @@ async fn handle_test_risk(
                 fan_in: fi,
                 has_test,
                 risk,
+                churn: 0,
             }
         })
         .filter(|r| include_tested || !r.has_test)
         .collect();
+
+    // Overlay git churn data: multiply risk by log2(churn + 1) for churned files
+    let churn_map = crate::graph::git::file_churn(cg.project_root(), 90).await.unwrap_or_default();
+    for r in &mut risks {
+        let churn = churn_map.get(&r.file).copied().unwrap_or(0);
+        r.churn = churn;
+        if churn > 0 {
+            r.risk *= (churn as f64 + 1.0).log2();
+        }
+    }
 
     risks.sort_by(|a, b| b.risk.partial_cmp(&a.risk).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -4217,6 +4231,7 @@ async fn handle_test_risk(
                 "fan_in": r.fan_in,
                 "has_test": r.has_test,
                 "risk": (r.risk * 100.0).round() / 100.0,
+                "churn": r.churn,
             })
         })
         .collect();
@@ -4240,6 +4255,255 @@ async fn handle_test_risk(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Shared health computation helper
+// ---------------------------------------------------------------------------
+
+struct HealthSnapshot {
+    quality_signal: u32,
+    files_analyzed: usize,
+    acyclicity: f64,
+    depth: f64,
+    equality: f64,
+    redundancy: f64,
+    modularity: f64,
+}
+
+/// Computes all 5 health dimensions and the composite signal for a given scope.
+async fn compute_health_snapshot(
+    cg: &TokenSave,
+    path_prefix: Option<&str>,
+) -> Result<HealthSnapshot> {
+    let adj = GraphQueryManager::new(cg.db())
+        .build_file_adjacency(path_prefix)
+        .await?;
+    let files_analyzed = adj.len();
+
+    let (acyclicity, _) = acyclicity_score(&adj);
+    let depth_result = dependency_depth(&adj, 1);
+    let depth = depth_score(depth_result.max_depth, depth_result.ideal_depth);
+
+    let all_nodes = cg.get_all_nodes().await?;
+    let nodes: Vec<_> = all_nodes
+        .iter()
+        .filter(|n| {
+            path_prefix.is_none_or(|pfx| {
+                let with_slash = if pfx.ends_with('/') {
+                    pfx.to_string()
+                } else {
+                    format!("{pfx}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == pfx
+            })
+        })
+        .collect();
+
+    let mut per_file_complexity: HashMap<String, f64> = HashMap::new();
+    for n in &nodes {
+        let c = f64::from(n.branches) * 2.0
+            + f64::from(n.loops) * 2.0
+            + f64::from(n.max_nesting) * 3.0
+            + f64::from(n.end_line.saturating_sub(n.start_line) + 1);
+        *per_file_complexity.entry(n.file_path.clone()).or_insert(0.0) += c;
+    }
+    let complexity_values: Vec<f64> = per_file_complexity.values().copied().collect();
+    let gini = gini_coefficient(&complexity_values);
+    let equality = (1.0 - gini).clamp(0.0, 1.0);
+
+    let dead = cg
+        .find_dead_code(&[NodeKind::Function, NodeKind::Method])
+        .await?;
+    let dead_in_scope = dead.iter().filter(|n| {
+        path_prefix.is_none_or(|pfx| {
+            let with_slash = if pfx.ends_with('/') {
+                pfx.to_string()
+            } else {
+                format!("{pfx}/")
+            };
+            n.file_path.starts_with(&with_slash) || n.file_path == pfx
+        })
+    });
+    let dead_count = dead_in_scope.count();
+    let total_fns = nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .count();
+    let redundancy = if total_fns == 0 {
+        1.0
+    } else {
+        (1.0 - dead_count as f64 / total_fns as f64).clamp(0.0, 1.0)
+    };
+
+    let (modularity, _) = modularity_score(&adj);
+
+    let dims = HealthDimensions {
+        acyclicity,
+        depth,
+        equality,
+        redundancy,
+        modularity,
+    };
+    let quality_signal = compute_composite_health(&dims);
+
+    Ok(HealthSnapshot {
+        quality_signal,
+        files_analyzed,
+        acyclicity,
+        depth,
+        equality,
+        redundancy,
+        modularity,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Session start / end handlers
+// ---------------------------------------------------------------------------
+
+/// Handles `tokensave_session_start` tool calls.
+async fn handle_session_start(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
+    let snap = compute_health_snapshot(cg, path_prefix).await?;
+
+    let baseline = json!({
+        "quality_signal": snap.quality_signal,
+        "files_analyzed": snap.files_analyzed,
+        "dimensions": {
+            "acyclicity": snap.acyclicity,
+            "depth": snap.depth,
+            "equality": snap.equality,
+            "redundancy": snap.redundancy,
+            "modularity": snap.modularity,
+        },
+        "timestamp": crate::tokensave::current_timestamp(),
+    });
+
+    // Write baseline to .tokensave/session_baseline.json
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    std::fs::create_dir_all(&tokensave_dir).map_err(|e| crate::errors::TokenSaveError::Config {
+        message: format!("failed to create .tokensave dir: {e}"),
+    })?;
+    let baseline_path = tokensave_dir.join("session_baseline.json");
+    std::fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap_or_default())
+        .map_err(|e| crate::errors::TokenSaveError::Config {
+            message: format!("failed to write session baseline: {e}"),
+        })?;
+
+    let output = json!({
+        "status": "baseline_saved",
+        "quality_signal": snap.quality_signal,
+        "files_analyzed": snap.files_analyzed,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_session_end` tool calls.
+async fn handle_session_end(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let baseline_path = tokensave_dir.join("session_baseline.json");
+
+    // Check if baseline exists
+    if !baseline_path.exists() {
+        let output = json!({
+            "status": "no_baseline",
+            "message": "No session baseline found. Call tokensave_session_start first.",
+        });
+        let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    // Read baseline
+    let baseline_raw = std::fs::read_to_string(&baseline_path).map_err(|e| {
+        crate::errors::TokenSaveError::Config {
+            message: format!("failed to read session baseline: {e}"),
+        }
+    })?;
+    let baseline: Value = serde_json::from_str(&baseline_raw).map_err(|e| {
+        crate::errors::TokenSaveError::Config {
+            message: format!("failed to parse session baseline: {e}"),
+        }
+    })?;
+
+    let signal_before = baseline["quality_signal"].as_u64().unwrap_or(0) as u32;
+    let dims_before = &baseline["dimensions"];
+
+    // Recompute current health
+    let path_prefix = effective_path(&args, scope_prefix);
+    let snap = compute_health_snapshot(cg, path_prefix).await?;
+
+    // Remove the baseline file
+    let _ = std::fs::remove_file(&baseline_path);
+
+    let signal_after = snap.quality_signal;
+    let delta = i64::from(signal_after) - i64::from(signal_before);
+    let pass = signal_after >= signal_before;
+
+    // Compute per-dimension deltas
+    let dim_names = ["acyclicity", "depth", "equality", "redundancy", "modularity"];
+    let after_vals = [snap.acyclicity, snap.depth, snap.equality, snap.redundancy, snap.modularity];
+
+    let mut dimensions = serde_json::Map::new();
+    let mut degraded_dimensions: Vec<String> = vec![];
+
+    for (name, after_val) in dim_names.iter().zip(after_vals.iter()) {
+        let before_val = dims_before[name].as_f64().unwrap_or(0.0);
+        let dim_delta = after_val - before_val;
+        let status = if dim_delta > 0.001 {
+            "improved"
+        } else if dim_delta < -0.001 {
+            degraded_dimensions.push((*name).to_string());
+            "degraded"
+        } else {
+            "unchanged"
+        };
+        dimensions.insert(
+            (*name).to_string(),
+            json!({
+                "before": (before_val * 10000.0).round() / 10000.0,
+                "after": (after_val * 10000.0).round() / 10000.0,
+                "delta": (dim_delta * 10000.0).round() / 10000.0,
+                "status": status,
+            }),
+        );
+    }
+
+    let output = json!({
+        "pass": pass,
+        "signal_before": signal_before,
+        "signal_after": signal_after,
+        "delta": delta,
+        "files_analyzed": snap.files_analyzed,
+        "degraded_dimensions": degraded_dimensions,
+        "dimensions": dimensions,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -4249,7 +4513,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 46);
+        assert_eq!(tools.len(), 48);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -4298,6 +4562,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_health"));
         assert!(tool_names.contains(&"tokensave_dsm"));
         assert!(tool_names.contains(&"tokensave_test_risk"));
+        assert!(tool_names.contains(&"tokensave_session_start"));
+        assert!(tool_names.contains(&"tokensave_session_end"));
     }
 
     #[test]
@@ -4319,6 +4585,7 @@ mod tests {
             "tokensave_multi_str_replace",
             "tokensave_insert_at",
             "tokensave_ast_grep_rewrite",
+            "tokensave_session_start",
         ];
         for tool in &tools {
             let ann = tool
