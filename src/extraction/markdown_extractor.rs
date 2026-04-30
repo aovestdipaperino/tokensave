@@ -101,7 +101,7 @@ impl MarkdownExtractor {
     fn parse_source(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
         parser
-            .set_language(&tree_sitter_markdown_fork::language())
+            .set_language(&tokensave_large_treesitters::markdown::LANGUAGE.into())
             .map_err(|e| format!("failed to load markdown grammar: {e}"))?;
         parser
             .parse(source, None)
@@ -251,7 +251,7 @@ impl MarkdownExtractor {
         let text_node = node
             .children(&mut node.walk())
             .find(|n| n.kind() == "link_text");
-        let link_text = text_node.map_or_else(|| target_path.to_string(), |n| state.node_text(n));
+        let _link_text = text_node.map_or_else(|| target_path.to_string(), |n| state.node_text(n));
 
         let target_id = generate_node_id(target_path, &NodeKind::File, target_path, 0);
 

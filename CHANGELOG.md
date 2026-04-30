@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### Added
 - **Markdown extraction** — tree-sitter based markdown parser that extracts headers as `Module` nodes with hierarchical `Contains` edges, and code links as `Uses` edges for cross-reference tracking (PR #47)
 

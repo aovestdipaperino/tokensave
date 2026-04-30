@@ -68,8 +68,7 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tree-sitter-markdown-fork = "0.7"
-tokensave-large-treesitters = "0.3.1"
+tokensave-large-treesitters = "0.3.2"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
