@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-05-01
+
+### Fixed
+- **`tokensave_str_replace`, `tokensave_multi_str_replace`, and `tokensave_insert_at` silently mutated files for unsupported types (issue #51)** — all three tools write the file to disk and then call `reindex_file` to update the graph. For file types without a registered extractor (e.g. `.css`, `.html`), `reindex_file` returned `Err("unsupported file type: …")`; the `?` propagated that error to the caller, which reported tool failure — but the write had already been committed. The fix changes `reindex_file` to return `Ok(())` early when no extractor is found, so edits to unsupported file types succeed and the graph simply skips reindexing for those files.
+
 ### Changed
 - **Sync duration is now tracked and displayed** — `GraphStats` gains a `last_sync_duration_ms` field persisted to the metadata store. All three sync paths (full index, `sync_single_files`, `sync_with_progress_verbose`) write this value. The status table's sync row now shows the duration inline: `Last sync 2m ago (1.2s)  Full sync 1d ago`. Duration is omitted when the value is unknown (existing databases before this change).
 

@@ -1677,6 +1677,87 @@ async fn test_multi_str_replace_atomic_failure() {
 }
 
 #[tokio::test]
+async fn test_str_replace_unsupported_file_type_succeeds() {
+    // Regression: editing unsupported types (e.g. .css) previously wrote the
+    // file then returned a reindex error, silently mutating the file.
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::write(
+        project.join("style.css"),
+        ".foo {\n\tfont-size: 14px;\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "style.css",
+            "old_str": "\tfont-size: 14px;",
+            "new_str": "\tfont-size: 0.85rem;"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+
+    let content = fs::read_to_string(project.join("style.css")).unwrap();
+    assert!(content.contains("0.85rem"));
+    assert!(!content.contains("14px"));
+}
+
+#[tokio::test]
+async fn test_multi_str_replace_unsupported_file_type_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::write(
+        project.join("style.css"),
+        ".foo {\n\tfont-size: 14px;\n}\n.bar {\n\tfont-size: 16px;\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_multi_str_replace",
+        json!({
+            "path": "style.css",
+            "replacements": [
+                ["\tfont-size: 14px;", "\tfont-size: 0.85rem;"],
+                ["\tfont-size: 16px;", "\tfont-size: 1rem;"]
+            ]
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["applied_count"], 2);
+
+    let content = fs::read_to_string(project.join("style.css")).unwrap();
+    assert!(content.contains("0.85rem"));
+    assert!(content.contains("1rem"));
+    assert!(!content.contains("14px"));
+    assert!(!content.contains("16px"));
+}
+
+#[tokio::test]
 async fn test_insert_at_string_anchor_before() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();

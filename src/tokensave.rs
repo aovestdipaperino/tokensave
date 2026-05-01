@@ -1355,12 +1355,9 @@ impl TokenSave {
             message: format!("failed to read file {file_path}: {e}"),
         })?;
 
-        let extractor =
-            self.registry
-                .extractor_for_file(file_path)
-                .ok_or_else(|| TokenSaveError::Config {
-                    message: format!("unsupported file type: {file_path}"),
-                })?;
+        let Some(extractor) = self.registry.extractor_for_file(file_path) else {
+            return Ok(());
+        };
 
         let mut result =
             safe_extract(extractor, file_path, &source).ok_or_else(|| TokenSaveError::Config {
