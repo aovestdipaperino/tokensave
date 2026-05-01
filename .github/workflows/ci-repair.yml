@@ -1,0 +1,21 @@
+name: CI Repair
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  repair:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger repair routine
+        run: |
+          curl -sf -X POST \
+            https://claude.ai/api/v1/code/triggers/trig_017SggkdvkFohYdSiPseqMBV/run \
+            -H "Authorization: Bearer ${{ secrets.CLAUDE_OAUTH_TOKEN }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "anthropic-beta: ccr-triggers-2026-01-30" \
+            -H "Content-Type: application/json" \
+            -d '{}'
