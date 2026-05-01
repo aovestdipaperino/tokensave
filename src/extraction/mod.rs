@@ -36,6 +36,24 @@ mod ruby_extractor;
 mod vbnet_extractor;
 
 // Full
+#[cfg(feature = "lang-r")]
+mod r_extractor;
+#[cfg(feature = "lang-sql")]
+mod sql_extractor;
+#[cfg(feature = "lang-julia")]
+mod julia_extractor;
+#[cfg(feature = "lang-haskell")]
+mod haskell_extractor;
+#[cfg(feature = "lang-ocaml")]
+mod ocaml_extractor;
+#[cfg(feature = "lang-clojure")]
+mod clojure_extractor;
+#[cfg(feature = "lang-erlang")]
+mod erlang_extractor;
+#[cfg(feature = "lang-elixir")]
+mod elixir_extractor;
+#[cfg(feature = "lang-fsharp")]
+mod fsharp_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
 #[cfg(feature = "lang-cobol")]
@@ -99,6 +117,24 @@ pub use ruby_extractor::RubyExtractor;
 pub use vbnet_extractor::VbNetExtractor;
 
 // Full
+#[cfg(feature = "lang-r")]
+pub use r_extractor::RExtractor;
+#[cfg(feature = "lang-sql")]
+pub use sql_extractor::SqlExtractor;
+#[cfg(feature = "lang-julia")]
+pub use julia_extractor::JuliaExtractor;
+#[cfg(feature = "lang-haskell")]
+pub use haskell_extractor::HaskellExtractor;
+#[cfg(feature = "lang-ocaml")]
+pub use ocaml_extractor::OcamlExtractor;
+#[cfg(feature = "lang-clojure")]
+pub use clojure_extractor::ClojureExtractor;
+#[cfg(feature = "lang-erlang")]
+pub use erlang_extractor::ErlangExtractor;
+#[cfg(feature = "lang-elixir")]
+pub use elixir_extractor::ElixirExtractor;
+#[cfg(feature = "lang-fsharp")]
+pub use fsharp_extractor::FSharpExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
 #[cfg(feature = "lang-cobol")]
@@ -223,6 +259,24 @@ impl LanguageRegistry {
         extractors.push(Box::new(GlslExtractor));
         #[cfg(feature = "lang-markdown")]
         extractors.push(Box::new(MarkdownExtractor));
+        #[cfg(feature = "lang-r")]
+        extractors.push(Box::new(RExtractor));
+        #[cfg(feature = "lang-sql")]
+        extractors.push(Box::new(SqlExtractor));
+        #[cfg(feature = "lang-julia")]
+        extractors.push(Box::new(JuliaExtractor));
+        #[cfg(feature = "lang-haskell")]
+        extractors.push(Box::new(HaskellExtractor));
+        #[cfg(feature = "lang-ocaml")]
+        extractors.push(Box::new(OcamlExtractor));
+        #[cfg(feature = "lang-clojure")]
+        extractors.push(Box::new(ClojureExtractor));
+        #[cfg(feature = "lang-erlang")]
+        extractors.push(Box::new(ErlangExtractor));
+        #[cfg(feature = "lang-elixir")]
+        extractors.push(Box::new(ElixirExtractor));
+        #[cfg(feature = "lang-fsharp")]
+        extractors.push(Box::new(FSharpExtractor));
 
         Self { extractors }
     }
