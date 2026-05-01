@@ -13,9 +13,10 @@ jobs:
       - name: Trigger repair routine
         run: |
           curl -sf -X POST \
-            https://claude.ai/api/v1/code/triggers/trig_017SggkdvkFohYdSiPseqMBV/run \
+            https://api.anthropic.com/v1/code/triggers/trig_017SggkdvkFohYdSiPseqMBV/run \
             -H "Authorization: Bearer ${{ secrets.CLAUDE_OAUTH_TOKEN }}" \
             -H "anthropic-version: 2023-06-01" \
             -H "anthropic-beta: ccr-triggers-2026-01-30" \
+            -H "x-organization-uuid: 19fd9051-5f08-4740-95e8-50f758e4c7b6" \
             -H "Content-Type: application/json" \
             -d '{}'
