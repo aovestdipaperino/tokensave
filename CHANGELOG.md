@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **9 new language extractors — R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#** — closes the gap between tokensave and sentrux for functional and data-science languages. Each extractor handles the language's primary top-level constructs and is gated behind its own `lang-*` feature flag, all included in `full`:
+  - **R** (`.r`, `.R`) — function assignments (`foo <- function(...)`), call sites, roxygen2 docstrings. Requires `tokensave-large-treesitters` ≥ 0.4.0.
+  - **SQL** (`.sql`) — `CREATE TABLE`, `CREATE VIEW`, `CREATE FUNCTION`, `CREATE PROCEDURE` via `tree-sitter-sequel`.
+  - **Julia** (`.jl`) — `function`, `macro`, `struct`, `abstract_definition`, `module` definitions; import/using nodes.
+  - **Haskell** (`.hs`, `.lhs`) — `function`/`bind` declarations, `data_type`/`newtype`, `class`, `instance`, `import` nodes.
+  - **OCaml** (`.ml`, `.mli`) — top-level `let_binding` (function vs const), `type_definition`, `module_definition`, `class_definition`, `open` nodes.
+  - **Clojure** (`.clj`, `.cljs`, `.cljc`) — `defn`/`defmacro`, `ns`, `def`/`defonce`, `defprotocol`/`defrecord`/`deftype` via `list_lit` dispatch on the first symbol.
+  - **Erlang** (`.erl`, `.hrl`) — `fun_decl` with arity-qualified names (`foo/2`), `-module` attribute, `-type`/`-opaque` declarations.
+  - **Elixir** (`.ex`, `.exs`) — `def`/`defp`, `defmodule`, `defmacro`/`defmacrop`, `defstruct` via `call`-node dispatch on the function head.
+  - **F#** (`.fs`, `.fsi`, `.fsx`) — `function_or_value_defn`, `type_definition`, `module_defn`, `namespace`, `open_decl` nodes.
+- **Complexity configs for all 9 new languages** — `R_COMPLEXITY`, `SQL_COMPLEXITY`, `JULIA_COMPLEXITY`, `HASKELL_COMPLEXITY`, `OCAML_COMPLEXITY`, `CLOJURE_COMPLEXITY`, `ERLANG_COMPLEXITY`, `ELIXIR_COMPLEXITY`, `FSHARP_COMPLEXITY` added to `src/extraction/complexity.rs`.
+- **`tokensave-large-treesitters` 0.4.0** — bundles the 9 new tree-sitter grammars: `tree-sitter-r`, `tree-sitter-sequel`, `tree-sitter-julia`, `tree-sitter-haskell`, `tree-sitter-ocaml`, `tree-sitter-clojure-orchard`, `tree-sitter-erlang`, `tree-sitter-elixir`, `tree-sitter-fsharp`.
+
 ## [4.3.1] - 2026-05-01
 
 ### Fixed
