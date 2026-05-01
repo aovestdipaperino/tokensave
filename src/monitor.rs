@@ -612,8 +612,7 @@ fn monitor_loop(
 }
 
 fn is_temp_dir_name(name: &str) -> bool {
-    name.starts_with(".tmp") &&
-    name.len() > 4
+    name.starts_with(".tmp") && name.len() > 4
 }
 
 fn format_number(n: u64) -> String {
