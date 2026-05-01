@@ -72,8 +72,13 @@ impl HaskellExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(file_node);
@@ -129,7 +134,16 @@ impl HaskellExtractor {
         let qualified_name = format!("{}::{}", state.file_path, name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
-        Self::emit(state, id, NodeKind::Function, name, qualified_name, node, sig, None);
+        Self::emit(
+            state,
+            id,
+            NodeKind::Function,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+        );
     }
 
     fn visit_bind(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -142,7 +156,16 @@ impl HaskellExtractor {
         let qualified_name = format!("{}::{}", state.file_path, name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
-        Self::emit(state, id, NodeKind::Function, name, qualified_name, node, sig, None);
+        Self::emit(
+            state,
+            id,
+            NodeKind::Function,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+        );
     }
 
     fn visit_data_type(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -156,7 +179,16 @@ impl HaskellExtractor {
         let qualified_name = format!("{}::{}", state.file_path, name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);
 
-        Self::emit(state, id, NodeKind::Class, name, qualified_name, node, sig, None);
+        Self::emit(
+            state,
+            id,
+            NodeKind::Class,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+        );
     }
 
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -169,7 +201,16 @@ impl HaskellExtractor {
         let qualified_name = format!("{}::{}", state.file_path, name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);
 
-        Self::emit(state, id, NodeKind::Class, name, qualified_name, node, sig, None);
+        Self::emit(
+            state,
+            id,
+            NodeKind::Class,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+        );
     }
 
     fn visit_instance(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -190,7 +231,16 @@ impl HaskellExtractor {
         let qualified_name = format!("{}::instance {}", state.file_path, name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);
 
-        Self::emit(state, id, NodeKind::Class, name, qualified_name, node, Some(sig_text), None);
+        Self::emit(
+            state,
+            id,
+            NodeKind::Class,
+            name,
+            qualified_name,
+            node,
+            Some(sig_text),
+            None,
+        );
     }
 
     fn visit_import(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -222,8 +272,13 @@ impl HaskellExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -301,8 +356,13 @@ impl HaskellExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);

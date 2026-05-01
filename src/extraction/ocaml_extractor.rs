@@ -84,8 +84,13 @@ impl OcamlExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -168,7 +173,11 @@ impl OcamlExtractor {
                 .map(|b| matches!(b.kind(), "fun_expression" | "function_expression"))
                 .unwrap_or(false);
 
-        let kind = if is_fn { NodeKind::Function } else { NodeKind::Const };
+        let kind = if is_fn {
+            NodeKind::Function
+        } else {
+            NodeKind::Const
+        };
         let docstring = Self::extract_docstring(state, node);
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
@@ -251,8 +260,13 @@ impl OcamlExtractor {
                             docstring: None,
                             visibility: Visibility::Pub,
                             is_async: false,
-                            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-                            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+                            branches: 0,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
                             updated_at: state.timestamp,
                         };
                         state.nodes.push(graph_node);
@@ -306,8 +320,13 @@ impl OcamlExtractor {
                             docstring: None,
                             visibility: Visibility::Pub,
                             is_async: false,
-                            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-                            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+                            branches: 0,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
                             updated_at: state.timestamp,
                         };
                         state.nodes.push(graph_node);
@@ -364,8 +383,13 @@ impl OcamlExtractor {
                             docstring: None,
                             visibility: Visibility::Pub,
                             is_async: false,
-                            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-                            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+                            branches: 0,
+                            loops: 0,
+                            returns: 0,
+                            max_nesting: 0,
+                            unsafe_blocks: 0,
+                            unchecked_calls: 0,
+                            assertions: 0,
                             updated_at: state.timestamp,
                         };
                         state.nodes.push(graph_node);
@@ -412,8 +436,13 @@ impl OcamlExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);

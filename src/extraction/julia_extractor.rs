@@ -188,8 +188,19 @@ impl JuliaExtractor {
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
         Self::push_node(
-            state, id, NodeKind::Function, name, qualified_name, node, sig, None,
-            0, 0, 0, 0, 0,
+            state,
+            id,
+            NodeKind::Function,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
         );
     }
 
@@ -206,8 +217,19 @@ impl JuliaExtractor {
 
         state.node_stack.push((name.clone(), id.clone()));
         Self::push_node(
-            state, id, NodeKind::Class, name, qualified_name, node, sig, docstring,
-            0, 0, 0, 0, 0,
+            state,
+            id,
+            NodeKind::Class,
+            name,
+            qualified_name,
+            node,
+            sig,
+            docstring,
+            0,
+            0,
+            0,
+            0,
+            0,
         );
         state.node_stack.pop();
     }
@@ -223,8 +245,19 @@ impl JuliaExtractor {
         let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);
 
         Self::push_node(
-            state, id, NodeKind::Class, name, qualified_name, node, sig, None,
-            0, 0, 0, 0, 0,
+            state,
+            id,
+            NodeKind::Class,
+            name,
+            qualified_name,
+            node,
+            sig,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
         );
     }
 
@@ -238,8 +271,19 @@ impl JuliaExtractor {
         let id = generate_node_id(&state.file_path, &NodeKind::Module, &name, start_line);
 
         Self::push_node(
-            state, id.clone(), NodeKind::Module, name.clone(), qualified_name, node, None, None,
-            0, 0, 0, 0, 0,
+            state,
+            id.clone(),
+            NodeKind::Module,
+            name.clone(),
+            qualified_name,
+            node,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
         );
 
         state.node_stack.push((name, id));
@@ -270,8 +314,13 @@ impl JuliaExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -376,13 +425,7 @@ impl JuliaExtractor {
         // Julia docstrings appear as string literals immediately before the definition.
         let prev = node.prev_named_sibling()?;
         if matches!(prev.kind(), "string_literal" | "string") {
-            return Some(
-                state
-                    .node_text(prev)
-                    .trim_matches('"')
-                    .trim()
-                    .to_string(),
-            );
+            return Some(state.node_text(prev).trim_matches('"').trim().to_string());
         }
         None
     }

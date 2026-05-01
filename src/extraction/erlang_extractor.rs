@@ -72,8 +72,13 @@ impl ErlangExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(file_node);
@@ -132,7 +137,12 @@ impl ErlangExtractor {
         let arity = Self::count_arity(first_clause);
         let full_name = format!("{}/{}", name, arity);
         let qualified_name = format!("{}::{}", state.file_path, full_name);
-        let id = generate_node_id(&state.file_path, &NodeKind::Function, &full_name, start_line);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::Function,
+            &full_name,
+            start_line,
+        );
 
         let graph_node = Node {
             id: id.clone(),
@@ -148,8 +158,13 @@ impl ErlangExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -201,8 +216,13 @@ impl ErlangExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -234,8 +254,13 @@ impl ErlangExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -313,7 +338,10 @@ impl ErlangExtractor {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if matches!(child.kind(), "clause_args" | "argument_list" | "pat_argument_list") {
+                if matches!(
+                    child.kind(),
+                    "clause_args" | "argument_list" | "pat_argument_list"
+                ) {
                     return child.named_child_count();
                 }
                 if !cursor.goto_next_sibling() {
@@ -333,7 +361,10 @@ impl ErlangExtractor {
                 if child.kind() == "atom" {
                     let text = state.node_text(child);
                     // Skip keywords like "module", "type", "spec".
-                    if !matches!(text.as_str(), "module" | "type" | "opaque" | "spec" | "callback") {
+                    if !matches!(
+                        text.as_str(),
+                        "module" | "type" | "opaque" | "spec" | "callback"
+                    ) {
                         return Some(text);
                     }
                 }

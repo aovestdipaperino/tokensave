@@ -1683,11 +1683,7 @@ async fn test_str_replace_unsupported_file_type_succeeds() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::write(
-        project.join("style.css"),
-        ".foo {\n\tfont-size: 14px;\n}\n",
-    )
-    .unwrap();
+    fs::write(project.join("style.css"), ".foo {\n\tfont-size: 14px;\n}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();

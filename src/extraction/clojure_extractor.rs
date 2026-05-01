@@ -83,8 +83,13 @@ impl ClojureExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -167,8 +172,13 @@ impl ClojureExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -193,7 +203,11 @@ impl ClojureExtractor {
             return;
         };
         let docstring = Self::extract_string_child(state, node);
-        let kind = if is_macro { NodeKind::Function } else { NodeKind::Function };
+        let kind = if is_macro {
+            NodeKind::Function
+        } else {
+            NodeKind::Function
+        };
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
@@ -213,8 +227,13 @@ impl ClojureExtractor {
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -256,8 +275,13 @@ impl ClojureExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -295,8 +319,13 @@ impl ClojureExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -330,8 +359,13 @@ impl ClojureExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -402,12 +436,7 @@ impl ClojureExtractor {
     }
 
     /// Collects call sites from the body of a defn, skipping the first `skip` children.
-    fn extract_calls(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        fn_id: &str,
-        skip: usize,
-    ) {
+    fn extract_calls(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str, skip: usize) {
         let child_count = node.child_count();
         let mut i = skip;
         while i < child_count {

@@ -83,8 +83,13 @@ impl ElixirExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         let file_node_id = file_node.id.clone();
@@ -132,7 +137,9 @@ impl ElixirExtractor {
         let head = Self::call_head(state, node);
         match head.as_deref() {
             Some("defmodule") => Self::visit_defmodule(state, node),
-            Some("def") | Some("defp") => Self::visit_def(state, node, head.as_deref() == Some("defp")),
+            Some("def") | Some("defp") => {
+                Self::visit_def(state, node, head.as_deref() == Some("defp"))
+            }
             Some("defmacro") | Some("defmacrop") => Self::visit_defmacro(state, node),
             Some("defstruct") => Self::visit_defstruct(state, node),
             Some("import") | Some("require") | Some("use") | Some("alias") => {
@@ -163,8 +170,13 @@ impl ElixirExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -193,7 +205,11 @@ impl ElixirExtractor {
         let sig = Self::first_line(state, node);
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
-        let visibility = if is_private { Visibility::Private } else { Visibility::Pub };
+        let visibility = if is_private {
+            Visibility::Private
+        } else {
+            Visibility::Pub
+        };
 
         // Extract @doc attribute from preceding attribute call.
         let docstring = Self::extract_doc(state, node);
@@ -212,8 +228,13 @@ impl ElixirExtractor {
             docstring,
             visibility,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -253,8 +274,13 @@ impl ElixirExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -296,8 +322,13 @@ impl ElixirExtractor {
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -332,8 +363,13 @@ impl ElixirExtractor {
             docstring: None,
             visibility: Visibility::Private,
             is_async: false,
-            branches: 0, loops: 0, returns: 0, max_nesting: 0,
-            unsafe_blocks: 0, unchecked_calls: 0, assertions: 0,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
             updated_at: state.timestamp,
         };
         state.nodes.push(graph_node);
@@ -394,8 +430,16 @@ impl ElixirExtractor {
                     // Skip the defmodule/def keyword itself.
                     if !matches!(
                         text.as_str(),
-                        "defmodule" | "def" | "defp" | "defmacro" | "defmacrop"
-                            | "defstruct" | "import" | "require" | "use" | "alias"
+                        "defmodule"
+                            | "def"
+                            | "defp"
+                            | "defmacro"
+                            | "defmacrop"
+                            | "defstruct"
+                            | "import"
+                            | "require"
+                            | "use"
+                            | "alias"
                     ) {
                         return Some(text);
                     }

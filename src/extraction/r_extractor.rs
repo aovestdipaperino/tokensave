@@ -137,8 +137,7 @@ impl RExtractor {
     /// Handles `name <- function(...)` and `name = function(...)` assignments.
     fn visit_assignment(state: &mut ExtractionState, node: TsNode<'_>) {
         // tree-sitter-r binary_operator: child(0)=lhs, child(1)=op, child(2)=rhs
-        let (Some(lhs), Some(op_node), Some(rhs)) =
-            (node.child(0), node.child(1), node.child(2))
+        let (Some(lhs), Some(op_node), Some(rhs)) = (node.child(0), node.child(1), node.child(2))
         else {
             return;
         };

@@ -36,36 +36,30 @@ mod ruby_extractor;
 mod vbnet_extractor;
 
 // Full
-#[cfg(feature = "lang-r")]
-mod r_extractor;
-#[cfg(feature = "lang-sql")]
-mod sql_extractor;
-#[cfg(feature = "lang-julia")]
-mod julia_extractor;
-#[cfg(feature = "lang-haskell")]
-mod haskell_extractor;
-#[cfg(feature = "lang-ocaml")]
-mod ocaml_extractor;
-#[cfg(feature = "lang-clojure")]
-mod clojure_extractor;
-#[cfg(feature = "lang-erlang")]
-mod erlang_extractor;
-#[cfg(feature = "lang-elixir")]
-mod elixir_extractor;
-#[cfg(feature = "lang-fsharp")]
-mod fsharp_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
+#[cfg(feature = "lang-clojure")]
+mod clojure_extractor;
 #[cfg(feature = "lang-cobol")]
 mod cobol_extractor;
 #[cfg(feature = "lang-dockerfile")]
 mod dockerfile_extractor;
+#[cfg(feature = "lang-elixir")]
+mod elixir_extractor;
+#[cfg(feature = "lang-erlang")]
+mod erlang_extractor;
 #[cfg(feature = "lang-fortran")]
 mod fortran_extractor;
+#[cfg(feature = "lang-fsharp")]
+mod fsharp_extractor;
 #[cfg(feature = "lang-glsl")]
 mod glsl_extractor;
 #[cfg(feature = "lang-gwbasic")]
 mod gwbasic_extractor;
+#[cfg(feature = "lang-haskell")]
+mod haskell_extractor;
+#[cfg(feature = "lang-julia")]
+mod julia_extractor;
 #[cfg(feature = "lang-lua")]
 mod lua_extractor;
 #[cfg(feature = "lang-markdown")]
@@ -74,12 +68,18 @@ mod markdown_extractor;
 mod msbasic2_extractor;
 #[cfg(feature = "lang-objc")]
 mod objc_extractor;
+#[cfg(feature = "lang-ocaml")]
+mod ocaml_extractor;
 #[cfg(feature = "lang-perl")]
 mod perl_extractor;
 #[cfg(feature = "lang-qbasic")]
 pub(crate) mod qbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
 mod quickbasic_extractor;
+#[cfg(feature = "lang-r")]
+mod r_extractor;
+#[cfg(feature = "lang-sql")]
+mod sql_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
 
@@ -117,36 +117,30 @@ pub use ruby_extractor::RubyExtractor;
 pub use vbnet_extractor::VbNetExtractor;
 
 // Full
-#[cfg(feature = "lang-r")]
-pub use r_extractor::RExtractor;
-#[cfg(feature = "lang-sql")]
-pub use sql_extractor::SqlExtractor;
-#[cfg(feature = "lang-julia")]
-pub use julia_extractor::JuliaExtractor;
-#[cfg(feature = "lang-haskell")]
-pub use haskell_extractor::HaskellExtractor;
-#[cfg(feature = "lang-ocaml")]
-pub use ocaml_extractor::OcamlExtractor;
-#[cfg(feature = "lang-clojure")]
-pub use clojure_extractor::ClojureExtractor;
-#[cfg(feature = "lang-erlang")]
-pub use erlang_extractor::ErlangExtractor;
-#[cfg(feature = "lang-elixir")]
-pub use elixir_extractor::ElixirExtractor;
-#[cfg(feature = "lang-fsharp")]
-pub use fsharp_extractor::FSharpExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
+#[cfg(feature = "lang-clojure")]
+pub use clojure_extractor::ClojureExtractor;
 #[cfg(feature = "lang-cobol")]
 pub use cobol_extractor::CobolExtractor;
 #[cfg(feature = "lang-dockerfile")]
 pub use dockerfile_extractor::DockerfileExtractor;
+#[cfg(feature = "lang-elixir")]
+pub use elixir_extractor::ElixirExtractor;
+#[cfg(feature = "lang-erlang")]
+pub use erlang_extractor::ErlangExtractor;
 #[cfg(feature = "lang-fortran")]
 pub use fortran_extractor::FortranExtractor;
+#[cfg(feature = "lang-fsharp")]
+pub use fsharp_extractor::FSharpExtractor;
 #[cfg(feature = "lang-glsl")]
 pub use glsl_extractor::GlslExtractor;
 #[cfg(feature = "lang-gwbasic")]
 pub use gwbasic_extractor::GwBasicExtractor;
+#[cfg(feature = "lang-haskell")]
+pub use haskell_extractor::HaskellExtractor;
+#[cfg(feature = "lang-julia")]
+pub use julia_extractor::JuliaExtractor;
 #[cfg(feature = "lang-lua")]
 pub use lua_extractor::LuaExtractor;
 #[cfg(feature = "lang-markdown")]
@@ -155,12 +149,18 @@ pub use markdown_extractor::MarkdownExtractor;
 pub use msbasic2_extractor::MsBasic2Extractor;
 #[cfg(feature = "lang-objc")]
 pub use objc_extractor::ObjcExtractor;
+#[cfg(feature = "lang-ocaml")]
+pub use ocaml_extractor::OcamlExtractor;
 #[cfg(feature = "lang-perl")]
 pub use perl_extractor::PerlExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use qbasic_extractor::QBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use quickbasic_extractor::QuickBasicExtractor;
+#[cfg(feature = "lang-r")]
+pub use r_extractor::RExtractor;
+#[cfg(feature = "lang-sql")]
+pub use sql_extractor::SqlExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
 

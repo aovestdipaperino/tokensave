@@ -1012,7 +1012,13 @@ pub static R_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     unchecked_methods: &[],
     call_expression_types: &["call"],
     call_method_field: "",
-    assertion_names: &["stopifnot", "assert_that", "expect_equal", "expect_true", "expect_false"],
+    assertion_names: &[
+        "stopifnot",
+        "assert_that",
+        "expect_equal",
+        "expect_true",
+        "expect_false",
+    ],
     macro_invocation_types: &[],
 };
 
@@ -1057,7 +1063,14 @@ pub static HASKELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     unchecked_methods: &["fromJust", "head"],
     call_expression_types: &["apply"],
     call_method_field: "",
-    assertion_names: &["assertBool", "assertEqual", "assertTrue", "assertFailure", "shouldBe", "shouldSatisfy"],
+    assertion_names: &[
+        "assertBool",
+        "assertEqual",
+        "assertTrue",
+        "assertFailure",
+        "shouldBe",
+        "shouldSatisfy",
+    ],
     macro_invocation_types: &[],
 };
 
@@ -1072,7 +1085,13 @@ pub static OCAML_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     unchecked_methods: &[],
     call_expression_types: &["application_expression"],
     call_method_field: "",
-    assertion_names: &["assert", "assert_equal", "assert_string_equal", "assert_bool", "check_bool"],
+    assertion_names: &[
+        "assert",
+        "assert_equal",
+        "assert_string_equal",
+        "assert_bool",
+        "check_bool",
+    ],
     macro_invocation_types: &[],
 };
 
