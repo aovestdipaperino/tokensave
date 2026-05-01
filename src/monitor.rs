@@ -427,6 +427,8 @@ fn monitor_loop(
     use std::collections::HashMap;
 
     let mut cost_cache = CostCache::new();
+    let mut scroll_offset: usize = 0;
+    let mut last_log_lines: usize = 20;
 
     loop {
         // Poll for key events (100ms timeout = our refresh rate).
@@ -442,6 +444,19 @@ fn monitor_loop(
                         if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                     {
                         entries.clear();
+                        scroll_offset = 0;
+                    }
+                    event::KeyCode::Up => {
+                        scroll_offset = scroll_offset.saturating_add(1);
+                    }
+                    event::KeyCode::Down => {
+                        scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                    event::KeyCode::PageUp => {
+                        scroll_offset = scroll_offset.saturating_add(last_log_lines.max(1));
+                    }
+                    event::KeyCode::PageDown => {
+                        scroll_offset = scroll_offset.saturating_sub(last_log_lines.max(1));
                     }
                     _ => {}
                 }
@@ -478,6 +493,7 @@ fn monitor_loop(
         let cost_lines = if has_cost { 4 } else { 0 }; // 3 lines + separator
         let footer_lines = 4; // separator + 2 footer lines + bottom separator
         let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
+        last_log_lines = log_lines;
 
         // ── Cost panel ──
         if has_cost {
@@ -520,7 +536,11 @@ fn monitor_loop(
                 .or_default() += entry.delta;
         }
 
-        let mut projects: Vec<String> = grouped.keys().cloned().collect();
+        let mut projects: Vec<String> = grouped
+            .keys()
+            .filter(|p| !is_temp_dir_name(p) && !p.is_empty())
+            .cloned()
+            .collect();
         projects.sort();
 
         let mut all_lines: Vec<String> = Vec::new();
@@ -544,14 +564,23 @@ fn monitor_loop(
         }
         all_lines.push(format!("TOTAL  {}", format_number(grand_total)));
 
-        let visible_lines: Vec<&String> = all_lines.iter().rev().take(log_lines).collect();
+        // Clamp scroll offset to valid range.
+        let max_offset = all_lines.len().saturating_sub(log_lines);
+        if scroll_offset > max_offset {
+            scroll_offset = max_offset;
+        }
+
+        let total = all_lines.len();
+        let end = total.saturating_sub(scroll_offset);
+        let start = end.saturating_sub(log_lines);
+        let visible_lines = &all_lines[start..end];
         let blank_lines = log_lines.saturating_sub(visible_lines.len());
 
         for _ in 0..blank_lines {
             write!(stdout, "\r{}\r\n", " ".repeat(w))?;
         }
 
-        for line in visible_lines.into_iter().rev() {
+        for line in visible_lines {
             let padding = w.saturating_sub(line.len());
             write!(stdout, "\r{}{}\r\n", line, " ".repeat(padding))?;
         }
@@ -564,7 +593,7 @@ fn monitor_loop(
         let suffix = "saved tokens";
         let footer_content = format!("{label}  {total_str} {suffix}");
         let footer_padding = w.saturating_sub(footer_content.len());
-        let hint = "Ctrl+R reset | Ctrl+C quit";
+        let hint = "\u{2191}\u{2193}/PgUp/PgDn scroll | Ctrl+R reset | Ctrl+C quit";
         let hint_padding = w.saturating_sub(hint.len());
 
         write!(stdout, "\r{sep}\r\n")?;
@@ -580,6 +609,10 @@ fn monitor_loop(
         stdout.flush()?;
     }
     Ok(())
+}
+
+fn is_temp_dir_name(name: &str) -> bool {
+    name.starts_with(".tmp") && name.len() > 4
 }
 
 fn format_number(n: u64) -> String {
