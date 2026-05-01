@@ -1000,3 +1000,138 @@ pub static QBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &[],
     macro_invocation_types: &[],
 };
+
+#[cfg(feature = "lang-r")]
+pub static R_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement"],
+    loop_types: &["for_statement", "while_statement", "repeat_statement"],
+    return_types: &["return"],
+    nesting_types: &["braced_expression"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call"],
+    call_method_field: "",
+    assertion_names: &["stopifnot", "assert_that", "expect_equal", "expect_true", "expect_false"],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-sql")]
+pub static SQL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if", "when_clause"],
+    loop_types: &["loop"],
+    return_types: &["return"],
+    nesting_types: &["block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["invocation"],
+    call_method_field: "",
+    assertion_names: &[],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-julia")]
+pub static JULIA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_statement", "elseif_clause", "ternary_expression"],
+    loop_types: &["for_statement", "while_statement"],
+    return_types: &["return_statement", "break_statement", "continue_statement"],
+    nesting_types: &["block", "compound_statement"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "",
+    assertion_names: &["@assert", "assert", "@test", "@test_throws"],
+    macro_invocation_types: &["macro_expression"],
+};
+
+#[cfg(feature = "lang-haskell")]
+pub static HASKELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["alternative", "guard"],
+    loop_types: &[],
+    return_types: &[],
+    nesting_types: &["where"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &["fromJust", "head"],
+    call_expression_types: &["apply"],
+    call_method_field: "",
+    assertion_names: &["assertBool", "assertEqual", "assertTrue", "assertFailure", "shouldBe", "shouldSatisfy"],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-ocaml")]
+pub static OCAML_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_expression", "match_case"],
+    loop_types: &["for_expression", "while_expression"],
+    return_types: &[],
+    nesting_types: &["let_binding"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["application_expression"],
+    call_method_field: "",
+    assertion_names: &["assert", "assert_equal", "assert_string_equal", "assert_bool", "check_bool"],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-clojure")]
+pub static CLOJURE_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["list_lit"],
+    loop_types: &[],
+    return_types: &[],
+    nesting_types: &[],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["list_lit"],
+    call_method_field: "",
+    assertion_names: &["assert", "is", "are", "testing"],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-erlang")]
+pub static ERLANG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["cr_clause", "if_clause"],
+    loop_types: &[],
+    return_types: &[],
+    nesting_types: &["clause_body"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call"],
+    call_method_field: "",
+    assertion_names: &["assertEqual", "assert", "assertMatch", "assertError"],
+    macro_invocation_types: &["macro_application"],
+};
+
+#[cfg(feature = "lang-elixir")]
+pub static ELIXIR_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["stab_clause"],
+    loop_types: &[],
+    return_types: &[],
+    nesting_types: &["do_block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call"],
+    call_method_field: "",
+    assertion_names: &["assert", "assert_raise", "assert_receive", "refute"],
+    macro_invocation_types: &[],
+};
+
+#[cfg(feature = "lang-fsharp")]
+pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &["if_expression", "elif_expression", "match_expression"],
+    loop_types: &["for_expression", "while_expression"],
+    return_types: &[],
+    nesting_types: &["sequential_expression"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["application_expression"],
+    call_method_field: "",
+    assertion_names: &["Assert", "assertEqual", "assertTrue", "assertFalse"],
+    macro_invocation_types: &[],
+};
