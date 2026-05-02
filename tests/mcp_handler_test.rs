@@ -2161,3 +2161,162 @@ async fn test_session_end_no_baseline() {
     let output: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(output["status"].as_str().unwrap(), "no_baseline");
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_body
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_body_returns_full_function_source() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_body",
+        json!({"symbol": "format_greeting"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["match_count"].as_u64().unwrap(), 1);
+    let body = output["matches"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("fn format_greeting"),
+        "body should contain the function signature, got: {body}"
+    );
+    assert!(
+        body.contains("Hello"),
+        "body should contain the function body, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_body_unknown_symbol() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_body",
+        json!({"symbol": "no_such_symbol_anywhere"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("No symbol named"),
+        "should report no match, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_body_missing_symbol_param() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_body", json!({}), None, None).await;
+    assert!(result.is_err(), "should error when symbol is missing");
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_todos
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_todos_finds_markers() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        r#"
+fn main() {
+    // TODO: refactor this
+    let x = 1;
+    // FIXME: handle the error case
+    let y = 2;
+    println!("{} {}", x, y);
+}
+
+fn helper() {
+    // not a marker: rendered todoist
+    let _ = 0;
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_todos", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let count = output["match_count"].as_u64().unwrap();
+    assert_eq!(count, 2, "should find exactly TODO and FIXME, got: {text}");
+    let kinds: Vec<&str> = output["markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"TODO"));
+    assert!(kinds.contains(&"FIXME"));
+    let enclosing: Vec<&str> = output["markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["enclosing"].as_str())
+        .collect();
+    assert!(
+        enclosing.iter().any(|e| e.contains("main")),
+        "TODO inside main should report main as enclosing, got: {enclosing:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_todos_filters_by_kind() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        r#"
+fn main() {
+    // TODO: a
+    // FIXME: b
+    // HACK: c
+    let _ = 0;
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_todos",
+        json!({"kinds": ["FIXME"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["match_count"].as_u64().unwrap(), 1);
+    assert_eq!(output["markers"][0]["kind"].as_str().unwrap(), "FIXME");
+}
+
+#[tokio::test]
+async fn test_todos_empty_when_clean() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_todos", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["match_count"].as_u64().unwrap(), 0);
+}

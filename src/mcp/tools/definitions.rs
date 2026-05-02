@@ -128,6 +128,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_test_risk(),
         def_session_start(),
         def_session_end(),
+        def_body(),
+        def_todos(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -1247,6 +1249,58 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_body() -> ToolDefinition {
+    def(
+        "tokensave_body",
+        "Symbol Body",
+        "Return the full source body of a symbol by name (function, struct, const, etc.). \
+         Collapses search + node lookup + file read into a single call. \
+         When the name is ambiguous, returns multiple matches ranked by relevance.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to look up (e.g. 'resolve_provider_api_key', 'CCH_SEED', 'GraphStats'). Qualified names are also accepted."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of matching bodies to return when the name is ambiguous (default: 3, max: 20)"
+                }
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_todos() -> ToolDefinition {
+    def(
+        "tokensave_todos",
+        "TODOs and FIXMEs",
+        "Find TODO, FIXME, XXX, HACK, WIP, NOTE, and unimplemented markers across the project. \
+         Each result includes the marker kind, file, line, the comment text, and the enclosing \
+         symbol name (function/method) for quick orientation.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Marker kinds to include (default: TODO, FIXME, XXX, HACK, WIP, NOTE, UNIMPLEMENTED). Matched case-insensitively."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (relative to project root)"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of markers to return (default: 200, max: 2000)"
+                }
+            }
         }),
     )
 }

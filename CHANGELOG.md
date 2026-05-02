@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.3.3] - 2026-05-02
 
+### Added
+- **`tokensave_body`** — new MCP tool that returns the full source body of a symbol by name (function, struct, const, etc.). Collapses search + node lookup + file read into a single call; returns multiple ranked matches when the name is ambiguous.
+- **`tokensave_todos`** — new MCP tool that finds TODO, FIXME, XXX, HACK, WIP, NOTE, and UNIMPLEMENTED markers across the project. Each result includes the marker kind, file, line, the comment text, and the enclosing symbol name. Filterable by marker kind and path prefix.
+
 ### Fixed
 - **SQL (and 8 other new-language) files no longer panic during sync** — `tokensave-large-treesitters 0.4.0` is now published to crates.io and `Cargo.toml` references the registry version instead of a local path. Users who built 4.3.2 via `cargo install` received the old 0.3.2 grammar bundle (no SQL), causing a panic per `.sql` file. Closes #53.
 

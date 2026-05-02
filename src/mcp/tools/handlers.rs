@@ -134,6 +134,8 @@ pub async fn handle_tool_call(
         "tokensave_test_risk" => handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_session_start" => handle_session_start(cg, args, scope_prefix).await,
         "tokensave_session_end" => handle_session_end(cg, args, scope_prefix).await,
+        "tokensave_body" => handle_body(cg, args, scope_prefix).await,
+        "tokensave_todos" => handle_todos(cg, args, scope_prefix).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -4453,6 +4455,230 @@ async fn handle_session_end(
     })
 }
 
+/// Extract lines `start_line..=end_line` (1-based, inclusive) from `source`.
+/// Returns the empty string if the range is out of bounds.
+fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = (start_line.saturating_sub(1)) as usize;
+    let end = (end_line as usize).min(lines.len());
+    if start >= lines.len() || start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+/// Handles `tokensave_body` tool calls.
+async fn handle_body(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.clamp(1, 20) as usize);
+
+    // Search broadly so we have enough candidates to filter by exact name.
+    let raw = cg.search(symbol, (limit * 4).max(20)).await?;
+    let raw = filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+
+    // Prefer exact name or qualified-name matches; fall back to ranked search.
+    let exact: Vec<_> = raw
+        .iter()
+        .filter(|r| r.node.name == symbol || r.node.qualified_name == symbol)
+        .collect();
+    let chosen: Vec<_> = if exact.is_empty() {
+        raw.iter().take(limit).collect()
+    } else {
+        exact.into_iter().take(limit).collect()
+    };
+
+    if chosen.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("No symbol named '{symbol}' found.") }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let project_root = cg.project_root();
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    for result in &chosen {
+        let n = &result.node;
+        let abs_path = project_root.join(&n.file_path);
+        let body = match crate::sync::read_source_file(&abs_path) {
+            Ok(source) => extract_lines(&source, n.start_line, n.end_line),
+            Err(_) => String::from("<file unreadable>"),
+        };
+        if !touched.contains(&n.file_path) {
+            touched.push(n.file_path.clone());
+        }
+        matches.push(json!({
+            "id": n.id,
+            "name": n.name,
+            "qualified_name": n.qualified_name,
+            "kind": n.kind.as_str(),
+            "file": n.file_path,
+            "start_line": n.start_line,
+            "end_line": n.end_line,
+            "signature": n.signature,
+            "body": body,
+        }));
+    }
+
+    let output = json!({
+        "match_count": matches.len(),
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// Default marker kinds recognised by `tokensave_todos`.
+const DEFAULT_TODO_KINDS: &[&str] = &[
+    "TODO",
+    "FIXME",
+    "XXX",
+    "HACK",
+    "WIP",
+    "NOTE",
+    "UNIMPLEMENTED",
+];
+
+/// True if `text` contains `marker` as a standalone uppercase word
+/// (case-insensitive, surrounded by non-alphanumeric characters or string ends).
+fn contains_marker_word(text: &str, marker: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    let marker_lower = marker.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mlen = marker_lower.len();
+    let mut idx = 0;
+    while idx + mlen <= bytes.len() {
+        if &bytes[idx..idx + mlen] == marker_lower.as_bytes() {
+            let before_ok =
+                idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric() && bytes[idx - 1] != b'_';
+            let after_ok = idx + mlen == bytes.len()
+                || (!bytes[idx + mlen].is_ascii_alphanumeric() && bytes[idx + mlen] != b'_');
+            if before_ok && after_ok {
+                return Some(idx);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Handles `tokensave_todos` tool calls.
+async fn handle_todos(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_uppercase))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| {
+            DEFAULT_TODO_KINDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+    let path = effective_path(&args, scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.min(2000) as usize);
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut markers: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut by_kind: HashMap<String, u64> = HashMap::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = path {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+        // Cache nodes per file so enclosing-symbol lookup is one DB call per file.
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = (idx as u32) + 1;
+            for kind in &kinds {
+                if contains_marker_word(line, kind).is_some() {
+                    let enclosing = nodes
+                        .iter()
+                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                        .map(|n| n.qualified_name.clone());
+                    *by_kind.entry(kind.clone()).or_insert(0) += 1;
+                    markers.push(json!({
+                        "kind": kind,
+                        "file": file.path,
+                        "line": line_no,
+                        "text": line.trim(),
+                        "enclosing": enclosing,
+                    }));
+                    if !touched.contains(&file.path) {
+                        touched.push(file.path.clone());
+                    }
+                    if markers.len() >= limit {
+                        break 'outer;
+                    }
+                    break; // one marker per line is enough
+                }
+            }
+        }
+    }
+
+    let counts = serde_json::to_value(&by_kind).unwrap_or(json!({}));
+    let output = json!({
+        "match_count": markers.len(),
+        "by_kind": counts,
+        "markers": markers,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -4462,7 +4688,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 48);
+        assert_eq!(tools.len(), 50);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -4513,6 +4739,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_test_risk"));
         assert!(tool_names.contains(&"tokensave_session_start"));
         assert!(tool_names.contains(&"tokensave_session_end"));
+        assert!(tool_names.contains(&"tokensave_body"));
+        assert!(tool_names.contains(&"tokensave_todos"));
     }
 
     #[test]
