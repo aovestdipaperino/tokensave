@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.4] - 2026-05-02
+
+### Fixed
+- **`tokensave sync` no longer hangs on large monorepos with `node_modules` symlinks** — the directory walker now prunes excluded directories (e.g. `node_modules`, `vendor`, `build`) at the `filter_entry` level before descending into them. Previously, exclusions were only checked per-file after the walker had already entered the directory, so monorepo setups where a package manager creates symlinks inside `node_modules` pointing back into source directories (e.g. `../../api`) could cause the scanner to spin indefinitely. Closes #36.
+
 ## [4.3.3] - 2026-05-02
 
 ### Added

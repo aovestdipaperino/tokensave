@@ -1239,6 +1239,19 @@ impl TokenSave {
                     }
                     return false;
                 }
+                // Prune directories covered by an exclude glob before descending.
+                // This prevents entering large trees (e.g. node_modules) and
+                // avoids following symlinks that cycle back into source directories.
+                // Probing with a dummy filename matches patterns of the form
+                // `dir/**` without needing to parse the glob syntax.
+                if e.file_type().is_dir() {
+                    if let Ok(rel) = e.path().strip_prefix(root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if is_excluded(&format!("{rel_str}/_"), config) {
+                            return false;
+                        }
+                    }
+                }
                 true
             })
         {
