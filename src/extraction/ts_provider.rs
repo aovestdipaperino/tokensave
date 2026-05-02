@@ -26,3 +26,30 @@ pub fn language(key: &str) -> Language {
         .cloned()
         .unwrap_or_else(|| panic!("ts_provider: unknown language key '{key}'"))
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every key that an extractor passes to `language()` must be present in the
+    /// grammar table. Add new entries here whenever a new extractor is added.
+    #[test]
+    fn all_extractor_keys_are_registered() {
+        #[rustfmt::skip]
+        let keys = [
+            "bash", "batch", "c", "c_sharp", "clojure", "cobol", "cpp", "dart",
+            "dockerfile", "elixir", "erlang", "fortran", "fsharp", "glsl", "go",
+            "gwbasic", "haskell", "java", "javascript", "julia", "kotlin", "lua",
+            "msbasic2", "nix", "objc", "ocaml", "pascal", "perl", "php", "powershell",
+            "protobuf", "python", "qbasic", "r", "ruby", "rust", "scala", "sql",
+            "swift", "tsx", "typescript", "vbnet", "zig",
+        ];
+        let missing: Vec<&str> = keys
+            .iter()
+            .copied()
+            .filter(|k| super::LANGUAGES.get(k).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "grammar keys missing from LANGUAGES: {missing:?}"
+        );
+    }
+}

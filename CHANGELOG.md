@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.3] - 2026-05-02
+
+### Fixed
+- **SQL (and 8 other new-language) files no longer panic during sync** — `tokensave-large-treesitters 0.4.0` is now published to crates.io and `Cargo.toml` references the registry version instead of a local path. Users who built 4.3.2 via `cargo install` received the old 0.3.2 grammar bundle (no SQL), causing a panic per `.sql` file. Closes #53.
+
+### Changed
+- **`tokensave-large-treesitters` dependency pinned to published 0.4.0** — switched from a local path dependency to `"0.4.0"` so `cargo install tokensave` picks up the full grammar set including SQL, R, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, and F#.
+
+### Internal
+- **Grammar completeness test** — `ts_provider::tests::all_extractor_keys_are_registered` verifies every language key an extractor passes to `ts_provider::language()` is present in the bundled grammar table. CI will catch mismatches before a release ships.
+
 ## [4.3.2] - 2026-05-01
 
 ### Added
