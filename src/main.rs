@@ -64,15 +64,30 @@ impl Spinner {
         *self.message.lock().unwrap() = msg.to_string();
     }
 
-    fn done(self, message: &str) {
+    fn done(mut self, message: &str) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.handle {
+        if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
         let mut stderr = std::io::stderr();
         // Show cursor again, then print the done line.
         let _ = write!(stderr, "\x1b[?25h");
         let _ = writeln!(stderr, "\r\x1b[2K\x1b[32m✔\x1b[0m {}", message);
+        let _ = stderr.flush();
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        // If the spinner wasn't explicitly finished (e.g. `?` propagated an
+        // error), still stop the thread, clear the line, and restore the
+        // cursor so the terminal is left in a sane state.
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        let mut stderr = std::io::stderr();
+        let _ = write!(stderr, "\r\x1b[2K\x1b[?25h");
         let _ = stderr.flush();
     }
 }
@@ -357,8 +372,28 @@ async fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
+        if is_edge_fk_violation(&e) {
+            eprintln!();
+            eprintln!(
+                "\x1b[33mhint:\x1b[0m the incremental sync cannot recover from this on its own. \
+                 Force a full re-index with:"
+            );
+            eprintln!("\n  \x1b[1mtokensave sync -f\x1b[0m\n");
+        }
         process::exit(1);
     }
+}
+
+/// Detects the foreign-key violation that incremental `insert_edges` can hit
+/// when an extractor produces an edge whose endpoint is not in the same
+/// extraction's node set. Full re-index masks this because it disables FK
+/// during bulk load, so suggesting `sync -f` actually unblocks the user.
+fn is_edge_fk_violation(err: &tokensave::errors::TokenSaveError) -> bool {
+    matches!(
+        err,
+        tokensave::errors::TokenSaveError::Database { message, operation }
+            if operation == "insert_edges" && message.contains("FOREIGN KEY constraint failed")
+    )
 }
 
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
