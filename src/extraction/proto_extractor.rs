@@ -156,8 +156,8 @@ impl ProtoExtractor {
     /// Extract a `package` declaration.
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
         // package -> fullIdent -> ident
-        let name = Self::find_child_by_kind(node, "fullIdent")
-            .and_then(|fi| Self::find_child_by_kind(fi, "ident"))
+        let name = Self::find_child_by_kind(node, "full_ident")
+            .and_then(|fi| Self::find_child_by_kind(fi, "identifier"))
             .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -213,7 +213,7 @@ impl ProtoExtractor {
     /// Extract an `import` statement.
     fn visit_import(state: &mut ExtractionState, node: TsNode<'_>) {
         // import -> strLit (the quoted path)
-        let name = Self::find_child_by_kind(node, "strLit").map_or_else(
+        let name = Self::find_child_by_kind(node, "string").map_or_else(
             || "<unknown>".to_string(),
             |n| {
                 let text = state.node_text(n);
@@ -275,8 +275,8 @@ impl ProtoExtractor {
     /// Extract a `message` definition.
     fn visit_message(state: &mut ExtractionState, node: TsNode<'_>) {
         // message -> messageName -> ident, messageBody -> (field | message | oneof | enum | ...)
-        let name = Self::find_child_by_kind(node, "messageName")
-            .and_then(|mn| Self::find_child_by_kind(mn, "ident"))
+        let name = Self::find_child_by_kind(node, "message_name")
+            .and_then(|mn| Self::find_child_by_kind(mn, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
@@ -325,7 +325,7 @@ impl ProtoExtractor {
 
         // Visit message body for fields, nested messages, enums, oneofs.
         state.node_stack.push((name, id));
-        if let Some(body) = Self::find_child_by_kind(node, "messageBody") {
+        if let Some(body) = Self::find_child_by_kind(node, "message_body") {
             Self::visit_message_body(state, body);
         }
         state.node_stack.pop();
@@ -353,16 +353,17 @@ impl ProtoExtractor {
 
     /// Extract a field declaration within a message.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        // field -> type, fieldName -> ident, fieldNumber -> intLit
-        let name = Self::find_child_by_kind(node, "fieldName")
-            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
+        // field -> type, identifier (name), `=`, field_number -> int_lit.
+        // tree-sitter-proto 0.4 dropped the `field_name` wrapper; the field
+        // name is now a direct `identifier` child of `field`.
+        let name = Self::find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let type_text = Self::find_child_by_kind(node, "type")
             .map_or_else(|| "unknown".to_string(), |n| state.node_text(n));
 
-        let field_number = Self::find_child_by_kind(node, "fieldNumber")
-            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "intLit"))
+        let field_number = Self::find_child_by_kind(node, "field_number")
+            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "int_lit"))
             .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -412,8 +413,8 @@ impl ProtoExtractor {
     /// Extract an `enum` definition.
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>) {
         // enum -> enumName -> ident, enumBody -> enumField*
-        let name = Self::find_child_by_kind(node, "enumName")
-            .and_then(|en| Self::find_child_by_kind(en, "ident"))
+        let name = Self::find_child_by_kind(node, "enum_name")
+            .and_then(|en| Self::find_child_by_kind(en, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
@@ -462,7 +463,7 @@ impl ProtoExtractor {
 
         // Visit enum body for variants.
         state.node_stack.push((name, id));
-        if let Some(body) = Self::find_child_by_kind(node, "enumBody") {
+        if let Some(body) = Self::find_child_by_kind(node, "enum_body") {
             Self::visit_enum_body(state, body);
         }
         state.node_stack.pop();
@@ -474,7 +475,7 @@ impl ProtoExtractor {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if child.kind() == "enumField" {
+                if child.kind() == "enum_field" {
                     Self::visit_enum_field(state, child);
                 }
                 if !cursor.goto_next_sibling() {
@@ -487,10 +488,10 @@ impl ProtoExtractor {
     /// Extract an enum variant (enumField).
     fn visit_enum_field(state: &mut ExtractionState, node: TsNode<'_>) {
         // enumField -> ident, intLit
-        let name = Self::find_child_by_kind(node, "ident")
+        let name = Self::find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
-        let value = Self::find_child_by_kind(node, "intLit")
+        let value = Self::find_child_by_kind(node, "int_lit")
             .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -540,8 +541,8 @@ impl ProtoExtractor {
     /// Extract a `service` definition.
     fn visit_service(state: &mut ExtractionState, node: TsNode<'_>) {
         // service -> serviceName -> ident, rpc*
-        let name = Self::find_child_by_kind(node, "serviceName")
-            .and_then(|sn| Self::find_child_by_kind(sn, "ident"))
+        let name = Self::find_child_by_kind(node, "service_name")
+            .and_then(|sn| Self::find_child_by_kind(sn, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
@@ -613,8 +614,8 @@ impl ProtoExtractor {
     /// Extract an `rpc` method definition within a service.
     fn visit_rpc(state: &mut ExtractionState, node: TsNode<'_>) {
         // rpc -> rpcName -> ident, enumMessageType (request), enumMessageType (response)
-        let name = Self::find_child_by_kind(node, "rpcName")
-            .and_then(|rn| Self::find_child_by_kind(rn, "ident"))
+        let name = Self::find_child_by_kind(node, "rpc_name")
+            .and_then(|rn| Self::find_child_by_kind(rn, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
@@ -677,7 +678,7 @@ impl ProtoExtractor {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if child.kind() == "oneofField" {
+                if child.kind() == "oneof_field" {
                     Self::visit_oneof_field(state, child);
                 }
                 if !cursor.goto_next_sibling() {
@@ -689,16 +690,17 @@ impl ProtoExtractor {
 
     /// Extract a field within a oneof block.
     fn visit_oneof_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        // oneofField -> type, fieldName -> ident, fieldNumber -> intLit
-        let name = Self::find_child_by_kind(node, "fieldName")
-            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
+        // oneof_field -> type, identifier (name), `=`, field_number -> int_lit.
+        // tree-sitter-proto 0.4 dropped the `field_name` wrapper here too; the
+        // oneof field name is a direct `identifier` child.
+        let name = Self::find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let type_text = Self::find_child_by_kind(node, "type")
             .map_or_else(|| "unknown".to_string(), |n| state.node_text(n));
 
-        let field_number = Self::find_child_by_kind(node, "fieldNumber")
-            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "intLit"))
+        let field_number = Self::find_child_by_kind(node, "field_number")
+            .and_then(|fn_node| Self::find_child_by_kind(fn_node, "int_lit"))
             .map_or_else(|| "?".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
