@@ -27,6 +27,7 @@ fn make_node(id: &str, name: &str, file_path: &str, visibility: Visibility) -> N
         qualified_name: format!("crate::{name}"),
         file_path: file_path.to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,

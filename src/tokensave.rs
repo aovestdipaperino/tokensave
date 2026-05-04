@@ -1752,6 +1752,22 @@ impl TokenSave {
         self.db.get_incoming_edges(node_id, &[]).await
     }
 
+    /// Returns incoming edges for many target nodes in one round-trip.
+    /// Empty `kinds` matches every edge kind.
+    pub async fn get_incoming_edges_bulk(
+        &self,
+        target_ids: &[String],
+        kinds: &[EdgeKind],
+    ) -> Result<Vec<Edge>> {
+        self.db.get_incoming_edges_bulk(target_ids, kinds).await
+    }
+
+    /// Returns all nodes whose `qualified_name` matches `qname`.
+    /// Cross-run lookup independent of the content-hash node IDs.
+    pub async fn get_nodes_by_qualified_name(&self, qname: &str) -> Result<Vec<Node>> {
+        self.db.get_nodes_by_qualified_name(qname).await
+    }
+
     /// Returns outgoing edges from a source node.
     pub async fn get_outgoing_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
         self.db.get_outgoing_edges(node_id, &[]).await

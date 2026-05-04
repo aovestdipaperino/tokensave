@@ -117,6 +117,7 @@ mod tests {
                 qualified_name: format!("{}::test_sym", path),
                 file_path: path.to_string(),
                 start_line: 1,
+                attrs_start_line: 1,
                 end_line: 5,
                 start_column: 0,
                 end_column: 1,

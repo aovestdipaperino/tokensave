@@ -2320,3 +2320,180 @@ async fn test_todos_empty_when_clean() {
     let output: Value = serde_json::from_str(text).unwrap();
     assert_eq!(output["match_count"].as_u64().unwrap(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_callers_for — bulk caller lookup
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_callers_for_returns_caller_set_per_id() {
+    let (cg, _dir) = setup_project().await;
+
+    // Look up two distinct targets in one call.
+    let helper_id = find_node_id(&cg, "helper").await;
+    let format_id = find_node_id(&cg, "format_greeting").await;
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers_for",
+        json!({"node_ids": [helper_id.clone(), format_id.clone()]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+
+    // Response shape: { callers: { id: [...], id2: [...] }, truncated: bool, max_per_item: N }
+    assert_eq!(output["truncated"], json!(false));
+    assert!(output["max_per_item"].as_u64().unwrap() > 0);
+
+    let callers = &output["callers"];
+    let helper_callers = callers[&helper_id].as_array().unwrap();
+    let format_callers = callers[&format_id].as_array().unwrap();
+
+    // helper is called from main; format_greeting is called from helper.
+    assert!(
+        !helper_callers.is_empty(),
+        "expected helper to have at least one caller"
+    );
+    assert!(
+        !format_callers.is_empty(),
+        "expected format_greeting to have at least one caller"
+    );
+}
+
+#[tokio::test]
+async fn test_callers_for_includes_unmatched_ids_as_empty() {
+    let (cg, _dir) = setup_project().await;
+    let helper_id = find_node_id(&cg, "helper").await;
+    let bogus_id = "function:0000000000000000000000000000ffff".to_string();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers_for",
+        json!({"node_ids": [helper_id.clone(), bogus_id.clone()]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let output: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let callers = &output["callers"];
+    assert!(callers[&bogus_id].as_array().unwrap().is_empty());
+    assert!(!callers[&helper_id].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_callers_for_respects_max_per_item() {
+    let (cg, _dir) = setup_project().await;
+    let helper_id = find_node_id(&cg, "helper").await;
+    // Cap at 0 — every caller should be marked truncated.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers_for",
+        json!({"node_ids": [helper_id.clone()], "max_per_item": 0}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let output: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(output["truncated"], json!(true));
+    assert!(output["callers"][&helper_id].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_callers_for_rejects_empty_input() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers_for",
+        json!({"node_ids": []}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("expected error for empty node_ids");
+    };
+    assert!(format!("{err}").contains("non-empty"));
+}
+
+#[tokio::test]
+async fn test_callers_for_rejects_unknown_kind() {
+    let (cg, _dir) = setup_project().await;
+    let helper_id = find_node_id(&cg, "helper").await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers_for",
+        json!({"node_ids": [helper_id], "kind": "not_a_real_kind"}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("expected error for unknown edge kind");
+    };
+    assert!(format!("{err}").contains("unknown edge kind"));
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_by_qualified_name — cross-run lookup
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_by_qualified_name_finds_indexed_node() {
+    let (cg, _dir) = setup_project().await;
+    // Find the qualified name of `helper` first.
+    let helper = cg
+        .get_node(&find_node_id(&cg, "helper").await)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_by_qualified_name",
+        json!({"qualified_name": helper.qualified_name}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert!(
+        !items.is_empty(),
+        "expected at least one match for helper qname"
+    );
+    assert!(items.iter().any(|i| i["name"] == "helper"));
+    // The handler exposes attrs_start_line in the response shape.
+    assert!(items[0].get("attrs_start_line").is_some());
+}
+
+#[tokio::test]
+async fn test_by_qualified_name_returns_empty_for_unknown() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_by_qualified_name",
+        json!({"qualified_name": "crate::does::not::exist"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert!(items.is_empty());
+}
+
+#[tokio::test]
+async fn test_by_qualified_name_requires_param() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_by_qualified_name", json!({}), None, None).await;
+    let Err(err) = result else {
+        panic!("expected error when qualified_name is missing");
+    };
+    assert!(format!("{err}").contains("qualified_name"));
+}

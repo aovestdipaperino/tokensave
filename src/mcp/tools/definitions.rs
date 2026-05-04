@@ -130,6 +130,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_session_end(),
         def_body(),
         def_todos(),
+        def_callers_for(),
+        def_by_qualified_name(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -227,6 +229,56 @@ fn def_status() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_callers_for() -> ToolDefinition {
+    def(
+        "tokensave_callers_for",
+        "Bulk callers",
+        "Returns the caller set of every supplied node ID in one round-trip. \
+         Useful for clustering or similarity queries that need many caller \
+         sets at once. Returns a map of {node_id: [caller_id, …]}. Defaults \
+         to `calls` edges; pass `kind` to filter by `uses`, `type_of`, etc.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node IDs to look up callers for."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Edge kind to filter by (default: \"calls\"). Pass an empty string to match all kinds."
+                },
+                "max_per_item": {
+                    "type": "number",
+                    "description": "Cap callers per item (default: 1000)."
+                }
+            },
+            "required": ["node_ids"]
+        }),
+    )
+}
+
+fn def_by_qualified_name() -> ToolDefinition {
+    def(
+        "tokensave_by_qualified_name",
+        "Lookup by qualified name",
+        "Look up nodes by their qualified name. Multiple rows can share a \
+         qualified name (overloads, generics, separate impl blocks). Useful \
+         for cross-run lookups where the content-hash node ID has changed.",
+        json!({
+            "type": "object",
+            "properties": {
+                "qualified_name": {
+                    "type": "string",
+                    "description": "The exact qualified name to look up."
+                }
+            },
+            "required": ["qualified_name"]
         }),
     )
 }

@@ -136,6 +136,8 @@ pub async fn handle_tool_call(
         "tokensave_session_end" => handle_session_end(cg, args, scope_prefix).await,
         "tokensave_body" => handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => handle_todos(cg, args, scope_prefix).await,
+        "tokensave_callers_for" => handle_callers_for(cg, args).await,
+        "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -4679,6 +4681,115 @@ async fn handle_todos(
     })
 }
 
+/// Handles `tokensave_callers_for` tool calls — bulk caller lookup over many IDs.
+async fn handle_callers_for(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_ids: Vec<String> = args
+        .get("node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if node_ids.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: "callers_for requires non-empty node_ids".to_string(),
+        });
+    }
+
+    // Default to "calls" but allow any kind (or empty string for all kinds).
+    let kind_arg = args.get("kind").and_then(|v| v.as_str()).unwrap_or("calls");
+    let kinds: Vec<EdgeKind> = if kind_arg.is_empty() {
+        Vec::new()
+    } else {
+        match EdgeKind::from_str(kind_arg) {
+            Some(k) => vec![k],
+            None => {
+                return Err(TokenSaveError::Config {
+                    message: format!("unknown edge kind: {kind_arg}"),
+                });
+            }
+        }
+    };
+
+    let max_per_item = args
+        .get("max_per_item")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(1000usize, |v| v.min(10_000) as usize);
+
+    let edges = cg.get_incoming_edges_bulk(&node_ids, &kinds).await?;
+
+    // Group source IDs by target. Cap each list at max_per_item.
+    let mut by_target: HashMap<String, Vec<String>> = HashMap::new();
+    let mut truncated = false;
+    for edge in edges {
+        let entry = by_target.entry(edge.target).or_default();
+        if entry.len() < max_per_item {
+            entry.push(edge.source);
+        } else {
+            truncated = true;
+        }
+    }
+
+    // Ensure every requested ID appears in the response, even if no callers.
+    let result_map: HashMap<&String, Vec<String>> = node_ids
+        .iter()
+        .map(|id| (id, by_target.remove(id).unwrap_or_default()))
+        .collect();
+
+    let output = json!({
+        "callers": result_map,
+        "truncated": truncated,
+        "max_per_item": max_per_item,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_by_qualified_name` — cross-run node lookup by name.
+async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args
+        .get("qualified_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: qualified_name".to_string(),
+        })?;
+
+    let nodes = cg.get_nodes_by_qualified_name(qname).await?;
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "node_id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "start_line": n.start_line,
+                "attrs_start_line": n.attrs_start_line,
+                "end_line": n.end_line,
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -4695,6 +4806,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_context"));
         assert!(tool_names.contains(&"tokensave_callers"));
         assert!(tool_names.contains(&"tokensave_callees"));
+        assert!(tool_names.contains(&"tokensave_callers_for"));
+        assert!(tool_names.contains(&"tokensave_by_qualified_name"));
         assert!(tool_names.contains(&"tokensave_impact"));
         assert!(tool_names.contains(&"tokensave_node"));
         assert!(tool_names.contains(&"tokensave_status"));

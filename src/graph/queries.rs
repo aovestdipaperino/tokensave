@@ -31,6 +31,16 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
     let kind_str = get_string_lossy(row, 1)?;
     let vis_str = get_string_lossy(row, 11)?;
     let is_async_int = row.get::<i64>(12)?;
+    let start_line = row.get::<u32>(5)?;
+    // Pre-v7 rows lack attrs_start_line; fall back to start_line. The dead-code
+    // SELECT below does not include the new column, so attempts to read at 21
+    // will always error here — keep the fallback path explicit.
+    let attrs_raw = row.get::<u32>(21).unwrap_or(0);
+    let attrs_start_line = if attrs_raw == 0 {
+        start_line
+    } else {
+        attrs_raw
+    };
 
     Ok(Node {
         id: get_string_lossy(row, 0)?,
@@ -38,7 +48,8 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
         name: get_string_lossy(row, 2)?,
         qualified_name: get_string_lossy(row, 3)?,
         file_path: get_string_lossy(row, 4)?,
-        start_line: row.get::<u32>(5)?,
+        start_line,
+        attrs_start_line,
         end_line: row.get::<u32>(6)?,
         start_column: row.get::<u32>(7)?,
         end_column: row.get::<u32>(8)?,
@@ -109,7 +120,7 @@ impl<'a> GraphQueryManager<'a> {
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                     start_column, end_column, docstring, signature, visibility,
                     is_async, branches, loops, returns, max_nesting, unsafe_blocks,
-                    unchecked_calls, assertions, updated_at
+                    unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
              WHERE name != 'main'
              AND name NOT LIKE 'test%'

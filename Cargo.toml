@@ -77,7 +77,7 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tokensave-large-treesitters = "0.4.0"
+tokensave-large-treesitters = { path = "/Users/pierre/src/tokensave/tokensave-large-treesitters" }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
