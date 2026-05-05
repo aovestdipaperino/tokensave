@@ -355,7 +355,7 @@ public class Box<T> {
         .iter()
         .filter(|n| n.kind == NodeKind::GenericParam)
         .collect();
-    assert!(generics.len() >= 1, "should extract generic type param T");
+    assert!(!generics.is_empty(), "should extract generic type param T");
 }
 
 #[test]

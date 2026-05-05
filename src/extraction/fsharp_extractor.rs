@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, FSHARP_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, FSHARP_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -159,7 +159,7 @@ impl FSharpExtractor {
         let metrics = if is_fn && node.child_count() > 0 {
             count_complexity(node, &FSHARP_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {

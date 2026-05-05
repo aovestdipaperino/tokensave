@@ -138,13 +138,13 @@ impl ElixirExtractor {
         let head = Self::call_head(state, node);
         match head.as_deref() {
             Some("defmodule") => Self::visit_defmodule(state, node),
-            Some("def") | Some("defp") => {
-                Self::visit_def(state, node, head.as_deref() == Some("defp"))
+            Some("def" | "defp") => {
+                Self::visit_def(state, node, head.as_deref() == Some("defp"));
             }
-            Some("defmacro") | Some("defmacrop") => Self::visit_defmacro(state, node),
+            Some("defmacro" | "defmacrop") => Self::visit_defmacro(state, node),
             Some("defstruct") => Self::visit_defstruct(state, node),
-            Some("import") | Some("require") | Some("use") | Some("alias") => {
-                Self::visit_use(state, node)
+            Some("import" | "require" | "use" | "alias") => {
+                Self::visit_use(state, node);
             }
             _ => Self::visit_children(state, node),
         }
@@ -305,8 +305,7 @@ impl ElixirExtractor {
         let name = state
             .node_stack
             .last()
-            .map(|(n, _)| n.clone())
-            .unwrap_or_else(|| "?".to_string());
+            .map_or_else(|| "?".to_string(), |(n, _)| n.clone());
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);

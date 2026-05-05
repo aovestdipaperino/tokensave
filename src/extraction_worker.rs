@@ -266,7 +266,12 @@ impl WorkerPool {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+// `worker_thread` is the body of a `thread::spawn` closure that takes
+// owned Arc clones / PathBufs by value to keep the strong refcount /
+// path data alive for the lifetime of the thread. Clippy's
+// `needless_pass_by_value` doesn't model that — it only sees that
+// nothing is moved out inside the function — so we silence it here.
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn worker_thread<F>(
     mut worker: WorkerHandle,
     queue: Arc<Mutex<VecDeque<String>>>,

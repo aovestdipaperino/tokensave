@@ -252,7 +252,7 @@ const char *name = "hello";
         .filter(|n| n.kind == NodeKind::Static)
         .collect();
     assert!(
-        statics.len() >= 1,
+        !statics.is_empty(),
         "should have global variables as Static nodes, got: {:?}",
         result.nodes
     );

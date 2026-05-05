@@ -115,10 +115,10 @@ impl SqlExtractor {
 
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
-            "create_table" => Self::emit_named(state, node, NodeKind::Class),
-            "create_view" => Self::emit_named(state, node, NodeKind::Class),
-            "create_function" => Self::emit_named(state, node, NodeKind::Function),
-            "create_procedure" => Self::emit_named(state, node, NodeKind::Function),
+            "create_table" | "create_view" => Self::emit_named(state, node, NodeKind::Class),
+            "create_function" | "create_procedure" => {
+                Self::emit_named(state, node, NodeKind::Function);
+            }
             _ => Self::visit_children(state, node),
         }
     }
@@ -178,7 +178,7 @@ impl SqlExtractor {
                 if child.kind() == "object_reference" {
                     // Grab the last identifier in the reference (unqualified name).
                     let text = state.node_text(child);
-                    let name = text.split('.').last().unwrap_or(&text).trim().to_string();
+                    let name = text.split('.').next_back().unwrap_or(&text).trim().to_string();
                     return Some(name);
                 }
                 if !cursor.goto_next_sibling() {

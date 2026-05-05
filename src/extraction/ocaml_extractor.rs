@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, OCAML_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, OCAML_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -137,7 +137,7 @@ impl OcamlExtractor {
             "open_module" => Self::visit_open(state, node),
             // structure/signature items — recurse to find definitions inside
             "structure_item" | "signature_item" | "structure" | "signature" => {
-                Self::visit_children(state, node)
+                Self::visit_children(state, node);
             }
             _ => {}
         }
@@ -171,8 +171,7 @@ impl OcamlExtractor {
         let is_fn = node.child_by_field_name("parameters").is_some()
             || node
                 .child_by_field_name("body")
-                .map(|b| matches!(b.kind(), "fun_expression" | "function_expression"))
-                .unwrap_or(false);
+                .is_some_and(|b| matches!(b.kind(), "fun_expression" | "function_expression"));
 
         let kind = if is_fn {
             NodeKind::Function
@@ -188,7 +187,7 @@ impl OcamlExtractor {
         let metrics = if is_fn && node.child_count() > 0 {
             count_complexity(node, &OCAML_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {

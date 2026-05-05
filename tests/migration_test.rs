@@ -283,7 +283,10 @@ async fn test_migrate_already_latest_returns_false() {
 
     let migrated = migrate(&conn).await.expect("migrate should succeed");
 
-    assert!(!migrated, "migrate should return false when already at latest");
+    assert!(
+        !migrated,
+        "migrate should return false when already at latest"
+    );
     assert_eq!(get_user_version(&conn).await, 7);
 }
 

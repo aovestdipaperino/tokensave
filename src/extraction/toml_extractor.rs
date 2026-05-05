@@ -223,7 +223,14 @@ impl TomlExtractor {
             end_line,
             start_column: pair_node.start_position().column as u32,
             end_column: pair_node.end_position().column as u32,
-            signature: Some(state.node_text(pair_node).lines().next().unwrap_or("").to_string()),
+            signature: Some(
+                state
+                    .node_text(pair_node)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            ),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,

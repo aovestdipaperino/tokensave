@@ -1234,21 +1234,21 @@ impl RustExtractor {
         kind: EdgeKind,
     ) {
         let mut cursor = type_node.walk();
-        Self::emit_type_refs_walk(state, &mut cursor, from_id, &kind);
+        Self::emit_type_refs_walk(state, &mut cursor, from_id, kind);
     }
 
     fn emit_type_refs_walk(
         state: &mut ExtractionState,
         cursor: &mut tree_sitter::TreeCursor<'_>,
         from_id: &str,
-        kind: &EdgeKind,
+        kind: EdgeKind,
     ) {
         let n = cursor.node();
         if n.kind() == "type_identifier" || n.kind() == "primitive_type" {
             state.unresolved_refs.push(UnresolvedRef {
                 from_node_id: from_id.to_string(),
                 reference_name: state.node_text(n),
-                reference_kind: kind.clone(),
+                reference_kind: kind,
                 line: n.start_position().row as u32,
                 column: n.start_position().column as u32,
                 file_path: state.file_path.clone(),

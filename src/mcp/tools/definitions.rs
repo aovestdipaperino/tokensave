@@ -1358,7 +1358,11 @@ fn def_todos() -> ToolDefinition {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreadable_literal,
+)]
 mod tests {
     use super::*;
 

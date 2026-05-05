@@ -32,7 +32,7 @@ fn round_trip_serialization() {
     };
     let toml_str = toml::to_string_pretty(&config).unwrap();
     let parsed: UserConfig = toml::from_str(&toml_str).unwrap();
-    assert_eq!(parsed.upload_enabled, false);
+    assert!(!parsed.upload_enabled);
     assert_eq!(parsed.pending_upload, 12345);
     assert_eq!(parsed.last_worldwide_total, 2847561);
 }
@@ -41,7 +41,7 @@ fn round_trip_serialization() {
 fn missing_fields_use_defaults() {
     let toml_str = "upload_enabled = false\n";
     let parsed: UserConfig = toml::from_str(toml_str).unwrap();
-    assert_eq!(parsed.upload_enabled, false);
+    assert!(!parsed.upload_enabled);
     assert_eq!(parsed.pending_upload, 0);
     assert_eq!(parsed.last_upload_at, 0);
 }

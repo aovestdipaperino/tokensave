@@ -219,7 +219,7 @@ impl<'a> ReferenceResolver<'a> {
             .map(|r| Edge {
                 source: r.original.from_node_id.clone(),
                 target: r.target_node_id.clone(),
-                kind: r.original.reference_kind.clone(),
+                kind: r.original.reference_kind,
                 line: Some(r.original.line),
             })
             .collect()

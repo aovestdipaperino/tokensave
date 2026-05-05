@@ -143,7 +143,7 @@ impl ClojureExtractor {
             "defmacro" => Self::visit_defn(state, node, true),
             "def" | "defonce" => Self::visit_def(state, node),
             "defprotocol" | "defrecord" | "deftype" | "definterface" => {
-                Self::visit_deftype(state, node)
+                Self::visit_deftype(state, node);
             }
             "require" | "use" | "import" => Self::visit_require(state, node),
             _ => Self::visit_children(state, node),
@@ -205,11 +205,11 @@ impl ClojureExtractor {
             return;
         };
         let docstring = Self::extract_string_child(state, node);
-        let kind = if is_macro {
-            NodeKind::Function
-        } else {
-            NodeKind::Function
-        };
+        // Clojure `defn` and `defmacro` both produce Function nodes; the
+        // `is_macro` flag is preserved for callers that may want to
+        // surface the distinction in signatures or future node kinds.
+        let _ = is_macro;
+        let kind = NodeKind::Function;
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);

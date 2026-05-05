@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, JULIA_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, JULIA_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -154,7 +154,7 @@ impl JuliaExtractor {
         let metrics = if node.child_count() > 0 {
             count_complexity(node, &JULIA_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         Self::push_node(

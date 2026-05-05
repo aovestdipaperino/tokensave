@@ -134,13 +134,23 @@ fn nested_modules_parent_correctly() {
         .collect();
 
     // Outer contains Inner, a, c (but not b)
-    assert!(contains.iter().any(|e| e.source == outer.id && e.target == inner.id));
-    assert!(contains.iter().any(|e| e.source == outer.id && e.target == a.id));
-    assert!(contains.iter().any(|e| e.source == outer.id && e.target == c.id));
-    assert!(!contains.iter().any(|e| e.source == outer.id && e.target == b.id));
+    assert!(contains
+        .iter()
+        .any(|e| e.source == outer.id && e.target == inner.id));
+    assert!(contains
+        .iter()
+        .any(|e| e.source == outer.id && e.target == a.id));
+    assert!(contains
+        .iter()
+        .any(|e| e.source == outer.id && e.target == c.id));
+    assert!(!contains
+        .iter()
+        .any(|e| e.source == outer.id && e.target == b.id));
 
     // Inner contains b (only)
-    assert!(contains.iter().any(|e| e.source == inner.id && e.target == b.id));
+    assert!(contains
+        .iter()
+        .any(|e| e.source == inner.id && e.target == b.id));
 }
 
 #[test]

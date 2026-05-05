@@ -359,7 +359,7 @@ fn test_dart_private_field_visibility() {
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert!(fields.len() >= 1);
+    assert!(!fields.is_empty());
     let private_field = fields.iter().find(|n| n.name == "_count").unwrap();
     assert_eq!(private_field.visibility, Visibility::Private);
 }

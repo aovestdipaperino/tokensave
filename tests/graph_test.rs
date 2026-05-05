@@ -744,7 +744,7 @@ async fn test_build_file_adjacency() {
     // src/main.rs depends on src/utils.rs (calls helper)
     assert!(
         adj.get("src/main.rs")
-            .map_or(false, |deps| deps.contains("src/utils.rs")),
+            .is_some_and(|deps| deps.contains("src/utils.rs")),
         "main.rs should depend on utils.rs"
     );
 
@@ -762,8 +762,8 @@ async fn test_build_file_adjacency() {
 // ---------------------------------------------------------------------------
 
 use tokensave::graph::health::{
-    acyclicity_score, compute_composite_health, dependency_depth, depth_score, gini_coefficient,
-    gini_label, modularity_score, HealthDimensions,
+    acyclicity_score, compute_composite_health, dependency_depth, gini_coefficient, gini_label,
+    modularity_score, HealthDimensions,
 };
 
 // --- Gini coefficient ---

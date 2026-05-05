@@ -4791,7 +4791,12 @@ async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Result<ToolRes
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::redundant_closure_for_method_calls,
+    clippy::uninlined_format_args,
+)]
 mod tests {
     use super::super::get_tool_definitions;
     use super::*;
@@ -4799,7 +4804,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 50);
+        assert_eq!(tools.len(), 52);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

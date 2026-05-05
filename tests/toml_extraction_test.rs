@@ -84,7 +84,11 @@ fn pairs_inside_table_are_parented_to_table() {
 fn top_level_pair_parented_to_file() {
     let source = "key = 42\n";
     let result = extract(source);
-    let file = result.nodes.iter().find(|n| n.kind == NodeKind::File).unwrap();
+    let file = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::File)
+        .unwrap();
     let key = result
         .nodes
         .iter()

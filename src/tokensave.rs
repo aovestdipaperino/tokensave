@@ -56,8 +56,7 @@ fn extract_files_isolated(
 ) -> Vec<ExtractTuple> {
     if should_use_subprocess() {
         let workers = std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(4);
+            .map_or(4, std::num::NonZeroUsize::get);
         match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
             Ok(pool) => return pool.extract_files(files, |_, _, _| {}),
             Err(e) => eprintln!(

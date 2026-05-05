@@ -2105,7 +2105,7 @@ async fn test_test_risk() {
         summary
             .get("total_functions")
             .and_then(|v| v.as_u64())
-            .map_or(false, |v| v > 0),
+            .is_some_and(|v| v > 0),
         "total_functions should be > 0, got: {}",
         text
     );

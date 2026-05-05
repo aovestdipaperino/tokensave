@@ -666,7 +666,7 @@ fn test_fixture_dart() {
         .iter()
         .filter(|n| n.visibility == Visibility::Private)
         .collect();
-    assert!(privates.len() >= 1, "expected private members");
+    assert!(!privates.is_empty(), "expected private members");
 
     // Async function
     let process = result.nodes.iter().find(|n| n.name == "processUsers");
@@ -1009,7 +1009,7 @@ fn test_fixture_pascal() {
         .iter()
         .filter(|n| n.kind == NodeKind::Property)
         .collect();
-    assert!(properties.len() >= 1, "expected >= 1 property");
+    assert!(!properties.is_empty(), "expected >= 1 property");
 
     // Visibility: private members
     assert!(result

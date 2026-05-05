@@ -233,7 +233,7 @@ impl NodeKind {
 }
 
 /// Kinds of edges in the code graph.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Contains,
     Calls,

@@ -103,6 +103,7 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, clippy::uninlined_format_args)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
