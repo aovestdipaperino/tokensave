@@ -149,7 +149,7 @@ impl DartExtractor {
             match child.kind() {
                 "library_name" => Self::visit_library(state, child),
                 "import_or_export" => Self::visit_import(state, child),
-                "class_declaration" => Self::visit_class(state, child),
+                "class_definition" | "class_declaration" => Self::visit_class(state, child),
                 "mixin_declaration" => Self::visit_mixin(state, child),
                 "extension_declaration" => Self::visit_extension(state, child),
                 "enum_declaration" => Self::visit_enum(state, child),

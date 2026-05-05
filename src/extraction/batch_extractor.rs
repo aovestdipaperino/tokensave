@@ -149,7 +149,7 @@ impl BatchExtractor {
             };
 
             match child.kind() {
-                "function_definition" => {
+                "label" => {
                     Self::visit_label(state, root, i);
                 }
                 "variable_assignment" => {
@@ -189,7 +189,7 @@ impl BatchExtractor {
         let mut j = label_index + 1;
         while j < child_count {
             if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "function_definition" {
+                if sibling.kind() == "label" {
                     // End just before the next label.
                     break;
                 }
@@ -377,7 +377,7 @@ impl BatchExtractor {
 
         while j < child_count {
             if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "function_definition" {
+                if sibling.kind() == "label" {
                     break;
                 }
                 Self::extract_call_sites_recursive(state, sibling, fn_node_id);
