@@ -161,13 +161,54 @@ impl DartExtractor {
                         .filter(|s| s.kind() == "function_body");
                     Self::visit_top_level_function(state, child, body);
                 }
+                "function_declaration" => {
+                    // tree-sitter-dart 0.2 wraps top-level functions in
+                    // `function_declaration { function_signature, function_body }`.
+                    if let Some(sig) = Self::find_child_by_kind(child, "function_signature") {
+                        let body = Self::find_child_by_kind(child, "function_body");
+                        Self::visit_top_level_function(state, sig, body);
+                    }
+                }
                 "declaration" => Self::visit_declaration(state, child),
+                // tree-sitter-dart 0.1 misparses `library foo;` as a variable
+                // declaration with type `library`. Detect that shape and treat
+                // it as a library directive.
+                "top_level_variable_declaration" if Self::is_library_directive(state, child) => {
+                    Self::visit_library_misparse(state, child);
+                }
                 _ => {}
             }
             if !cursor.goto_next_sibling() {
                 break;
             }
         }
+    }
+
+    /// Returns true if `node` looks like `library foo;` misparsed as a
+    /// `top_level_variable_declaration` whose declared "type" is the
+    /// `library` keyword.
+    fn is_library_directive(state: &ExtractionState, node: TsNode<'_>) -> bool {
+        let Some(ty) = Self::find_child_by_kind(node, "type") else {
+            return false;
+        };
+        let Some(type_id) = Self::find_child_by_kind(ty, "type_identifier") else {
+            return false;
+        };
+        state.node_text(type_id) == "library"
+    }
+
+    fn visit_library_misparse(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(list) = Self::find_child_by_kind(node, "initialized_identifier_list") else {
+            return;
+        };
+        let Some(init) = Self::find_child_by_kind(list, "initialized_identifier") else {
+            return;
+        };
+        let Some(ident) = Self::find_child_by_kind(init, "identifier") else {
+            return;
+        };
+        let name = state.node_text(ident);
+        Self::push_library_node(state, node, name);
     }
 
     // ----------------------------------
@@ -179,7 +220,10 @@ impl DartExtractor {
             || state.node_text(node).trim().to_string(),
             |n| state.node_text(n),
         );
+        Self::push_library_node(state, node, name);
+    }
 
+    fn push_library_node(state: &mut ExtractionState, node: TsNode<'_>, name: String) {
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -313,7 +357,14 @@ impl DartExtractor {
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
-        let docstring = Self::extract_docstring(state, sig_node);
+        // Doc-comment siblings live one level above `sig_node` when dart 0.2
+        // wraps the function in `function_declaration`. Walk up to find the
+        // outermost wrapper before scanning prev siblings.
+        let doc_anchor = sig_node
+            .parent()
+            .filter(|p| p.kind() == "function_declaration")
+            .unwrap_or(sig_node);
+        let docstring = Self::extract_docstring(state, doc_anchor);
 
         // Build signature text from the function_signature node.
         let sig_text = state.node_text(sig_node);
@@ -799,6 +850,11 @@ impl DartExtractor {
     }
 
     /// Visit members of a class/mixin/extension/enum body.
+    ///
+    /// tree-sitter-dart 0.1 wraps every member in a `class_member` node, so
+    /// declarations and method definitions are one level deeper than the
+    /// extractor originally expected. We unwrap when we see one and dispatch
+    /// to the same handlers as before.
     fn visit_body_members(state: &mut ExtractionState, body: TsNode<'_>) {
         let mut cursor = body.walk();
         if !cursor.goto_first_child() {
@@ -808,14 +864,67 @@ impl DartExtractor {
         loop {
             let child = cursor.node();
             match child.kind() {
+                "class_member" => Self::visit_body_members(state, child),
                 "declaration" => Self::visit_declaration(state, child),
                 "method_signature" => Self::visit_method_signature(state, child),
+                "method_declaration" => Self::visit_method_declaration(state, child),
                 "function_signature" => {
                     // Function signature followed by function_body sibling in body context.
                     let body_node = child
                         .next_named_sibling()
                         .filter(|s| s.kind() == "function_body");
                     Self::visit_method_from_sig(state, child, body_node);
+                }
+                _ => {}
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
+    /// `method_declaration` in tree-sitter-dart 0.1 wraps a `method_signature`
+    /// and a `function_body` (for non-abstract methods). Find the signature
+    /// and forward to the existing `visit_method_signature` path, passing the
+    /// body so the method's complexity metrics get computed.
+    fn visit_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
+        let sig = node
+            .child_by_field_name("signature")
+            .or_else(|| Self::find_child_by_kind(node, "method_signature"));
+        let Some(sig) = sig else {
+            return;
+        };
+
+        // Walk into the `method_signature` to find the actual function /
+        // constructor / getter / setter / operator signature, then dispatch.
+        let mut cursor = sig.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        let body = node
+            .child_by_field_name("body")
+            .or_else(|| Self::find_child_by_kind(node, "function_body"));
+        loop {
+            let child = cursor.node();
+            match child.kind() {
+                "function_signature" => {
+                    Self::visit_method_from_sig(state, child, body);
+                    return;
+                }
+                "constructor_signature"
+                | "constant_constructor_signature"
+                | "factory_constructor_signature"
+                | "redirecting_factory_constructor_signature" => {
+                    Self::visit_constructor(state, sig, child);
+                    return;
+                }
+                "getter_signature" | "setter_signature" => {
+                    Self::visit_getter_or_setter(state, sig, child);
+                    return;
+                }
+                "operator_signature" => {
+                    Self::visit_operator(state, sig, child);
+                    return;
                 }
                 _ => {}
             }
@@ -1405,6 +1514,25 @@ impl DartExtractor {
                 | "assert_builtin"
                 | "assertion" => {
                     // Recurse into these container nodes.
+                    Self::extract_call_sites(state, child, fn_node_id);
+                }
+                // tree-sitter-dart 0.2 wraps every function call in a
+                // dedicated `call_expression { identifier, arguments }` node.
+                // Earlier 0.1 code looked for `identifier + selector(arguments)`
+                // sibling pairs (still kept below for compatibility with method
+                // calls of the form `obj.method()`).
+                "call_expression" => {
+                    if let Some(ident) = Self::find_child_by_kind(child, "identifier") {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_node_id.to_string(),
+                            reference_name: state.node_text(ident),
+                            reference_kind: EdgeKind::Calls,
+                            line: ident.start_position().row as u32,
+                            column: ident.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                    // Recurse into arguments to catch nested calls.
                     Self::extract_call_sites(state, child, fn_node_id);
                 }
                 // An identifier node: check if followed by selector with arguments.

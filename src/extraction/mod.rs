@@ -60,6 +60,8 @@ mod gwbasic_extractor;
 mod haskell_extractor;
 #[cfg(feature = "lang-julia")]
 mod julia_extractor;
+#[cfg(feature = "lang-lean")]
+mod lean_extractor;
 #[cfg(feature = "lang-lua")]
 mod lua_extractor;
 #[cfg(feature = "lang-markdown")]
@@ -76,10 +78,14 @@ mod perl_extractor;
 pub(crate) mod qbasic_extractor;
 #[cfg(feature = "lang-qbasic")]
 mod quickbasic_extractor;
+#[cfg(feature = "lang-quint")]
+mod quint_extractor;
 #[cfg(feature = "lang-r")]
 mod r_extractor;
 #[cfg(feature = "lang-sql")]
 mod sql_extractor;
+#[cfg(feature = "lang-toml")]
+mod toml_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
 
@@ -141,6 +147,8 @@ pub use gwbasic_extractor::GwBasicExtractor;
 pub use haskell_extractor::HaskellExtractor;
 #[cfg(feature = "lang-julia")]
 pub use julia_extractor::JuliaExtractor;
+#[cfg(feature = "lang-lean")]
+pub use lean_extractor::LeanExtractor;
 #[cfg(feature = "lang-lua")]
 pub use lua_extractor::LuaExtractor;
 #[cfg(feature = "lang-markdown")]
@@ -157,10 +165,14 @@ pub use perl_extractor::PerlExtractor;
 pub use qbasic_extractor::QBasicExtractor;
 #[cfg(feature = "lang-qbasic")]
 pub use quickbasic_extractor::QuickBasicExtractor;
+#[cfg(feature = "lang-quint")]
+pub use quint_extractor::QuintExtractor;
 #[cfg(feature = "lang-r")]
 pub use r_extractor::RExtractor;
 #[cfg(feature = "lang-sql")]
 pub use sql_extractor::SqlExtractor;
+#[cfg(feature = "lang-toml")]
+pub use toml_extractor::TomlExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
 
@@ -253,6 +265,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(QBasicExtractor));
         #[cfg(feature = "lang-qbasic")]
         extractors.push(Box::new(QuickBasicExtractor));
+        #[cfg(feature = "lang-quint")]
+        extractors.push(Box::new(QuintExtractor));
         #[cfg(feature = "lang-dockerfile")]
         extractors.push(Box::new(DockerfileExtractor));
         #[cfg(feature = "lang-glsl")]
@@ -277,6 +291,10 @@ impl LanguageRegistry {
         extractors.push(Box::new(ElixirExtractor));
         #[cfg(feature = "lang-fsharp")]
         extractors.push(Box::new(FSharpExtractor));
+        #[cfg(feature = "lang-lean")]
+        extractors.push(Box::new(LeanExtractor));
+        #[cfg(feature = "lang-toml")]
+        extractors.push(Box::new(TomlExtractor));
 
         Self { extractors }
     }

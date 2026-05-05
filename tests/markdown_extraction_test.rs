@@ -215,3 +215,45 @@ fn test_markdown_handles_header_with_punctuation() {
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].name, "Hello, World! (2024)");
 }
+
+#[test]
+fn test_markdown_link_inside_heading_emits_uses_edge() {
+    // `## See [main](src/main.rs)` — the link inside the heading should
+    // be captured as a Uses edge parented to that heading.
+    let source = "## See [main](src/main.rs)\n";
+    let result = MarkdownExtractor.extract("README.md", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Uses)
+        .collect();
+    assert_eq!(
+        uses_edges.len(),
+        1,
+        "expected 1 Uses edge for link in heading"
+    );
+
+    // The edge should be parented to the heading, not the file.
+    let heading = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Module)
+        .expect("heading module node");
+    assert_eq!(uses_edges[0].source, heading.id);
+}
+
+#[test]
+fn test_markdown_link_in_heading_does_not_double_count_body_links() {
+    // A heading with a link, plus a body paragraph with another link,
+    // produces exactly two Uses edges — one per link.
+    let source = "# [foo](src/foo.rs)\n\nSee also [bar](src/bar.rs).\n";
+    let result = MarkdownExtractor.extract("README.md", source);
+    let uses_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Uses)
+        .collect();
+    assert_eq!(uses_edges.len(), 2);
+}

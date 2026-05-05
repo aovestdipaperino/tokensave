@@ -1,14 +1,10 @@
 /// Tree-sitter based Markdown source code extractor.
 ///
-/// Markdown is parsed with two cooperating tree-sitter grammars:
-/// - the **block** grammar (`tree_sitter_md::LANGUAGE`) for document
-///   structure (headings, paragraphs, code blocks);
-/// - the **inline** grammar (`tree_sitter_md::INLINE_LANGUAGE`) for the
-///   contents of paragraphs and headings (links, emphasis, code spans).
-///
-/// We walk the block tree, recurse into `inline` content nodes by re-parsing
-/// their text with the inline grammar, then look for `inline_link` nodes
-/// to emit `Uses` edges to referenced source files.
+/// Uses the vendored unified `tree-sitter-markdown` grammar, which parses
+/// both block (headings, paragraphs, code blocks) and inline (links,
+/// emphasis, code spans) constructs in a single tree. We walk that tree
+/// once: `atx_heading` nodes produce `Module` nodes, and `link` nodes
+/// emit `Uses` edges to referenced source files.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -89,24 +85,10 @@ impl MarkdownExtractor {
             .node_stack
             .push((file_path.to_string(), file_node_id, 0));
 
-        let mut inline_parser = match Self::make_inline_parser() {
-            Ok(p) => p,
-            Err(_) => {
-                state.node_stack.pop();
-                return ExtractionResult {
-                    nodes: state.nodes,
-                    edges: state.edges,
-                    unresolved_refs: Vec::new(),
-                    errors: Vec::new(),
-                    duration_ms: start.elapsed().as_millis() as u64,
-                };
-            }
-        };
-
-        match Self::parse_block(source) {
+        match Self::parse(source) {
             Ok(tree) => {
                 let root = tree.root_node();
-                Self::visit_block(&mut state, root, &mut inline_parser);
+                Self::visit(&mut state, root);
             }
             Err(_msg) => {
                 // Parse failed; skip extraction rather than creating a self-loop.
@@ -124,78 +106,33 @@ impl MarkdownExtractor {
         }
     }
 
-    fn parse_block(source: &str) -> Result<Tree, String> {
+    fn parse(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
         parser
             .set_language(&tokensave_large_treesitters::markdown::LANGUAGE.into())
-            .map_err(|e| format!("failed to load markdown block grammar: {e}"))?;
+            .map_err(|e| format!("failed to load markdown grammar: {e}"))?;
         parser
             .parse(source, None)
-            .ok_or_else(|| "tree-sitter block parse returned None".to_string())
+            .ok_or_else(|| "tree-sitter parse returned None".to_string())
     }
 
-    fn make_inline_parser() -> Result<Parser, String> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tokensave_large_treesitters::markdown::INLINE_LANGUAGE.into())
-            .map_err(|e| format!("failed to load markdown inline grammar: {e}"))?;
-        Ok(parser)
-    }
-
-    /// Walks the block tree. Headings produce `Module` nodes; `inline`
-    /// content nodes are re-parsed with the inline grammar to find links.
-    fn visit_block(state: &mut ExtractionState, node: TsNode<'_>, inline_parser: &mut Parser) {
-        let kind = node.kind();
-        match kind {
+    /// Walks the unified markdown tree. `atx_heading` nodes become `Module`
+    /// nodes; `link` nodes emit `Uses` edges. All other nodes are descended
+    /// into so links nested inside paragraphs, list items, etc. are found.
+    fn visit(state: &mut ExtractionState, node: TsNode<'_>) {
+        match node.kind() {
             "atx_heading" => Self::visit_heading(state, node),
             // TODO: setext_heading (H1\n===, H2\n---).
-            "inline" => Self::visit_inline_content(state, node, inline_parser),
-            _ => Self::visit_block_children(state, node, inline_parser),
+            "link" => Self::visit_link(state, node),
+            _ => Self::visit_children(state, node),
         }
     }
 
-    fn visit_block_children(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        inline_parser: &mut Parser,
-    ) {
+    fn visit_children(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                Self::visit_block(state, cursor.node(), inline_parser);
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Re-parses an `inline` content node with the inline grammar and walks
-    /// the result for `inline_link` nodes. Line numbers from the inline tree
-    /// are local to the inline source — we add the block-tree row offset so
-    /// emitted edges point back to the correct line in the original file.
-    fn visit_inline_content(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        inline_parser: &mut Parser,
-    ) {
-        let text = state.node_text(node);
-        let Some(tree) = inline_parser.parse(&text, None) else {
-            return;
-        };
-        let row_offset = node.start_position().row as u32;
-        Self::walk_inline(state, tree.root_node(), row_offset);
-    }
-
-    fn walk_inline(state: &mut ExtractionState, node: TsNode<'_>, row_offset: u32) {
-        if node.kind() == "inline_link" {
-            Self::visit_inline_link(state, node, row_offset);
-            return;
-        }
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                Self::walk_inline(state, cursor.node(), row_offset);
+                Self::visit(state, cursor.node());
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -214,10 +151,11 @@ impl MarkdownExtractor {
             })
             .clamp(1, 6);
 
-        // The heading title is in the `inline` child (tree-sitter-md 0.5).
+        // The heading title lives in the `heading_content` child of an
+        // `atx_heading` in the vendored unified markdown grammar.
         let title_node = node
             .children(&mut node.walk())
-            .find(|n| n.kind() == "inline")
+            .find(|n| n.kind() == "heading_content")
             .map(|n| state.node_text(n).trim().to_string())
             .unwrap_or_default();
 
@@ -280,12 +218,20 @@ impl MarkdownExtractor {
 
         state.nodes.push(node_obj);
         state.node_stack.push((title_node, id, level));
+
+        // Recurse into the heading so links inside it (e.g.
+        // `## See [main](src/main.rs)`) become `Uses` edges parented to
+        // the heading we just pushed. Links lower down in the document
+        // use whichever heading is on top of `node_stack` when they're
+        // visited, which is the same heading until a sibling/larger
+        // heading pops it.
+        Self::visit_children(state, node);
     }
 
-    /// Emits a `Uses` edge for an inline link whose destination references a
-    /// source file. External (`http(s)://`) and non-code-extension links are
-    /// skipped to avoid low-signal edges.
-    fn visit_inline_link(state: &mut ExtractionState, node: TsNode<'_>, row_offset: u32) {
+    /// Emits a `Uses` edge for a markdown link whose destination references
+    /// a source file. External (`http(s)://`) and non-code-extension links
+    /// are skipped to avoid low-signal edges.
+    fn visit_link(state: &mut ExtractionState, node: TsNode<'_>) {
         let Some(url_node) = node
             .children(&mut node.walk())
             .find(|n| n.kind() == "link_destination")
@@ -311,9 +257,7 @@ impl MarkdownExtractor {
                 source: parent_id.clone(),
                 target: target_id,
                 kind: EdgeKind::Uses,
-                // The inline tree uses local rows; add the offset of the
-                // host `inline` node to map back to the original file.
-                line: Some(node.start_position().row as u32 + row_offset),
+                line: Some(node.start_position().row as u32),
             });
         }
     }
