@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+
+### Changed
+- **Copilot MCP server now passes the workspace folder to `serve`** — both the VS Code (`mcp.servers.tokensave`) and the Copilot CLI (`mcpServers.tokensave`) registrations now launch the daemon as `tokensave serve -p ${workspaceFolder}` instead of plain `tokensave serve`. This lets the MCP server scope its index to the active workspace automatically without requiring a manual `-p` flag.
+- **Copilot agent args validation tightened** — tests for `CopilotIntegration` now verify that `"serve"` is strictly the first argument and that all remaining args are limited to `-p` / `${workspaceFolder}`. This prevents silent regressions where extra or reordered flags could be injected into the MCP server launch command.
+
 ### Fixed
 - **Foreign-key violations during incremental sync now point at the recovery path** — when an extractor produces an edge whose source or target is not in the same file's node set, `tokensave sync` would die with `failed to insert edge: SQLite failure: FOREIGN KEY constraint failed` and no guidance. Full re-index masks this because bulk load disables FK enforcement, so the top-level error handler now detects this specific failure and suggests `tokensave sync -f`.
 - **Spinner no longer leaks on early exit** — added `Drop` for `Spinner` so when `?` propagates an error mid-sync the worker thread is joined, the line is cleared, and the cursor is restored. Previously the cursor stayed hidden after a failed sync.
