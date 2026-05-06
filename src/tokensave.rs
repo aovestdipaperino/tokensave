@@ -1598,7 +1598,10 @@ impl TokenSave {
         let mut new_lines: Vec<&str> = lines[..insert_idx].to_vec();
         new_lines.push(content);
         new_lines.extend_from_slice(&lines[insert_idx..]);
-        let modified = new_lines.join("\n");
+        let mut modified = new_lines.join("\n");
+        if source.ends_with('\n') {
+            modified.push('\n');
+        }
 
         tokio::fs::write(&abs_path, &modified)
             .await

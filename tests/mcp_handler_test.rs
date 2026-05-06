@@ -1788,6 +1788,10 @@ async fn test_insert_at_string_anchor_before() {
     assert_eq!(parsed["success"], true);
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(
+        content.ends_with('\n'),
+        "trailing newline must be preserved"
+    );
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines[0], "line one");
     assert_eq!(lines[1], "inserted line");
@@ -1831,6 +1835,10 @@ async fn test_insert_at_line_number() {
     assert_eq!(parsed["anchor_line"], 2);
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(
+        content.ends_with('\n'),
+        "trailing newline must be preserved"
+    );
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines[0], "line one");
     assert_eq!(lines[1], "line two");
@@ -1907,6 +1915,47 @@ async fn test_insert_at_ambiguous_anchor() {
         .as_str()
         .unwrap()
         .contains("matches 2 lines"));
+}
+
+// Regression: insert_at must not strip trailing newline (#57)
+#[tokio::test]
+async fn test_insert_at_preserves_trailing_newline() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    let original = "fn hello() {}\n\nfn world() {}\n";
+    fs::write(project.join("src/lib.rs"), original).unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/lib.rs",
+            "anchor": "fn world",
+            "content": "fn extra() {}",
+            "before": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+
+    let content = fs::read_to_string(project.join("src/lib.rs")).unwrap();
+    assert!(
+        content.ends_with('\n'),
+        "file must end with newline after insert_at, got: {:?}",
+        &content[content.len().saturating_sub(20)..]
+    );
+    assert_eq!(content, "fn hello() {}\n\nfn extra() {}\nfn world() {}\n");
 }
 
 // ---------------------------------------------------------------------------

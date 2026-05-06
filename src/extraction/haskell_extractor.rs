@@ -218,7 +218,6 @@ impl HaskellExtractor {
         let sig_text = Self::first_line(state, node).unwrap_or_default();
         let name = sig_text
             .trim_start_matches("instance")
-            .trim()
             .split_whitespace()
             .take(2)
             .collect::<Vec<_>>()
@@ -250,7 +249,7 @@ impl HaskellExtractor {
         let name = parts
             .iter()
             .skip(1)
-            .find(|p| p.chars().next().map_or(false, |c| c.is_uppercase()))
+            .find(|p| p.chars().next().is_some_and(|c| c.is_uppercase()))
             .copied()
             .unwrap_or("?")
             .to_string();
@@ -320,7 +319,7 @@ impl HaskellExtractor {
                 let child = cursor.node();
                 if matches!(child.kind(), "constructor" | "type" | "name") {
                     let text = state.node_text(child);
-                    if text.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    if text.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return Some(text);
                     }
                 }
@@ -332,6 +331,7 @@ impl HaskellExtractor {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit(
         state: &mut ExtractionState,
         id: String,

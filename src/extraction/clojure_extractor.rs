@@ -204,7 +204,7 @@ impl ClojureExtractor {
         };
         let docstring = Self::extract_string_child(state, node);
         let kind = if is_macro {
-            NodeKind::Function
+            NodeKind::Macro
         } else {
             NodeKind::Function
         };

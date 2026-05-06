@@ -1123,7 +1123,26 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Serve { path } => {
             let original_cwd = std::env::current_dir().ok();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = match ensure_initialized(&project_path).await {
+                Ok(cg) => cg,
+                Err(_) => {
+                    // CWD-based discovery failed (e.g. VS Code launched us from ~).
+                    // Fall back to the global DB's registered projects.
+                    let fallback = resolve_serve_from_global_db().await;
+                    match fallback {
+                        Some(p) => ensure_initialized(&p).await?,
+                        None => {
+                            return Err(tokensave::errors::TokenSaveError::Config {
+                                message: format!(
+                                    "no TokenSave index found at '{}' and no projects registered in the global database — run 'tokensave init' in your project first",
+                                    project_path.display()
+                                ),
+                            }
+                            .into());
+                        }
+                    }
+                }
+            };
 
             // Compute scope prefix: relative path from project root to original cwd
             let scope_prefix = original_cwd.and_then(|cwd| {
@@ -1801,6 +1820,31 @@ async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<To
             project_path.display()
         ),
     })
+}
+
+/// Fallback for `serve`: when CWD-based discovery fails, check the global DB
+/// for registered projects. Returns the single registered project path, or
+/// `None` if zero or multiple projects are registered.
+async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
+    let gdb = tokensave::global_db::GlobalDb::open().await?;
+    let mut paths: Vec<String> = gdb.list_project_paths().await;
+    // Keep only projects whose .tokensave dir still exists on disk.
+    paths.retain(|p| {
+        std::path::Path::new(p)
+            .join(".tokensave/tokensave.db")
+            .exists()
+    });
+    if paths.len() == 1 {
+        Some(std::path::PathBuf::from(paths.remove(0)))
+    } else if paths.len() > 1 {
+        eprintln!("Multiple tokensave projects found — pass -p <path> to select one:");
+        for p in &paths {
+            eprintln!("  {p}");
+        }
+        None
+    } else {
+        None
+    }
 }
 
 /// Best-effort: register this project in the user-level global DB and
