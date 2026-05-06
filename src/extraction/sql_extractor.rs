@@ -178,7 +178,12 @@ impl SqlExtractor {
                 if child.kind() == "object_reference" {
                     // Grab the last identifier in the reference (unqualified name).
                     let text = state.node_text(child);
-                    let name = text.split('.').next_back().unwrap_or(&text).trim().to_string();
+                    let name = text
+                        .split('.')
+                        .next_back()
+                        .unwrap_or(&text)
+                        .trim()
+                        .to_string();
                     return Some(name);
                 }
                 if !cursor.goto_next_sibling() {

@@ -250,7 +250,7 @@ impl HaskellExtractor {
         let name = parts
             .iter()
             .skip(1)
-            .find(|p| p.chars().next().is_some_and(char::is_uppercase))
+            .find(|p| p.chars().next().is_some_and(|c| c.is_uppercase()))
             .copied()
             .unwrap_or("?")
             .to_string();
@@ -321,7 +321,7 @@ impl HaskellExtractor {
                 let child = cursor.node();
                 if matches!(child.kind(), "constructor" | "type" | "name") {
                     let text = state.node_text(child);
-                    if text.chars().next().is_some_and(char::is_uppercase) {
+                    if text.chars().next().is_some_and(|c| c.is_uppercase()) {
                         return Some(text);
                     }
                 }

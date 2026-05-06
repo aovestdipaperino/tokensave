@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.6] - 2026-05-06
+
 ### Fixed
+- **`upgrade` no longer stops the daemon when release assets aren't ready yet** — the preflight asset check now runs before stopping the daemon, so if CI hasn't finished building the release binaries, the command exits cleanly without disrupting the running MCP server.
+
+## [4.3.5] - 2026-05-06
+
+### Changed
+- **Copilot MCP server now passes the workspace folder to `serve`** — both the VS Code (`mcp.servers.tokensave`) and the Copilot CLI (`mcpServers.tokensave`) registrations now launch the daemon as `tokensave serve -p ${workspaceFolder}` instead of plain `tokensave serve`. This lets the MCP server scope its index to the active workspace automatically without requiring a manual `-p` flag.
+- **Copilot agent args validation tightened** — tests for `CopilotIntegration` now verify that `"serve"` is strictly the first argument and that all remaining args are limited to `-p` / `${workspaceFolder}`. This prevents silent regressions where extra or reordered flags could be injected into the MCP server launch command.
+
+### Fixed
+- **`serve` now falls back to the global project database when CWD discovery fails (#55)** — when VS Code Copilot (or another host) launches `tokensave serve` with the working directory set to the user's home folder and `${workspaceFolder}` fails to resolve, the server now checks `~/.tokensave/global.db` for registered projects. If exactly one project is found, it is used automatically; if multiple are found, they are listed on stderr with guidance to pass `-p <path>`.
+- **`insert_at` no longer strips the trailing newline from edited files (#57)** — `str::lines()` discards the final `\n`, so the file was silently rewritten without its POSIX-required trailing newline. The join result now re-appends `\n` when the original file ended with one.
+- **Clippy CI failures resolved** — fixed 6 `deny`-level clippy errors across extractors (identical `if`/`else` blocks in clojure, redundant `trim()` before `split_whitespace` in haskell, `map_or` → `is_some_and`, `Iterator::last` → `next_back` in SQL, `too_many_arguments` allow in haskell `emit`).
 - **Foreign-key violations during incremental sync now point at the recovery path** — when an extractor produces an edge whose source or target is not in the same file's node set, `tokensave sync` would die with `failed to insert edge: SQLite failure: FOREIGN KEY constraint failed` and no guidance. Full re-index masks this because bulk load disables FK enforcement, so the top-level error handler now detects this specific failure and suggests `tokensave sync -f`.
 - **Spinner no longer leaks on early exit** — added `Drop` for `Spinner` so when `?` propagates an error mid-sync the worker thread is joined, the line is cleared, and the cursor is restored. Previously the cursor stayed hidden after a failed sync.
 

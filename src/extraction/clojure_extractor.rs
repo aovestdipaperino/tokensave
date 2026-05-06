@@ -205,11 +205,11 @@ impl ClojureExtractor {
             return;
         };
         let docstring = Self::extract_string_child(state, node);
-        // Clojure `defn` and `defmacro` both produce Function nodes; the
-        // `is_macro` flag is preserved for callers that may want to
-        // surface the distinction in signatures or future node kinds.
-        let _ = is_macro;
-        let kind = NodeKind::Function;
+        let kind = if is_macro {
+            NodeKind::Macro
+        } else {
+            NodeKind::Function
+        };
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);

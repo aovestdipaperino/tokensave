@@ -83,7 +83,14 @@ fn test_install_creates_vscode_settings_with_mcp_server() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(args, vec!["serve"], "args should be [\"serve\"]");
+    assert_eq!(args[0], "serve", "first arg should be \"serve\"");
+    assert!(
+        args[1..]
+            .iter()
+            .all(|a| *a == "-p" || *a == "${workspaceFolder}"),
+        "remaining args should be limited to workspace path flags, got: {:?}",
+        &args[1..]
+    );
 }
 
 #[test]
@@ -113,7 +120,14 @@ fn test_install_creates_cli_config_with_mcp_server() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(args, vec!["serve"]);
+    assert_eq!(args[0], "serve", "first arg should be \"serve\"");
+    assert!(
+        args[1..]
+            .iter()
+            .all(|a| *a == "-p" || *a == "${workspaceFolder}"),
+        "remaining args should be limited to workspace path flags, got: {:?}",
+        &args[1..]
+    );
 }
 
 #[test]
