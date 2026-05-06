@@ -705,7 +705,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     clippy::expect_used,
     clippy::case_sensitive_file_extension_comparisons,
     clippy::doc_markdown,
-    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_closure_for_method_calls
 )]
 mod tests {
     use super::*;

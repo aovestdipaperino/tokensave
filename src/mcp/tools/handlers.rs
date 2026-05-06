@@ -4795,7 +4795,7 @@ async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Result<ToolRes
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::redundant_closure_for_method_calls,
-    clippy::uninlined_format_args,
+    clippy::uninlined_format_args
 )]
 mod tests {
     use super::super::get_tool_definitions;

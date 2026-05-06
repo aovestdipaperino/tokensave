@@ -4096,6 +4096,7 @@ dependencies = [
 [[package]]
 name = "tokensave-large-treesitters"
 version = "0.4.0"
+source = "git+https://github.com/aovestdipaperino/tokensave-large-treesitters#cac1d9ccf962f9e0ccf43c3c686c3bd1d65b0bba"
 dependencies = [
  "arborium-kotlin",
  "arborium-lean",
