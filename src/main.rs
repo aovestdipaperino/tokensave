@@ -1102,6 +1102,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::hooks::hook_stop().await;
         }
         Commands::Serve { path } => {
+            if std::env::var("DISABLE_TOKENSAVE").as_deref() == Ok("true") {
+                // Allow users to opt out per-project by setting
+                // DISABLE_TOKENSAVE=true in their MCP server config (#19).
+                // The process exits cleanly so the host does not retry.
+                return Ok(());
+            }
             let original_cwd = std::env::current_dir().ok();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = match ensure_initialized(&project_path).await {

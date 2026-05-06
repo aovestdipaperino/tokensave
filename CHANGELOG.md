@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.8] - 2026-05-06
+
+### Added
+- **`DISABLE_TOKENSAVE=true` environment variable to opt out per-project (#19)** — when set in the MCP server configuration, the `serve` command exits cleanly without initializing. This lets users selectively disable tokensave for large projects that consume too much RAM, without removing it from their global agent config.
+
 ## [4.3.7] - 2026-05-06
 
 ### Fixed
