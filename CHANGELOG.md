@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
+## [4.3.5] - 2026-05-06
 
 ### Changed
 - **Copilot MCP server now passes the workspace folder to `serve`** — both the VS Code (`mcp.servers.tokensave`) and the Copilot CLI (`mcpServers.tokensave`) registrations now launch the daemon as `tokensave serve -p ${workspaceFolder}` instead of plain `tokensave serve`. This lets the MCP server scope its index to the active workspace automatically without requiring a manual `-p` flag.
