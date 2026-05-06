@@ -856,11 +856,13 @@ impl TokenSave {
         let sync_extractions: Vec<_> =
             extract_files_isolated(project_root, registry, file_paths.to_vec());
 
-        // Insert into database
+        // Phase 1: insert all nodes (and metadata) so cross-file edges
+        // can reference them. Edges are queued for phase 2 (#58).
+        let mut queued_edges: Vec<&Edge> = Vec::new();
         for (file_path, result, hash, size, mtime) in &sync_extractions {
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
-            self.db.insert_edges(&result.edges).await?;
+            queued_edges.extend(&result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
                     .insert_unresolved_refs(&result.unresolved_refs)
@@ -876,6 +878,14 @@ impl TokenSave {
                 node_count: result.nodes.len() as u32,
             };
             self.db.upsert_file(&file_record).await?;
+        }
+
+        // Phase 2: insert all queued edges now that every node is present.
+        // The conditional INSERT in `insert_edges` silently skips edges
+        // whose endpoints are truly missing (e.g. unindexed files).
+        if !queued_edges.is_empty() {
+            let owned: Vec<Edge> = queued_edges.into_iter().cloned().collect();
+            self.db.insert_edges(&owned).await?;
         }
 
         // Resolve references for any new/changed unresolved refs
@@ -1085,9 +1095,12 @@ impl TokenSave {
         let sync_extractions: Vec<_> =
             extract_files_isolated(project_root, registry, to_index.clone());
 
+        // Phase 1: insert all nodes (and metadata) so cross-file edges
+        // can reference them. Edges are queued for phase 2 (#58).
         let total = sync_extractions.len();
         let mut total_nodes = 0usize;
         let mut total_edges = 0usize;
+        let mut queued_edges: Vec<&Edge> = Vec::new();
         for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
             on_progress(idx + 1, total, file_path);
 
@@ -1096,7 +1109,7 @@ impl TokenSave {
 
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
-            self.db.insert_edges(&result.edges).await?;
+            queued_edges.extend(&result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
                     .insert_unresolved_refs(&result.unresolved_refs)
@@ -1113,6 +1126,13 @@ impl TokenSave {
             };
             self.db.upsert_file(&file_record).await?;
         }
+
+        // Phase 2: insert all queued edges now that every node is present.
+        if !queued_edges.is_empty() {
+            let owned: Vec<Edge> = queued_edges.into_iter().cloned().collect();
+            self.db.insert_edges(&owned).await?;
+        }
+
         if !to_index.is_empty() {
             on_verbose(&format!(
                 "indexed {} files ({} nodes, {} edges) in {:.1}s",

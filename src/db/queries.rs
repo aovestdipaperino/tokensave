@@ -605,11 +605,14 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 impl Database {
-    /// Inserts a single edge.
+    /// Inserts a single edge, skipping silently if either endpoint is missing.
     pub async fn insert_edge(&self, edge: &Edge) -> Result<()> {
         self.conn()
             .execute(
-                "INSERT OR IGNORE INTO edges (source, target, kind, line) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR IGNORE INTO edges (source, target, kind, line) \
+                 SELECT ?1, ?2, ?3, ?4 \
+                 WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?1) \
+                   AND EXISTS (SELECT 1 FROM nodes WHERE id = ?2)",
                 params![
                     edge.source.as_str(),
                     edge.target.as_str(),
@@ -626,6 +629,10 @@ impl Database {
     }
 
     /// Inserts a batch of edges inside a single transaction.
+    ///
+    /// Edges whose source or target node does not yet exist are silently
+    /// skipped (#58). They will be picked up on a future sync once the
+    /// referenced file is indexed.
     pub async fn insert_edges(&self, edges: &[Edge]) -> Result<()> {
         if edges.is_empty() {
             return Ok(());
@@ -639,9 +646,17 @@ impl Database {
                 operation: "insert_edges".to_string(),
             })?;
 
+        // Conditional INSERT: only insert when both endpoints exist in
+        // `nodes`. This avoids FK violations during incremental sync
+        // when an edge references a node from a not-yet-indexed file.
         let stmt = self
             .conn()
-            .prepare("INSERT OR IGNORE INTO edges (source,target,kind,line) VALUES (?1,?2,?3,?4)")
+            .prepare(
+                "INSERT OR IGNORE INTO edges (source, target, kind, line) \
+                 SELECT ?1, ?2, ?3, ?4 \
+                 WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?1) \
+                   AND EXISTS (SELECT 1 FROM nodes WHERE id = ?2)",
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),

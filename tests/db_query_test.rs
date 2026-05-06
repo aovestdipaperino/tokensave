@@ -189,6 +189,237 @@ async fn test_insert_edges_empty() {
 }
 
 // -------------------------------------------------------------------------
+// insert_edges — missing-node scenarios (#58)
+// -------------------------------------------------------------------------
+
+/// Both source and target are missing — edge must be silently skipped.
+#[tokio::test]
+async fn test_insert_edges_both_endpoints_missing() {
+    let (db, _dir) = setup_db().await;
+
+    let edges = vec![sample_edge("ghost-a", "ghost-b", EdgeKind::Calls)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing endpoints");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "edge with two missing endpoints must be skipped");
+}
+
+/// Source exists but target is missing — edge must be skipped.
+#[tokio::test]
+async fn test_insert_edges_missing_target() {
+    let (db, _dir) = setup_db().await;
+
+    let node = sample_node("src-ok", "func_a", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edges = vec![sample_edge("src-ok", "no-such-target", EdgeKind::Calls)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing target");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "edge with missing target must be skipped");
+}
+
+/// Target exists but source is missing — edge must be skipped.
+#[tokio::test]
+async fn test_insert_edges_missing_source() {
+    let (db, _dir) = setup_db().await;
+
+    let node = sample_node("tgt-ok", "func_b", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edges = vec![sample_edge("no-such-source", "tgt-ok", EdgeKind::Uses)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing source");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "edge with missing source must be skipped");
+}
+
+/// Mixed batch: some edges valid, some with missing endpoints.
+/// Valid edges must be inserted; invalid ones silently skipped.
+#[tokio::test]
+async fn test_insert_edges_mixed_valid_and_missing() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("mx-a", "fa", "src/a.rs"),
+        sample_node("mx-b", "fb", "src/a.rs"),
+        sample_node("mx-c", "fc", "src/b.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("mx-a", "mx-b", EdgeKind::Calls),       // valid
+        sample_edge("mx-a", "ghost-1", EdgeKind::Uses),      // missing target
+        sample_edge("ghost-2", "mx-c", EdgeKind::Contains),  // missing source
+        sample_edge("mx-b", "mx-c", EdgeKind::Calls),        // valid
+        sample_edge("ghost-3", "ghost-4", EdgeKind::Uses),    // both missing
+    ];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for mixed batch");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 2, "only edges with both endpoints present must be inserted");
+}
+
+/// Singular insert_edge also skips when target is missing.
+#[tokio::test]
+async fn test_insert_edge_singular_missing_target() {
+    let (db, _dir) = setup_db().await;
+
+    let node = sample_node("se-a", "fa", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("se-a", "missing", EdgeKind::Calls);
+    db.insert_edge(&edge)
+        .await
+        .expect("insert_edge should not fail for missing target");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty());
+}
+
+/// Singular insert_edge also skips when source is missing.
+#[tokio::test]
+async fn test_insert_edge_singular_missing_source() {
+    let (db, _dir) = setup_db().await;
+
+    let node = sample_node("se-b", "fb", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("missing", "se-b", EdgeKind::Uses);
+    db.insert_edge(&edge)
+        .await
+        .expect("insert_edge should not fail for missing source");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty());
+}
+
+/// Singular insert_edge works normally when both endpoints exist.
+#[tokio::test]
+async fn test_insert_edge_singular_valid() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("sv-a", "fa", "src/lib.rs"),
+        sample_node("sv-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("sv-a", "sv-b", EdgeKind::Calls);
+    db.insert_edge(&edge).await.expect("insert_edge failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].source, "sv-a");
+    assert_eq!(all[0].target, "sv-b");
+}
+
+/// Duplicate edges (same source/target/kind) are ignored via INSERT OR IGNORE.
+#[tokio::test]
+async fn test_insert_edges_duplicate_ignored() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("dup-a", "fa", "src/lib.rs"),
+        sample_node("dup-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("dup-a", "dup-b", EdgeKind::Calls),
+        sample_edge("dup-a", "dup-b", EdgeKind::Calls), // duplicate
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1, "duplicate edge must be ignored");
+}
+
+/// Cross-file edges inserted after all nodes are present succeed.
+/// This simulates the incremental sync reordering fix.
+#[tokio::test]
+async fn test_insert_edges_cross_file_after_all_nodes() {
+    let (db, _dir) = setup_db().await;
+
+    // Simulate phase 1: insert nodes from two different files
+    let nodes_file_a = vec![sample_node("cf-a1", "func_a", "src/a.rs")];
+    let nodes_file_b = vec![sample_node("cf-b1", "func_b", "src/b.rs")];
+    db.insert_nodes(&nodes_file_a).await.expect("insert_nodes a failed");
+    db.insert_nodes(&nodes_file_b).await.expect("insert_nodes b failed");
+
+    // Simulate phase 2: insert cross-file edges after all nodes are in
+    let edges = vec![
+        sample_edge("cf-a1", "cf-b1", EdgeKind::Calls), // a.rs -> b.rs
+        sample_edge("cf-b1", "cf-a1", EdgeKind::Uses),   // b.rs -> a.rs
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 2, "cross-file edges must succeed when nodes are present");
+}
+
+/// Large batch with many missing endpoints does not abort the transaction.
+#[tokio::test]
+async fn test_insert_edges_large_batch_with_missing() {
+    let (db, _dir) = setup_db().await;
+
+    // Only insert one node
+    let node = sample_node("lb-0", "f0", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    // Create 100 edges, all referencing missing targets
+    let edges: Vec<Edge> = (0..100)
+        .map(|i| sample_edge("lb-0", &format!("missing-{i}"), EdgeKind::Calls))
+        .collect();
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not abort on large batch with missing endpoints");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "all edges with missing targets must be skipped");
+}
+
+/// Edges with None line values and missing endpoints are handled correctly.
+#[tokio::test]
+async fn test_insert_edges_null_line_with_missing() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("nl-a", "fa", "src/lib.rs"),
+        sample_node("nl-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        Edge {
+            source: "nl-a".to_string(),
+            target: "nl-b".to_string(),
+            kind: EdgeKind::Calls,
+            line: None, // valid, null line
+        },
+        Edge {
+            source: "nl-a".to_string(),
+            target: "missing".to_string(),
+            kind: EdgeKind::Uses,
+            line: None, // missing target, null line
+        },
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1, "only the valid edge should be inserted");
+    assert!(all[0].line.is_none());
+}
+
+// -------------------------------------------------------------------------
 // insert_all (bulk)
 // -------------------------------------------------------------------------
 

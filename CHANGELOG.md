@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.7] - 2026-05-06
+
+### Fixed
+- **Incremental sync no longer aborts on cross-file edge references (#58)** — `insert_edges` now uses a conditional INSERT that silently skips edges whose source or target node does not yet exist in the database. Additionally, both incremental sync loops now insert all nodes first and queue edges for a second pass, so cross-file edges within the same sync batch always find their targets. Previously, `INSERT OR IGNORE` did not suppress FK violations, causing the sync to abort with `FOREIGN KEY constraint failed`.
+
 ## [4.3.6] - 2026-05-06
 
 ### Fixed

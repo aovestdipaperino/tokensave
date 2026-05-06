@@ -372,29 +372,10 @@ async fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
-        if is_edge_fk_violation(&e) {
-            eprintln!();
-            eprintln!(
-                "\x1b[33mhint:\x1b[0m the incremental sync cannot recover from this on its own. \
-                 Force a full re-index with:"
-            );
-            eprintln!("\n  \x1b[1mtokensave sync -f\x1b[0m\n");
-        }
         process::exit(1);
     }
 }
 
-/// Detects the foreign-key violation that incremental `insert_edges` can hit
-/// when an extractor produces an edge whose endpoint is not in the same
-/// extraction's node set. Full re-index masks this because it disables FK
-/// during bulk load, so suggesting `sync -f` actually unblocks the user.
-fn is_edge_fk_violation(err: &tokensave::errors::TokenSaveError) -> bool {
-    matches!(
-        err,
-        tokensave::errors::TokenSaveError::Database { message, operation }
-            if operation == "insert_edges" && message.contains("FOREIGN KEY constraint failed")
-    )
-}
 
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     let command = match cli.command {
