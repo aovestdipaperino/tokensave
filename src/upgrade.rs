@@ -501,19 +501,24 @@ fn replace_for_scoop(new_exe: &Path, _new_version: &str) -> Result<()> {
 // ────────────────────────────────────────────────────────────────────────
 
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
-fn perform_upgrade(version: &str, is_beta: bool, method: &InstallMethod) -> Result<()> {
+/// Verifies the release asset exists on GitHub and returns the download URL.
+/// Call this *before* stopping the daemon so we don't disrupt the user when
+/// CI hasn't finished building the release yet.
+fn preflight_asset_check(version: &str, is_beta: bool) -> Result<String> {
     let tag = release_tag(version);
     let expected = asset_name(version, is_beta);
+    eprintln!("  Asset: {expected}");
+    fetch_asset_url(&tag, &expected)
+}
+
+fn perform_upgrade(version: &str, asset_url: &str, method: &InstallMethod) -> Result<()> {
     let bin_name = if cfg!(windows) {
         "tokensave.exe"
     } else {
         "tokensave"
     };
 
-    eprintln!("  Asset: {expected}");
-
-    let url = fetch_asset_url(&tag, &expected)?;
-    let tmp = download_and_extract(&url, bin_name)?;
+    let tmp = download_and_extract(asset_url, bin_name)?;
 
     let label = match method {
         InstallMethod::Brew => " (Homebrew Cellar)",
@@ -584,13 +589,16 @@ pub fn run_upgrade() -> Result<String> {
 
     eprintln!("Upgrading v{current} → v{latest}...");
 
+    // Verify the binary asset exists before disrupting the daemon.
+    let asset_url = preflight_asset_check(latest, is_beta)?;
+
     let daemon_was_running = daemon::running_daemon_pid().is_some();
     if daemon_was_running {
         eprintln!("  Stopping daemon...");
         daemon::stop().ok();
     }
 
-    let result = perform_upgrade(latest, is_beta, &method);
+    let result = perform_upgrade(latest, &asset_url, &method);
 
     match result {
         Ok(()) => {
@@ -661,13 +669,16 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 
     eprintln!("  Target: v{latest}");
 
+    // Verify the binary asset exists before disrupting the daemon.
+    let asset_url = preflight_asset_check(&latest, target_is_beta)?;
+
     let daemon_was_running = daemon::running_daemon_pid().is_some();
     if daemon_was_running {
         eprintln!("  Stopping daemon...");
         daemon::stop().ok();
     }
 
-    let result = perform_upgrade(&latest, target_is_beta, &method);
+    let result = perform_upgrade(&latest, &asset_url, &method);
 
     match result {
         Ok(()) => {
