@@ -671,6 +671,30 @@ Large projects take longer on the first full index.
 - Use `tokensave sync` (not `--force`) for day-to-day updates
 - The background daemon handles sync automatically
 
+### Disabling tokensave for specific projects
+
+If a project is too large and tokensave uses too much RAM, you can disable it per-project by setting `DISABLE_TOKENSAVE=true` in the MCP server environment. The server exits cleanly without initializing.
+
+**Claude Code** — add to your project's `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "tokensave": {
+      "command": "tokensave",
+      "args": ["serve"],
+      "env": {
+        "DISABLE_TOKENSAVE": "true"
+      }
+    }
+  }
+}
+```
+
+**Other agents** — set the environment variable in whatever config your agent uses to launch MCP servers.
+
+You can also set it globally via the shell (`DISABLE_TOKENSAVE=true claude`), but this disables tokensave for every project in the session.
+
 ---
 
 ## Origin
