@@ -17,11 +17,20 @@ use crate::types::*;
 /// `file_path(4)`, `start_line(5)`, `end_line(6)`, `start_column(7)`, `end_column(8)`,
 /// docstring(9), signature(10), visibility(11), `is_async(12)`,
 /// branches(13), loops(14), returns(15), `max_nesting(16)`,
-/// `unsafe_blocks(17)`, `unchecked_calls(18)`, assertions(19), `updated_at(20)`.
+/// `unsafe_blocks(17)`, `unchecked_calls(18)`, assertions(19), `updated_at(20)`,
+/// `attrs_start_line(21)`.
 fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
     let kind_str = get_string_lossy(row, 1)?;
     let vis_str = get_string_lossy(row, 11)?;
     let is_async_int = row.get::<i64>(12)?;
+    let start_line = row.get::<u32>(5)?;
+    // Pre-v7 rows may have attrs_start_line == 0 (default); fall back to start_line.
+    let attrs_raw = row.get::<u32>(21).unwrap_or(0);
+    let attrs_start_line = if attrs_raw == 0 {
+        start_line
+    } else {
+        attrs_raw
+    };
 
     Ok(Node {
         id: get_string_lossy(row, 0)?,
@@ -29,7 +38,8 @@ fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
         name: get_string_lossy(row, 2)?,
         qualified_name: get_string_lossy(row, 3)?,
         file_path: get_string_lossy(row, 4)?,
-        start_line: row.get::<u32>(5)?,
+        start_line,
+        attrs_start_line,
         end_line: row.get::<u32>(6)?,
         start_column: row.get::<u32>(7)?,
         end_column: row.get::<u32>(8)?,
@@ -141,8 +151,8 @@ impl Database {
                  start_line, end_line, start_column, end_column,
                  docstring, signature, visibility, is_async,
                  branches, loops, returns, max_nesting,
-                 unsafe_blocks, unchecked_calls, assertions, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                 unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     node.id.as_str(),
                     node.kind.as_str(),
@@ -165,6 +175,7 @@ impl Database {
                     i64::from(node.unchecked_calls),
                     i64::from(node.assertions),
                     node.updated_at as i64,
+                    i64::from(node.attrs_start_line),
                 ],
             )
             .await
@@ -195,7 +206,7 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at) VALUES ",
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line) VALUES ",
             );
             for (i, node) in chunk.iter().enumerate() {
                 if i > 0 {
@@ -243,6 +254,8 @@ impl Database {
                 push_int(&mut sql, i64::from(node.assertions));
                 sql.push(',');
                 push_int(&mut sql, node.updated_at as i64);
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.attrs_start_line));
                 sql.push(')');
             }
             sql.push_str(";\n");
@@ -332,8 +345,8 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"
             )
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -364,6 +377,7 @@ impl Database {
                 i64::from(node.unchecked_calls),
                 i64::from(node.assertions),
                 node.updated_at as i64,
+                i64::from(node.attrs_start_line),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -390,7 +404,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes WHERE id = ?1",
                 params![id],
             )
@@ -425,7 +439,7 @@ impl Database {
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes WHERE id IN ({})",
             placeholders.join(", ")
         );
@@ -451,7 +465,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes WHERE file_path = ?1 ORDER BY start_line",
                 params![file_path],
             )
@@ -471,7 +485,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes WHERE kind = ?1",
                 params![kind.as_str()],
             )
@@ -491,7 +505,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes",
                 (),
             )
@@ -792,6 +806,86 @@ impl Database {
         }
     }
 
+    /// Returns all incoming edges for many target nodes in a single query.
+    ///
+    /// Used by the bulk `callers_for` MCP tool: clients pass a list of item
+    /// IDs and get back, for each id, the set of nodes pointing at it via
+    /// the requested edge kinds. One round-trip replaces N round-trips
+    /// through `get_incoming_edges`.
+    ///
+    /// When `kinds` is empty, all edge kinds are returned.
+    pub async fn get_incoming_edges_bulk(
+        &self,
+        target_ids: &[String],
+        kinds: &[EdgeKind],
+    ) -> Result<Vec<Edge>> {
+        if target_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let target_placeholders: Vec<String> =
+            (1..=target_ids.len()).map(|i| format!("?{i}")).collect();
+        let mut param_values: Vec<libsql::Value> = target_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+
+        let sql = if kinds.is_empty() {
+            format!(
+                "SELECT source, target, kind, line FROM edges WHERE target IN ({})",
+                target_placeholders.join(", ")
+            )
+        } else {
+            let kind_placeholders: Vec<String> = (1..=kinds.len())
+                .map(|i| format!("?{}", target_ids.len() + i))
+                .collect();
+            for k in kinds {
+                param_values.push(libsql::Value::Text(k.as_str().to_string()));
+            }
+            format!(
+                "SELECT source, target, kind, line FROM edges \
+                 WHERE target IN ({}) AND kind IN ({})",
+                target_placeholders.join(", "),
+                kind_placeholders.join(", ")
+            )
+        };
+
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query bulk incoming edges: {e}"),
+                operation: "get_incoming_edges_bulk".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_edge, "get_incoming_edges_bulk").await
+    }
+
+    /// Returns all nodes whose `qualified_name` matches the given string.
+    ///
+    /// Multiple rows can share a qualified name (overloads, generic
+    /// specialisations, separate `impl Trait for T` blocks). Uses the
+    /// `idx_nodes_qualified_name` index for cross-run lookups by name,
+    /// independent of content-hash IDs that change on edits.
+    pub async fn get_nodes_by_qualified_name(&self, qname: &str) -> Result<Vec<Node>> {
+        let sql = "SELECT id, kind, name, qualified_name, file_path,
+                          start_line, end_line, start_column, end_column,
+                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
+                   FROM nodes
+                   WHERE qualified_name = ?1";
+        let mut rows =
+            self.conn()
+                .query(sql, params![qname])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query by qualified_name: {e}"),
+                    operation: "get_nodes_by_qualified_name".to_string(),
+                })?;
+
+        collect_rows(&mut rows, row_to_node, "get_nodes_by_qualified_name").await
+    }
+
     /// Returns nodes ranked by edge count for a given edge kind and direction,
     /// optionally filtered by node kind.
     ///
@@ -843,7 +937,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
                     COUNT(*) AS cnt
              FROM edges e
              JOIN nodes n ON {join_col} = n.id
@@ -873,7 +967,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let count = row.get::<u64>(21).map_err(|e| TokenSaveError::Database {
+            let count = row.get::<u64>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read count column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -915,7 +1009,7 @@ impl Database {
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at,
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line,
                     (end_line - start_line + 1) AS lines
              FROM nodes
              {where_clause}
@@ -943,7 +1037,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let lines = row.get::<u32>(21).map_err(|e| TokenSaveError::Database {
+            let lines = row.get::<u32>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read lines column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1045,7 +1139,7 @@ impl Database {
              )
              SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
                     MAX(h.depth) AS max_depth
              FROM hierarchy h
              JOIN nodes n ON h.leaf_id = n.id
@@ -1074,7 +1168,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let depth = row.get::<u64>(21).map_err(|e| TokenSaveError::Database {
+            let depth = row.get::<u64>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read depth column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1225,7 +1319,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
                     (n.end_line - n.start_line + 1) AS lines,
                     COALESCE(out_calls.cnt, 0) AS fan_out,
                     COALESCE(in_calls.cnt, 0) AS fan_in,
@@ -1258,19 +1352,19 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let lines = row.get::<u32>(21).map_err(|e| TokenSaveError::Database {
+            let lines = row.get::<u32>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read lines: {e}"),
                 operation: op.to_string(),
             })?;
-            let fan_out = row.get::<u64>(22).map_err(|e| TokenSaveError::Database {
+            let fan_out = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fan_out: {e}"),
                 operation: op.to_string(),
             })?;
-            let fan_in = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
+            let fan_in = row.get::<u64>(24).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fan_in: {e}"),
                 operation: op.to_string(),
             })?;
-            let score = row.get::<u64>(24).map_err(|e| TokenSaveError::Database {
+            let score = row.get::<u64>(25).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read score: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1293,7 +1387,7 @@ impl Database {
             Some(prefix) => (
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes
                  WHERE visibility = 'public'
                    AND (docstring IS NULL OR docstring = '')
@@ -1310,7 +1404,7 @@ impl Database {
             None => (
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes
                  WHERE visibility = 'public'
                    AND (docstring IS NULL OR docstring = '')
@@ -1351,7 +1445,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
                     SUM(CASE WHEN c.kind IN ('method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
                     SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
@@ -1385,15 +1479,15 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let methods = row.get::<u64>(21).map_err(|e| TokenSaveError::Database {
+            let methods = row.get::<u64>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read methods: {e}"),
                 operation: op.to_string(),
             })?;
-            let fields = row.get::<u64>(22).map_err(|e| TokenSaveError::Database {
+            let fields = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fields: {e}"),
                 operation: op.to_string(),
             })?;
-            let total = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
+            let total = row.get::<u64>(24).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read total: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1733,7 +1827,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                  FROM nodes
                  WHERE name LIKE ?1 OR qualified_name LIKE ?1 OR docstring LIKE ?1 OR signature LIKE ?1
                  LIMIT ?2",
@@ -1766,7 +1860,7 @@ impl Database {
             .query(
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
                     bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0) AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
@@ -1790,7 +1884,7 @@ impl Database {
                 message: format!("failed to map search result: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
-            let rank: f64 = row.get::<f64>(21).map_err(|e| TokenSaveError::Database {
+            let rank: f64 = row.get::<f64>(22).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read rank: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
@@ -1854,7 +1948,7 @@ impl Database {
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async,
                     branches, loops, returns, max_nesting,
-                    unsafe_blocks, unchecked_calls, assertions, updated_at
+                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
              WHERE LOWER(name) IN ({})
              LIMIT ?{}",
@@ -2100,7 +2194,7 @@ impl Database {
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async,
                     branches, loops, returns, max_nesting,
-                    unsafe_blocks, unchecked_calls, assertions, updated_at
+                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
              WHERE file_path LIKE ?1 || '%' AND kind IN ({})
              ORDER BY file_path, start_line",

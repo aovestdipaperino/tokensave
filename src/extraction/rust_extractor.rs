@@ -91,6 +91,7 @@ impl RustExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -202,6 +203,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -235,6 +237,27 @@ impl RustExtractor {
 
         // Extract attribute annotations (e.g. #[test], #[inline]).
         Self::extract_annotations_from_modifiers(state, node, &id);
+
+        // Emit TypeOf refs for parameter types and Returns refs for the return
+        // type. Lets refactoring tools cluster items "anchored on T" without
+        // walking source again.
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if let Some(ty) = child.child_by_field_name("type") {
+                        Self::emit_type_refs(state, ty, &id, EdgeKind::TypeOf);
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(ret) = node.child_by_field_name("return_type") {
+            Self::emit_type_refs(state, ret, &id, EdgeKind::Returns);
+        }
     }
 
     /// Extract a struct node and its fields.
@@ -257,6 +280,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -318,6 +342,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -378,6 +403,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -442,6 +468,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -519,6 +546,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -579,6 +607,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -629,6 +658,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -679,6 +709,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -727,6 +758,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -965,6 +997,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -987,10 +1020,15 @@ impl RustExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
+        }
+
+        // Emit TypeOf refs for the field's declared type.
+        if let Some(type_node) = node.child_by_field_name("type") {
+            Self::emit_type_refs(state, type_node, &id, EdgeKind::TypeOf);
         }
     }
 
@@ -1030,6 +1068,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,
@@ -1162,6 +1201,70 @@ impl RustExtractor {
         }
     }
 
+    /// Returns the line of the earliest preceding doc-comment / attribute
+    /// sibling of `node`, or `node`'s own start line when there is no leading
+    /// block. Walks back over `attribute_item`, `line_comment`, and
+    /// `block_comment` siblings; stops at the first node of any other kind.
+    ///
+    /// Lets refactoring tools select the full span of an item (delete, move,
+    /// rewrite) without losing its leading documentation or attributes.
+    fn compute_attrs_start_line(node: TsNode<'_>) -> u32 {
+        let mut earliest = node.start_position().row as u32;
+        let mut current = node.prev_named_sibling();
+        while let Some(sibling) = current {
+            match sibling.kind() {
+                "attribute_item" | "line_comment" | "block_comment" => {
+                    earliest = sibling.start_position().row as u32;
+                    current = sibling.prev_named_sibling();
+                }
+                _ => break,
+            }
+        }
+        earliest
+    }
+
+    /// Walks a type expression and emits an `UnresolvedRef` of the given kind
+    /// for every named type identifier it contains. For a type like
+    /// `Result<Vec<T>, MyError>` this yields refs for `Result`, `Vec`, `T`,
+    /// and `MyError` — letting the resolver wire them up to declared nodes.
+    fn emit_type_refs(
+        state: &mut ExtractionState,
+        type_node: TsNode<'_>,
+        from_id: &str,
+        kind: EdgeKind,
+    ) {
+        let mut cursor = type_node.walk();
+        Self::emit_type_refs_walk(state, &mut cursor, from_id, kind);
+    }
+
+    fn emit_type_refs_walk(
+        state: &mut ExtractionState,
+        cursor: &mut tree_sitter::TreeCursor<'_>,
+        from_id: &str,
+        kind: EdgeKind,
+    ) {
+        let n = cursor.node();
+        if n.kind() == "type_identifier" || n.kind() == "primitive_type" {
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: from_id.to_string(),
+                reference_name: state.node_text(n),
+                reference_kind: kind,
+                line: n.start_position().row as u32,
+                column: n.start_position().column as u32,
+                file_path: state.file_path.clone(),
+            });
+        }
+        if cursor.goto_first_child() {
+            loop {
+                Self::emit_type_refs_walk(state, cursor, from_id, kind);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.goto_parent();
+        }
+    }
+
     /// Walk previous siblings of a declaration looking for `attribute_item` nodes
     /// and extract annotation usages from each one (skipping `derive` attributes,
     /// which are already handled by `extract_derive_macros`).
@@ -1213,6 +1316,7 @@ impl RustExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: Self::compute_attrs_start_line(node),
             end_line,
             start_column,
             end_column,

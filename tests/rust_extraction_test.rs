@@ -569,3 +569,122 @@ pub struct Config {
         "each AnnotationUsage should have an Annotates unresolved ref"
     );
 }
+
+#[test]
+fn test_attrs_start_line_walks_back_over_doc_comments_and_attrs() {
+    let source = r#"
+/// First doc line.
+/// Second doc line.
+#[inline]
+#[must_use]
+pub fn double(x: i32) -> i32 {
+    x * 2
+}
+
+pub fn no_attrs(y: i32) -> i32 {
+    y
+}
+"#;
+    let result = RustExtractor.extract("doc.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let double = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "double")
+        .expect("double not found");
+    let no_attrs = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "no_attrs")
+        .expect("no_attrs not found");
+
+    // `double` has 2 doc lines + 2 attribute lines preceding `pub fn double`.
+    // Source is 0-indexed by tree-sitter. With the leading newline, the first
+    // doc comment is at row 1 and `pub fn double` is at row 5.
+    assert!(
+        double.attrs_start_line < double.start_line,
+        "attrs_start_line ({}) should be < start_line ({}) when leading docs/attrs present",
+        double.attrs_start_line,
+        double.start_line
+    );
+    assert_eq!(
+        double.start_line - double.attrs_start_line,
+        4,
+        "expected attrs_start_line to walk back over 2 doc + 2 attribute lines"
+    );
+
+    // `no_attrs` has nothing leading it that should count — its blank gap means
+    // the walk stops, so attrs_start_line == start_line.
+    assert_eq!(no_attrs.attrs_start_line, no_attrs.start_line);
+}
+
+#[test]
+fn test_emit_type_refs_for_struct_fields() {
+    let source = r#"
+pub struct Container {
+    pub name: String,
+    pub items: Vec<MyItem>,
+    count: usize,
+}
+"#;
+    let result = RustExtractor.extract("c.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let type_of_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::TypeOf)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        type_of_refs.contains(&"String"),
+        "expected TypeOf ref to String, got {type_of_refs:?}"
+    );
+    assert!(
+        type_of_refs.contains(&"Vec"),
+        "expected TypeOf ref to Vec, got {type_of_refs:?}"
+    );
+    assert!(
+        type_of_refs.contains(&"MyItem"),
+        "expected TypeOf ref to MyItem (inner generic), got {type_of_refs:?}"
+    );
+}
+
+#[test]
+fn test_emit_type_refs_for_function_signatures() {
+    let source = r#"
+pub fn make(name: String, count: usize) -> Result<MyType, MyError> {
+    todo!()
+}
+"#;
+    let result = RustExtractor.extract("f.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let type_of: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::TypeOf)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    let returns: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Returns)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+
+    assert!(
+        type_of.contains(&"String"),
+        "param TypeOf String missing: {type_of:?}"
+    );
+    assert!(
+        returns.contains(&"Result"),
+        "Returns Result missing: {returns:?}"
+    );
+    assert!(
+        returns.contains(&"MyType"),
+        "Returns MyType missing: {returns:?}"
+    );
+    assert!(
+        returns.contains(&"MyError"),
+        "Returns MyError missing: {returns:?}"
+    );
+}

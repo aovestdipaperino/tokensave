@@ -22,6 +22,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         qualified_name: format!("crate::{name}"),
         file_path: file_path.to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,
@@ -377,4 +378,151 @@ async fn test_database_size() {
     let (db, _dir) = setup_db().await;
     let size = db.size().await.expect("size should not fail");
     assert!(size > 0, "database should have non-zero size");
+}
+
+// ---------------------------------------------------------------------------
+// Migration v7: attrs_start_line column add + backfill
+// ---------------------------------------------------------------------------
+//
+// Builds a v6-shaped nodes table directly (no attrs_start_line column), inserts
+// rows with various start_line values, runs the migration runner, and verifies
+// the column now exists with values backfilled from start_line.
+
+#[tokio::test]
+async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("v6.db");
+
+    // Open the DB directly so we can build a v6-shaped schema (no
+    // attrs_start_line column) before running the migration.
+    let lib_db = libsql::Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("build db");
+    let conn = lib_db.connect().expect("connect");
+
+    conn.execute_batch(
+        "CREATE TABLE nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            docstring TEXT,
+            signature TEXT,
+            visibility TEXT NOT NULL DEFAULT 'private',
+            is_async INTEGER NOT NULL DEFAULT 0,
+            branches INTEGER NOT NULL DEFAULT 0,
+            loops INTEGER NOT NULL DEFAULT 0,
+            returns INTEGER NOT NULL DEFAULT 0,
+            max_nesting INTEGER NOT NULL DEFAULT 0,
+            unsafe_blocks INTEGER NOT NULL DEFAULT 0,
+            unchecked_calls INTEGER NOT NULL DEFAULT 0,
+            assertions INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        );
+         PRAGMA user_version = 6;",
+    )
+    .await
+    .expect("v6 schema setup");
+
+    // Two rows: one with a normal start_line, one a file root with start_line=0.
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path,
+                            start_line, end_line, start_column, end_column, updated_at)
+         VALUES ('a', 'function', 'foo', 'crate::foo', 'src/lib.rs', 42, 50, 0, 1, 1000)",
+        (),
+    )
+    .await
+    .expect("insert row a");
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path,
+                            start_line, end_line, start_column, end_column, updated_at)
+         VALUES ('b', 'file', 'src/lib.rs', 'src/lib.rs', 'src/lib.rs', 0, 100, 0, 0, 1000)",
+        (),
+    )
+    .await
+    .expect("insert row b");
+
+    // Run pending migrations — should apply v7.
+    let migrated = tokensave::db::migrations::migrate(&conn)
+        .await
+        .expect("migrate failed");
+    assert!(migrated, "expected v7 migration to run");
+
+    // user_version is now LATEST (= 7).
+    let mut rows = conn
+        .query("PRAGMA user_version", ())
+        .await
+        .expect("read version");
+    let row = rows.next().await.expect("row").expect("some row");
+    let version: i64 = row.get(0).expect("version");
+    assert_eq!(version, 7);
+
+    // attrs_start_line is backfilled from start_line for both rows.
+    // Row a: start_line=42 -> attrs_start_line=42.
+    // Row b: start_line=0  -> attrs_start_line stays 0 (file root, consistent).
+    let mut rows = conn
+        .query(
+            "SELECT id, start_line, attrs_start_line FROM nodes ORDER BY id",
+            (),
+        )
+        .await
+        .expect("select");
+    let r1 = rows.next().await.expect("row").expect("row a missing");
+    assert_eq!(r1.get::<String>(0).expect("id"), "a");
+    assert_eq!(r1.get::<u32>(1).expect("start_line"), 42);
+    assert_eq!(
+        r1.get::<u32>(2).expect("attrs_start_line"),
+        42,
+        "attrs_start_line should backfill from start_line"
+    );
+
+    let r2 = rows.next().await.expect("row").expect("row b missing");
+    assert_eq!(r2.get::<String>(0).expect("id"), "b");
+    assert_eq!(r2.get::<u32>(1).expect("start_line"), 0);
+    assert_eq!(r2.get::<u32>(2).expect("attrs_start_line"), 0);
+
+    // Inserting a fresh row with an explicit attrs_start_line works post-migration.
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path,
+                            start_line, end_line, start_column, end_column, updated_at,
+                            attrs_start_line)
+         VALUES ('c', 'function', 'bar', 'crate::bar', 'src/lib.rs', 60, 70, 0, 1, 2000, 55)",
+        (),
+    )
+    .await
+    .expect("insert row c");
+    let mut rows = conn
+        .query("SELECT attrs_start_line FROM nodes WHERE id = 'c'", ())
+        .await
+        .expect("select c");
+    let r = rows.next().await.expect("row").expect("row c missing");
+    assert_eq!(r.get::<u32>(0).expect("attrs"), 55);
+}
+
+#[tokio::test]
+async fn test_migrate_is_idempotent_at_latest() {
+    // After Database::initialize creates the latest schema, calling migrate
+    // again must be a no-op (returns false) — guards against accidental
+    // re-runs of v7's ALTER TABLE on an already-migrated DB.
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("idem.db");
+    let (db, _) = Database::initialize(&db_path).await.expect("initialize");
+    drop(db);
+
+    let lib_db = libsql::Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("build db");
+    let conn = lib_db.connect().expect("connect");
+
+    let migrated = tokensave::db::migrations::migrate(&conn)
+        .await
+        .expect("migrate");
+    assert!(!migrated, "second migrate should be a no-op");
 }

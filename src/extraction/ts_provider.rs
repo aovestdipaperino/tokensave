@@ -37,10 +37,10 @@ mod tests {
         let keys = [
             "bash", "batch", "c", "c_sharp", "clojure", "cobol", "cpp", "dart",
             "dockerfile", "elixir", "erlang", "fortran", "fsharp", "glsl", "go",
-            "gwbasic", "haskell", "java", "javascript", "julia", "kotlin", "lua",
+            "gwbasic", "haskell", "java", "javascript", "julia", "kotlin", "lean", "lua",
             "msbasic2", "nix", "objc", "ocaml", "pascal", "perl", "php", "powershell",
-            "protobuf", "python", "qbasic", "r", "ruby", "rust", "scala", "sql",
-            "swift", "tsx", "typescript", "vbnet", "zig",
+            "protobuf", "python", "qbasic", "quint", "r", "ruby", "rust", "scala", "sql",
+            "swift", "toml", "tsx", "typescript", "vbnet", "zig",
         ];
         let missing: Vec<&str> = keys
             .iter()

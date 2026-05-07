@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, R_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, R_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -77,6 +77,7 @@ impl RExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -157,13 +158,12 @@ impl RExtractor {
 
         // Extract function name — handle simple identifiers and `pkg::fn` forms.
         let name = match lhs.kind() {
-            "identifier" => state.node_text(lhs),
             "namespace_operator" => {
                 // pkg::fn — use the rightmost identifier
                 lhs.child((lhs.child_count() - 1) as u32)
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| state.node_text(lhs))
+                    .map_or_else(|| state.node_text(lhs), |n| state.node_text(n))
             }
+            // identifier and any other shape: fall back to raw text.
             _ => state.node_text(lhs),
         };
 
@@ -177,7 +177,7 @@ impl RExtractor {
         let metrics = if rhs.child_count() > 0 {
             count_complexity(rhs, &R_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {
@@ -187,6 +187,7 @@ impl RExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,

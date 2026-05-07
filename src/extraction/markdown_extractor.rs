@@ -1,6 +1,10 @@
 /// Tree-sitter based Markdown source code extractor.
 ///
-/// Parses Markdown source files and emits nodes and edges for the code graph.
+/// Uses the vendored unified `tree-sitter-markdown` grammar, which parses
+/// both block (headings, paragraphs, code blocks) and inline (links,
+/// emphasis, code spans) constructs in a single tree. We walk that tree
+/// once: `atx_heading` nodes produce `Module` nodes, and `link` nodes
+/// emit `Uses` edges to referenced source files.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -17,6 +21,9 @@ struct ExtractionState {
     file_path: String,
     source: Vec<u8>,
     timestamp: u64,
+    /// (heading title, node id, level) — heading levels strictly increase
+    /// going *down* the stack. Headings of equal or shallower level pop
+    /// the stack so we always parent to the nearest ancestor heading.
     node_stack: Vec<(String, String, usize)>,
 }
 
@@ -55,6 +62,7 @@ impl MarkdownExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -77,13 +85,13 @@ impl MarkdownExtractor {
             .node_stack
             .push((file_path.to_string(), file_node_id, 0));
 
-        match Self::parse_source(source) {
+        match Self::parse(source) {
             Ok(tree) => {
                 let root = tree.root_node();
-                Self::visit_children(&mut state, root);
+                Self::visit(&mut state, root);
             }
             Err(_msg) => {
-                // Parse failed; skip extraction rather than creating a self-loop
+                // Parse failed; skip extraction rather than creating a self-loop.
             }
         }
 
@@ -98,7 +106,7 @@ impl MarkdownExtractor {
         }
     }
 
-    fn parse_source(source: &str) -> Result<Tree, String> {
+    fn parse(source: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
         parser
             .set_language(&tokensave_large_treesitters::markdown::LANGUAGE.into())
@@ -108,12 +116,23 @@ impl MarkdownExtractor {
             .ok_or_else(|| "tree-sitter parse returned None".to_string())
     }
 
+    /// Walks the unified markdown tree. `atx_heading` nodes become `Module`
+    /// nodes; `link` nodes emit `Uses` edges. All other nodes are descended
+    /// into so links nested inside paragraphs, list items, etc. are found.
+    fn visit(state: &mut ExtractionState, node: TsNode<'_>) {
+        match node.kind() {
+            "atx_heading" => Self::visit_heading(state, node),
+            // TODO: setext_heading (H1\n===, H2\n---).
+            "link" => Self::visit_link(state, node),
+            _ => Self::visit_children(state, node),
+        }
+    }
+
     fn visit_children(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                let child = cursor.node();
-                Self::visit_node(state, child);
+                Self::visit(state, cursor.node());
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -121,45 +140,19 @@ impl MarkdownExtractor {
         }
     }
 
-    fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
-        let kind = node.kind();
-        match kind {
-            "atx_heading" => {
-                Self::visit_heading(state, node);
-            }
-            // TODO: Add support for setext_heading (H1\n===, H2\n---)
-            "link" => {
-                Self::visit_link(state, node);
-            }
-            _ => {
-                Self::visit_children(state, node);
-            }
-        }
-    }
-
     fn visit_heading(state: &mut ExtractionState, node: TsNode<'_>) {
-        // TODO: Count '#' characters in marker text instead of parsing
-        // tree-sitter node kind string (atx_h2_marker -> extract "2").
-        // Counting '#' chars is simpler and more robust.
-        let marker = node
+        // Count `#` characters in the leading marker — robust against
+        // grammar versions that name the marker `atx_h{1..6}_marker`.
+        let level = node
             .children(&mut node.walk())
-            .find(|n| n.kind().starts_with("atx_h") && n.kind().contains("_marker"));
-        let level = marker
-            .as_ref()
+            .find(|n| n.kind().starts_with("atx_h") && n.kind().ends_with("_marker"))
             .map_or(1, |m| {
-                let kind = m.kind();
-                let parts: Vec<&str> = kind.split('_').collect();
-                if parts.len() >= 2 {
-                    parts[1]
-                        .trim_start_matches('h')
-                        .parse::<usize>()
-                        .unwrap_or(1)
-                } else {
-                    1
-                }
+                state.node_text(m).chars().filter(|c| *c == '#').count()
             })
-            .min(6);
+            .clamp(1, 6);
 
+        // The heading title lives in the `heading_content` child of an
+        // `atx_heading` in the vendored unified markdown grammar.
         let title_node = node
             .children(&mut node.walk())
             .find(|n| n.kind() == "heading_content")
@@ -196,6 +189,7 @@ impl MarkdownExtractor {
             qualified_name: qualified_name.clone(),
             file_path: state.file_path.clone(),
             start_line: node.start_position().row as u32,
+            attrs_start_line: node.start_position().row as u32,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -224,17 +218,26 @@ impl MarkdownExtractor {
 
         state.nodes.push(node_obj);
         state.node_stack.push((title_node, id, level));
+
+        // Recurse into the heading so links inside it (e.g.
+        // `## See [main](src/main.rs)`) become `Uses` edges parented to
+        // the heading we just pushed. Links lower down in the document
+        // use whichever heading is on top of `node_stack` when they're
+        // visited, which is the same heading until a sibling/larger
+        // heading pops it.
+        Self::visit_children(state, node);
     }
 
+    /// Emits a `Uses` edge for a markdown link whose destination references
+    /// a source file. External (`http(s)://`) and non-code-extension links
+    /// are skipped to avoid low-signal edges.
     fn visit_link(state: &mut ExtractionState, node: TsNode<'_>) {
-        let url_node = node
+        let Some(url_node) = node
             .children(&mut node.walk())
-            .find(|n| n.kind() == "link_destination");
-
-        let Some(url_node) = url_node else {
+            .find(|n| n.kind() == "link_destination")
+        else {
             return;
         };
-
         let url = state.node_text(url_node);
 
         if url.starts_with("http://") || url.starts_with("https://") {
@@ -243,15 +246,9 @@ impl MarkdownExtractor {
 
         let target_path = url.trim_start_matches("file:");
         let target_ext = target_path.rsplit('.').next().unwrap_or("");
-
         if !is_code_extension(target_ext) {
             return;
         }
-
-        let text_node = node
-            .children(&mut node.walk())
-            .find(|n| n.kind() == "link_text");
-        let _link_text = text_node.map_or_else(|| target_path.to_string(), |n| state.node_text(n));
 
         let target_id = generate_node_id(target_path, &NodeKind::File, target_path, 0);
 

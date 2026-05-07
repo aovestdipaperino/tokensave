@@ -65,6 +65,7 @@ impl ErlangExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -135,7 +136,7 @@ impl ErlangExtractor {
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
         let arity = Self::count_arity(first_clause);
-        let full_name = format!("{}/{}", name, arity);
+        let full_name = format!("{name}/{arity}");
         let qualified_name = format!("{}::{}", state.file_path, full_name);
         let id = generate_node_id(
             &state.file_path,
@@ -151,6 +152,7 @@ impl ErlangExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -209,6 +211,7 @@ impl ErlangExtractor {
             qualified_name: format!("{}::module", state.file_path),
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -247,6 +250,7 @@ impl ErlangExtractor {
             qualified_name: format!("{}::type", state.file_path),
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -307,7 +311,7 @@ impl ErlangExtractor {
         None
     }
 
-    /// Extracts the atom (function name) from the first child of a function_clause.
+    /// Extracts the atom (function name) from the first child of a `function_clause`.
     fn extract_atom_name(state: &ExtractionState, clause: TsNode<'_>) -> Option<String> {
         if let Some(n) = clause.child_by_field_name("name") {
             return Some(state.node_text(n));
@@ -328,7 +332,7 @@ impl ErlangExtractor {
         None
     }
 
-    /// Counts the arity of a function_clause by counting its argument patterns.
+    /// Counts the arity of a `function_clause` by counting its argument patterns.
     fn count_arity(clause: TsNode<'_>) -> usize {
         if let Some(args) = clause.child_by_field_name("args") {
             return args.named_child_count();

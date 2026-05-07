@@ -462,7 +462,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Constructor)
         .collect();
     assert!(
-        ctors.len() >= 1,
+        !ctors.is_empty(),
         "Should have at least one constructor, got {}",
         ctors.len()
     );
@@ -498,7 +498,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Method && n.name == "Destroy")
         .collect();
     assert!(
-        methods.len() >= 1,
+        !methods.is_empty(),
         "Should have at least one destructor-as-method, got {}",
         methods.len()
     );
@@ -951,7 +951,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Method && n.name == "DoSomething")
         .collect();
     assert!(
-        methods.len() >= 1,
+        !methods.is_empty(),
         "Should have at least one Method node for DoSomething"
     );
 }

@@ -85,6 +85,7 @@ impl ProtoExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -180,6 +181,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -241,6 +243,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -292,6 +295,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -349,7 +353,7 @@ impl ProtoExtractor {
 
     /// Extract a field declaration within a message.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        // field -> type, fieldName -> ident, fieldNumber -> intLit
+        // field -> type, fieldName -> ident, `=`, fieldNumber -> intLit
         let name = Self::find_child_by_kind(node, "fieldName")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
@@ -376,6 +380,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -427,6 +432,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -502,6 +508,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -553,6 +560,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -632,6 +640,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -680,7 +689,7 @@ impl ProtoExtractor {
 
     /// Extract a field within a oneof block.
     fn visit_oneof_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        // oneofField -> type, fieldName -> ident, fieldNumber -> intLit
+        // oneof_field -> type, fieldName -> ident, `=`, fieldNumber -> intLit.
         let name = Self::find_child_by_kind(node, "fieldName")
             .and_then(|fn_node| Self::find_child_by_kind(fn_node, "ident"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
@@ -707,6 +716,7 @@ impl ProtoExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,

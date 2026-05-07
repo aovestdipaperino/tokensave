@@ -76,6 +76,7 @@ impl ClojureExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -142,7 +143,7 @@ impl ClojureExtractor {
             "defmacro" => Self::visit_defn(state, node, true),
             "def" | "defonce" => Self::visit_def(state, node),
             "defprotocol" | "defrecord" | "deftype" | "definterface" => {
-                Self::visit_deftype(state, node)
+                Self::visit_deftype(state, node);
             }
             "require" | "use" | "import" => Self::visit_require(state, node),
             _ => Self::visit_children(state, node),
@@ -165,6 +166,7 @@ impl ClojureExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -220,6 +222,7 @@ impl ClojureExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -268,6 +271,7 @@ impl ClojureExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -312,6 +316,7 @@ impl ClojureExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -352,6 +357,7 @@ impl ClojureExtractor {
             qualified_name: format!("{}::require", state.file_path),
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,

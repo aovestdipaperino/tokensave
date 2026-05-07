@@ -311,7 +311,7 @@ fn format_duration_ms(ms: u64) -> String {
         return String::new();
     }
     if ms < 1000 {
-        format!("{}ms", ms)
+        format!("{ms}ms")
     } else {
         format!("{:.1}s", ms as f64 / 1000.0)
     }

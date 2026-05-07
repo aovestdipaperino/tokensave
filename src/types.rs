@@ -233,7 +233,7 @@ impl NodeKind {
 }
 
 /// Kinds of edges in the code graph.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Contains,
     Calls,
@@ -324,6 +324,10 @@ pub struct Node {
     pub qualified_name: String,
     pub file_path: String,
     pub start_line: u32,
+    /// First line of the leading doc-comment / attribute block, or `start_line`
+    /// when no such block exists. Lets refactoring tools select the full span
+    /// of an item (delete, move, rewrite) without losing its documentation.
+    pub attrs_start_line: u32,
     pub end_line: u32,
     pub start_column: u32,
     pub end_column: u32,

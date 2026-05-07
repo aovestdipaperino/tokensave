@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, OCAML_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, OCAML_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -77,6 +77,7 @@ impl OcamlExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -136,7 +137,7 @@ impl OcamlExtractor {
             "open_module" => Self::visit_open(state, node),
             // structure/signature items — recurse to find definitions inside
             "structure_item" | "signature_item" | "structure" | "signature" => {
-                Self::visit_children(state, node)
+                Self::visit_children(state, node);
             }
             _ => {}
         }
@@ -170,8 +171,7 @@ impl OcamlExtractor {
         let is_fn = node.child_by_field_name("parameters").is_some()
             || node
                 .child_by_field_name("body")
-                .map(|b| matches!(b.kind(), "fun_expression" | "function_expression"))
-                .unwrap_or(false);
+                .is_some_and(|b| matches!(b.kind(), "fun_expression" | "function_expression"));
 
         let kind = if is_fn {
             NodeKind::Function
@@ -187,7 +187,7 @@ impl OcamlExtractor {
         let metrics = if is_fn && node.child_count() > 0 {
             count_complexity(node, &OCAML_COMPLEXITY, &state.source)
         } else {
-            Default::default()
+            ComplexityMetrics::default()
         };
 
         let graph_node = Node {
@@ -197,6 +197,7 @@ impl OcamlExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
@@ -253,6 +254,7 @@ impl OcamlExtractor {
                             qualified_name,
                             file_path: state.file_path.clone(),
                             start_line,
+                            attrs_start_line: start_line,
                             end_line: child.end_position().row as u32,
                             start_column: child.start_position().column as u32,
                             end_column: child.end_position().column as u32,
@@ -313,6 +315,7 @@ impl OcamlExtractor {
                             qualified_name,
                             file_path: state.file_path.clone(),
                             start_line,
+                            attrs_start_line: start_line,
                             end_line: child.end_position().row as u32,
                             start_column: child.start_position().column as u32,
                             end_column: child.end_position().column as u32,
@@ -376,6 +379,7 @@ impl OcamlExtractor {
                             qualified_name,
                             file_path: state.file_path.clone(),
                             start_line,
+                            attrs_start_line: start_line,
                             end_line: child.end_position().row as u32,
                             start_column: child.start_position().column as u32,
                             end_column: child.end_position().column as u32,
@@ -429,6 +433,7 @@ impl OcamlExtractor {
             qualified_name: format!("{}::open", state.file_path),
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,

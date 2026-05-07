@@ -27,7 +27,7 @@ fn test_ignore_crate_nested_gitignore_direct() {
         .add_custom_ignore_filename(".gitignore")
         .build()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+        .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
         .filter_map(|e| {
             e.path()
                 .strip_prefix(project)

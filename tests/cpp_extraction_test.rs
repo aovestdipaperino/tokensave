@@ -156,7 +156,7 @@ namespace mylib {
         .filter(|e| e.kind == EdgeKind::Contains && e.source == *ns_id)
         .collect();
     assert!(
-        contains_from_ns.len() >= 1,
+        !contains_from_ns.is_empty(),
         "namespace should contain children, got: {:?}",
         contains_from_ns
     );
@@ -309,7 +309,7 @@ public:
         .filter(|r| r.reference_kind == EdgeKind::Extends)
         .collect();
     assert!(
-        extends_refs.len() >= 1,
+        !extends_refs.is_empty(),
         "should have Extends refs, got: {:?}",
         extends_refs
     );
@@ -563,7 +563,7 @@ int main() {
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .collect();
     assert!(
-        call_refs.len() >= 1,
+        !call_refs.is_empty(),
         "should have call refs for helper, got: {:?}",
         call_refs
     );

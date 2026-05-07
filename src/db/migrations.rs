@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 6;
+const LATEST_VERSION: u32 = 7;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -81,7 +81,8 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             unsafe_blocks INTEGER NOT NULL DEFAULT 0,
             unchecked_calls INTEGER NOT NULL DEFAULT 0,
             assertions INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            attrs_start_line INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS edges (
@@ -250,6 +251,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         4 => migrate_v4(conn).await,
         5 => migrate_v5(conn).await,
         6 => migrate_v6(conn).await,
+        7 => migrate_v7(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -518,6 +520,41 @@ async fn migrate_v6(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v6: failed to create lower(name) index: {e}"),
         operation: "migrate_v6".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V7: attrs_start_line column for full-span item lookups
+// ---------------------------------------------------------------------------
+
+/// Adds `attrs_start_line` to the nodes table. This column captures the first
+/// line of an item's leading doc-comment / attribute block, so that consumers
+/// (refactoring tools, code movers) can select an item's full span including
+/// its documentation rather than guessing where the leading attrs start.
+///
+/// Existing rows are backfilled with `start_line` so behaviour is preserved
+/// for nodes indexed before this migration.
+async fn migrate_v7(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v7: failed to add attrs_start_line column: {e}"),
+        operation: "migrate_v7".to_string(),
+    })?;
+
+    conn.execute(
+        "UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v7: failed to backfill attrs_start_line: {e}"),
+        operation: "migrate_v7".to_string(),
     })?;
 
     Ok(())

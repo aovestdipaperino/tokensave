@@ -700,7 +700,13 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::doc_markdown,
+    clippy::redundant_closure_for_method_calls
+)]
 mod tests {
     use super::*;
 
@@ -1091,7 +1097,7 @@ mod tests {
 
         #[test]
         fn brew_upgrade_renames_version_dir_and_updates_symlink() {
-            let (real, link, tmp) = homebrew_layout();
+            let (_real, link, _tmp) = homebrew_layout();
 
             // Write an "upgraded" binary via the Cellar path
             let canonical = link.canonicalize().unwrap();
@@ -1102,7 +1108,7 @@ mod tests {
             let version_dir = bin_dir.parent().unwrap();
             let formula_dir = version_dir.parent().unwrap();
             let cellar_dir = formula_dir.parent().unwrap();
-            let prefix = cellar_dir.parent().unwrap();
+            let _prefix = cellar_dir.parent().unwrap();
 
             let new_version_dir = formula_dir.join("5.0.0");
             fs::rename(version_dir, &new_version_dir).unwrap();

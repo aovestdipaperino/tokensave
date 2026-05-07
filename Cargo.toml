@@ -31,7 +31,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp"]
+full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-quint", "lang-toml", "lang-lean"]
 
 # Language features (all grammars provided by tokensave-large-treesitters)
 lang-dart = []
@@ -65,6 +65,9 @@ lang-clojure = []
 lang-erlang = []
 lang-elixir = []
 lang-fsharp = []
+lang-quint = []
+lang-toml = []
+lang-lean = []
 test-transport = []
 
 [lib]
@@ -77,7 +80,14 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tokensave-large-treesitters = "0.4.0"
+tokensave-large-treesitters = { version="0.4.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
+# Force tree-sitter-dart 0.2 — 0.1 fails to wrap top-level declarations
+# in `top_level_variable_declaration` / `function_declaration` nodes,
+# breaking the dart extractor and most dart_extraction_test cases.
+# medium-treesitters declares `tree-sitter-dart = "0.1"` which won't
+# pick up 0.2 via SemVer; pulling it directly here forces the lock file
+# to resolve to 0.2 for the whole workspace.
+tree-sitter-dart = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }

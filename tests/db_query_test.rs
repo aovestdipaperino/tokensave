@@ -22,6 +22,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         qualified_name: format!("crate::{name}"),
         file_path: file_path.to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,
@@ -1914,6 +1915,7 @@ async fn test_fts_name_match_outranks_docstring_match() {
         qualified_name: "src/lib.rs::sync_data".to_string(),
         file_path: "src/lib.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 5,
         start_column: 0,
         end_column: 1,
@@ -1940,6 +1942,7 @@ async fn test_fts_name_match_outranks_docstring_match() {
         qualified_name: "src/lib.rs::upload_report".to_string(),
         file_path: "src/lib.rs".to_string(),
         start_line: 10,
+        attrs_start_line: 10,
         end_line: 15,
         start_column: 0,
         end_column: 1,
@@ -1983,6 +1986,7 @@ async fn test_batch_incoming_call_counts() {
             qualified_name: format!("src/lib.rs::{name}"),
             file_path: "src/lib.rs".to_string(),
             start_line: 1,
+            attrs_start_line: 1,
             end_line: 5,
             start_column: 0,
             end_column: 1,
@@ -2089,4 +2093,144 @@ async fn test_non_utf8_signature_does_not_crash() {
     // The invalid bytes are replaced with U+FFFD (replacement character)
     assert!(node.signature.is_some());
     assert!(node.docstring.is_some());
+}
+
+// -------------------------------------------------------------------------
+// get_incoming_edges_bulk
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_returns_all_targets() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("caller_a", "caller_a", "src/lib.rs"),
+        sample_node("caller_b", "caller_b", "src/lib.rs"),
+        sample_node("target_x", "target_x", "src/lib.rs"),
+        sample_node("target_y", "target_y", "src/lib.rs"),
+        sample_node("isolated", "isolated", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("caller_a", "target_x", EdgeKind::Calls),
+        sample_edge("caller_b", "target_x", EdgeKind::Calls),
+        sample_edge("caller_a", "target_y", EdgeKind::Calls),
+        sample_edge("caller_a", "isolated", EdgeKind::Uses),
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let target_ids = vec!["target_x".to_string(), "target_y".to_string()];
+    let result = db
+        .get_incoming_edges_bulk(&target_ids, &[EdgeKind::Calls])
+        .await
+        .expect("get_incoming_edges_bulk failed");
+
+    // 2 callers of target_x + 1 caller of target_y = 3 edges via Calls.
+    assert_eq!(result.len(), 3);
+    assert!(result.iter().all(|e| e.kind == EdgeKind::Calls));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_x" && e.source == "caller_a"));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_x" && e.source == "caller_b"));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_y" && e.source == "caller_a"));
+}
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_empty_kinds_returns_all_kinds() {
+    let (db, _dir) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("a", "a", "src/lib.rs"),
+        sample_node("b", "b", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("a", "b", EdgeKind::Calls),
+        sample_edge("a", "b", EdgeKind::Uses),
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let result = db
+        .get_incoming_edges_bulk(&["b".to_string()], &[])
+        .await
+        .expect("get_incoming_edges_bulk failed");
+
+    // Empty kinds should return both edges.
+    assert_eq!(result.len(), 2);
+}
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_empty_input() {
+    let (db, _dir) = setup_db().await;
+    let result = db
+        .get_incoming_edges_bulk(&[], &[])
+        .await
+        .expect("should not fail on empty input");
+    assert!(result.is_empty());
+}
+
+// -------------------------------------------------------------------------
+// get_nodes_by_qualified_name
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_nodes_by_qualified_name_returns_all_matches() {
+    let (db, _dir) = setup_db().await;
+
+    // Two nodes with the same qualified name (e.g. overloaded methods or
+    // multiple impl blocks). Both should come back.
+    let mut a = sample_node("a", "render", "src/foo.rs");
+    a.qualified_name = "crate::foo::render".to_string();
+    let mut b = sample_node("b", "render", "src/bar.rs");
+    b.qualified_name = "crate::foo::render".to_string();
+    let mut c = sample_node("c", "other", "src/foo.rs");
+    c.qualified_name = "crate::foo::other".to_string();
+
+    db.insert_nodes(&[a, b, c])
+        .await
+        .expect("insert_nodes failed");
+
+    let hits = db
+        .get_nodes_by_qualified_name("crate::foo::render")
+        .await
+        .expect("query failed");
+    assert_eq!(hits.len(), 2);
+    assert!(hits
+        .iter()
+        .all(|n| n.qualified_name == "crate::foo::render"));
+
+    let none = db
+        .get_nodes_by_qualified_name("crate::missing")
+        .await
+        .expect("query failed");
+    assert!(none.is_empty());
+}
+
+// -------------------------------------------------------------------------
+// attrs_start_line round-trip + backfill
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_attrs_start_line_round_trips_through_db() {
+    let (db, _dir) = setup_db().await;
+
+    let mut n = sample_node("n", "documented_fn", "src/lib.rs");
+    n.start_line = 10;
+    // Doc-comment block starts 4 lines above the function signature.
+    n.attrs_start_line = 6;
+    db.insert_node(&n).await.expect("insert failed");
+
+    let fetched = db
+        .get_node_by_id("n")
+        .await
+        .expect("query failed")
+        .expect("node missing");
+    assert_eq!(fetched.start_line, 10);
+    assert_eq!(fetched.attrs_start_line, 6);
 }

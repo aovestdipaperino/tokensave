@@ -444,6 +444,7 @@ impl<'a> ContextBuilder<'a> {
                         qualified_name: String::new(),
                         file_path: current.file_path.clone(),
                         start_line: current.start_line,
+                        attrs_start_line: current.start_line,
                         end_line: new_end,
                         start_column: 0,
                         end_column: 0,
@@ -905,7 +906,7 @@ fn apply_per_file_cap(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -1001,6 +1002,7 @@ mod tests {
                 qualified_name: format!("{file_path}::{name}"),
                 file_path: file_path.to_string(),
                 start_line: 1,
+                attrs_start_line: 1,
                 end_line: 5,
                 start_column: 0,
                 end_column: 1,

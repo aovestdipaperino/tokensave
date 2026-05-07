@@ -65,6 +65,7 @@ impl SqlExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -114,10 +115,10 @@ impl SqlExtractor {
 
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
-            "create_table" => Self::emit_named(state, node, NodeKind::Class),
-            "create_view" => Self::emit_named(state, node, NodeKind::Class),
-            "create_function" => Self::emit_named(state, node, NodeKind::Function),
-            "create_procedure" => Self::emit_named(state, node, NodeKind::Function),
+            "create_table" | "create_view" => Self::emit_named(state, node, NodeKind::Class),
+            "create_function" | "create_procedure" => {
+                Self::emit_named(state, node, NodeKind::Function);
+            }
             _ => Self::visit_children(state, node),
         }
     }
@@ -141,6 +142,7 @@ impl SqlExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,

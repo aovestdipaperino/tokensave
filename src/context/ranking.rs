@@ -103,6 +103,7 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, clippy::uninlined_format_args)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
@@ -117,6 +118,7 @@ mod tests {
                 qualified_name: format!("{}::test_sym", path),
                 file_path: path.to_string(),
                 start_line: 1,
+                attrs_start_line: 1,
                 end_line: 5,
                 start_column: 0,
                 end_column: 1,

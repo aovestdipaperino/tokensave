@@ -32,6 +32,7 @@ fn sample_node(id: &str, name: &str) -> Node {
         qualified_name: format!("crate::{name}"),
         file_path: "src/lib.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,
