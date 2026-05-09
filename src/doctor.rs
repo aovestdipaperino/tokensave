@@ -40,6 +40,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     }
 
     check_global_db(&mut dc);
+    check_stale_stores(&mut dc).await;
     check_user_config(&mut dc);
 
     // Agent-specific health checks
@@ -147,6 +148,67 @@ fn check_global_db(dc: &mut DoctorCounters) {
     } else {
         dc.fail("Could not determine home directory for global DB");
     }
+}
+
+/// Lists projects registered in the global DB whose `.tokensave/` directory
+/// is gone, and offers to purge them. Stale rows are harmless but show up in
+/// `tokensave list --all` and inflate the global tokens-saved count.
+async fn check_stale_stores(dc: &mut DoctorCounters) {
+    use std::io::{IsTerminal, Write};
+
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return;
+    };
+    let stale: Vec<String> = gdb
+        .list_project_paths()
+        .await
+        .into_iter()
+        .filter(|p| !Path::new(p).join(".tokensave/tokensave.db").exists())
+        .collect();
+    if stale.is_empty() {
+        dc.pass("No stale projects in global DB");
+        return;
+    }
+
+    eprintln!(
+        "  \x1b[33m!\x1b[0m {} stale project(s) in global DB (registered but `.tokensave/` is gone):",
+        stale.len()
+    );
+    let preview = stale.len().min(10);
+    for p in &stale[..preview] {
+        dc.info(&format!("  • {p}"));
+    }
+    if stale.len() > preview {
+        dc.info(&format!("  … and {} more", stale.len() - preview));
+    }
+
+    if !std::io::stdin().is_terminal() {
+        dc.warnings += 1;
+        dc.info("    Re-run `tokensave doctor` interactively to purge them.");
+        return;
+    }
+
+    eprint!(
+        "  Purge {} stale row(s) from the global DB? [Y/n] ",
+        stale.len()
+    );
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        dc.warnings += 1;
+        return;
+    }
+    let answer = answer.trim();
+    if !answer.is_empty() && !answer.eq_ignore_ascii_case("y") {
+        dc.warnings += 1;
+        dc.info("Skipped — run again later to purge.");
+        return;
+    }
+
+    for p in &stale {
+        gdb.delete_project(Path::new(p)).await;
+    }
+    dc.pass(&format!("Purged {} stale project(s)", stale.len()));
 }
 
 /// Check user config file.
