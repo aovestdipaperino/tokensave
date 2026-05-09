@@ -327,6 +327,12 @@ enum Commands {
         #[command(subcommand)]
         action: BranchAction,
     },
+    /// Wipe local tokensave DBs (current folder, parents, and children)
+    Wipe {
+        /// Wipe ALL tracked projects so the global DB ends empty
+        #[arg(short, long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1427,6 +1433,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Branch { action } => {
             handle_branch_action(action).await?;
         }
+        Commands::Wipe { all } => {
+            handle_wipe(all).await?;
+        }
     }
     Ok(())
 }
@@ -1656,6 +1665,239 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
         }
     }
     Ok(())
+}
+
+/// Handles the `wipe` and `wipe --all` commands.
+async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
+    use std::collections::HashSet;
+    use std::fs;
+    use std::path::PathBuf;
+
+    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+
+    let targets: Vec<PathBuf> = if all {
+        let gdb = tokensave::global_db::GlobalDb::open().await;
+        let mut paths: Vec<PathBuf> = match gdb {
+            Some(db) => db
+                .list_project_paths()
+                .await
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            None => Vec::new(),
+        };
+        paths.retain(|p| p.join(".tokensave/tokensave.db").exists());
+        paths
+    } else {
+        gather_local_projects(&home_tokensave)
+    };
+
+    if !all && targets.is_empty() {
+        eprintln!(
+            "No tokensave projects found in current folder, parents, or children."
+        );
+        return Ok(());
+    }
+
+    print_flash_warning(all, &targets);
+
+    eprint!("Type \x1b[1;32mgo!\x1b[0m to confirm (anything else aborts): ");
+    io::stderr().flush().ok();
+    let mut answer = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|e| tokensave::errors::TokenSaveError::Config {
+            message: format!("failed to read stdin: {e}"),
+        })?;
+    if answer.trim() != "go!" {
+        eprintln!("\x1b[33mAborted — nothing was wiped.\x1b[0m");
+        return Ok(());
+    }
+
+    let mut removed = 0usize;
+    let mut errors = 0usize;
+    let mut wiped_paths: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    for project_root in &targets {
+        if !seen.insert(project_root.clone()) {
+            continue;
+        }
+        let ts_dir = project_root.join(".tokensave");
+        if !ts_dir.exists() {
+            continue;
+        }
+        match fs::remove_dir_all(&ts_dir) {
+            Ok(()) => {
+                removed += 1;
+                wiped_paths.push(project_root.clone());
+                eprintln!("  \x1b[32m✔\x1b[0m removed {}", ts_dir.display());
+            }
+            Err(e) => {
+                errors += 1;
+                eprintln!("  \x1b[31m✗\x1b[0m {} ({e})", ts_dir.display());
+            }
+        }
+    }
+
+    if all {
+        if let Some(global_dir) = home_tokensave.as_ref() {
+            for ext in ["db", "db-wal", "db-shm"] {
+                let p = global_dir.join(format!("global.{ext}"));
+                let _ = fs::remove_file(&p);
+            }
+            eprintln!(
+                "  \x1b[32m✔\x1b[0m emptied global DB at {}/global.db",
+                global_dir.display()
+            );
+        }
+    } else if !wiped_paths.is_empty() {
+        if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
+            for p in &wiped_paths {
+                gdb.delete_project(p).await;
+            }
+        }
+    }
+
+    eprintln!();
+    let suffix = if errors > 0 {
+        format!(" ({errors} error(s))")
+    } else {
+        String::new()
+    };
+    eprintln!("\x1b[32mWiped {removed} project(s){suffix}.\x1b[0m");
+    Ok(())
+}
+
+/// Returns project roots whose `.tokensave` dir lives in cwd, an ancestor, or a descendant.
+fn gather_local_projects(home_tokensave: &Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    let Ok(cwd) = std::env::current_dir() else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    let is_project_dir = |ts: &Path| -> bool {
+        if let Some(ref skip) = home_tokensave {
+            if ts == skip.as_path() {
+                return false;
+            }
+        }
+        ts.is_dir() && ts.join("tokensave.db").exists()
+    };
+
+    let mut cursor: Option<&Path> = Some(cwd.as_path());
+    while let Some(dir) = cursor {
+        let ts = dir.join(".tokensave");
+        if is_project_dir(&ts) && seen.insert(dir.to_path_buf()) {
+            out.push(dir.to_path_buf());
+        }
+        cursor = dir.parent();
+    }
+
+    find_descendant_tokensave(&cwd, home_tokensave, &mut seen, &mut out);
+
+    out
+}
+
+/// Recursively walks `start` looking for `.tokensave/tokensave.db` projects.
+///
+/// Skips common heavy directories (node_modules, target, .git, etc.) and never
+/// descends into a `.tokensave` once found.
+fn find_descendant_tokensave(
+    start: &Path,
+    home_tokensave: &Option<std::path::PathBuf>,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(start) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if let Some(skip) = home_tokensave {
+            if &path == skip {
+                continue;
+            }
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str == ".tokensave" {
+            if path.join("tokensave.db").exists() {
+                if let Some(parent) = path.parent() {
+                    let pb = parent.to_path_buf();
+                    if seen.insert(pb.clone()) {
+                        out.push(pb);
+                    }
+                }
+            }
+            continue;
+        }
+        if matches!(
+            name_str.as_ref(),
+            "node_modules"
+                | "target"
+                | ".git"
+                | "vendor"
+                | "dist"
+                | "build"
+                | ".next"
+                | ".venv"
+                | "__pycache__"
+        ) {
+            continue;
+        }
+        find_descendant_tokensave(&path, home_tokensave, seen, out);
+    }
+}
+
+/// Prints the big flashing warning shown before a wipe.
+fn print_flash_warning(all: bool, targets: &[std::path::PathBuf]) {
+    let banner = "═".repeat(64);
+    eprintln!();
+    eprintln!("\x1b[1;31m{banner}\x1b[0m");
+    eprintln!("\x1b[1;5;37;41m   ⚠  DESTRUCTIVE ACTION — TOKENSAVE WIPE  ⚠   \x1b[0m");
+    eprintln!("\x1b[1;31m{banner}\x1b[0m");
+    eprintln!();
+    if all {
+        eprintln!(
+            "\x1b[1;31mThis will wipe \x1b[5mALL\x1b[25;1;31m tracked tokensave projects \
+             AND empty the global DB.\x1b[0m"
+        );
+    } else {
+        eprintln!(
+            "\x1b[1;31mThis will wipe local tokensave DBs in the current folder \
+             (parents and children).\x1b[0m"
+        );
+    }
+    eprintln!();
+    if targets.is_empty() {
+        eprintln!("  \x1b[33m(no project .tokensave directories found)\x1b[0m");
+    } else {
+        eprintln!("Targets:");
+        for t in targets {
+            eprintln!("  \x1b[31m✗\x1b[0m {}/.tokensave", t.display());
+        }
+    }
+    if all {
+        if let Some(p) = tokensave::global_db::global_db_path() {
+            eprintln!("  \x1b[31m✗\x1b[0m {} (global DB)", p.display());
+        }
+    }
+    eprintln!();
+    eprintln!("\x1b[1;5;33mThis cannot be undone.\x1b[0m");
+    eprintln!();
 }
 
 fn format_size(bytes: u64) -> String {

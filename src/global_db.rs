@@ -124,6 +124,18 @@ impl GlobalDb {
         Some(total as u64)
     }
 
+    /// Removes a project's row from the global DB. Best-effort.
+    pub async fn delete_project(&self, project_path: &Path) {
+        let path_str = project_path.to_string_lossy().to_string();
+        let _ = self
+            .conn
+            .execute(
+                "DELETE FROM projects WHERE path = ?1",
+                params![path_str],
+            )
+            .await;
+    }
+
     /// Returns all tracked project paths.
     pub async fn list_project_paths(&self) -> Vec<String> {
         let Ok(mut rows) = self.conn.query("SELECT path FROM projects", ()).await else {
