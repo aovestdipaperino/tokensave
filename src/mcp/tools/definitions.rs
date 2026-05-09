@@ -132,6 +132,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_todos(),
         def_read(),
         def_outline(),
+        def_implementations(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1303,6 +1304,35 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_implementations() -> ToolDefinition {
+    def(
+        "tokensave_implementations",
+        "Trait / Method Implementations",
+        "Find every type implementing a given trait, or every body of a given \
+         method name. The 'trait' form returns each implementing type plus the \
+         methods on its impl block. The 'method' form returns every function/ \
+         method named X across the project, grouped by enclosing type when \
+         present. Each result includes file, signature, and the method body.",
+        json!({
+            "type": "object",
+            "properties": {
+                "trait": {
+                    "type": "string",
+                    "description": "Trait name to look up implementations of (e.g. 'LanguageExtractor', 'Display'). Mutually exclusive with 'method'."
+                },
+                "method": {
+                    "type": "string",
+                    "description": "Method or function name to find every implementation of (e.g. 'extensions', 'count_complexity'). Mutually exclusive with 'trait'."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of implementations to return (default: 20, max: 200)"
+                }
+            }
         }),
     )
 }
