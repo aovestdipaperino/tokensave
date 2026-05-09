@@ -11,6 +11,8 @@
 //! commit 3a here; `gopls`, `clangd`, `zls`, `lua-language-server` land in
 //! commit 4. Phase 2 (Node.js servers) and Phase 3 (daemon-kept) follow.
 
+pub mod java;
+pub mod python;
 pub mod rust;
 
 use std::path::{Path, PathBuf};

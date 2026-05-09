@@ -80,6 +80,8 @@ impl LspManager {
             "m" | "mm" => "objc",
             "zig" => "zig",
             "lua" => "lua",
+            "py" | "pyi" => "python",
+            "java" => "java",
             _ => return None,
         })
     }
@@ -221,6 +223,9 @@ mod tests {
             ("foo.m", "objc"),
             ("foo.zig", "zig"),
             ("foo.lua", "lua"),
+            ("foo.py", "python"),
+            ("foo.pyi", "python"),
+            ("Foo.java", "java"),
         ];
         for (name, want) in cases {
             assert_eq!(
@@ -233,7 +238,7 @@ mod tests {
 
     #[test]
     fn language_for_path_unknown_extension_is_none() {
-        assert!(LspManager::language_for_path(std::path::Path::new("foo.py")).is_none());
+        assert!(LspManager::language_for_path(std::path::Path::new("foo.rb")).is_none());
         assert!(LspManager::language_for_path(std::path::Path::new("README.md")).is_none());
         assert!(LspManager::language_for_path(std::path::Path::new("Makefile")).is_none());
     }

@@ -64,8 +64,11 @@ pub async fn run_pass(
         });
     }
 
-    let adapters: Vec<Box<dyn adapters::LspAdapter>> =
-        vec![Box::new(adapters::rust::RustAnalyzerAdapter)];
+    let adapters: Vec<Box<dyn adapters::LspAdapter>> = vec![
+        Box::new(adapters::rust::RustAnalyzerAdapter),
+        Box::new(adapters::python::PythonAdapter),
+        Box::new(adapters::java::JavaAdapter),
+    ];
 
     let mut manager = manager::LspManager::new(project_root);
     let started = manager.start(&adapters).await;
