@@ -14,6 +14,19 @@ fn current_unix_timestamp() -> i64 {
     tokensave::tokensave::current_timestamp()
 }
 
+/// Wires the `--no-lsp` CLI flag to the same `TOKENSAVE_LSP=0` kill switch
+/// the env var exposes. Called from each subcommand handler that accepts
+/// the flag; idempotent and safe to call when `no_lsp` is false.
+fn apply_no_lsp_flag(no_lsp: bool) {
+    if no_lsp {
+        // SAFETY: env mutation is unsafe in newer Rust. Called once at
+        // command dispatch, before any worker threads spawn, so no race.
+        unsafe {
+            std::env::set_var("TOKENSAVE_LSP", "0");
+        }
+    }
+}
+
 /// A self-animating spinner that ticks on a background thread.
 /// Call `set_message` to update what is displayed; the background thread
 /// redraws at ~80 ms intervals. Call `done` to stop and print a final line.
@@ -113,6 +126,10 @@ enum Commands {
         /// Folders to skip during indexing (can be repeated)
         #[arg(long = "skip-folder", num_args = 1..)]
         skip_folders: Vec<String>,
+        /// Skip the LSP resolution pass even if servers are installed.
+        /// Same effect as setting TOKENSAVE_LSP=0 for this invocation.
+        #[arg(long = "no-lsp")]
+        no_lsp: bool,
     },
     /// Incremental sync (project must already be initialized with `tokensave init`)
     Sync {
@@ -130,6 +147,10 @@ enum Commands {
         /// Print per-phase diagnostics (file counts, timings) to help debug slow syncs
         #[arg(short, long)]
         verbose: bool,
+        /// Skip the LSP resolution pass even if servers are installed.
+        /// Same effect as setting TOKENSAVE_LSP=0 for this invocation.
+        #[arg(long = "no-lsp")]
+        no_lsp: bool,
     },
     /// Show project statistics
     Status {
@@ -376,7 +397,6 @@ async fn main() {
     }
 }
 
-
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -464,7 +484,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Init { path, skip_folders } => {
+        Commands::Init {
+            path,
+            skip_folders,
+            no_lsp,
+        } => {
+            apply_no_lsp_flag(no_lsp);
             let project_path = tokensave::config::resolve_path(path);
             if TokenSave::is_initialized(&project_path) {
                 eprintln!(
@@ -505,7 +530,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             skip_folders,
             doctor,
             verbose,
+            no_lsp,
         } => {
+            apply_no_lsp_flag(no_lsp);
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             if !TokenSave::is_initialized(&project_path) {
                 eprintln!(
