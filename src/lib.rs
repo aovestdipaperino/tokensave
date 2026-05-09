@@ -32,6 +32,7 @@ pub mod extraction_worker;
 pub mod global_db;
 pub mod graph;
 pub mod hooks;
+pub mod lsp;
 pub mod mcp;
 pub mod monitor;
 pub mod project_watcher;
