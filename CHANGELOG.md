@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0-beta.2] - 2026-05-09
+
+Bugfix release for the 5.0 beta line. Anyone on v5.0.0-beta.1 with a Rust + C/C++/Obj-C project who ran `tokensave sync` would have hit `Error: database error: failed to end bulk load: SQLite failure: UNIQUE constraint failed: index 'idx_edges_unique'` at the end of the index pass.
+
+### Fixed
+- **Cross-bucket edge dedup during full index** — `index_all_with_progress_verbose` partitioned resolved edges into three buckets (LSP / heuristic / direct) and dedup'd within each bucket only. Cross-bucket duplicates were left to `INSERT OR IGNORE` against the unique index. But `begin_bulk_load` *drops* `idx_edges_unique` for insert performance, so `INSERT OR IGNORE` becomes a no-op deduper during bulk load: duplicates land as real rows. `end_bulk_load` then fails when it tries to recreate the unique index. Replaced the per-bucket dedup with a single `HashSet<(source, target, kind, line)>` walk in priority order — LSP first, heuristic second, direct third — so each tuple is claimed by the highest-priority bucket and the unique index can always be recreated. The two incremental sync paths (`sync_with_progress`, `sync_with_progress_verbose`) were unaffected because they don't drop the unique index.
+
+### Includes
+All [4.3.12] fixes (the beta channel reopen, the Cargo.toml + main.rs nudge retirement, the wipe / list / doctor cleanups carried forward from master).
+
 ## [5.0.0-beta.1] - 2026-05-09
 
 First public preview of the 5.0 line. Tracks the `release5` branch; available on the beta channel only (no crates.io publish).

@@ -738,11 +738,18 @@ impl TokenSave {
             heuristic_edges.len(),
         ));
 
-        // 6. Sort by PK order + dedup edges within each provenance bucket.
-        // Cross-bucket dedup is handled by the (source, target, kind, line)
-        // unique index plus INSERT OR IGNORE: the first insert wins, so
-        // insertion order below establishes provenance precedence
-        // (LSP > heuristic > direct).
+        // 6. Sort by PK order + dedup edges across all three provenance
+        // buckets. The unique index `idx_edges_unique` on
+        // (source, target, kind, COALESCE(line, -1)) is dropped during
+        // bulk load (see begin_bulk_load), so INSERT OR IGNORE is a no-op
+        // deduper here — duplicates land as actual rows and `end_bulk_load`
+        // fails when it tries to recreate the unique index.
+        //
+        // The dedup walks LSP first (highest provenance precedence), then
+        // heuristic, then direct. Each bucket retains only edges whose
+        // (source, target, kind, line) tuple hasn't already been claimed
+        // by a higher-priority bucket. Within-bucket duplicates are
+        // dropped by the same HashSet check.
         all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         let edge_sort = |a: &Edge, b: &Edge| {
             (&a.source, &a.target, a.kind.as_str(), &a.line).cmp(&(
@@ -752,15 +759,17 @@ impl TokenSave {
                 &b.line,
             ))
         };
-        let edge_dedup = |a: &mut Edge, b: &mut Edge| {
-            a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
+        let mut seen: std::collections::HashSet<(String, String, EdgeKind, Option<u32>)> =
+            std::collections::HashSet::new();
+        let mut keep = |edges: &mut Vec<Edge>| {
+            edges.retain(|e| seen.insert((e.source.clone(), e.target.clone(), e.kind, e.line)));
         };
-        all_edges.sort_unstable_by(edge_sort);
-        all_edges.dedup_by(edge_dedup);
-        heuristic_edges.sort_unstable_by(edge_sort);
-        heuristic_edges.dedup_by(edge_dedup);
+        keep(&mut lsp_edges);
+        keep(&mut heuristic_edges);
+        keep(&mut all_edges);
         lsp_edges.sort_unstable_by(edge_sort);
-        lsp_edges.dedup_by(edge_dedup);
+        heuristic_edges.sort_unstable_by(edge_sort);
+        all_edges.sort_unstable_by(edge_sort);
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         let total_edges = all_edges.len() + heuristic_edges.len() + lsp_edges.len();
 
