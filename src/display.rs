@@ -229,8 +229,7 @@ fn shuffle_flags(flags: &[String]) -> Vec<String> {
     }
     let mut state: u64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xdead_beef_cafe_babe)
+        .map_or(0xdead_beef_cafe_babe, |d| d.as_nanos() as u64)
         .wrapping_add(u64::from(std::process::id()));
     if state == 0 {
         state = 0xdead_beef_cafe_babe;

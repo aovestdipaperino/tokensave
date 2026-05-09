@@ -1920,26 +1920,46 @@ fn tokensave_dir_size(dir: &Path) -> u64 {
 
 /// Returns project roots whose `.tokensave` dir lives in cwd, an ancestor, or a descendant.
 fn gather_local_projects(home_tokensave: &Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-
     let Ok(cwd) = std::env::current_dir() else {
         return Vec::new();
     };
+    gather_local_projects_from(&cwd, home_tokensave)
+}
+
+/// Same as [`gather_local_projects`] but takes the starting directory explicitly.
+///
+/// Pure (apart from filesystem reads) — easier to test than the cwd-driven wrapper.
+fn gather_local_projects_from(
+    cwd: &Path,
+    home_tokensave: &Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    // Canonicalize the home `.tokensave` once so symlinked HOME paths still
+    // get correctly skipped during the ancestor + descendant walks. A user
+    // whose `$HOME` is `/Users/x` but whose canonical home is
+    // `/private/var/...` would otherwise leak the global DB into the wipe set.
+    let canon_home_ts: Option<PathBuf> =
+        home_tokensave.as_ref().and_then(|p| p.canonicalize().ok());
 
     let mut out: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
-    let is_project_dir = |ts: &Path| -> bool {
-        if let Some(ref skip) = home_tokensave {
-            if ts == skip.as_path() {
-                return false;
+    let is_home_tokensave = |ts: &Path| -> bool {
+        if let Some(ref canon) = canon_home_ts {
+            if ts.canonicalize().ok().as_ref() == Some(canon) {
+                return true;
             }
         }
-        ts.is_dir() && ts.join("tokensave.db").exists()
+        false
     };
 
-    let mut cursor: Option<&Path> = Some(cwd.as_path());
+    let is_project_dir = |ts: &Path| -> bool {
+        !is_home_tokensave(ts) && ts.is_dir() && ts.join("tokensave.db").exists()
+    };
+
+    let mut cursor: Option<&Path> = Some(cwd);
     while let Some(dir) = cursor {
         let ts = dir.join(".tokensave");
         if is_project_dir(&ts) && seen.insert(dir.to_path_buf()) {
@@ -1948,65 +1968,84 @@ fn gather_local_projects(home_tokensave: &Option<std::path::PathBuf>) -> Vec<std
         cursor = dir.parent();
     }
 
-    find_descendant_tokensave(&cwd, home_tokensave, &mut seen, &mut out);
+    find_descendant_tokensave(cwd, &canon_home_ts, &mut seen, &mut out);
 
     out
 }
 
-/// Recursively walks `start` looking for `.tokensave/tokensave.db` projects.
+/// Iteratively walks `start` looking for `.tokensave/tokensave.db` projects.
 ///
 /// Skips common heavy directories (node_modules, target, .git, etc.) and never
-/// descends into a `.tokensave` once found.
+/// descends into a `.tokensave` once found. Tracks canonicalized directories
+/// to break symlink/junction cycles, and uses an explicit worklist instead of
+/// recursion so deep trees can't overflow the stack.
 fn find_descendant_tokensave(
     start: &Path,
-    home_tokensave: &Option<std::path::PathBuf>,
+    canon_home_ts: &Option<std::path::PathBuf>,
     seen: &mut std::collections::HashSet<std::path::PathBuf>,
     out: &mut Vec<std::path::PathBuf>,
 ) {
-    let Ok(entries) = std::fs::read_dir(start) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
+    use std::collections::HashSet;
+
+    let mut visited: HashSet<std::path::PathBuf> = HashSet::new();
+    let mut work: Vec<std::path::PathBuf> = vec![start.to_path_buf()];
+
+    while let Some(dir) = work.pop() {
+        // Cycle guard — best-effort. If canonicalize fails (permission, broken
+        // symlink) we fall back to the raw path, which still dedupes most cases.
+        let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        if !visited.insert(canon) {
+            continue;
+        }
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        if !ft.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        if let Some(skip) = home_tokensave {
-            if &path == skip {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            // `file_type()` does not traverse symlinks, so symlinks-to-dirs
+            // report `is_symlink()` and are skipped here. That's the primary
+            // cycle defense; the `visited` set above is belt-and-suspenders.
+            if !ft.is_dir() {
                 continue;
             }
-        }
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str == ".tokensave" {
-            if path.join("tokensave.db").exists() {
-                if let Some(parent) = path.parent() {
-                    let pb = parent.to_path_buf();
-                    if seen.insert(pb.clone()) {
-                        out.push(pb);
-                    }
+            let path = entry.path();
+            if let Some(canon) = canon_home_ts {
+                if path.canonicalize().ok().as_ref() == Some(canon) {
+                    continue;
                 }
             }
-            continue;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str == ".tokensave" {
+                if path.join("tokensave.db").exists() {
+                    if let Some(parent) = path.parent() {
+                        let pb = parent.to_path_buf();
+                        if seen.insert(pb.clone()) {
+                            out.push(pb);
+                        }
+                    }
+                }
+                continue;
+            }
+            if matches!(
+                name_str.as_ref(),
+                "node_modules"
+                    | "target"
+                    | ".git"
+                    | "vendor"
+                    | "dist"
+                    | "build"
+                    | ".next"
+                    | ".venv"
+                    | "__pycache__"
+            ) {
+                continue;
+            }
+            work.push(path);
         }
-        if matches!(
-            name_str.as_ref(),
-            "node_modules"
-                | "target"
-                | ".git"
-                | "vendor"
-                | "dist"
-                | "build"
-                | ".next"
-                | ".venv"
-                | "__pycache__"
-        ) {
-            continue;
-        }
-        find_descendant_tokensave(&path, home_tokensave, seen, out);
     }
 }
 
@@ -2402,6 +2441,152 @@ async fn find_affected_tests(
     let mut result: Vec<String> = affected.into_iter().collect();
     result.sort();
     Ok(result)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod gather_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Plant a `.tokensave/tokensave.db` marker so `is_project_dir` returns true.
+    fn make_project(root: &Path) {
+        let ts = root.join(".tokensave");
+        fs::create_dir_all(&ts).unwrap();
+        fs::write(ts.join("tokensave.db"), b"").unwrap();
+    }
+
+    #[test]
+    fn finds_project_at_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        make_project(&cwd);
+
+        let out = gather_local_projects_from(&cwd, &None);
+        assert_eq!(out, vec![cwd]);
+    }
+
+    #[test]
+    fn finds_project_at_ancestor_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let nested = root.join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        make_project(&root);
+
+        let out = gather_local_projects_from(&nested, &None);
+        assert!(
+            out.contains(&root),
+            "ancestor project must be detected, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn finds_project_at_descendant_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let child = cwd.join("sub").join("proj");
+        fs::create_dir_all(&child).unwrap();
+        make_project(&child);
+
+        let out = gather_local_projects_from(&cwd, &None);
+        assert!(
+            out.contains(&child),
+            "descendant project must be detected, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn finds_both_ancestor_and_descendant_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let cwd = root.join("mid");
+        fs::create_dir_all(&cwd).unwrap();
+        let child = cwd.join("child");
+        fs::create_dir_all(&child).unwrap();
+        make_project(&root);
+        make_project(&child);
+
+        let out = gather_local_projects_from(&cwd, &None);
+        assert!(out.contains(&root));
+        assert!(out.contains(&child));
+        let unique: std::collections::HashSet<_> = out.iter().collect();
+        assert_eq!(unique.len(), out.len(), "duplicates: {out:?}");
+    }
+
+    #[test]
+    fn skips_projects_inside_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let buried = cwd.join("node_modules").join("pkg");
+        fs::create_dir_all(&buried).unwrap();
+        make_project(&buried);
+
+        let out = gather_local_projects_from(&cwd, &None);
+        assert!(
+            !out.contains(&buried),
+            "projects inside node_modules must be skipped, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn skips_home_tokensave_via_canonical_path() {
+        // Simulate a symlinked HOME: `home_alias` → `home_real`. The user
+        // passes `home_alias/.tokensave` as the skip path, but the descendant
+        // walk encounters the directory through `home_real/.tokensave`.
+        // Canonicalization must resolve them as equal so the global DB
+        // directory is not picked up as a wipe target.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+
+        let home_real = root.join("home_real");
+        fs::create_dir_all(&home_real).unwrap();
+        make_project(&home_real); // pretend `~/.tokensave` is a project (it shouldn't be wiped)
+
+        // Try to symlink: home_alias -> home_real. If the platform doesn't
+        // allow symlinks (e.g. Windows without dev mode) we just skip the
+        // canonical-equivalence check and verify the direct-path skip works.
+        let home_alias = root.join("home_alias");
+        let symlink_ok = symlink_dir(&home_real, &home_alias).is_ok();
+
+        let cwd = root.clone();
+        let alias_ts: PathBuf = if symlink_ok {
+            home_alias.join(".tokensave")
+        } else {
+            home_real.join(".tokensave")
+        };
+
+        let out = gather_local_projects_from(&cwd, &Some(alias_ts));
+        assert!(
+            !out.contains(&home_real),
+            "home `.tokensave` (canonical) must be skipped, got {out:?}"
+        );
+        if symlink_ok {
+            assert!(
+                !out.contains(&home_alias),
+                "home `.tokensave` (alias) must be skipped, got {out:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(src, dst)
+    }
+
+    #[test]
+    fn empty_dir_yields_empty_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let out = gather_local_projects_from(&cwd, &None);
+        assert!(out.is_empty(), "got {out:?}");
+    }
 }
 // direct test 1774739850
 // daemon-test-1774740132

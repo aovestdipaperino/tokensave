@@ -205,10 +205,8 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         return;
     }
 
-    for p in &stale {
-        gdb.delete_project(Path::new(p)).await;
-    }
-    dc.pass(&format!("Purged {} stale project(s)", stale.len()));
+    let purged = gdb.delete_projects(&stale).await;
+    dc.pass(&format!("Purged {purged} stale project(s)"));
 }
 
 /// Check user config file.
