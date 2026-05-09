@@ -425,6 +425,16 @@ async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
             assertions INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL
         );
+
+        CREATE TABLE edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            line INTEGER,
+            FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
+        );
          PRAGMA user_version = 6;",
     )
     .await
@@ -452,16 +462,16 @@ async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
     let migrated = tokensave::db::migrations::migrate(&conn)
         .await
         .expect("migrate failed");
-    assert!(migrated, "expected v7 migration to run");
+    assert!(migrated, "expected v7+ migrations to run");
 
-    // user_version is now LATEST (= 7).
+    // user_version is now LATEST (= 8).
     let mut rows = conn
         .query("PRAGMA user_version", ())
         .await
         .expect("read version");
     let row = rows.next().await.expect("row").expect("some row");
     let version: i64 = row.get(0).expect("version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 
     // attrs_start_line is backfilled from start_line for both rows.
     // Row a: start_line=42 -> attrs_start_line=42.

@@ -247,7 +247,7 @@ async fn test_create_schema_fresh_db() {
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -269,7 +269,7 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 }
 
 /// migrate returns false when already at the latest version.
@@ -287,7 +287,7 @@ async fn test_migrate_already_latest_returns_false() {
         !migrated,
         "migrate should return false when already at latest"
     );
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 }
 
 /// migrate from v0 (completely empty database) applies all migrations to latest.
@@ -306,7 +306,7 @@ async fn test_migrate_from_v0() {
         migrated,
         "migrate should return true when migrations were applied"
     );
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -347,7 +347,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -383,7 +383,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -413,7 +413,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -441,7 +441,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -583,7 +583,7 @@ async fn test_database_initialize_creates_latest_version() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -650,7 +650,67 @@ async fn test_database_open_migrates_v1_to_latest() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
+}
+
+/// V8 adds `edges.resolved_by` (default 'direct') and a `read_cache` table.
+#[tokio::test]
+async fn test_migrate_v8_adds_resolved_by_and_read_cache() {
+    let (conn, _db, _dir) = create_raw_db().await;
+
+    // Build a v7 database (run all earlier migrations) without v8 by going
+    // through `migrate` and then verifying the v8 column/table exist.
+    migrate(&conn).await.expect("migrate should succeed");
+
+    assert!(
+        column_exists(&conn, "edges", "resolved_by").await,
+        "v8 migration should add edges.resolved_by"
+    );
+
+    assert!(
+        table_exists(&conn, "read_cache").await,
+        "v8 migration should create the read_cache table"
+    );
+
+    // Insert nodes + an edge, verify the default value.
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path, start_line, end_line, start_column, end_column, visibility, updated_at, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions) VALUES ('a', 'function', 'a', 'crate::a', 'src/lib.rs', 1, 5, 0, 1, 'pub', 1000, 0, 0, 0, 0, 0, 0, 0)",
+        (),
+    )
+    .await
+    .expect("failed to insert node a");
+
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path, start_line, end_line, start_column, end_column, visibility, updated_at, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions) VALUES ('b', 'function', 'b', 'crate::b', 'src/lib.rs', 6, 10, 0, 1, 'pub', 1000, 0, 0, 0, 0, 0, 0, 0)",
+        (),
+    )
+    .await
+    .expect("failed to insert node b");
+
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('a', 'b', 'calls', 3)",
+        (),
+    )
+    .await
+    .expect("edge insert should succeed");
+
+    let mut rows = conn
+        .query(
+            "SELECT resolved_by FROM edges WHERE source='a' AND target='b'",
+            (),
+        )
+        .await
+        .expect("failed to query resolved_by");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read row")
+        .expect("should have row");
+    let resolved_by: String = row.get(0).expect("failed to read resolved_by");
+    assert_eq!(
+        resolved_by, "direct",
+        "edges inserted without resolved_by should default to 'direct'"
+    );
 }
 
 /// After create_schema, all v5 columns on nodes exist.
