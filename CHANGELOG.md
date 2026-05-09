@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`tokensave wipe` no longer leaks the global DB into the wipe set when `$HOME` is symlinked** — the home `.tokensave` skip relied on lexical path equality, so a user whose `$HOME` resolves through a symlink (e.g. macOS `/Users/x` vs the canonical `/private/var/...`) could see `~/.tokensave` show up as a wipe target if the descendant walk reached it via the canonical chain. The skip now canonicalizes both the home path and every candidate before comparing.
+
+### Changed
+- **Descendant walk for `tokensave wipe` / `tokensave list` is now iterative with cycle protection** — `find_descendant_tokensave` used to recurse, which made deep trees a stack-overflow risk and relied entirely on `file_type()` skipping symlinks for cycle safety. It now uses an explicit worklist plus a canonical-path `visited` set, so the walk is bounded even if a directory cycle slips past the symlink filter (e.g. Windows junctions).
+- **`tokensave doctor` purges stale global-DB entries in batched statements** — purging used to issue one `DELETE` per stale row, which meant N serial round-trips against libsql for a stale-store cleanup (the case that prompted this: 216 deletes). A new `GlobalDb::delete_projects(&[String])` issues one `DELETE … WHERE path IN (…)` per chunk of 256, so the same 216-row purge is now one round-trip.
+- **`gather_local_projects_from` is now a separately-exported helper** — extracts the pure discovery logic from the cwd-driven `gather_local_projects` wrapper so the ancestor + descendant walk can be unit-tested without mutating the process's working directory. Backed by 7 new tests covering cwd / ancestor-only / descendant-only / ancestor+descendant dedup / `node_modules` skip / canonical home-skip / empty-dir.
+- **Cleared `clippy::map_unwrap_or` warning in `display::shuffle_flags`** — the xorshift seed now uses `map_or` instead of `map(...).unwrap_or(...)`. Behavior unchanged.
+
+## [4.3.11] - 2026-05-09
+
+### Added
+- **`tokensave doctor` now reports stale entries in the global DB and offers to purge them** — projects registered in `~/.tokensave/global.db` whose `.tokensave/` directory is gone (deleted, moved, or scratch dirs cleaned up by the OS) are listed under the "Global database" section. Up to 10 paths are shown with an "… and N more" tail. When run interactively, the doctor prompts `Purge N stale row(s) from the global DB? [Y/n]`; on confirmation each stale row is deleted via `GlobalDb::delete_project`. When stdin is not a terminal (CI, piped invocation), the stale list is shown as a warning with a hint to re-run interactively.
+
+### Fixed
+- **`tokensave reinstall` now refreshes every detected agent, not just the first one ever installed** — `migrate_installed_agents` previously returned early as soon as `installed_agents` was non-empty. A user who installed agent A and later configured agent B (e.g. installed Copilot first, then Claude) would have only A in the list, so `reinstall` silently skipped B and its tool permissions never got refreshed when new tools shipped. The migration now scans every agent on each call and additively appends any whose tokensave config exists on disk but is missing from the tracked list. Side effect: a stale `tokensave install` warning ("N new tokensave tool(s) not yet permitted") could persist across reinstalls — that no longer happens. The detection logic is also extracted into a pure `detect_missing_installed_agents` helper covered by a regression test that reproduces the original "claude missing when copilot is tracked" scenario.
+- **`tokensave wipe` warning banner now reaches full width** — the colored title row was 49 visual columns while the `═` rules above and below were 64, producing a short red strip floating between long horizontal lines. The title is now centered and padded with red-background spaces, sandwiched between two blank red rows so the warning reads as a single fixed-width block.
+
+## [4.3.10] - 2026-05-09
+
+### Added
+- **`tokensave list` command for inspecting tracked projects** — `list` shows the same projects `wipe` would target (current folder, ancestors, and descendants), with on-disk `.tokensave/` size and tokens-saved per row, sorted by tokens-saved descending. `tokensave list --all` (or `-a`) lists every project tracked in `~/.tokensave/global.db`, marking entries whose `.tokensave/` directory has been removed as `(stale)`.
+
+### Changed
+- **Country flags in `tokensave status` are now shuffled on every render** — when more flags are tracked than fit on the line, the row used to always show the same prefix and `…` truncate the rest. Each `status` invocation now applies a Fisher-Yates shuffle (xorshift64 seeded from time + PID) before truncation, so a different sample of contributing countries is shown each time.
+
+### Fixed
+- **Tool-permission warning now points at `tokensave reinstall`** — when new tokensave tools are detected that aren't yet permitted in the agent config, the warning previously said "Run `tokensave install` to update", which would re-do the full install. The warning now reads "Run `tokensave reinstall` to update permissions", which is the right command for refreshing permissions on already-installed agents.
+
+## [4.3.9] - 2026-05-09
+
+### Added
+- **`tokensave wipe` command for clearing local DBs** — `wipe` finds every `.tokensave/tokensave.db` project in the current folder, all its ancestors, and all its descendants (skipping `node_modules`, `target`, `.git`, `vendor`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and the user-level `~/.tokensave/`), then prompts for a `go!` confirmation before removing each `.tokensave/` directory and its row in the global DB. `tokensave wipe --all` (or `-a`) instead wipes every project tracked in `~/.tokensave/global.db` and then deletes the global DB itself, leaving it empty. Both flows display a bordered, blinking warning that lists every target before asking for confirmation.
+
 ## [4.3.8] - 2026-05-06
 
 ### Added

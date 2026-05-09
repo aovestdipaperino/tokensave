@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::agents::{self, DoctorCounters, HealthcheckContext};
-use crate::display::format_token_count;
+use crate::display::{format_bytes, format_token_count};
 use crate::tokensave::TokenSave;
 
 /// Runs a comprehensive health check of the tokensave installation.
@@ -40,6 +40,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     }
 
     check_global_db(&mut dc);
+    check_stale_stores(&mut dc).await;
     check_user_config(&mut dc);
 
     // Agent-specific health checks
@@ -107,23 +108,6 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     }
 }
 
-/// Format a byte count as a human-readable string.
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// Check binary location and version.
 fn check_binary(dc: &mut DoctorCounters) {
     eprintln!("\x1b[1mBinary\x1b[0m");
@@ -147,6 +131,65 @@ fn check_global_db(dc: &mut DoctorCounters) {
     } else {
         dc.fail("Could not determine home directory for global DB");
     }
+}
+
+/// Lists projects registered in the global DB whose `.tokensave/` directory
+/// is gone, and offers to purge them. Stale rows are harmless but show up in
+/// `tokensave list --all` and inflate the global tokens-saved count.
+async fn check_stale_stores(dc: &mut DoctorCounters) {
+    use std::io::{IsTerminal, Write};
+
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return;
+    };
+    let stale: Vec<String> = gdb
+        .list_project_paths()
+        .await
+        .into_iter()
+        .filter(|p| !Path::new(p).join(".tokensave/tokensave.db").exists())
+        .collect();
+    if stale.is_empty() {
+        dc.pass("No stale projects in global DB");
+        return;
+    }
+
+    eprintln!(
+        "  \x1b[33m!\x1b[0m {} stale project(s) in global DB (registered but `.tokensave/` is gone):",
+        stale.len()
+    );
+    let preview = stale.len().min(10);
+    for p in &stale[..preview] {
+        dc.info(&format!("  • {p}"));
+    }
+    if stale.len() > preview {
+        dc.info(&format!("  … and {} more", stale.len() - preview));
+    }
+
+    if !std::io::stdin().is_terminal() {
+        dc.warnings += 1;
+        dc.info("    Re-run `tokensave doctor` interactively to purge them.");
+        return;
+    }
+
+    eprint!(
+        "  Purge {} stale row(s) from the global DB? [Y/n] ",
+        stale.len()
+    );
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        dc.warnings += 1;
+        return;
+    }
+    let answer = answer.trim();
+    if !answer.is_empty() && !answer.eq_ignore_ascii_case("y") {
+        dc.warnings += 1;
+        dc.info("Skipped — run again later to purge.");
+        return;
+    }
+
+    let purged = gdb.delete_projects(&stale).await;
+    dc.pass(&format!("Purged {purged} stale project(s)"));
 }
 
 /// Check user config file.

@@ -124,6 +124,44 @@ impl GlobalDb {
         Some(total as u64)
     }
 
+    /// Removes a project's row from the global DB. Best-effort.
+    pub async fn delete_project(&self, project_path: &Path) {
+        let path_str = project_path.to_string_lossy().to_string();
+        let _ = self
+            .conn
+            .execute("DELETE FROM projects WHERE path = ?1", params![path_str])
+            .await;
+    }
+
+    /// Removes many project rows in a single statement. Returns the number of
+    /// rows actually deleted (0 on any error). Best-effort.
+    ///
+    /// Chunks the input at 256 paths per statement to stay well clear of
+    /// SQLite's default 999-parameter limit while still reducing N round trips
+    /// to ⌈N/256⌉.
+    pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
+        const CHUNK: usize = 256;
+        let mut total: usize = 0;
+        for chunk in project_paths.chunks(CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
+            let sql = format!(
+                "DELETE FROM projects WHERE path IN ({})",
+                placeholders.join(",")
+            );
+            let values: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|p| libsql::Value::Text(p.clone()))
+                .collect();
+            if let Ok(n) = self.conn.execute(&sql, values).await {
+                total = total.saturating_add(n as usize);
+            }
+        }
+        total
+    }
+
     /// Returns all tracked project paths.
     pub async fn list_project_paths(&self) -> Vec<String> {
         let Ok(mut rows) = self.conn.query("SELECT path FROM projects", ()).await else {
