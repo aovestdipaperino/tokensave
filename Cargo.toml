@@ -30,6 +30,11 @@ default = ["full"]
 # Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
 lite = []
 
+# Gated integration tests that require real LSP server binaries on PATH.
+# Off by default so `cargo test` works without rust-analyzer / gopls / etc
+# installed. Enable with `cargo test --features lsp-integration`.
+lsp-integration = []
+
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
 full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-quint", "lang-toml", "lang-lean"]
 
