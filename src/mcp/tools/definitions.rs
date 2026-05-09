@@ -137,6 +137,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_diagnostics(),
         def_config(),
         def_signature_search(),
+        def_constructors(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1308,6 +1309,35 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_constructors() -> ToolDefinition {
+    def(
+        "tokensave_constructors",
+        "Struct Literal Sites",
+        "Find every place a given struct is instantiated as a literal \
+         ({ field: value, ... }). Each result includes the file, line, the \
+         field list present in that literal, and the set of fields missing \
+         relative to the struct's current definition (from the graph). The \
+         missing-fields list is the typical refactor signal: after adding a \
+         required field, this tool surfaces every site that needs updating, \
+         before cargo even compiles. Currently best-effort for Rust source; \
+         pattern matching ignores `match` arms and `if let` patterns.",
+        json!({
+            "type": "object",
+            "properties": {
+                "struct": {
+                    "type": "string",
+                    "description": "Struct name to search literal sites of (e.g. 'GraphStats', 'Config')."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of literal sites to return (default: 100, max: 1000)."
+                }
+            },
+            "required": ["struct"]
         }),
     )
 }

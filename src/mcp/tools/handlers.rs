@@ -143,6 +143,7 @@ pub async fn handle_tool_call(
         "tokensave_diagnostics" => handle_diagnostics(cg, args).await,
         "tokensave_config" => handle_config(cg, args).await,
         "tokensave_signature_search" => handle_signature_search(cg, args, scope_prefix).await,
+        "tokensave_constructors" => handle_constructors(cg, args, scope_prefix).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -5611,6 +5612,404 @@ fn params_substring(signature: &str) -> &str {
     signature
 }
 
+/// Handles `tokensave_constructors` — locate every literal-instantiation
+/// site for a named struct and report which fields each site sets.
+///
+/// Detection is regex-based over source files: `<StructName> {` followed
+/// by balanced braces, with disambiguation against `match` arms and
+/// `if let` patterns where the same shape appears but means destructuring.
+/// "Missing fields" is computed by diffing the field set actually present
+/// at the literal against the struct's current `Field` children in the
+/// graph.
+async fn handle_constructors(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let struct_name =
+        args.get("struct")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "tokensave_constructors requires a 'struct' argument".to_string(),
+            })?;
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(100, |v| v.clamp(1, 1000) as usize);
+
+    // Resolve the struct's expected field set from the graph. We accept
+    // Struct, Class, and CaseClass kinds; everything else exits early with
+    // a "no such struct" message.
+    let candidates = cg
+        .db()
+        .search_nodes_by_exact_name(&[struct_name.to_string()], 50)
+        .await?;
+    let struct_nodes: Vec<&crate::types::Node> = candidates
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Struct | NodeKind::Class | NodeKind::CaseClass
+            )
+        })
+        .collect();
+
+    if struct_nodes.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("No struct, class, or case-class named '{struct_name}' found.") }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    // Union of expected fields across every matching definition. Most names
+    // are unique; ambiguous names (e.g. two structs named Config in
+    // different modules) get a permissive union — false negatives on
+    // missing_fields are better than false positives.
+    let mut expected_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for sn in &struct_nodes {
+        let outgoing = cg
+            .db()
+            .get_outgoing_edges(&sn.id, &[EdgeKind::Contains])
+            .await?;
+        for edge in outgoing {
+            if let Some(child) = cg.db().get_node_by_id(&edge.target).await? {
+                if matches!(
+                    child.kind,
+                    NodeKind::Field | NodeKind::ValField | NodeKind::VarField
+                ) {
+                    expected_fields.insert(child.name);
+                }
+            }
+        }
+    }
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut sites: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = scope_prefix {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs) else {
+            continue;
+        };
+
+        for site in find_struct_literals(&source, struct_name) {
+            let field_list = parse_literal_fields(&source, site.brace_open_byte);
+            let missing: Vec<String> = if expected_fields.is_empty() {
+                Vec::new()
+            } else {
+                expected_fields
+                    .iter()
+                    .filter(|f| !field_list.contains(f))
+                    .cloned()
+                    .collect()
+            };
+            if !touched.contains(&file.path) {
+                touched.push(file.path.clone());
+            }
+            sites.push(json!({
+                "file": file.path,
+                "line": site.line,
+                "fields": field_list,
+                "missing_fields": missing,
+            }));
+            if sites.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+
+    let payload = json!({
+        "struct": struct_name,
+        "expected_fields": expected_fields.iter().cloned().collect::<Vec<_>>(),
+        "match_count": sites.len(),
+        "sites": sites,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// One detected struct-literal site: 1-based line number plus the byte
+/// offset of the opening brace.
+#[derive(Debug, Clone, Copy)]
+struct LiteralSite {
+    line: u32,
+    brace_open_byte: usize,
+}
+
+/// Scan `source` for `<StructName> {` literal sites. Excludes:
+///
+/// - Definition / declaration sites: `struct Foo {`, `impl Foo {`,
+///   `trait Foo {`, `enum Foo {`, `union Foo {`, `type Foo = `
+/// - Function-body openers: `-> Foo {` (return-type followed by body)
+/// - Match / if-let / while-let arm patterns where `Foo { ... }` means
+///   destructuring instead of construction. Detected via a left-to-right
+///   pass that tracks brace depth and remembers which depths started in a
+///   pattern context, so nested arms are caught regardless of where the
+///   prior `=>` lands.
+///
+/// Best-effort. False positives are still possible inside string literals
+/// and macro arguments; for review tooling that's acceptable.
+fn find_struct_literals(source: &str, struct_name: &str) -> Vec<LiteralSite> {
+    let bytes = source.as_bytes();
+    // Stack of brace depths at which we entered a pattern context.
+    // Popped when we close the brace that started it.
+    let mut pattern_stack: Vec<i32> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut out: Vec<LiteralSite> = Vec::new();
+    let mut byte = 0usize;
+    let n = bytes.len();
+    while byte < n {
+        if matches_word(bytes, byte, b"match") {
+            pattern_stack.push(depth);
+            byte += "match".len();
+            continue;
+        }
+        if matches_word(bytes, byte, b"if") && lookahead_let(bytes, byte + 2) {
+            pattern_stack.push(depth);
+            byte += "if".len();
+            continue;
+        }
+        if matches_word(bytes, byte, b"while") && lookahead_let(bytes, byte + 5) {
+            pattern_stack.push(depth);
+            byte += "while".len();
+            continue;
+        }
+
+        let b = bytes[byte];
+        if b == b'{' {
+            depth += 1;
+            byte += 1;
+            continue;
+        }
+        if b == b'}' {
+            depth -= 1;
+            if let Some(&entered_at) = pattern_stack.last() {
+                if depth <= entered_at {
+                    pattern_stack.pop();
+                }
+            }
+            byte += 1;
+            continue;
+        }
+
+        if matches_word(bytes, byte, struct_name.as_bytes()) {
+            let start = byte;
+            let end = start + struct_name.len();
+
+            let mut probe = end;
+            while let Some(c) = bytes.get(probe) {
+                if c.is_ascii_whitespace() {
+                    probe += 1;
+                } else {
+                    break;
+                }
+            }
+            if bytes.get(probe).copied() != Some(b'{') {
+                byte = end;
+                continue;
+            }
+
+            if has_disqualifying_prefix(source, start) {
+                byte = end;
+                continue;
+            }
+
+            if !pattern_stack.is_empty() {
+                byte = end;
+                continue;
+            }
+
+            let line = source[..start].bytes().filter(|c| *c == b'\n').count() as u32 + 1;
+            out.push(LiteralSite {
+                line,
+                brace_open_byte: probe,
+            });
+            byte = probe + 1;
+            continue;
+        }
+
+        byte += 1;
+    }
+    out
+}
+
+/// True when `bytes[at..]` starts with whitespace then `let` followed by
+/// a non-identifier byte. Used to detect `if let` and `while let` without
+/// matching identifiers like `whilelets`.
+fn lookahead_let(bytes: &[u8], at: usize) -> bool {
+    let mut probe = at;
+    while let Some(b) = bytes.get(probe) {
+        if b.is_ascii_whitespace() {
+            probe += 1;
+        } else {
+            break;
+        }
+    }
+    matches_word(bytes, probe, b"let")
+}
+
+/// True when `bytes[at..]` starts with `needle` followed by a word
+/// boundary on both sides.
+fn matches_word(bytes: &[u8], at: usize, needle: &[u8]) -> bool {
+    if at + needle.len() > bytes.len() {
+        return false;
+    }
+    if &bytes[at..at + needle.len()] != needle {
+        return false;
+    }
+    let left_ok = at == 0
+        || !matches!(
+            bytes[at - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+        );
+    let right_ok = match bytes.get(at + needle.len()) {
+        None => true,
+        Some(b) => !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'),
+    };
+    left_ok && right_ok
+}
+
+/// Inspect bytes immediately before `idx` to reject sites that look like
+/// definitions or return-type bodies. Walks back over whitespace and
+/// checks the preceding token against a small disqualifying set.
+fn has_disqualifying_prefix(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut probe = idx;
+    while probe > 0 && bytes[probe - 1].is_ascii_whitespace() {
+        probe -= 1;
+    }
+    if probe == 0 {
+        return false;
+    }
+    if probe >= 2 && &bytes[probe - 2..probe] == b"->" {
+        return true;
+    }
+    let id_end = probe;
+    let mut id_start = probe;
+    while id_start > 0
+        && matches!(
+            bytes[id_start - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+        )
+    {
+        id_start -= 1;
+    }
+    if id_start == id_end {
+        return false;
+    }
+    let token = &source[id_start..id_end];
+    matches!(
+        token,
+        "struct" | "enum" | "union" | "impl" | "trait" | "type"
+    )
+}
+
+/// Parse the field names from a struct-literal body starting at the open
+/// brace at `open_byte`. Returns a Vec of field names (before any `:`),
+/// in source order. Empty when the literal can't be parsed.
+fn parse_literal_fields(source: &str, open_byte: usize) -> Vec<String> {
+    let bytes = source.as_bytes();
+    if bytes.get(open_byte).copied() != Some(b'{') {
+        return Vec::new();
+    }
+    // Find the matching close brace, respecting nested braces.
+    let mut depth = 0i32;
+    let mut close_byte = None;
+    for (i, b) in bytes.iter().enumerate().skip(open_byte) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_byte = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close_byte else {
+        return Vec::new();
+    };
+    let body = &source[open_byte + 1..close];
+
+    // Split on top-level commas (commas inside nested braces or parens
+    // belong to nested expressions, not the outer field list).
+    let mut fields: Vec<String> = Vec::new();
+    let mut depth_brace = 0i32;
+    let mut depth_paren = 0i32;
+    let mut current = String::new();
+    for c in body.chars() {
+        match c {
+            '{' | '[' => depth_brace += 1,
+            '}' | ']' => depth_brace -= 1,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            ',' if depth_brace == 0 && depth_paren == 0 => {
+                if let Some(name) = field_name_from_chunk(&current) {
+                    fields.push(name);
+                }
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    if let Some(name) = field_name_from_chunk(&current) {
+        fields.push(name);
+    }
+    fields
+}
+
+/// Extract the field name from a single `field: value` (or shorthand
+/// `field`) chunk inside a struct literal. Strips comments and whitespace.
+fn field_name_from_chunk(chunk: &str) -> Option<String> {
+    let trimmed = chunk.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Skip Rust spread operator (`..base`) and comments.
+    if trimmed.starts_with("..") || trimmed.starts_with("//") {
+        return None;
+    }
+    let name_end = trimmed
+        .find(|c: char| c == ':' || c == ',' || c.is_whitespace())
+        .unwrap_or(trimmed.len());
+    let name = &trimmed[..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    // Reject things that don't look like identifiers.
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -5864,7 +6263,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 59);
+        assert_eq!(tools.len(), 60);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
