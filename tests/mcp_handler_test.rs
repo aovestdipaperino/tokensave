@@ -2950,6 +2950,143 @@ async fn test_implementations_rejects_both_args() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_diagnostics
+// ---------------------------------------------------------------------------
+
+/// A real cargo crate with one type-error in src/lib.rs. cargo check on
+/// this returns a single E0308 (mismatched types).
+async fn setup_diagnostics_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "tokensave_diag_fixture"
+version = "0.0.1"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub fn add_one(x: i32) -> i32 {
+    x + 1
+}
+
+pub fn broken() {
+    let _x: i32 = "not a number";
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_diagnostics_workspace_returns_compile_error() {
+    let (cg, _dir) = setup_diagnostics_project().await;
+    let result = handle_tool_call(&cg, "tokensave_diagnostics", json!({}), None, None)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let diagnostics = payload["diagnostics"].as_array().unwrap();
+    assert!(
+        !diagnostics.is_empty(),
+        "should report at least one diagnostic, got: {payload}"
+    );
+    let has_e0308 = diagnostics
+        .iter()
+        .any(|d| d["code"].as_str() == Some("E0308"));
+    assert!(
+        has_e0308,
+        "should report E0308 mismatched types, got codes: {:?}",
+        diagnostics
+            .iter()
+            .map(|d| d["code"].as_str())
+            .collect::<Vec<_>>()
+    );
+    let error = diagnostics
+        .iter()
+        .find(|d| d["level"].as_str() == Some("error"))
+        .expect("should have at least one error-level diagnostic");
+    assert_eq!(error["file"].as_str(), Some("src/lib.rs"));
+    assert_eq!(error["driver"].as_str(), Some("rust"));
+    assert!(payload["error_count"].as_u64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn test_diagnostics_resolves_enclosing_symbol() {
+    let (cg, _dir) = setup_diagnostics_project().await;
+    let result = handle_tool_call(&cg, "tokensave_diagnostics", json!({}), None, None)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let diagnostics = payload["diagnostics"].as_array().unwrap();
+    let error = diagnostics
+        .iter()
+        .find(|d| d["level"].as_str() == Some("error"))
+        .expect("error diagnostic missing");
+    let enclosing = error["enclosing"].as_str();
+    assert!(
+        enclosing.is_some_and(|n| n.contains("broken")),
+        "enclosing symbol for the type error should contain 'broken', got: {enclosing:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_diagnostics_file_scope_filters_by_path() {
+    let (cg, _dir) = setup_diagnostics_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diagnostics",
+        json!({"scope": "file", "path": "src/lib.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let diagnostics = payload["diagnostics"].as_array().unwrap();
+    for d in diagnostics {
+        assert_eq!(d["file"].as_str(), Some("src/lib.rs"));
+    }
+}
+
+#[tokio::test]
+async fn test_diagnostics_file_scope_requires_path() {
+    let (cg, _dir) = setup_diagnostics_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diagnostics",
+        json!({"scope": "file"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "scope='file' without a path should error");
+}
+
+#[tokio::test]
+async fn test_diagnostics_unknown_scope_errors() {
+    let (cg, _dir) = setup_diagnostics_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diagnostics",
+        json!({"scope": "lunch"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "unknown scope should error");
+}
+
+// ---------------------------------------------------------------------------
 // tokensave_unsafe_patterns
 // ---------------------------------------------------------------------------
 

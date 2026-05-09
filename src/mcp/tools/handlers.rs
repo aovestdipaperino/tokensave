@@ -140,6 +140,7 @@ pub async fn handle_tool_call(
         "tokensave_outline" => handle_outline(cg, args).await,
         "tokensave_implementations" => handle_implementations(cg, args, scope_prefix).await,
         "tokensave_unsafe_patterns" => handle_unsafe_patterns(cg, args, scope_prefix).await,
+        "tokensave_diagnostics" => handle_diagnostics(cg, args).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -5166,6 +5167,113 @@ async fn handle_unsafe_patterns(
     })
 }
 
+/// Handles `tokensave_diagnostics` — runs the project's compile / type
+/// checker (cargo check for Rust today) and returns structured errors and
+/// warnings, each enriched with the enclosing graph node where one can be
+/// resolved.
+///
+/// `scope` defaults to `"workspace"`. The `"file"` scope falls back to a
+/// workspace run with a post-filter, since cargo lacks a native single-file
+/// type-check mode.
+async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::diagnostics::{run_all, Scope};
+
+    let scope_str = args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("workspace");
+
+    let scope = match scope_str {
+        "workspace" => Scope::Workspace,
+        "package" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "scope='package' requires a 'name' argument".to_string(),
+                })?
+                .to_string();
+            Scope::Package { name }
+        }
+        "file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "scope='file' requires a 'path' argument".to_string(),
+                })?
+                .to_string();
+            Scope::File { path }
+        }
+        other => {
+            return Err(TokenSaveError::Config {
+                message: format!("unknown scope '{other}'; expected workspace, package, or file"),
+            });
+        }
+    };
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut diagnostics = run_all(&project_root, &scope).await?;
+
+    // Post-filter for `file` scope: cargo always builds the workspace, so
+    // we run the full pass and keep diagnostics whose file matches.
+    if let Scope::File { path } = &scope {
+        diagnostics.retain(|d| d.file == *path);
+    }
+
+    let mut entries: Vec<Value> = Vec::with_capacity(diagnostics.len());
+    let mut touched: Vec<String> = Vec::new();
+    let mut error_count = 0u64;
+    let mut warning_count = 0u64;
+
+    for diag in &diagnostics {
+        match diag.level.as_str() {
+            "error" => error_count += 1,
+            "warning" => warning_count += 1,
+            _ => {}
+        }
+
+        // Enclosing-symbol lookup: smallest node whose [start_line, end_line]
+        // covers the diagnostic's start line.
+        let nodes = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
+        let enclosing = nodes
+            .iter()
+            .filter(|n| n.start_line <= diag.line_start && diag.line_start <= n.end_line)
+            .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+            .map(|n| n.qualified_name.clone());
+
+        if !touched.contains(&diag.file) {
+            touched.push(diag.file.clone());
+        }
+
+        entries.push(json!({
+            "file": diag.file,
+            "line_start": diag.line_start,
+            "line_end": diag.line_end,
+            "level": diag.level,
+            "code": diag.code,
+            "message": diag.message,
+            "driver": diag.driver,
+            "enclosing": enclosing,
+        }));
+    }
+
+    let payload = json!({
+        "scope": scope_str,
+        "diagnostic_count": entries.len(),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "diagnostics": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -5419,7 +5527,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 56);
+        assert_eq!(tools.len(), 57);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

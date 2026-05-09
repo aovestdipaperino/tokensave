@@ -134,6 +134,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_outline(),
         def_implementations(),
         def_unsafe_patterns(),
+        def_diagnostics(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1305,6 +1306,38 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_diagnostics() -> ToolDefinition {
+    def(
+        "tokensave_diagnostics",
+        "Compile / Type-Check Diagnostics",
+        "Run the project's type-checker (cargo check for Rust) and return \
+         structured errors and warnings. Each diagnostic includes file, line \
+         range, level, code, message, driver, and the enclosing graph node \
+         when one can be resolved. Replaces the recurring 'run cargo → parse \
+         text → read file' loop with a single structured response. The cargo \
+         target dir defaults to .tokensave/target/ to avoid racing with \
+         interactive cargo runs.",
+        json!({
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["workspace", "package", "file"],
+                    "description": "Run scope. Default 'workspace'. 'package' requires `name`; 'file' requires `path` and currently runs workspace + post-filter (cargo has no native single-file mode)."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Package name when scope='package' (e.g. 'tokensave', 'serde-json')."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative file path when scope='file'."
+                }
+            }
         }),
     )
 }

@@ -24,6 +24,7 @@ pub mod config;
 pub mod context;
 pub mod daemon;
 pub mod db;
+pub mod diagnostics;
 pub mod display;
 pub mod doctor;
 pub mod errors;
