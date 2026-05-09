@@ -423,13 +423,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         );
     }
 
-    // Nudge beta users to switch to the stable channel.
-    if tokensave::cloud::is_beta() {
-        eprintln!(
-            "\x1b[33mnote:\x1b[0m The beta channel has been merged into stable. \
-             Run `tokensave channel stable` to switch."
-        );
-    }
+    // The "beta merged into stable" nudge that lived here through 4.3.x was
+    // retired in 4.3.12. The beta channel is open again as of v5.0.0-beta.1
+    // and beta users now stay on beta until they explicitly switch off.
 
     // Best-effort check: warn if install needs re-running
     if !matches!(command, Commands::Install { .. } | Commands::Reinstall) {
