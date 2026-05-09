@@ -21,7 +21,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::adapters::LspAdapter;
 use super::client::LspClient;
+use super::protocol::{
+    ClientCapabilities, DefinitionClientCapabilities, InitializeParams, InitializeResult,
+    TextDocumentClientCapabilities, WorkspaceClientCapabilities,
+};
 
 /// Default grace period for `shutdown` to wait per server before SIGKILL.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
@@ -105,9 +110,93 @@ impl LspManager {
     pub async fn shutdown_default(&self) {
         self.shutdown(DEFAULT_SHUTDOWN_GRACE).await
     }
+
+    /// Detect, spawn, initialize, and register every adapter whose binary
+    /// is on `$PATH` (and whose manifest, if required, is present).
+    ///
+    /// Per-adapter failures are non-fatal: an adapter that fails detection,
+    /// spawn, or initialize is silently skipped. The manager remains usable
+    /// for adapters that did succeed, and the resolver layer treats absent
+    /// languages as pass-throughs to the heuristic resolver.
+    ///
+    /// Returns the list of language ids that registered successfully so
+    /// callers can log a summary.
+    pub async fn start(&mut self, adapters: &[Box<dyn LspAdapter>]) -> Vec<&'static str> {
+        let mut started: Vec<&'static str> = Vec::new();
+        for adapter in adapters {
+            // Manifest gate first — a missing Cargo.toml means we should skip
+            // rust-analyzer entirely, not pay the spawn cost.
+            if let Some(manifest) = adapter.requires_manifest() {
+                if !self.project_root.join(manifest).exists() {
+                    continue;
+                }
+            }
+
+            let Some(binary) = adapter.detect() else {
+                continue;
+            };
+
+            let command = adapter.spawn_command(&binary);
+            let client = match LspClient::spawn(command).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let init_params = InitializeParams {
+                process_id: Some(std::process::id()),
+                root_uri: super::protocol::path_to_uri(&self.project_root),
+                initialization_options: adapter.init_options(&self.project_root),
+                capabilities: ClientCapabilities {
+                    text_document: Some(TextDocumentClientCapabilities {
+                        definition: Some(DefinitionClientCapabilities {
+                            link_support: Some(true),
+                        }),
+                    }),
+                    workspace: Some(WorkspaceClientCapabilities {
+                        workspace_folders: Some(true),
+                    }),
+                },
+            };
+
+            // initialize is the slowest request in the LSP protocol. Override
+            // the per-request timeout so rust-analyzer's ~10s startup doesn't
+            // get killed by the default 5s budget.
+            let init_client =
+                client.with_request_timeout(adapter.index_grace_period() + Duration::from_secs(15));
+
+            let result: InitializeResult =
+                match init_client.request("initialize", init_params).await {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+            if !result.capabilities.supports_definition() {
+                let _ = init_client.notify("exit", ()).await;
+                continue;
+            }
+            if init_client
+                .notify("initialized", serde_json::json!({}))
+                .await
+                .is_err()
+            {
+                continue;
+            }
+
+            // Register one entry per language id the adapter handles. clangd
+            // covers c/cpp/objc with the same client; this mapping shares
+            // a single `Arc<LspClient>` across all of them.
+            let shared = Arc::new(init_client);
+            for lang in adapter.languages() {
+                self.clients
+                    .insert((*lang).to_string(), Arc::clone(&shared));
+                started.push(*lang);
+            }
+        }
+        started
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

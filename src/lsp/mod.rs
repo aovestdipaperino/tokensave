@@ -18,6 +18,7 @@
 //! Higher layers (`LspManager`, `LspResolver`, per-language adapters) land in
 //! follow-up commits.
 
+pub mod adapters;
 pub mod client;
 pub mod manager;
 pub mod protocol;

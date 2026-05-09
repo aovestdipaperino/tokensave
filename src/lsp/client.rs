@@ -338,6 +338,7 @@ async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Resul
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

@@ -239,6 +239,7 @@ fn hex_digit(b: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{EdgeKind, NodeKind, Visibility};

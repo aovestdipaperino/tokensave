@@ -90,7 +90,7 @@ pub fn render_full(source: &str) -> String {
 /// good enough for the metric tokensave reports back to the caller.
 pub fn estimate_tokens(s: &str) -> u32 {
     let chars = s.chars().count();
-    ((chars + 3) / 4).min(u32::MAX as usize) as u32
+    chars.div_ceil(4).min(u32::MAX as usize) as u32
 }
 
 /// Renders the `lines` mode body — slices `range.start..=range.end` (1-based,
@@ -113,18 +113,15 @@ pub fn render_lines(source: &str, range: LineRange) -> String {
 /// is included.
 pub async fn render_map(db: &Database, file_path: &str, kinds: Option<&[String]>) -> Result<Value> {
     let nodes = fetch_nodes(db, file_path).await?;
-    let want_all = kinds.map_or(true, |k| k.is_empty());
+    let active_filter: Option<&[String]> = kinds.filter(|k| !k.is_empty());
     let entries: Vec<Value> = nodes
         .iter()
-        .filter(|n| {
-            if want_all {
-                return true;
+        .filter(|n| match active_filter {
+            None => true,
+            Some(filter) => {
+                let lhs = n.kind.as_str();
+                filter.iter().any(|want| want.eq_ignore_ascii_case(lhs))
             }
-            let lhs = n.kind.as_str();
-            kinds
-                .unwrap()
-                .iter()
-                .any(|want| want.eq_ignore_ascii_case(lhs))
         })
         .map(|n| {
             json!({
@@ -201,6 +198,7 @@ fn is_signature_kind(kind: &NodeKind) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

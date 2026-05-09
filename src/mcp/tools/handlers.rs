@@ -4660,11 +4660,14 @@ async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             render_full(&source)
         }
         ReadMode::Lines => {
+            let range = line_range.ok_or_else(|| TokenSaveError::Config {
+                message: "internal error: lines mode reached without a parsed range".to_string(),
+            })?;
             let source =
                 crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
                     message: format!("cannot read '{file}': {e}"),
                 })?;
-            render_lines(&source, line_range.expect("validated above"))
+            render_lines(&source, range)
         }
         ReadMode::Map => {
             let v = render_map(cg.db(), &display_file, None).await?;
