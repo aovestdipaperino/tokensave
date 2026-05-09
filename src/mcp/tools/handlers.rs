@@ -141,6 +141,7 @@ pub async fn handle_tool_call(
         "tokensave_implementations" => handle_implementations(cg, args, scope_prefix).await,
         "tokensave_unsafe_patterns" => handle_unsafe_patterns(cg, args, scope_prefix).await,
         "tokensave_diagnostics" => handle_diagnostics(cg, args).await,
+        "tokensave_config" => handle_config(cg, args).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -5274,6 +5275,202 @@ async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     })
 }
 
+/// Handles `tokensave_config` — structured TOML / JSON queries by dotted
+/// key path. Either `path` (single file) or `glob` (multiple files) is
+/// required, plus a dot-separated `key`.
+///
+/// Format detection is by extension: `.toml` → TOML, `.json` → JSON. Other
+/// extensions error rather than guess. The line lookup is heuristic:
+/// the value is parsed structurally, but we then text-search for the
+/// final key segment to pin the row. That mis-attributes when the same
+/// key appears in multiple sibling tables; a future commit can swap to
+/// `toml_edit` for exact spans.
+async fn handle_config(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: key".to_string(),
+        })?;
+    let path = args.get("path").and_then(|v| v.as_str());
+    let glob_pat = args.get("glob").and_then(|v| v.as_str());
+
+    if path.is_none() && glob_pat.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config requires either 'path' or 'glob'".to_string(),
+        });
+    }
+    if path.is_some() && glob_pat.is_some() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config: 'path' and 'glob' are mutually exclusive".to_string(),
+        });
+    }
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut files: Vec<String> = Vec::new();
+    if let Some(p) = path {
+        files.push(p.to_string());
+    } else if let Some(pat) = glob_pat {
+        let combined = project_root.join(pat);
+        let walker =
+            glob::glob(&combined.to_string_lossy()).map_err(|e| TokenSaveError::Config {
+                message: format!("invalid glob '{pat}': {e}"),
+            })?;
+        for entry in walker.flatten() {
+            if let Ok(rel) = entry.strip_prefix(&project_root) {
+                files.push(rel.to_string_lossy().to_string());
+            }
+        }
+        files.sort();
+    }
+
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for rel in &files {
+        let abs = project_root.join(rel);
+        let Ok(contents) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let parsed = match config_format(rel) {
+            Some(ConfigFormat::Toml) => match toml::from_str::<toml::Value>(&contents) {
+                Ok(v) => toml_to_json(&v),
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("toml parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            Some(ConfigFormat::Json) => match serde_json::from_str::<Value>(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("json parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            None => continue,
+        };
+
+        let value = lookup_dotted(&parsed, key);
+        let line = match &value {
+            Some(_) => find_key_line(&contents, key),
+            None => None,
+        };
+
+        if !touched.contains(rel) {
+            touched.push(rel.clone());
+        }
+
+        matches.push(match value {
+            Some(v) => json!({
+                "file": rel,
+                "key": key,
+                "value": v,
+                "line": line,
+            }),
+            None => json!({
+                "file": rel,
+                "key": key,
+                "value": Value::Null,
+                "found": false,
+            }),
+        });
+    }
+
+    let payload = json!({
+        "match_count": matches.iter().filter(|m| m.get("found") != Some(&Value::Bool(false))).count(),
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConfigFormat {
+    Toml,
+    Json,
+}
+
+fn config_format(path: &str) -> Option<ConfigFormat> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".toml") {
+        Some(ConfigFormat::Toml)
+    } else if lower.ends_with(".json") {
+        Some(ConfigFormat::Json)
+    } else {
+        None
+    }
+}
+
+/// Walk `key` (dot-separated) into `value`. Returns the leaf value or `None`
+/// when any segment is missing. Numeric segments index arrays.
+fn lookup_dotted(value: &Value, key: &str) -> Option<Value> {
+    let mut cursor = value.clone();
+    for segment in key.split('.') {
+        cursor = match cursor {
+            Value::Object(map) => map.get(segment).cloned()?,
+            Value::Array(items) => {
+                let idx: usize = segment.parse().ok()?;
+                items.get(idx).cloned()?
+            }
+            _ => return None,
+        };
+    }
+    Some(cursor)
+}
+
+/// Convert a `toml::Value` to a `serde_json::Value` for uniform downstream
+/// handling. Datetime values become their RFC 3339 string form.
+fn toml_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::Number((*i).into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(items) => Value::Array(items.iter().map(toml_to_json).collect()),
+        toml::Value::Table(t) => {
+            let mut map = serde_json::Map::with_capacity(t.len());
+            for (k, child) in t {
+                map.insert(k.clone(), toml_to_json(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
+
+/// Heuristically locate the 1-based line of the final key segment in the
+/// file's text. Returns the first line where `<segment> = ` (or
+/// `"<segment>": `) appears. Mis-attributes when the segment name is reused
+/// across sibling tables, which is acceptable for a navigation hint.
+fn find_key_line(contents: &str, key: &str) -> Option<u32> {
+    let last = key.rsplit('.').next()?;
+    let toml_form_eq = format!("{last} =");
+    let toml_form_quoted = format!("\"{last}\" =");
+    let json_form = format!("\"{last}\":");
+    for (idx, line) in contents.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(&toml_form_eq)
+            || trimmed.starts_with(&toml_form_quoted)
+            || trimmed.starts_with(&json_form)
+        {
+            return Some((idx as u32) + 1);
+        }
+    }
+    None
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -5527,7 +5724,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 57);
+        assert_eq!(tools.len(), 58);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

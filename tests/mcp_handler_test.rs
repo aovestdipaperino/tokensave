@@ -2950,6 +2950,184 @@ async fn test_implementations_rejects_both_args() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_config
+// ---------------------------------------------------------------------------
+
+async fn setup_config_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("crates/inner/src")).unwrap();
+
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "tokensave_cfg_fixture"
+version = "0.7.3"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+tokio = { version = "1", features = ["full"] }
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("crates/inner/Cargo.toml"),
+        r#"[package]
+name = "inner"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+
+    fs::write(project.join("src/lib.rs"), "pub fn placeholder() {}\n").unwrap();
+    fs::write(
+        project.join("crates/inner/src/lib.rs"),
+        "pub fn placeholder() {}\n",
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "target": "es2022",
+    "strict": true
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_config_returns_toml_value_and_line() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"path": "Cargo.toml", "key": "package.version"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["match_count"].as_u64(), Some(1));
+    let m = &payload["matches"][0];
+    assert_eq!(m["file"].as_str(), Some("Cargo.toml"));
+    assert_eq!(m["value"].as_str(), Some("0.7.3"));
+    assert!(m["line"].as_u64().is_some(), "line should be reported");
+}
+
+#[tokio::test]
+async fn test_config_returns_json_value() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"path": "tsconfig.json", "key": "compilerOptions.target"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let m = &payload["matches"][0];
+    assert_eq!(m["value"].as_str(), Some("es2022"));
+    assert_eq!(m["file"].as_str(), Some("tsconfig.json"));
+}
+
+#[tokio::test]
+async fn test_config_glob_returns_one_match_per_file() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"glob": "**/Cargo.toml", "key": "package.name"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let matches = payload["matches"].as_array().unwrap();
+    let names: Vec<&str> = matches.iter().filter_map(|m| m["value"].as_str()).collect();
+    assert!(names.contains(&"tokensave_cfg_fixture"));
+    assert!(names.contains(&"inner"));
+}
+
+#[tokio::test]
+async fn test_config_missing_key_reports_not_found() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"path": "Cargo.toml", "key": "package.no_such_field"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["match_count"].as_u64(), Some(0));
+    let m = &payload["matches"][0];
+    assert_eq!(m["found"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn test_config_requires_path_or_glob() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"key": "package.version"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "missing both path and glob should error");
+}
+
+#[tokio::test]
+async fn test_config_path_and_glob_mutually_exclusive() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"path": "Cargo.toml", "glob": "*.toml", "key": "package.version"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "passing both path and glob should error (mutually exclusive)"
+    );
+}
+
+#[tokio::test]
+async fn test_config_missing_key_arg_errors() {
+    let (cg, _dir) = setup_config_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_config",
+        json!({"path": "Cargo.toml"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "missing key arg should error");
+}
+
+// ---------------------------------------------------------------------------
 // tokensave_diagnostics
 // ---------------------------------------------------------------------------
 

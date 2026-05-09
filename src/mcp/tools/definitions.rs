@@ -135,6 +135,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_implementations(),
         def_unsafe_patterns(),
         def_diagnostics(),
+        def_config(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1306,6 +1307,37 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_config() -> ToolDefinition {
+    def(
+        "tokensave_config",
+        "Config File Query",
+        "Query TOML or JSON config files by dotted key path. Use 'path' for a \
+         single file (e.g. Cargo.toml, tsconfig.json, pyproject.toml) or 'glob' \
+         to query the same key across multiple files. The 'key' is dot-separated \
+         (e.g. 'package.version', 'dependencies.tokio'). Returns each match's \
+         file, parsed value, and the line where the key is defined. Format is \
+         detected from extension: .toml → TOML, .json → JSON.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative path to a single config file (e.g. 'Cargo.toml'). Mutually exclusive with 'glob'."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to match multiple config files (e.g. '**/Cargo.toml', 'crates/*/Cargo.toml'). Mutually exclusive with 'path'."
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Dot-separated key path (e.g. 'package.version', 'dependencies.tokio.version'). Required."
+                }
+            },
+            "required": ["key"]
         }),
     )
 }
