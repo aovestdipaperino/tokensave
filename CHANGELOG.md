@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.9] - 2026-05-09
+
+### Added
+- **`tokensave wipe` command for clearing local DBs** — `wipe` finds every `.tokensave/tokensave.db` project in the current folder, all its ancestors, and all its descendants (skipping `node_modules`, `target`, `.git`, `vendor`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and the user-level `~/.tokensave/`), then prompts for a `go!` confirmation before removing each `.tokensave/` directory and its row in the global DB. `tokensave wipe --all` (or `-a`) instead wipes every project tracked in `~/.tokensave/global.db` and then deletes the global DB itself, leaving it empty. Both flows display a bordered, blinking warning that lists every target before asking for confirmation.
+
 ## [4.3.8] - 2026-05-06
 
 ### Added
