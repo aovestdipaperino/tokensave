@@ -2950,6 +2950,182 @@ async fn test_implementations_rejects_both_args() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_signature_search
+// ---------------------------------------------------------------------------
+
+async fn setup_signature_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "tokensave_sig_fixture"
+version = "0.0.1"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub fn returns_result(x: i32) -> Result<i32, String> {
+    Ok(x)
+}
+
+pub async fn fetch_data(url: &str) -> Result<String, std::io::Error> {
+    Ok(url.to_string())
+}
+
+pub fn takes_mut_self(value: i32) -> i32 {
+    value
+}
+
+pub struct Holder {
+    pub n: i32,
+}
+
+impl Holder {
+    pub fn mut_method(&mut self, n: i32) -> i32 {
+        self.n = n;
+        n
+    }
+
+    pub async fn async_mut_method(&mut self, n: i32) -> i32 {
+        self.n = n;
+        n
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_signature_search_by_return_type() {
+    let (cg, _dir) = setup_signature_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_signature_search",
+        json!({"returns": "Result<"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let names: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"returns_result") && names.contains(&"fetch_data"),
+        "should find functions returning Result, got: {names:?}"
+    );
+    assert!(
+        !names.contains(&"takes_mut_self"),
+        "should exclude i32-returning functions, got: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_signature_search_by_async_flag() {
+    let (cg, _dir) = setup_signature_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_signature_search",
+        json!({"async": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let matches = payload["matches"].as_array().unwrap();
+    assert!(!matches.is_empty(), "should find async functions");
+    for m in matches {
+        assert_eq!(m["is_async"].as_bool(), Some(true), "non-async leak: {m}");
+    }
+}
+
+#[tokio::test]
+async fn test_signature_search_by_param_substring() {
+    let (cg, _dir) = setup_signature_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_signature_search",
+        json!({"params": ["&mut self"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let names: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"mut_method"),
+        "should find mut_method, got: {names:?}"
+    );
+    assert!(
+        !names.contains(&"returns_result"),
+        "should exclude free functions, got: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_signature_search_combined_filters() {
+    let (cg, _dir) = setup_signature_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_signature_search",
+        json!({"params": ["&mut self"], "async": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let names: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"async_mut_method"),
+        "expected async_mut_method, got: {names:?}"
+    );
+    for n in &names {
+        assert!(
+            *n != "mut_method",
+            "non-async &mut self method should be filtered out"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_signature_search_requires_at_least_one_filter() {
+    let (cg, _dir) = setup_signature_project().await;
+    let result = handle_tool_call(&cg, "tokensave_signature_search", json!({}), None, None).await;
+    assert!(
+        result.is_err(),
+        "no filters should error rather than return everything"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // tokensave_config
 // ---------------------------------------------------------------------------
 

@@ -142,6 +142,7 @@ pub async fn handle_tool_call(
         "tokensave_unsafe_patterns" => handle_unsafe_patterns(cg, args, scope_prefix).await,
         "tokensave_diagnostics" => handle_diagnostics(cg, args).await,
         "tokensave_config" => handle_config(cg, args).await,
+        "tokensave_signature_search" => handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -5471,6 +5472,145 @@ fn find_key_line(contents: &str, key: &str) -> Option<u32> {
     None
 }
 
+/// Handles `tokensave_signature_search` — substring search across the
+/// cached `signature` column on every Function/Method node, plus
+/// structured filters for async-ness and parameter shape.
+///
+/// All filters compose with AND. The `returns` filter looks for the
+/// substring after the first `->` in the signature; the `params` filter
+/// looks inside the first `(...)`. Both fall back to whole-signature
+/// substring match when the parser can't find the relevant region.
+async fn handle_signature_search(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let returns = args.get("returns").and_then(|v| v.as_str());
+    let params: Vec<String> = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let want_async = args.get("async").and_then(serde_json::Value::as_bool);
+    let path_filter = args.get("path").and_then(|v| v.as_str()).or(scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.clamp(1, 500) as usize);
+
+    if returns.is_none() && params.is_empty() && want_async.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_signature_search requires at least one of returns / params / async"
+                .to_string(),
+        });
+    }
+
+    let function_nodes = cg.db().get_nodes_by_kind(NodeKind::Function).await?;
+    let method_nodes = cg.db().get_nodes_by_kind(NodeKind::Method).await?;
+
+    let mut entries: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for node in function_nodes.iter().chain(method_nodes.iter()) {
+        if let Some(prefix) = path_filter {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !node.file_path.starts_with(&with_slash) && node.file_path != prefix {
+                continue;
+            }
+        }
+
+        if let Some(want) = want_async {
+            if node.is_async != want {
+                continue;
+            }
+        }
+
+        let Some(sig) = node.signature.as_deref() else {
+            continue;
+        };
+
+        if let Some(ret_pat) = returns {
+            if !returns_substring(sig).contains(ret_pat) {
+                continue;
+            }
+        }
+
+        if !params.is_empty() {
+            let param_region = params_substring(sig);
+            if !params.iter().all(|p| param_region.contains(p.as_str())) {
+                continue;
+            }
+        }
+
+        if !touched.contains(&node.file_path) {
+            touched.push(node.file_path.clone());
+        }
+        entries.push(json!({
+            "name": node.name,
+            "qualified_name": node.qualified_name,
+            "kind": node.kind.as_str(),
+            "file": node.file_path,
+            "line": node.start_line,
+            "is_async": node.is_async,
+            "signature": sig,
+        }));
+        if entries.len() >= limit {
+            break;
+        }
+    }
+
+    let payload = json!({
+        "match_count": entries.len(),
+        "matches": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// Best-effort slice of a signature after the first `->`. Falls back to
+/// the whole signature when no return-type marker is present.
+fn returns_substring(signature: &str) -> &str {
+    match signature.find("->") {
+        Some(pos) => signature[pos + 2..].trim_start(),
+        None => signature,
+    }
+}
+
+/// Best-effort slice of the parameter list — the first balanced
+/// parentheses block. Falls back to the whole signature on a parse miss.
+fn params_substring(signature: &str) -> &str {
+    let bytes = signature.as_bytes();
+    let Some(open) = signature.find('(') else {
+        return signature;
+    };
+    let mut depth = 0i32;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &signature[open + 1..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    signature
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -5724,7 +5864,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 58);
+        assert_eq!(tools.len(), 59);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

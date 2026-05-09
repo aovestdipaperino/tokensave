@@ -136,6 +136,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_unsafe_patterns(),
         def_diagnostics(),
         def_config(),
+        def_signature_search(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1307,6 +1308,46 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_signature_search() -> ToolDefinition {
+    def(
+        "tokensave_signature_search",
+        "Signature Search",
+        "Find functions and methods by signature shape: return type, parameter \
+         substring, async, or path. Searches the cached `signature` column on \
+         every Function/Method node. Substring-matched with case-sensitive \
+         compare; combine multiple criteria for narrower hits. Use \
+         tokensave_search for plain name lookups; this tool is for refactor \
+         questions like 'find every function returning Result<_, MyError>' or \
+         'every async fn taking &mut self'.",
+        json!({
+            "type": "object",
+            "properties": {
+                "returns": {
+                    "type": "string",
+                    "description": "Substring that must appear in the return-type portion of the signature (after '->'). E.g. 'Result<', 'impl Future', 'Vec<u32>'."
+                },
+                "params": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Substrings that must all appear in the parameter list portion of the signature. E.g. ['&mut self'], ['i32', 'String']."
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": "When true, only return functions marked async. When false, exclude them. Omit to ignore async-ness."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to symbols defined under this directory."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum matches to return (default: 50, max: 500)."
+                }
+            }
         }),
     )
 }
