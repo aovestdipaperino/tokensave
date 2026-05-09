@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::process::Stdio;
 
 use crate::diagnostics::{Diagnostic, Driver, Scope};
-use crate::errors::{Result, TokenSaveError};
+use crate::errors::Result;
 
 pub struct TscDriver;
 
@@ -48,9 +48,14 @@ impl Driver for TscDriver {
                 .stderr(Stdio::null())
                 .kill_on_drop(true);
 
-            let output = cmd.output().await.map_err(|e| TokenSaveError::Config {
-                message: format!("failed to spawn tsc: {e}"),
-            })?;
+            // Spawn errors (tsc not on PATH) fall through to empty rather
+            // than killing the call. Same reasoning as the Python driver:
+            // a tsconfig.json's presence doesn't guarantee tsc is installed,
+            // and a Rust project with a JS sibling shouldn't be punished.
+            let output = match cmd.output().await {
+                Ok(o) => o,
+                Err(_) => return Ok(Vec::new()),
+            };
 
             // tsc exits with status 1 when there are errors; status 0 means
             // "no diagnostics." Either way, stdout has the diagnostic stream.

@@ -11,6 +11,7 @@
 //! enclosing graph node, so callers get structured errors mapped to the
 //! same node IDs the rest of tokensave's tools speak.
 
+pub mod python;
 pub mod rust;
 pub mod typescript;
 
@@ -77,8 +78,11 @@ pub trait Driver {
 /// diagnostic list. Drivers are run sequentially; any driver-level error
 /// is propagated immediately. Empty when no driver detects the project.
 pub async fn run_all(project_root: &Path, scope: &Scope) -> Result<Vec<Diagnostic>> {
-    let drivers: Vec<Box<dyn Driver + Send + Sync>> =
-        vec![Box::new(rust::CargoDriver), Box::new(typescript::TscDriver)];
+    let drivers: Vec<Box<dyn Driver + Send + Sync>> = vec![
+        Box::new(rust::CargoDriver),
+        Box::new(typescript::TscDriver),
+        Box::new(python::PyrightDriver),
+    ];
 
     let mut all = Vec::new();
     for driver in drivers {
