@@ -333,6 +333,12 @@ enum Commands {
         #[arg(short, long)]
         all: bool,
     },
+    /// List tokensave projects (current folder, parents, and children)
+    List {
+        /// List ALL tracked projects from the global DB
+        #[arg(short, long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1436,6 +1442,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Wipe { all } => {
             handle_wipe(all).await?;
         }
+        Commands::List { all } => {
+            handle_list(all).await?;
+        }
     }
     Ok(())
 }
@@ -1768,6 +1777,145 @@ async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     };
     eprintln!("\x1b[32mWiped {removed} project(s){suffix}.\x1b[0m");
     Ok(())
+}
+
+/// Handles the `list` and `list --all` commands.
+async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
+    use std::path::PathBuf;
+    use tokensave::display::format_token_count;
+
+    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+
+    let project_paths: Vec<PathBuf> = if all {
+        match tokensave::global_db::GlobalDb::open().await {
+            Some(db) => db
+                .list_project_paths()
+                .await
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+            None => Vec::new(),
+        }
+    } else {
+        gather_local_projects(&home_tokensave)
+    };
+
+    if project_paths.is_empty() {
+        if all {
+            println!("No tokensave projects tracked in the global DB.");
+        } else {
+            println!("No tokensave projects found in current folder, parents, or children.");
+        }
+        return Ok(());
+    }
+
+    let gdb = tokensave::global_db::GlobalDb::open().await;
+    let mut rows: Vec<ListRow> = Vec::with_capacity(project_paths.len());
+    let mut total_size: u64 = 0;
+    let mut total_tokens: u64 = 0;
+
+    for path in &project_paths {
+        let ts_dir = path.join(".tokensave");
+        let on_disk = ts_dir.exists();
+        let size = if on_disk { tokensave_dir_size(&ts_dir) } else { 0 };
+        let tokens = match &gdb {
+            Some(db) => db.get_project_tokens(path).await,
+            None => 0,
+        };
+        total_size = total_size.saturating_add(size);
+        total_tokens = total_tokens.saturating_add(tokens);
+        rows.push(ListRow {
+            path: path.clone(),
+            on_disk,
+            size,
+            tokens,
+        });
+    }
+
+    rows.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.path.cmp(&b.path)));
+
+    let path_w = rows
+        .iter()
+        .map(|r| {
+            r.path.display().to_string().chars().count()
+                + if r.on_disk { 0 } else { " (stale)".len() }
+        })
+        .max()
+        .unwrap_or(0);
+
+    println!("Found {} tokensave project(s):", rows.len());
+    println!();
+    for r in &rows {
+        let path_str = if r.on_disk {
+            r.path.display().to_string()
+        } else {
+            format!("{} \x1b[33m(stale)\x1b[0m", r.path.display())
+        };
+        let pad = path_w.saturating_sub(
+            r.path.display().to_string().chars().count()
+                + if r.on_disk { 0 } else { " (stale)".len() },
+        );
+        let size_str = if r.on_disk {
+            format_size(r.size)
+        } else {
+            "—".to_string()
+        };
+        let tokens_str = if r.tokens == 0 {
+            "—".to_string()
+        } else {
+            format_token_count(r.tokens)
+        };
+        println!(
+            "  {path_str}{pad}  {size:>10}  {tokens:>10} tokens",
+            pad = " ".repeat(pad),
+            size = size_str,
+            tokens = tokens_str
+        );
+    }
+    println!();
+    let total_tokens_str = if total_tokens == 0 {
+        "—".to_string()
+    } else {
+        format_token_count(total_tokens)
+    };
+    println!(
+        "Total: {} on disk · {} tokens saved",
+        format_size(total_size),
+        total_tokens_str
+    );
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ListRow {
+    path: std::path::PathBuf,
+    on_disk: bool,
+    size: u64,
+    tokens: u64,
+}
+
+/// Returns the total size in bytes of every file under `dir`. Best-effort.
+fn tokensave_dir_size(dir: &Path) -> u64 {
+    fn walk(p: &Path, acc: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(p) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                walk(&entry.path(), acc);
+            } else if ft.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    *acc = acc.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    let mut total = 0u64;
+    walk(dir, &mut total);
+    total
 }
 
 /// Returns project roots whose `.tokensave` dir lives in cwd, an ancestor, or a descendant.
