@@ -139,6 +139,7 @@ pub async fn handle_tool_call(
         "tokensave_read" => handle_read(cg, args).await,
         "tokensave_outline" => handle_outline(cg, args).await,
         "tokensave_implementations" => handle_implementations(cg, args, scope_prefix).await,
+        "tokensave_unsafe_patterns" => handle_unsafe_patterns(cg, args, scope_prefix).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -4949,6 +4950,222 @@ async fn collect_method_bodies(
     Ok(out)
 }
 
+/// Patterns recognised by `tokensave_unsafe_patterns`. Each entry maps a
+/// public kind name to a per-line matcher. Matchers operate on a single
+/// trimmed source line; the comment / string filter happens before they run.
+const UNSAFE_KINDS: &[&str] = &[
+    "unwrap",
+    "expect",
+    "panic",
+    "todo",
+    "unimplemented",
+    "unsafe_block",
+];
+
+/// True when `line` (already trimmed of leading whitespace) matches the
+/// requested unsafe-pattern `kind`. Excludes lines that are entirely
+/// `//` comments. Does not detect string-literal context — false positives
+/// are rare enough in practice that the simpler check is fine for review
+/// tooling.
+fn line_matches_unsafe_kind(line: &str, kind: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with("///") {
+        return false;
+    }
+
+    match kind {
+        // `.unwrap()` with empty parens. Excludes .unwrap_or, .unwrap_err,
+        // .unwrap_or_else, .unwrap_or_default by checking for the closing
+        // paren immediately after.
+        "unwrap" => contains_method_call(line, "unwrap", true),
+        "expect" => contains_method_call(line, "expect", false),
+        // Macro forms — match the bang plus open paren.
+        "panic" => line.contains("panic!("),
+        "todo" => line.contains("todo!("),
+        "unimplemented" => line.contains("unimplemented!(") || line.contains("unimplemented!()"),
+        // Unsafe-block start.
+        "unsafe_block" => contains_unsafe_block_start(line),
+        _ => false,
+    }
+}
+
+/// Returns true when `line` contains `.<method>(` followed by the right
+/// shape. When `empty_parens` is true, requires `()` directly (so `.unwrap()`
+/// matches but `.unwrap_or(0)` does not). Otherwise allows any args.
+fn contains_method_call(line: &str, method: &str, empty_parens: bool) -> bool {
+    let needle = format!(".{method}");
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = line[start..].find(&needle) {
+        let abs = start + pos;
+        let after = abs + needle.len();
+        // Word-boundary on the right side: rule out .unwrap_or, .expectation, etc.
+        let next = bytes.get(after).copied();
+        let is_word_boundary = !matches!(next, Some(c) if c.is_ascii_alphanumeric() || c == b'_');
+        if is_word_boundary {
+            // Position of the open paren must immediately follow.
+            if next == Some(b'(') {
+                if empty_parens {
+                    // Next non-space char after `(` should be `)`.
+                    if line[after + 1..].trim_start().starts_with(')') {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
+            }
+        }
+        start = abs + needle.len();
+    }
+    false
+}
+
+/// True when `line` starts an `unsafe { ... }` block. Recognises both
+/// `unsafe {` and `unsafe fn` (the latter is a function-level annotation
+/// rather than a block; we still surface it because reviewers care about
+/// both). Skips identifiers like `unsafe_value` via word-boundary check.
+fn contains_unsafe_block_start(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = line[start..].find("unsafe") {
+        let abs = start + pos;
+        // Left boundary: previous char must be non-word or string start.
+        let prev_ok =
+            abs == 0 || !matches!(bytes[abs - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+        let after = abs + "unsafe".len();
+        let next = bytes.get(after).copied();
+        let next_ok = matches!(next, Some(b' ') | Some(b'\t') | Some(b'{'));
+        if prev_ok && next_ok {
+            // Only return true when followed by `{` or `fn` or `impl` or `trait`.
+            let rest = line[after..].trim_start();
+            if rest.starts_with('{')
+                || rest.starts_with("fn ")
+                || rest.starts_with("impl ")
+                || rest.starts_with("trait ")
+            {
+                return true;
+            }
+        }
+        start = abs + "unsafe".len();
+    }
+    false
+}
+
+/// True when `path` looks like a test file. Recognises common conventions
+/// across Rust, Go, JavaScript/TypeScript, Python, and Java.
+fn path_looks_like_test(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.ends_with("_test.rs")
+        || path.ends_with("_tests.rs")
+        || path.ends_with("_test.go")
+        || path.contains("/__tests__/")
+        || path.ends_with(".test.ts")
+        || path.ends_with(".test.tsx")
+        || path.ends_with(".test.js")
+        || path.ends_with("_test.py")
+        || path.ends_with("Test.java")
+}
+
+/// Handles `tokensave_unsafe_patterns` — finds unwrap / expect / panic /
+/// todo / unimplemented / unsafe-block sites with an in_test flag.
+async fn handle_unsafe_patterns(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| UNSAFE_KINDS.iter().map(|s| (*s).to_string()).collect());
+
+    let path = effective_path(&args, scope_prefix);
+    let exclude_tests = args
+        .get("exclude_tests")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.min(2000) as usize);
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut matches: Vec<Value> = Vec::new();
+    let mut by_kind: HashMap<String, u64> = HashMap::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = path {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let in_test = path_looks_like_test(&file.path);
+        if exclude_tests && in_test {
+            continue;
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = (idx as u32) + 1;
+            for kind in &kinds {
+                if line_matches_unsafe_kind(line, kind) {
+                    let enclosing = nodes
+                        .iter()
+                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                        .map(|n| n.qualified_name.clone());
+                    *by_kind.entry(kind.clone()).or_insert(0) += 1;
+                    matches.push(json!({
+                        "kind": kind,
+                        "file": file.path,
+                        "line": line_no,
+                        "snippet": line.trim(),
+                        "enclosing": enclosing,
+                        "in_test": in_test,
+                    }));
+                    if !touched.contains(&file.path) {
+                        touched.push(file.path.clone());
+                    }
+                    if matches.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let counts = serde_json::to_value(&by_kind).unwrap_or(json!({}));
+    let payload = json!({
+        "match_count": matches.len(),
+        "by_kind": counts,
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -5202,7 +5419,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 55);
+        assert_eq!(tools.len(), 56);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

@@ -133,6 +133,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_read(),
         def_outline(),
         def_implementations(),
+        def_unsafe_patterns(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1304,6 +1305,40 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_unsafe_patterns() -> ToolDefinition {
+    def(
+        "tokensave_unsafe_patterns",
+        "Risky Pattern Finder",
+        "Find unwrap(), expect(), panic!(), todo!(), unimplemented!(), and unsafe \
+         { } sites across the project. Each match includes the file, line, kind, \
+         enclosing symbol, the source line, and an in_test flag derived from the \
+         path. Use this in security/quality reviews to surface panic sites before \
+         a release. Defaults to all kinds; pass `kinds` to narrow.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Subset of patterns to search. Default: ['unwrap', 'expect', 'panic', 'todo', 'unimplemented', 'unsafe_block']."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory (relative to project root)."
+                },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": "When true, skips files whose path looks like a test (default: false)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of matches to return (default: 200, max: 2000)."
+                }
+            }
         }),
     )
 }

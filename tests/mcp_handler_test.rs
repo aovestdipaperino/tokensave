@@ -2949,6 +2949,174 @@ async fn test_implementations_rejects_both_args() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// tokensave_unsafe_patterns
+// ---------------------------------------------------------------------------
+
+async fn setup_unsafe_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub fn risky() -> i32 {
+    let x: Option<i32> = Some(7);
+    let _ = x.unwrap();
+    let _ = x.expect("must be set");
+    let _ = x.unwrap_or(0);
+    let _ = x.unwrap_or_else(|| 0);
+    if x.is_none() {
+        panic!("nope");
+    }
+    todo!("compute the answer");
+    let _value: i32 = unsafe { *(0xDEAD as *const i32) };
+    0
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("tests/risky_test.rs"),
+        r#"#[test]
+fn smoke() {
+    let x: Option<i32> = Some(1);
+    let _ = x.unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_unsafe_patterns_finds_each_kind() {
+    let (cg, _dir) = setup_unsafe_project().await;
+    let result = handle_tool_call(&cg, "tokensave_unsafe_patterns", json!({}), None, None)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let kinds: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["kind"].as_str())
+        .collect();
+    for expected in ["unwrap", "expect", "panic", "todo", "unsafe_block"] {
+        assert!(
+            kinds.contains(&expected),
+            "expected {expected} kind in matches, got: {kinds:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_unsafe_patterns_does_not_false_match_unwrap_or() {
+    let (cg, _dir) = setup_unsafe_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_unsafe_patterns",
+        json!({"kinds": ["unwrap"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let snippets: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["snippet"].as_str())
+        .collect();
+    let combined = snippets.join("\n");
+    assert!(
+        combined.contains(".unwrap()"),
+        ".unwrap() should match, got: {combined}"
+    );
+    for snip in &snippets {
+        assert!(
+            !snip.contains("unwrap_or"),
+            "unwrap_or should not appear as an unwrap match: {snip}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_unsafe_patterns_in_test_flag() {
+    let (cg, _dir) = setup_unsafe_project().await;
+    let result = handle_tool_call(&cg, "tokensave_unsafe_patterns", json!({}), None, None)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let matches = payload["matches"].as_array().unwrap();
+    let test_match = matches
+        .iter()
+        .find(|m| m["file"].as_str() == Some("tests/risky_test.rs"))
+        .expect("test-file match should be present");
+    assert_eq!(test_match["in_test"].as_bool(), Some(true));
+
+    let lib_match = matches
+        .iter()
+        .find(|m| m["file"].as_str() == Some("src/lib.rs"))
+        .expect("src match should be present");
+    assert_eq!(lib_match["in_test"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn test_unsafe_patterns_exclude_tests() {
+    let (cg, _dir) = setup_unsafe_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_unsafe_patterns",
+        json!({"exclude_tests": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let matches = payload["matches"].as_array().unwrap();
+    for m in matches {
+        assert!(
+            m["file"].as_str() != Some("tests/risky_test.rs"),
+            "exclude_tests should hide tests/* matches, found: {m}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_unsafe_patterns_kind_filter() {
+    let (cg, _dir) = setup_unsafe_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_unsafe_patterns",
+        json!({"kinds": ["panic", "unsafe_block"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let kinds: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["kind"].as_str())
+        .collect();
+    for k in &kinds {
+        assert!(
+            *k == "panic" || *k == "unsafe_block",
+            "kind filter leaked: {k}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_implementations_by_trait_returns_implementing_types() {
     let (cg, _dir) = setup_traits_project().await;
