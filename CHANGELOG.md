@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.11] - 2026-05-09
+
 ### Added
 - **`tokensave doctor` now reports stale entries in the global DB and offers to purge them** — projects registered in `~/.tokensave/global.db` whose `.tokensave/` directory is gone (deleted, moved, or scratch dirs cleaned up by the OS) are listed under the "Global database" section. Up to 10 paths are shown with an "… and N more" tail. When run interactively, the doctor prompts `Purge N stale row(s) from the global DB? [Y/n]`; on confirmation each stale row is deleted via `GlobalDb::delete_project`. When stdin is not a terminal (CI, piped invocation), the stale list is shown as a warning with a hint to re-run interactively.
 
 ### Fixed
 - **`tokensave reinstall` now refreshes every detected agent, not just the first one ever installed** — `migrate_installed_agents` previously returned early as soon as `installed_agents` was non-empty. A user who installed agent A and later configured agent B (e.g. installed Copilot first, then Claude) would have only A in the list, so `reinstall` silently skipped B and its tool permissions never got refreshed when new tools shipped. The migration now scans every agent on each call and additively appends any whose tokensave config exists on disk but is missing from the tracked list. Side effect: a stale `tokensave install` warning ("N new tokensave tool(s) not yet permitted") could persist across reinstalls — that no longer happens. The detection logic is also extracted into a pure `detect_missing_installed_agents` helper covered by a regression test that reproduces the original "claude missing when copilot is tracked" scenario.
+- **`tokensave wipe` warning banner now reaches full width** — the colored title row was 49 visual columns while the `═` rules above and below were 64, producing a short red strip floating between long horizontal lines. The title is now centered and padded with red-background spaces, sandwiched between two blank red rows so the warning reads as a single fixed-width block.
 
 ## [4.3.10] - 2026-05-09
 
