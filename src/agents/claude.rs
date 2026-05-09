@@ -1129,7 +1129,7 @@ fn warn_missing_permissions(settings: &serde_json::Value) {
 
     if missing_count > 0 {
         eprintln!(
-            "\x1b[33mwarning: {missing_count} new tokensave tool(s) not yet permitted. Run `tokensave install` to update.\x1b[0m"
+            "\x1b[33mwarning: {missing_count} new tokensave tool(s) not yet permitted. Run `tokensave reinstall` to update permissions.\x1b[0m"
         );
     }
 }
