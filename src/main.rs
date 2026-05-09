@@ -2012,10 +2012,27 @@ fn find_descendant_tokensave(
 
 /// Prints the big flashing warning shown before a wipe.
 fn print_flash_warning(all: bool, targets: &[std::path::PathBuf]) {
-    let banner = "═".repeat(64);
+    // Banner is `INNER_WIDTH` display columns wide. The colored title row is
+    // padded with red-background spaces so the highlight reaches the same
+    // width as the `═` rules above and below — a fixed-width visual block
+    // rather than a short red strip floating between long horizontal lines.
+    const INNER_WIDTH: usize = 64;
+    let title = "⚠  DESTRUCTIVE ACTION — TOKENSAVE WIPE  ⚠";
+    // Visible columns: ⚠(2) + "  "(2) + 35 + "  "(2) + ⚠(2) = 43.
+    // Modern terminals render U+26A0 as a 2-col emoji glyph; older terminals
+    // that pick the text presentation will leave a 2-col gap, which is mild.
+    const TITLE_COLS: usize = 43;
+    let pad_total = INNER_WIDTH.saturating_sub(TITLE_COLS);
+    let pad_left = " ".repeat(pad_total / 2);
+    let pad_right = " ".repeat(pad_total - pad_total / 2);
+    let banner = "═".repeat(INNER_WIDTH);
+    let blank_red = " ".repeat(INNER_WIDTH);
+
     eprintln!();
     eprintln!("\x1b[1;31m{banner}\x1b[0m");
-    eprintln!("\x1b[1;5;37;41m   ⚠  DESTRUCTIVE ACTION — TOKENSAVE WIPE  ⚠   \x1b[0m");
+    eprintln!("\x1b[1;5;37;41m{blank_red}\x1b[0m");
+    eprintln!("\x1b[1;5;37;41m{pad_left}{title}{pad_right}\x1b[0m");
+    eprintln!("\x1b[1;5;37;41m{blank_red}\x1b[0m");
     eprintln!("\x1b[1;31m{banner}\x1b[0m");
     eprintln!();
     if all {
