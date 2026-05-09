@@ -66,6 +66,10 @@ pub async fn run_pass(
 
     let adapters: Vec<Box<dyn adapters::LspAdapter>> = vec![
         Box::new(adapters::rust::RustAnalyzerAdapter),
+        Box::new(adapters::go::GoplsAdapter),
+        Box::new(adapters::clangd::ClangdAdapter),
+        Box::new(adapters::zig::ZlsAdapter),
+        Box::new(adapters::lua::LuaLsAdapter),
         Box::new(adapters::python::PythonAdapter),
         Box::new(adapters::java::JavaAdapter),
     ];
