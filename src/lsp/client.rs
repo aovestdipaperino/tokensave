@@ -116,16 +116,24 @@ impl LspClient {
 
     /// Send a JSON-RPC request and await the typed response.
     ///
-    /// On timeout, the pending entry is removed and an error is returned.
-    /// A late response after timeout is silently dropped by the reader.
+    /// Cleanup invariants:
+    /// - Param serialisation runs before the pending entry is inserted, so a
+    ///   serialise failure can never leak a map entry.
+    /// - Send / timeout / oneshot-drop failures all remove the pending entry
+    ///   inline before returning, so late responses see a stale id and
+    ///   simply get ignored by the reader.
     pub async fn request<P, R>(&self, method: &str, params: P) -> Result<R>
     where
         P: Serialize,
         R: DeserializeOwned,
     {
+        // Serialise first — failure here returns before any state changes.
+        let params_value = serde_json::to_value(params).map_err(|e| TokenSaveError::Config {
+            message: format!("serialise params for {method}: {e}"),
+        })?;
+
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-
         {
             let mut map = self.pending.lock().await;
             map.insert(id, tx);
@@ -135,33 +143,39 @@ impl LspClient {
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "params": serde_json::to_value(params).map_err(|e| TokenSaveError::Config {
-                message: format!("serialise params for {method}: {e}"),
-            })?,
+            "params": params_value,
         });
 
-        self.outbound
+        if let Err(_send_err) = self
+            .outbound
             .send(OutboundFrame::Request { id, payload })
             .await
-            .map_err(|_| TokenSaveError::Config {
+        {
+            // Writer is dead. Reclaim the pending entry so the map doesn't
+            // accumulate orphans across the LspClient's lifetime.
+            self.pending.lock().await.remove(&id);
+            return Err(TokenSaveError::Config {
                 message: format!("LSP writer channel closed before send of {method}"),
-            })?;
+            });
+        }
 
-        let resolved = timeout(self.request_timeout, rx)
-            .await
-            .map_err(|_| {
-                // Timeout fired — drop the pending entry so a late response is ignored.
-                let pending = Arc::clone(&self.pending);
-                tokio::spawn(async move {
-                    pending.lock().await.remove(&id);
+        let resolved = match timeout(self.request_timeout, rx).await {
+            Ok(Ok(value)) => value?,
+            Ok(Err(_)) => {
+                // The reader dropped the Sender — typically means stdout closed.
+                self.pending.lock().await.remove(&id);
+                return Err(TokenSaveError::Config {
+                    message: format!("LSP response oneshot dropped for '{method}'"),
                 });
-                TokenSaveError::Config {
+            }
+            Err(_) => {
+                // Timeout. Inline cleanup avoids the spawn-vs-reader race.
+                self.pending.lock().await.remove(&id);
+                return Err(TokenSaveError::Config {
                     message: format!("LSP request '{method}' timed out"),
-                }
-            })?
-            .map_err(|_| TokenSaveError::Config {
-                message: format!("LSP response oneshot dropped for '{method}'"),
-            })??;
+                });
+            }
+        };
 
         serde_json::from_value::<R>(resolved).map_err(|e| TokenSaveError::Config {
             message: format!("LSP response deserialise for '{method}' failed: {e}"),

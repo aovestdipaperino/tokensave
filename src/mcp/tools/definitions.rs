@@ -1425,7 +1425,9 @@ fn def_config() -> ToolDefinition {
          to query the same key across multiple files. The 'key' is dot-separated \
          (e.g. 'package.version', 'dependencies.tokio'). Returns each match's \
          file, parsed value, and the line where the key is defined. Format is \
-         detected from extension: .toml → TOML, .json → JSON.",
+         detected from extension: .toml → TOML, .json → JSON. \
+         \n\nDoes not query the code graph — pure filesystem + parser. Works \
+         on uninitialized projects.",
         json!({
             "type": "object",
             "properties": {
@@ -1451,13 +1453,19 @@ fn def_diagnostics() -> ToolDefinition {
     def(
         "tokensave_diagnostics",
         "Compile / Type-Check Diagnostics",
-        "Run the project's type-checker (cargo check for Rust) and return \
-         structured errors and warnings. Each diagnostic includes file, line \
-         range, level, code, message, driver, and the enclosing graph node \
-         when one can be resolved. Replaces the recurring 'run cargo → parse \
-         text → read file' loop with a single structured response. The cargo \
-         target dir defaults to .tokensave/target/ to avoid racing with \
-         interactive cargo runs.",
+        "Run the project's type-checker (cargo check for Rust, tsc for \
+         TypeScript, pyright for Python) and return structured errors and \
+         warnings. Each diagnostic includes file, line range, level, code, \
+         message, driver, and the enclosing graph node when one can be \
+         resolved. Replaces the recurring 'run cargo → parse text → read \
+         file' loop with a single structured response. \
+         \n\nNote: the cargo target dir is forced to .tokensave/target/ so \
+         we don't race with the user's interactive cargo runs. The first \
+         call against a fresh tree builds dependencies from scratch, which \
+         can take several minutes on large workspaces; subsequent calls \
+         are sub-second. Build scripts and proc macros from the project \
+         execute as part of cargo check — same trust model as running it \
+         manually.",
         json!({
             "type": "object",
             "properties": {

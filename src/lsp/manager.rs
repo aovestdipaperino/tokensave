@@ -116,86 +116,96 @@ impl LspManager {
     /// Detect, spawn, initialize, and register every adapter whose binary
     /// is on `$PATH` (and whose manifest, if required, is present).
     ///
+    /// Adapters are dispatched **concurrently** via `tokio::task::JoinSet`,
+    /// so a multi-language project pays the cost of the slowest server
+    /// (rust-analyzer at ~10s) rather than the sum across every server.
     /// Per-adapter failures are non-fatal: an adapter that fails detection,
-    /// spawn, or initialize is silently skipped. The manager remains usable
-    /// for adapters that did succeed, and the resolver layer treats absent
-    /// languages as pass-throughs to the heuristic resolver.
+    /// spawn, or initialize is silently skipped.
+    ///
+    /// Takes the adapter list by value so the spawned futures can own
+    /// each `Box<dyn LspAdapter>` for their lifetime.
     ///
     /// Returns the list of language ids that registered successfully so
     /// callers can log a summary.
-    pub async fn start(&mut self, adapters: &[Box<dyn LspAdapter>]) -> Vec<&'static str> {
-        let mut started: Vec<&'static str> = Vec::new();
+    pub async fn start(
+        &mut self,
+        adapters: Vec<Box<dyn LspAdapter + Send + Sync>>,
+    ) -> Vec<&'static str> {
+        let mut set: tokio::task::JoinSet<Option<(Vec<&'static str>, LspClient)>> =
+            tokio::task::JoinSet::new();
         for adapter in adapters {
-            // Manifest gate first — a missing manifest means we should skip
-            // the adapter entirely, not pay the spawn cost. Adapters with
-            // multiple acceptable manifests (e.g. JavaAdapter accepting
-            // Maven or Gradle) override `manifest_present` to widen the
-            // check beyond a single filename.
-            if !adapter.manifest_present(&self.project_root) {
-                continue;
-            }
+            let project_root = self.project_root.clone();
+            set.spawn(async move { start_one(adapter, project_root).await });
+        }
 
-            let Some(binary) = adapter.detect() else {
+        let mut started: Vec<&'static str> = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            let Ok(Some((langs, client))) = joined else {
+                // Either the spawned task panicked or the adapter returned
+                // None. Either way, skip silently.
                 continue;
             };
-
-            let command = adapter.spawn_command(&binary);
-            let client = match LspClient::spawn(command).await {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let init_params = InitializeParams {
-                process_id: Some(std::process::id()),
-                root_uri: super::protocol::path_to_uri(&self.project_root),
-                initialization_options: adapter.init_options(&self.project_root),
-                capabilities: ClientCapabilities {
-                    text_document: Some(TextDocumentClientCapabilities {
-                        definition: Some(DefinitionClientCapabilities {
-                            link_support: Some(true),
-                        }),
-                    }),
-                    workspace: Some(WorkspaceClientCapabilities {
-                        workspace_folders: Some(true),
-                    }),
-                },
-            };
-
-            // initialize is the slowest request in the LSP protocol. Override
-            // the per-request timeout so rust-analyzer's ~10s startup doesn't
-            // get killed by the default 5s budget.
-            let init_client =
-                client.with_request_timeout(adapter.index_grace_period() + Duration::from_secs(15));
-
-            let result: InitializeResult =
-                match init_client.request("initialize", init_params).await {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
-            if !result.capabilities.supports_definition() {
-                let _ = init_client.notify("exit", ()).await;
-                continue;
-            }
-            if init_client
-                .notify("initialized", serde_json::json!({}))
-                .await
-                .is_err()
-            {
-                continue;
-            }
-
-            // Register one entry per language id the adapter handles. clangd
-            // covers c/cpp/objc with the same client; this mapping shares
-            // a single `Arc<LspClient>` across all of them.
-            let shared = Arc::new(init_client);
-            for lang in adapter.languages() {
-                self.clients
-                    .insert((*lang).to_string(), Arc::clone(&shared));
-                started.push(*lang);
+            let shared = Arc::new(client);
+            for lang in langs {
+                self.clients.insert(lang.to_string(), Arc::clone(&shared));
+                started.push(lang);
             }
         }
         started
     }
+}
+
+/// Per-adapter startup: manifest check, detect, spawn, initialize. Returns
+/// the language list + client when every step succeeds. Returns `None` on
+/// any failure so the caller can simply skip the adapter.
+async fn start_one(
+    adapter: Box<dyn LspAdapter + Send + Sync>,
+    project_root: PathBuf,
+) -> Option<(Vec<&'static str>, LspClient)> {
+    if !adapter.manifest_present(&project_root) {
+        return None;
+    }
+    let binary = adapter.detect()?;
+    let command = adapter.spawn_command(&binary);
+    let client = LspClient::spawn(command).await.ok()?;
+
+    let init_params = InitializeParams {
+        process_id: Some(std::process::id()),
+        root_uri: super::protocol::path_to_uri(&project_root),
+        initialization_options: adapter.init_options(&project_root),
+        capabilities: ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                definition: Some(DefinitionClientCapabilities {
+                    link_support: Some(true),
+                }),
+            }),
+            workspace: Some(WorkspaceClientCapabilities {
+                workspace_folders: Some(true),
+            }),
+        },
+    };
+
+    // initialize is the slowest request in the protocol. Override the
+    // per-request timeout so rust-analyzer's ~10s startup doesn't get
+    // killed by the default 5s budget.
+    let init_client =
+        client.with_request_timeout(adapter.index_grace_period() + Duration::from_secs(15));
+
+    let result: InitializeResult = init_client.request("initialize", init_params).await.ok()?;
+    if !result.capabilities.supports_definition() {
+        let _ = init_client.notify("exit", ()).await;
+        return None;
+    }
+    if init_client
+        .notify("initialized", serde_json::json!({}))
+        .await
+        .is_err()
+    {
+        return None;
+    }
+
+    let langs: Vec<&'static str> = adapter.languages().to_vec();
+    Some((langs, init_client))
 }
 
 #[cfg(test)]

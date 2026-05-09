@@ -16,6 +16,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -25,6 +26,12 @@ use tokensave::lsp::adapters::{which, LspAdapter};
 use tokensave::lsp::manager::LspManager;
 use tokensave::lsp::resolver::LspResolver;
 use tokensave::types::{EdgeKind, Node, NodeKind, UnresolvedRef, Visibility};
+
+/// Serializes any test that reads or mutates `TOKENSAVE_LSP`. cargo test
+/// runs test functions concurrently across threads, and env vars are
+/// process-global — a kill-switch test setting `TOKENSAVE_LSP=0` would
+/// otherwise race with a parallel test that calls `lsp::run_pass`.
+static LSP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Skip a test when the binary isn't actually usable on the runner.
 ///
@@ -163,6 +170,7 @@ fn main_logic_caller_node() -> Node {
 #[tokio::test]
 async fn rust_analyzer_resolves_cross_file_call() {
     require_binary!("rust-analyzer");
+    let _guard = LSP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = build_rust_fixture();
     let project_root = fixture.path().to_path_buf();
@@ -171,8 +179,8 @@ async fn rust_analyzer_resolves_cross_file_call() {
     // through lsp::run_pass so we can control timeout and assert against
     // the resolver output directly.
     let mut manager = LspManager::new(project_root.clone());
-    let adapters: Vec<Box<dyn LspAdapter>> = vec![Box::new(RustAnalyzerAdapter)];
-    let started = manager.start(&adapters).await;
+    let adapters: Vec<Box<dyn LspAdapter + Send + Sync>> = vec![Box::new(RustAnalyzerAdapter)];
+    let started = manager.start(adapters).await;
 
     assert!(
         started.contains(&"rust"),
@@ -213,6 +221,7 @@ async fn rust_analyzer_resolves_cross_file_call() {
 #[tokio::test]
 async fn run_pass_returns_lsp_edges_when_rust_analyzer_present() {
     require_binary!("rust-analyzer");
+    let _guard = LSP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture = build_rust_fixture();
     let project_root = fixture.path().to_path_buf();
@@ -250,9 +259,12 @@ async fn run_pass_returns_lsp_edges_when_rust_analyzer_present() {
 #[tokio::test]
 async fn run_pass_kill_switch_skips_lsp() {
     // Even if rust-analyzer is installed, TOKENSAVE_LSP=0 must short-circuit.
+    // The mutex serialises against the other run_pass-calling tests so the
+    // env var change is observed only by this test.
+    let _guard = LSP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var("TOKENSAVE_LSP").ok();
-    // SAFETY: env mutation is unsafe in newer Rust. Test is single-threaded
-    // by tokio::test; restore the prior value at the end.
+    // SAFETY: env mutation is unsafe in newer Rust. The mutex above
+    // serialises against any other test that reads TOKENSAVE_LSP.
     unsafe {
         std::env::set_var("TOKENSAVE_LSP", "0");
     }
@@ -298,13 +310,14 @@ async fn run_pass_kill_switch_skips_lsp() {
 async fn manager_skips_rust_analyzer_without_cargo_toml() {
     // No Cargo.toml at the project root. Manager should refuse to start
     // rust-analyzer regardless of whether the binary is on PATH.
+    let _guard = LSP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     // Touch a single .rs file so the directory isn't pathologically empty.
     std::fs::write(dir.path().join("scratch.rs"), "fn main() {}").unwrap();
 
     let mut manager = LspManager::new(dir.path().to_path_buf());
-    let adapters: Vec<Box<dyn LspAdapter>> = vec![Box::new(RustAnalyzerAdapter)];
-    let started = manager.start(&adapters).await;
+    let adapters: Vec<Box<dyn LspAdapter + Send + Sync>> = vec![Box::new(RustAnalyzerAdapter)];
+    let started = manager.start(adapters).await;
 
     assert!(
         started.is_empty(),

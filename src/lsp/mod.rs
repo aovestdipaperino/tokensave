@@ -64,7 +64,7 @@ pub async fn run_pass(
         });
     }
 
-    let adapters: Vec<Box<dyn adapters::LspAdapter>> = vec![
+    let adapters: Vec<Box<dyn adapters::LspAdapter + Send + Sync>> = vec![
         Box::new(adapters::rust::RustAnalyzerAdapter),
         Box::new(adapters::go::GoplsAdapter),
         Box::new(adapters::clangd::ClangdAdapter),
@@ -75,7 +75,7 @@ pub async fn run_pass(
     ];
 
     let mut manager = manager::LspManager::new(project_root);
-    let started = manager.start(&adapters).await;
+    let started = manager.start(adapters).await;
 
     if !manager.is_active() {
         return Ok(LspPassOutput {

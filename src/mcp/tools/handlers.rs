@@ -4622,10 +4622,20 @@ async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         message: format!("cannot read file metadata for '{file}': {e}"),
     })?;
 
-    // Stable hash of the inputs that affect output. The mode itself is part
-    // of the key separately so we don't need to include it here.
+    // For graph-backed modes (`map`, `signatures`), include `last_sync_at`
+    // in the args_hash so a force-reindex (which can produce different
+    // graph contents from an unchanged file mtime) busts the cache. The
+    // file-mtime check alone is sufficient for `full` and `lines` since
+    // their outputs are deterministic from file content.
+    let last_sync_at = match mode {
+        ReadMode::Map | ReadMode::Signatures => {
+            cg.db().get_metadata("last_sync_at").await.unwrap_or(None)
+        }
+        _ => None,
+    };
     let hash_input = json!({
         "lines": args.get("lines").cloned(),
+        "last_sync_at": last_sync_at,
     });
     let args_hash = read_cache::args_hash(&hash_input);
 
@@ -5229,6 +5239,10 @@ async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let mut touched: Vec<String> = Vec::new();
     let mut error_count = 0u64;
     let mut warning_count = 0u64;
+    // Hoist node lookups out of the per-diagnostic loop. Multiple errors in
+    // the same file are common (a missing import cascades) and the
+    // un-hoisted form was N round-trips per file.
+    let mut nodes_by_file: HashMap<String, Vec<crate::types::Node>> = HashMap::new();
 
     for diag in &diagnostics {
         match diag.level.as_str() {
@@ -5239,7 +5253,13 @@ async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<ToolResult> {
 
         // Enclosing-symbol lookup: smallest node whose [start_line, end_line]
         // covers the diagnostic's start line.
-        let nodes = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
+        let nodes = match nodes_by_file.get(&diag.file) {
+            Some(n) => n,
+            None => {
+                let fetched = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
+                nodes_by_file.entry(diag.file.clone()).or_insert(fetched)
+            }
+        };
         let enclosing = nodes
             .iter()
             .filter(|n| n.start_line <= diag.line_start && diag.line_start <= n.end_line)
@@ -5772,13 +5792,74 @@ struct LiteralSite {
 fn find_struct_literals(source: &str, struct_name: &str) -> Vec<LiteralSite> {
     let bytes = source.as_bytes();
     // Stack of brace depths at which we entered a pattern context.
-    // Popped when we close the brace that started it.
+    // Popped only when we exit the exact depth we entered at — `<=` would
+    // pop the outer pattern when an inner pattern's brace closed (e.g.
+    // `match x { Some(_) => match y { ... } }`).
     let mut pattern_stack: Vec<i32> = Vec::new();
     let mut depth: i32 = 0;
+    // String / char-literal context so `"Foo { ... }"` inside a string
+    // doesn't fire as a struct literal. Tracks the active delimiter and
+    // whether the previous byte was an unescaped backslash.
+    let mut string_delim: Option<u8> = None;
+    let mut prev_was_backslash = false;
     let mut out: Vec<LiteralSite> = Vec::new();
     let mut byte = 0usize;
     let n = bytes.len();
     while byte < n {
+        let b = bytes[byte];
+
+        // String / char-literal handling. Skip everything inside a string
+        // until we hit the matching unescaped delimiter.
+        if let Some(delim) = string_delim {
+            if !prev_was_backslash && b == delim {
+                string_delim = None;
+                prev_was_backslash = false;
+                byte += 1;
+                continue;
+            }
+            prev_was_backslash = !prev_was_backslash && b == b'\\';
+            byte += 1;
+            continue;
+        }
+        // Enter a string literal. We don't try to parse Rust raw strings
+        // (`r#"..."#`); they're rare enough in struct-literal-bearing code
+        // that the simpler model is fine.
+        if b == b'"' {
+            string_delim = Some(b'"');
+            prev_was_backslash = false;
+            byte += 1;
+            continue;
+        }
+        // `'` is ambiguous in Rust: char literal (`'a'`, `'\n'`) or lifetime
+        // (`'static`, `'a`). Discriminate by walking the trailing identifier
+        // run and looking for a closing `'` — char literals have one;
+        // lifetimes don't.
+        if b == b'\'' {
+            let after = bytes.get(byte + 1).copied();
+            if matches!(after, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')) {
+                let mut probe = byte + 1;
+                while let Some(c) = bytes.get(probe) {
+                    if matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
+                        probe += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if bytes.get(probe).copied() != Some(b'\'') {
+                    // Lifetime — advance past the apostrophe and let the
+                    // identifier run be consumed normally below.
+                    byte += 1;
+                    continue;
+                }
+                // Otherwise (closing apostrophe present) it's a char literal
+                // of an identifier-y character — fall through to string mode.
+            }
+            string_delim = Some(b'\'');
+            prev_was_backslash = false;
+            byte += 1;
+            continue;
+        }
+
         if matches_word(bytes, byte, b"match") {
             pattern_stack.push(depth);
             byte += "match".len();
@@ -5795,7 +5876,6 @@ fn find_struct_literals(source: &str, struct_name: &str) -> Vec<LiteralSite> {
             continue;
         }
 
-        let b = bytes[byte];
         if b == b'{' {
             depth += 1;
             byte += 1;
@@ -5804,7 +5884,7 @@ fn find_struct_literals(source: &str, struct_name: &str) -> Vec<LiteralSite> {
         if b == b'}' {
             depth -= 1;
             if let Some(&entered_at) = pattern_stack.last() {
-                if depth <= entered_at {
+                if depth == entered_at {
                     pattern_stack.pop();
                 }
             }
@@ -6110,10 +6190,15 @@ async fn handle_field_sites(
         }
     }
 
+    // The qualifier is parsed from the input but NOT used to scope the scan
+    // — we'd need type info to do that correctly. Surface this honestly so
+    // callers don't assume the results are struct-narrowed.
+    let qualifier_applied = false;
     let payload = if writes_only {
         json!({
             "field": raw,
             "qualifier": qualifier,
+            "qualifier_applied": qualifier_applied,
             "write_count": writes.len(),
             "write_sites": writes,
         })
@@ -6121,6 +6206,7 @@ async fn handle_field_sites(
         json!({
             "field": raw,
             "qualifier": qualifier,
+            "qualifier_applied": qualifier_applied,
             "write_count": writes.len(),
             "read_count": reads.len(),
             "write_sites": writes,

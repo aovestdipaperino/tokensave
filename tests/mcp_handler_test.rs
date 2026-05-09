@@ -3312,6 +3312,58 @@ async fn test_constructors_skips_match_patterns() {
 }
 
 #[tokio::test]
+async fn test_constructors_skips_string_literals() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "tokensave_strlit_fixture"
+version = "0.0.1"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub struct Marker {
+    pub n: i32,
+}
+
+pub fn explain() -> &'static str {
+    // Embedded inside a string literal — must NOT count as a constructor site.
+    "Marker { n: 1 } is the canonical literal form"
+}
+
+pub fn make_real() -> Marker {
+    Marker { n: 7 }
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_constructors",
+        json!({"struct": "Marker"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let sites = payload["sites"].as_array().unwrap();
+    assert_eq!(
+        sites.len(),
+        1,
+        "exactly one real literal; the string-embedded one must be skipped. got: {sites:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_constructors_unknown_struct() {
     let (cg, _dir) = setup_constructors_project().await;
     let result = handle_tool_call(
