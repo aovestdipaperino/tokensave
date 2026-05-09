@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.10] - 2026-05-09
+
+### Added
+- **`tokensave list` command for inspecting tracked projects** — `list` shows the same projects `wipe` would target (current folder, ancestors, and descendants), with on-disk `.tokensave/` size and tokens-saved per row, sorted by tokens-saved descending. `tokensave list --all` (or `-a`) lists every project tracked in `~/.tokensave/global.db`, marking entries whose `.tokensave/` directory has been removed as `(stale)`.
+
+### Changed
+- **Country flags in `tokensave status` are now shuffled on every render** — when more flags are tracked than fit on the line, the row used to always show the same prefix and `…` truncate the rest. Each `status` invocation now applies a Fisher-Yates shuffle (xorshift64 seeded from time + PID) before truncation, so a different sample of contributing countries is shown each time.
+
+### Fixed
+- **Tool-permission warning now points at `tokensave reinstall`** — when new tokensave tools are detected that aren't yet permitted in the agent config, the warning previously said "Run `tokensave install` to update", which would re-do the full install. The warning now reads "Run `tokensave reinstall` to update permissions", which is the right command for refreshing permissions on already-installed agents.
+
 ## [4.3.9] - 2026-05-09
 
 ### Added
