@@ -388,7 +388,6 @@ async fn main() {
     }
 }
 
-
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -1702,9 +1701,7 @@ async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     };
 
     if !all && targets.is_empty() {
-        eprintln!(
-            "No tokensave projects found in current folder, parents, or children."
-        );
+        eprintln!("No tokensave projects found in current folder, parents, or children.");
         return Ok(());
     }
 
@@ -1713,12 +1710,11 @@ async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     eprint!("Type \x1b[1;32mgo!\x1b[0m to confirm (anything else aborts): ");
     io::stderr().flush().ok();
     let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| tokensave::errors::TokenSaveError::Config {
+    io::stdin().lock().read_line(&mut answer).map_err(|e| {
+        tokensave::errors::TokenSaveError::Config {
             message: format!("failed to read stdin: {e}"),
-        })?;
+        }
+    })?;
     if answer.trim() != "go!" {
         eprintln!("\x1b[33mAborted — nothing was wiped.\x1b[0m");
         return Ok(());
@@ -1817,7 +1813,11 @@ async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     for path in &project_paths {
         let ts_dir = path.join(".tokensave");
         let on_disk = ts_dir.exists();
-        let size = if on_disk { tokensave_dir_size(&ts_dir) } else { 0 };
+        let size = if on_disk {
+            tokensave_dir_size(&ts_dir)
+        } else {
+            0
+        };
         let tokens = match &gdb {
             Some(db) => db.get_project_tokens(path).await,
             None => 0,

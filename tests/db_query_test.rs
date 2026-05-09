@@ -204,7 +204,10 @@ async fn test_insert_edges_both_endpoints_missing() {
         .expect("insert_edges should not fail for missing endpoints");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert!(all.is_empty(), "edge with two missing endpoints must be skipped");
+    assert!(
+        all.is_empty(),
+        "edge with two missing endpoints must be skipped"
+    );
 }
 
 /// Source exists but target is missing — edge must be skipped.
@@ -255,18 +258,22 @@ async fn test_insert_edges_mixed_valid_and_missing() {
     db.insert_nodes(&nodes).await.expect("insert_nodes failed");
 
     let edges = vec![
-        sample_edge("mx-a", "mx-b", EdgeKind::Calls),       // valid
-        sample_edge("mx-a", "ghost-1", EdgeKind::Uses),      // missing target
-        sample_edge("ghost-2", "mx-c", EdgeKind::Contains),  // missing source
-        sample_edge("mx-b", "mx-c", EdgeKind::Calls),        // valid
-        sample_edge("ghost-3", "ghost-4", EdgeKind::Uses),    // both missing
+        sample_edge("mx-a", "mx-b", EdgeKind::Calls),   // valid
+        sample_edge("mx-a", "ghost-1", EdgeKind::Uses), // missing target
+        sample_edge("ghost-2", "mx-c", EdgeKind::Contains), // missing source
+        sample_edge("mx-b", "mx-c", EdgeKind::Calls),   // valid
+        sample_edge("ghost-3", "ghost-4", EdgeKind::Uses), // both missing
     ];
     db.insert_edges(&edges)
         .await
         .expect("insert_edges should not fail for mixed batch");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all.len(), 2, "only edges with both endpoints present must be inserted");
+    assert_eq!(
+        all.len(),
+        2,
+        "only edges with both endpoints present must be inserted"
+    );
 }
 
 /// Singular insert_edge also skips when target is missing.
@@ -353,18 +360,26 @@ async fn test_insert_edges_cross_file_after_all_nodes() {
     // Simulate phase 1: insert nodes from two different files
     let nodes_file_a = vec![sample_node("cf-a1", "func_a", "src/a.rs")];
     let nodes_file_b = vec![sample_node("cf-b1", "func_b", "src/b.rs")];
-    db.insert_nodes(&nodes_file_a).await.expect("insert_nodes a failed");
-    db.insert_nodes(&nodes_file_b).await.expect("insert_nodes b failed");
+    db.insert_nodes(&nodes_file_a)
+        .await
+        .expect("insert_nodes a failed");
+    db.insert_nodes(&nodes_file_b)
+        .await
+        .expect("insert_nodes b failed");
 
     // Simulate phase 2: insert cross-file edges after all nodes are in
     let edges = vec![
         sample_edge("cf-a1", "cf-b1", EdgeKind::Calls), // a.rs -> b.rs
-        sample_edge("cf-b1", "cf-a1", EdgeKind::Uses),   // b.rs -> a.rs
+        sample_edge("cf-b1", "cf-a1", EdgeKind::Uses),  // b.rs -> a.rs
     ];
     db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all.len(), 2, "cross-file edges must succeed when nodes are present");
+    assert_eq!(
+        all.len(),
+        2,
+        "cross-file edges must succeed when nodes are present"
+    );
 }
 
 /// Large batch with many missing endpoints does not abort the transaction.
@@ -385,7 +400,10 @@ async fn test_insert_edges_large_batch_with_missing() {
         .expect("insert_edges should not abort on large batch with missing endpoints");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert!(all.is_empty(), "all edges with missing targets must be skipped");
+    assert!(
+        all.is_empty(),
+        "all edges with missing targets must be skipped"
+    );
 }
 
 /// Edges with None line values and missing endpoints are handled correctly.

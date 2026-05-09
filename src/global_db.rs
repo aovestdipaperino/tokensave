@@ -129,10 +129,7 @@ impl GlobalDb {
         let path_str = project_path.to_string_lossy().to_string();
         let _ = self
             .conn
-            .execute(
-                "DELETE FROM projects WHERE path = ?1",
-                params![path_str],
-            )
+            .execute("DELETE FROM projects WHERE path = ?1", params![path_str])
             .await;
     }
 
