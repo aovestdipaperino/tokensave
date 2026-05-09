@@ -137,6 +137,7 @@ pub async fn handle_tool_call(
         "tokensave_body" => handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => handle_read(cg, args).await,
+        "tokensave_outline" => handle_outline(cg, args).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -4666,7 +4667,7 @@ async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
             render_lines(&source, line_range.expect("validated above"))
         }
         ReadMode::Map => {
-            let v = render_map(cg.db(), &display_file).await?;
+            let v = render_map(cg.db(), &display_file, None).await?;
             serde_json::to_string_pretty(&v).unwrap_or_default()
         }
         ReadMode::Signatures => {
@@ -4701,6 +4702,56 @@ async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
         "body": body_text,
     });
     let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
+/// Handles `tokensave_outline` — flat symbol map for a file with optional
+/// `kinds` filter.
+///
+/// Shares the underlying `render_map` helper with `tokensave_read mode=map`.
+/// The outline tool is the more discoverable entry point for "what's in this
+/// file?" questions and adds a kinds filter on top.
+async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_modes::render_map;
+
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+
+    let kinds: Option<Vec<String>> = args.get("kinds").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    });
+
+    let project_root = cg.project_root();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    let display_file = if abs_path.starts_with(project_root) {
+        abs_path
+            .strip_prefix(project_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(rel_path.clone())
+    } else {
+        rel_path.clone()
+    };
+
+    let kinds_slice: Option<&[String]> = kinds.as_deref();
+    let value = render_map(cg.db(), &display_file, kinds_slice).await?;
+    let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();
 
     Ok(ToolResult {
         value: json!({
@@ -4963,7 +5014,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 53);
+        assert_eq!(tools.len(), 54);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

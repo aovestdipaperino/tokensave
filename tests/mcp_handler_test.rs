@@ -2726,3 +2726,111 @@ async fn test_read_lines_requires_lines_arg() {
     .await;
     assert!(result.is_err(), "lines mode without lines arg should error");
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_outline
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_outline_lists_all_top_level_symbols() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_outline",
+        json!({"file": "src/utils.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let symbols = payload["symbols"].as_array().unwrap();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        names.contains(&"helper"),
+        "outline should include helper, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"format_greeting"),
+        "outline should include format_greeting, got: {names:?}"
+    );
+    let helper = symbols
+        .iter()
+        .find(|s| s["name"].as_str() == Some("helper"))
+        .unwrap();
+    assert!(helper["kind"].as_str().is_some());
+    assert!(helper["line"].as_u64().is_some());
+    assert!(helper["visibility"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_outline_filters_by_kinds() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_outline",
+        json!({"file": "src/utils.rs", "kinds": ["function"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let symbols = payload["symbols"].as_array().unwrap();
+    assert!(!symbols.is_empty(), "function kind should match helpers");
+    for s in symbols {
+        assert_eq!(
+            s["kind"].as_str(),
+            Some("function"),
+            "all results should be function kind, got: {s}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_outline_kinds_filter_is_case_insensitive() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_outline",
+        json!({"file": "src/utils.rs", "kinds": ["FUNCTION", "Struct"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let symbols = payload["symbols"].as_array().unwrap();
+    assert!(
+        !symbols.is_empty(),
+        "case-insensitive kind match should still find functions"
+    );
+}
+
+#[tokio::test]
+async fn test_outline_unknown_kind_returns_empty() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_outline",
+        json!({"file": "src/utils.rs", "kinds": ["banana"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let symbols = payload["symbols"].as_array().unwrap();
+    assert!(
+        symbols.is_empty(),
+        "unknown kind should match nothing, got: {symbols:?}"
+    );
+    assert_eq!(payload["symbol_count"].as_u64(), Some(0));
+}
+
+#[tokio::test]
+async fn test_outline_missing_file_param_errors() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_outline", json!({}), None, None).await;
+    assert!(result.is_err(), "missing file param should error");
+}

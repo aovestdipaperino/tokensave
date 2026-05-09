@@ -131,6 +131,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_body(),
         def_todos(),
         def_read(),
+        def_outline(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1302,6 +1303,33 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_outline() -> ToolDefinition {
+    def(
+        "tokensave_outline",
+        "File Outline",
+        "Flat list of every top-level symbol defined in a file (functions, structs, \
+         enums, traits, classes, impls, etc.) — like a table of contents. Sorted by \
+         line number; no code bodies. Optional 'kinds' filter narrows to specific \
+         node kinds. Use this as the cheapest way to orient before zooming into a \
+         large file with tokensave_node, tokensave_body, or tokensave_read.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative path to the file (e.g. 'src/sync.rs')."
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional filter on node kinds. Common values: 'function', 'struct', 'enum', 'trait', 'impl', 'class', 'method', 'const'. Case-insensitive. Default: all kinds."
+                }
+            },
+            "required": ["file"]
         }),
     )
 }

@@ -107,10 +107,25 @@ pub fn render_lines(source: &str, range: LineRange) -> String {
 
 /// Renders the `map` mode body — JSON list of every top-level symbol in the
 /// file, sourced from the graph. No source bytes are touched.
-pub async fn render_map(db: &Database, file_path: &str) -> Result<Value> {
+///
+/// `kinds` is an optional case-insensitive filter on `NodeKind::as_str()`
+/// values (e.g. `["function", "struct"]`). When `None` or empty, every kind
+/// is included.
+pub async fn render_map(db: &Database, file_path: &str, kinds: Option<&[String]>) -> Result<Value> {
     let nodes = fetch_nodes(db, file_path).await?;
+    let want_all = kinds.map_or(true, |k| k.is_empty());
     let entries: Vec<Value> = nodes
         .iter()
+        .filter(|n| {
+            if want_all {
+                return true;
+            }
+            let lhs = n.kind.as_str();
+            kinds
+                .unwrap()
+                .iter()
+                .any(|want| want.eq_ignore_ascii_case(lhs))
+        })
         .map(|n| {
             json!({
                 "kind": n.kind.as_str(),
