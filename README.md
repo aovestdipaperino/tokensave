@@ -715,6 +715,23 @@ cargo check --no-default-features              # verify lite compiles
 cargo clippy --all
 ```
 
+## Language Support Matrix (lite tier)
+
+The 11 languages in the `lite` tier ship in every binary. Per-feature support varies — symbol extraction is universal, but LSP-resolved edges and the `tokensave_diagnostics` driver depend on per-language tooling.
+
+| Feature | Rust | Go | Java | Scala | TS / JS | Python | C | C++ | Kotlin | C# | Swift |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Symbol extraction (tree-sitter) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Heuristic cross-file edges | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| LSP-resolved edges (5.0) | ✅ rust-analyzer | ✅ gopls | ✅ jdtls | ❌ | ⏳ Phase 2 | ✅ pyright / pylsp | ✅ clangd | ✅ clangd | ⏳ Phase 3 | ⏳ Phase 3 | ⏳ Phase 3 |
+| `tokensave_diagnostics` driver (5.0) | ✅ cargo | ❌ | ❌ | ❌ | ✅ tsc | ✅ pyright | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Edit primitives (`str_replace`, `insert_at`, `ast_grep_rewrite`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pattern tools (`unsafe_patterns`, `constructors`, `field_sites`) | ✅ Rust-tuned | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort | ⚠️ best-effort |
+
+Legend: ✅ shipping, ⚠️ best-effort (Rust-tuned regexes that work on most languages but may miss language-specific syntax), ⏳ planned for a later phase, ❌ not planned.
+
+LSP-resolved edges require the listed binary on `$PATH` and the language's manifest in the project root (`Cargo.toml`, `go.mod`, `pom.xml` / `build.gradle` / `build.gradle.kts` / `.classpath`, `tsconfig.json`, etc.). When the binary or manifest is absent, the heuristic resolver fills in. `TOKENSAVE_LSP=0` or `tokensave sync --no-lsp` skips the LSP pass entirely. See [docs/LSP-INTEGRATION.md](docs/LSP-INTEGRATION.md) for the full design and Phase-2/3 roadmap.
+
 ## Star History
 
 <a href="https://www.star-history.com/#aovestdipaperino/tokensave&Date">
