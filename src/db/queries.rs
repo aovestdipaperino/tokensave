@@ -648,6 +648,25 @@ impl Database {
     /// skipped (#58). They will be picked up on a future sync once the
     /// referenced file is indexed.
     pub async fn insert_edges(&self, edges: &[Edge]) -> Result<()> {
+        self.insert_edges_with_provenance(edges, "direct").await
+    }
+
+    /// Insert edges and tag the v8 `resolved_by` column with `provenance`.
+    ///
+    /// Use `"direct"` for edges emitted directly by the tree-sitter
+    /// extractors (`Contains`, `DerivesMacro`, etc.), `"heuristic"` for
+    /// edges produced by `ReferenceResolver`, and `"lsp"` for edges
+    /// produced by `LspResolver`.
+    ///
+    /// On the `(source, target, kind, line)` unique index, INSERT OR IGNORE
+    /// preserves the first-inserted row. Sync orchestration controls
+    /// insertion order so the most accurate provenance wins (LSP first,
+    /// then heuristic, then direct).
+    pub async fn insert_edges_with_provenance(
+        &self,
+        edges: &[Edge],
+        provenance: &str,
+    ) -> Result<()> {
         if edges.is_empty() {
             return Ok(());
         }
@@ -657,7 +676,7 @@ impl Database {
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to begin: {e}"),
-                operation: "insert_edges".to_string(),
+                operation: "insert_edges_with_provenance".to_string(),
             })?;
 
         // Conditional INSERT: only insert when both endpoints exist in
@@ -666,15 +685,15 @@ impl Database {
         let stmt = self
             .conn()
             .prepare(
-                "INSERT OR IGNORE INTO edges (source, target, kind, line) \
-                 SELECT ?1, ?2, ?3, ?4 \
+                "INSERT OR IGNORE INTO edges (source, target, kind, line, resolved_by) \
+                 SELECT ?1, ?2, ?3, ?4, ?5 \
                  WHERE EXISTS (SELECT 1 FROM nodes WHERE id = ?1) \
                    AND EXISTS (SELECT 1 FROM nodes WHERE id = ?2)",
             )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),
-                operation: "insert_edges".to_string(),
+                operation: "insert_edges_with_provenance".to_string(),
             })?;
 
         for edge in edges {
@@ -683,11 +702,12 @@ impl Database {
                 edge.target.as_str(),
                 edge.kind.as_str(),
                 edge.line.map(i64::from),
+                provenance,
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to insert edge: {e}"),
-                operation: "insert_edges".to_string(),
+                operation: "insert_edges_with_provenance".to_string(),
             })?;
             stmt.reset();
         }
@@ -697,7 +717,7 @@ impl Database {
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to commit: {e}"),
-                operation: "insert_edges".to_string(),
+                operation: "insert_edges_with_provenance".to_string(),
             })?;
         Ok(())
     }

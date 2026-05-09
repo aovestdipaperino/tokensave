@@ -704,36 +704,78 @@ impl TokenSave {
 
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
+        let mut lsp_edges: Vec<Edge> = Vec::new();
+        let mut heuristic_edges: Vec<Edge> = Vec::new();
         if !all_unresolved.is_empty() {
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
-            let resolution = resolver.resolve_all(&all_unresolved);
-            all_edges.extend(resolver.create_edges(&resolution.resolved));
+            // 5a. LSP pass (rust-analyzer + Phase 1 servers when available).
+            // Skipped entirely when TOKENSAVE_LSP=0. Per-server failures are
+            // non-fatal: anything LSP can't resolve flows to the heuristic.
+            let lsp_pass =
+                crate::lsp::run_pass(self.project_root.clone(), &all_nodes, &all_unresolved)
+                    .await?;
+            lsp_edges = lsp_pass.lsp_edges;
+            let remaining = lsp_pass.remaining_unresolved;
+            if !lsp_pass.started_languages.is_empty() {
+                on_verbose(&format!(
+                    "LSP resolved {} of {} refs via {:?}",
+                    lsp_edges.len(),
+                    all_unresolved.len(),
+                    lsp_pass.started_languages
+                ));
+            }
+            // 5b. Heuristic resolver picks up everything LSP missed.
+            if !remaining.is_empty() {
+                let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+                let resolution = resolver.resolve_all(&remaining);
+                heuristic_edges = resolver.create_edges(&resolution.resolved);
+            }
         }
         on_verbose(&format!(
-            "resolved {} references in {:.1}s",
+            "resolved {} references in {:.1}s ({} via LSP, {} via heuristic)",
             all_unresolved.len(),
-            phase_start.elapsed().as_secs_f64()
+            phase_start.elapsed().as_secs_f64(),
+            lsp_edges.len(),
+            heuristic_edges.len(),
         ));
 
-        // 6. Sort by PK order + dedup edges
+        // 6. Sort by PK order + dedup edges within each provenance bucket.
+        // Cross-bucket dedup is handled by the (source, target, kind, line)
+        // unique index plus INSERT OR IGNORE: the first insert wins, so
+        // insertion order below establishes provenance precedence
+        // (LSP > heuristic > direct).
         all_nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id));
-        all_edges.sort_unstable_by(|a, b| {
+        let edge_sort = |a: &Edge, b: &Edge| {
             (&a.source, &a.target, a.kind.as_str(), &a.line).cmp(&(
                 &b.source,
                 &b.target,
                 b.kind.as_str(),
                 &b.line,
             ))
-        });
-        all_edges.dedup_by(|a, b| {
+        };
+        let edge_dedup = |a: &mut Edge, b: &mut Edge| {
             a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
-        });
+        };
+        all_edges.sort_unstable_by(edge_sort);
+        all_edges.dedup_by(edge_dedup);
+        heuristic_edges.sort_unstable_by(edge_sort);
+        heuristic_edges.dedup_by(edge_dedup);
+        lsp_edges.sort_unstable_by(edge_sort);
+        lsp_edges.dedup_by(edge_dedup);
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
-        let total_edges = all_edges.len();
+        let total_edges = all_edges.len() + heuristic_edges.len() + lsp_edges.len();
 
-        // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
+        // 7. Bulk-insert via prepared statements (zero SQL re-parsing).
+        // Insert order is LSP-first → heuristic → direct so that on a
+        // (src, target, kind, line) collision the most accurate provenance
+        // is the row that actually persists.
         let phase_start = Instant::now();
         self.db.insert_nodes(&all_nodes).await?;
+        self.db
+            .insert_edges_with_provenance(&lsp_edges, "lsp")
+            .await?;
+        self.db
+            .insert_edges_with_provenance(&heuristic_edges, "heuristic")
+            .await?;
         self.db.insert_edges(&all_edges).await?;
         self.db.upsert_files(&file_records).await?;
 
@@ -888,13 +930,24 @@ impl TokenSave {
 
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
-            let resolver = ReferenceResolver::new(&self.db).await;
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
-                let resolution = resolver.resolve_all(&unresolved);
+                let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+                let lsp_pass =
+                    crate::lsp::run_pass(self.project_root.clone(), &all_nodes, &unresolved)
+                        .await?;
+                if !lsp_pass.lsp_edges.is_empty() {
+                    self.db
+                        .insert_edges_with_provenance(&lsp_pass.lsp_edges, "lsp")
+                        .await?;
+                }
+                let resolver = ReferenceResolver::new(&self.db).await;
+                let resolution = resolver.resolve_all(&lsp_pass.remaining_unresolved);
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
-                    self.db.insert_edges(&edges).await?;
+                    self.db
+                        .insert_edges_with_provenance(&edges, "heuristic")
+                        .await?;
                 }
             }
         }
@@ -1148,18 +1201,35 @@ impl TokenSave {
             on_progress(0, 0, "resolving references");
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
+            let mut lsp_count = 0usize;
+            let mut heuristic_count = 0usize;
             if !unresolved.is_empty() {
+                let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+                let lsp_pass =
+                    crate::lsp::run_pass(self.project_root.clone(), &all_nodes, &unresolved)
+                        .await?;
+                lsp_count = lsp_pass.lsp_edges.len();
+                if !lsp_pass.lsp_edges.is_empty() {
+                    self.db
+                        .insert_edges_with_provenance(&lsp_pass.lsp_edges, "lsp")
+                        .await?;
+                }
                 let resolver = ReferenceResolver::new(&self.db).await;
-                let resolution = resolver.resolve_all(&unresolved);
+                let resolution = resolver.resolve_all(&lsp_pass.remaining_unresolved);
                 let edges = resolver.create_edges(&resolution.resolved);
+                heuristic_count = edges.len();
                 if !edges.is_empty() {
-                    self.db.insert_edges(&edges).await?;
+                    self.db
+                        .insert_edges_with_provenance(&edges, "heuristic")
+                        .await?;
                 }
             }
             on_verbose(&format!(
-                "resolved {} references in {:.1}s",
+                "resolved {} references in {:.1}s ({} via LSP, {} via heuristic)",
                 unresolved.len(),
-                phase_start.elapsed().as_secs_f64()
+                phase_start.elapsed().as_secs_f64(),
+                lsp_count,
+                heuristic_count,
             ));
         }
 
