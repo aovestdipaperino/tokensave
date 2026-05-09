@@ -2950,6 +2950,219 @@ async fn test_implementations_rejects_both_args() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_field_sites
+// ---------------------------------------------------------------------------
+
+async fn setup_field_sites_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "tokensave_field_fixture"
+version = "0.0.1"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub struct Counter {
+    pub value: i32,
+    pub label: String,
+}
+
+pub fn write_simple(c: &mut Counter) {
+    c.value = 42;
+}
+
+pub fn write_compound(c: &mut Counter) {
+    c.value += 1;
+}
+
+pub fn read_simple(c: &Counter) -> i32 {
+    c.value
+}
+
+pub fn read_in_expression(c: &Counter) -> i32 {
+    c.value + 1
+}
+
+pub fn read_in_eq(c: &Counter) -> bool {
+    // This is a comparison, not assignment.
+    c.value == 0
+}
+
+pub fn read_via_match(c: &Counter) -> i32 {
+    match c.value {
+        0 => 0,
+        n => n,
+    }
+}
+
+// c.value = ignored; should not match (comment line).
+pub fn write_via_mut_borrow(c: &mut Counter) {
+    inc(&mut c.value);
+}
+
+fn inc(_n: &mut i32) {}
+
+pub fn unrelated_field(c: &Counter) -> &str {
+    c.label.as_str()
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_field_sites_partitions_reads_and_writes() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_field_sites",
+        json!({"field": "value"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let writes = payload["write_sites"].as_array().unwrap();
+    let reads = payload["read_sites"].as_array().unwrap();
+    let write_lines: Vec<&str> = writes
+        .iter()
+        .filter_map(|w| w["snippet"].as_str())
+        .collect();
+    let read_lines: Vec<&str> = reads.iter().filter_map(|r| r["snippet"].as_str()).collect();
+
+    let writes_text = write_lines.join("\n");
+    assert!(
+        writes_text.contains("c.value = 42"),
+        "simple `c.value = 42` should be a write, got writes:\n{writes_text}\nreads:\n{}",
+        read_lines.join("\n")
+    );
+    assert!(
+        writes_text.contains("c.value += 1"),
+        "compound assignment should be a write, got writes:\n{writes_text}"
+    );
+    assert!(
+        writes_text.contains("&mut c.value"),
+        "&mut borrow should be a write, got writes:\n{writes_text}"
+    );
+
+    let reads_text = read_lines.join("\n");
+    assert!(
+        reads_text.contains("c.value + 1")
+            || reads_text.contains("c.value") && !reads_text.contains("c.value = 42"),
+        "expression-position reads should appear in reads, got reads:\n{reads_text}"
+    );
+    assert!(
+        reads_text.contains("c.value == 0"),
+        "equality comparison should be a read, not a write"
+    );
+}
+
+#[tokio::test]
+async fn test_field_sites_writes_only_skips_reads() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_field_sites",
+        json!({"field": "value", "writes_only": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert!(
+        payload["read_sites"].is_null(),
+        "writes_only should omit read_sites, got: {payload}"
+    );
+    assert!(payload["write_count"].as_u64().unwrap() >= 3);
+}
+
+#[tokio::test]
+async fn test_field_sites_word_boundary() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    // 'val' must NOT match 'value' references.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_field_sites",
+        json!({"field": "val"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(
+        payload["write_count"].as_u64(),
+        Some(0),
+        "no field named 'val' exists; should be 0 hits"
+    );
+    assert_eq!(payload["read_count"].as_u64(), Some(0));
+}
+
+#[tokio::test]
+async fn test_field_sites_qualified_name_form_accepted() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_field_sites",
+        json!({"field": "Counter::value"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["qualifier"].as_str(), Some("Counter"));
+    assert!(payload["write_count"].as_u64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn test_field_sites_skips_comment_lines() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_field_sites",
+        json!({"field": "value"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let writes = payload["write_sites"].as_array().unwrap();
+    let snippets: Vec<&str> = writes
+        .iter()
+        .filter_map(|w| w["snippet"].as_str())
+        .collect();
+    for s in &snippets {
+        assert!(
+            !s.starts_with("//"),
+            "comment-line write should be filtered, got: {s}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_field_sites_requires_field_arg() {
+    let (cg, _dir) = setup_field_sites_project().await;
+    let result = handle_tool_call(&cg, "tokensave_field_sites", json!({}), None, None).await;
+    assert!(result.is_err(), "missing field arg should error");
+}
+
+// ---------------------------------------------------------------------------
 // tokensave_constructors
 // ---------------------------------------------------------------------------
 

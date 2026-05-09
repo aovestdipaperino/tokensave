@@ -138,6 +138,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_config(),
         def_signature_search(),
         def_constructors(),
+        def_field_sites(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1309,6 +1310,39 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_field_sites() -> ToolDefinition {
+    def(
+        "tokensave_field_sites",
+        "Field Read/Write Sites",
+        "Find every read and write site of a named field across the codebase. \
+         Returns two arrays: write_sites (assignments to the field) and \
+         read_sites (everything else). Each entry includes file, line, \
+         enclosing symbol, and a source snippet. Useful when renaming, \
+         removing, or adding an invariant to a field — the write-site list \
+         is the exact blast radius. Pattern matches `.<field>` references; \
+         field-by-name is shorthand for any struct's same-named field, while \
+         `Struct::field` form narrows to a specific declaration.",
+        json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs; qualified form ('GraphStats::last_sync_at') narrows to one struct's field."
+                },
+                "writes_only": {
+                    "type": "boolean",
+                    "description": "When true, returns only write_sites and omits reads. Default false."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum sites per kind (default: 200, max: 2000)."
+                }
+            },
+            "required": ["field"]
         }),
     )
 }

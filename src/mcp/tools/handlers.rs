@@ -144,6 +144,7 @@ pub async fn handle_tool_call(
         "tokensave_config" => handle_config(cg, args).await,
         "tokensave_signature_search" => handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_constructors" => handle_constructors(cg, args, scope_prefix).await,
+        "tokensave_field_sites" => handle_field_sites(cg, args, scope_prefix).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -6010,6 +6011,298 @@ fn field_name_from_chunk(chunk: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Handles `tokensave_field_sites` — partition every `.<field>` reference
+/// across the codebase into reads and writes.
+///
+/// A site is classified as a *write* when:
+///   - The reference is on the left-hand side of an assignment (`=`), or
+///   - It's the target of a compound assignment (`+=`, `-=`, etc.), or
+///   - It's the target of a `&mut` borrow (which permits a mutating call)
+///
+/// Everything else is a *read*. The classifier is heuristic and looks
+/// only at the bytes immediately following the field name on the same
+/// line; multi-line assignments are handled by lookahead through
+/// whitespace and comments.
+async fn handle_field_sites(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let raw = args
+        .get("field")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "tokensave_field_sites requires a 'field' argument".to_string(),
+        })?;
+    let writes_only = args
+        .get("writes_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.clamp(1, 2000) as usize);
+
+    // Accept "Struct::field" qualified form. The struct portion narrows the
+    // graph lookup but we still scan source for the bare field name (we
+    // can't disambiguate `.foo` to a specific struct without type info).
+    let (qualifier, field_name) = match raw.rsplit_once("::") {
+        Some((q, f)) => (Some(q.to_string()), f.to_string()),
+        None => (None, raw.to_string()),
+    };
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut writes: Vec<Value> = Vec::new();
+    let mut reads: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = scope_prefix {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs) else {
+            continue;
+        };
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for site in find_field_references(&source, &field_name) {
+            let line_text = line_at(&source, site.byte).unwrap_or("");
+            let enclosing = nodes
+                .iter()
+                .filter(|n| n.start_line <= site.line && site.line <= n.end_line)
+                .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                .map(|n| n.qualified_name.clone());
+            let entry = json!({
+                "file": file.path,
+                "line": site.line,
+                "enclosing": enclosing,
+                "snippet": line_text.trim(),
+            });
+            if !touched.contains(&file.path) {
+                touched.push(file.path.clone());
+            }
+            match site.kind {
+                FieldRefKind::Write => {
+                    writes.push(entry);
+                    if writes.len() >= limit && (writes_only || reads.len() >= limit) {
+                        break 'outer;
+                    }
+                }
+                FieldRefKind::Read => {
+                    if writes_only {
+                        continue;
+                    }
+                    reads.push(entry);
+                    if reads.len() >= limit && writes.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let payload = if writes_only {
+        json!({
+            "field": raw,
+            "qualifier": qualifier,
+            "write_count": writes.len(),
+            "write_sites": writes,
+        })
+    } else {
+        json!({
+            "field": raw,
+            "qualifier": qualifier,
+            "write_count": writes.len(),
+            "read_count": reads.len(),
+            "write_sites": writes,
+            "read_sites": reads,
+        })
+    };
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FieldRefKind {
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FieldSite {
+    byte: usize,
+    line: u32,
+    kind: FieldRefKind,
+}
+
+/// Scan `source` for `.<field>` references and classify each as read or
+/// write. Skips occurrences inside comment lines (`//` at the start of
+/// the trimmed line).
+fn find_field_references(source: &str, field: &str) -> Vec<FieldSite> {
+    let bytes = source.as_bytes();
+    let needle = format!(".{field}");
+    let mut out: Vec<FieldSite> = Vec::new();
+    let mut byte = 0usize;
+    while let Some(rel) = source[byte..].find(&needle) {
+        let dot = byte + rel;
+        let name_start = dot + 1;
+        let name_end = name_start + field.len();
+        // Word-boundary on the right side: `.foo` must not be a prefix of
+        // `.fooBar` or `.foo123`.
+        let right_ok = match bytes.get(name_end) {
+            None => true,
+            Some(b) => !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'),
+        };
+        if !right_ok {
+            byte = name_end;
+            continue;
+        }
+
+        // Skip comment lines: line starts (after whitespace) with `//`.
+        if line_is_comment(source, dot) {
+            byte = name_end;
+            continue;
+        }
+
+        let line = source[..dot].bytes().filter(|c| *c == b'\n').count() as u32 + 1;
+        let kind = classify_field_reference(source, name_end);
+        out.push(FieldSite {
+            byte: name_end,
+            line,
+            kind,
+        });
+        byte = name_end;
+    }
+    out
+}
+
+/// Determine whether a field reference ending at `after_name` (the byte
+/// after the field name) is a read or a write. Looks at the next
+/// non-whitespace token: `=` (alone, not `==` or `=>`) or compound
+/// assignment operator means write; everything else is a read.
+///
+/// A `&mut <expr>.<field>` form is also treated as a write since the
+/// pattern produces a mutable borrow that almost always feeds a mutating
+/// call. Detected by walking back from the dot for a `&mut ` prefix.
+fn classify_field_reference(source: &str, after_name: usize) -> FieldRefKind {
+    let bytes = source.as_bytes();
+    let mut probe = after_name;
+    while let Some(b) = bytes.get(probe) {
+        if *b == b' ' || *b == b'\t' {
+            probe += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Could still be on a continued line; walk through one newline + ws
+    // to permit assignments split across lines.
+    if let Some(b'\n') = bytes.get(probe).copied() {
+        probe += 1;
+        while let Some(b) = bytes.get(probe) {
+            if *b == b' ' || *b == b'\t' {
+                probe += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let next = bytes.get(probe).copied();
+    let next2 = bytes.get(probe + 1).copied();
+    match (next, next2) {
+        // `=` alone: assignment. Reject `==` (equality) and `=>` (match arm fat arrow).
+        (Some(b'='), Some(b'=' | b'>')) => FieldRefKind::Read,
+        (Some(b'='), _) => FieldRefKind::Write,
+        // Compound assignments: +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
+        (Some(b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^'), Some(b'=')) => {
+            FieldRefKind::Write
+        }
+        (Some(b'<'), Some(b'<')) | (Some(b'>'), Some(b'>')) => {
+            // Could be `<<=` / `>>=` if next3 is `=`.
+            if bytes.get(probe + 2).copied() == Some(b'=') {
+                FieldRefKind::Write
+            } else {
+                FieldRefKind::Read
+            }
+        }
+        _ => {
+            // `&mut <expr>.field` — walk back from the dot looking for a
+            // `&mut ` token at the start of this expression.
+            if has_mut_borrow_prefix(source, after_name.saturating_sub(1)) {
+                FieldRefKind::Write
+            } else {
+                FieldRefKind::Read
+            }
+        }
+    }
+}
+
+/// Walk back from `idx` (1 byte before the dot) over identifier and
+/// path-separator characters looking for `&mut`. Returns true when the
+/// expression is borrowed mutably. Conservative: only detects the
+/// `&mut <ident>.<field>` shape, not chained projections.
+fn has_mut_borrow_prefix(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut probe = idx;
+    // Skip the base expression (identifier characters, `.`, `:`, `[`,
+    // `]`, `?`, indexing, etc. Conservative subset; other expressions
+    // just won't trigger the heuristic.)
+    while probe > 0
+        && matches!(
+            bytes[probe],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b':' | b'?'
+        )
+    {
+        probe -= 1;
+    }
+    // Now skip whitespace.
+    while probe > 0 && bytes[probe].is_ascii_whitespace() {
+        probe -= 1;
+    }
+    // Look back for `&mut`. Probe is on the last non-ws byte.
+    if probe < 4 {
+        return false;
+    }
+    let window = &source[probe.saturating_sub(4)..probe + 1];
+    window.ends_with("&mut")
+}
+
+/// Line at byte offset, without trailing newline. Used to populate the
+/// `snippet` field on each result.
+fn line_at(source: &str, byte: usize) -> Option<&str> {
+    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = source[byte..]
+        .find('\n')
+        .map(|i| byte + i)
+        .unwrap_or(source.len());
+    source.get(line_start..line_end)
+}
+
+/// True when the line containing `byte` (after leading whitespace) starts
+/// with `//` — the simple comment-line filter shared with the unsafe-
+/// patterns tool.
+fn line_is_comment(source: &str, byte: usize) -> bool {
+    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &source[line_start..];
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//")
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -6263,7 +6556,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 60);
+        assert_eq!(tools.len(), 61);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
