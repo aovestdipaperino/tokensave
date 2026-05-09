@@ -633,7 +633,7 @@ pub fn detect_missing_installed_agents(home: &Path, current: &[String]) -> Vec<S
     let mut additions = Vec::new();
     for ag in all_integrations() {
         let id = ag.id().to_string();
-        if ag.has_tokensave(home) && !current.iter().any(|i| i == &id) {
+        if ag.has_tokensave(home) && !current.contains(&id) {
             additions.push(id);
         }
     }

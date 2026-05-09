@@ -1468,7 +1468,7 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
                 let db_path = tokensave_dir.join(&entry.db_file);
                 let size = if db_path.exists() {
                     let bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-                    format_size(bytes)
+                    tokensave::display::format_bytes(bytes)
                 } else {
                     "missing".to_string()
                 };
@@ -1677,28 +1677,17 @@ async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result
 
 /// Handles the `wipe` and `wipe --all` commands.
 async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
-    use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
 
     let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
 
-    let targets: Vec<PathBuf> = if all {
-        let gdb = tokensave::global_db::GlobalDb::open().await;
-        let mut paths: Vec<PathBuf> = match gdb {
-            Some(db) => db
-                .list_project_paths()
-                .await
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
-            None => Vec::new(),
-        };
-        paths.retain(|p| p.join(".tokensave/tokensave.db").exists());
-        paths
-    } else {
-        gather_local_projects(&home_tokensave)
-    };
+    let mut targets = gather_target_projects(all, &home_tokensave).await;
+    if all {
+        // wipe acts on the live `.tokensave/` directory; drop rows whose
+        // directory is already gone (they're handled by `tokensave doctor`).
+        targets.retain(|p| p.join(".tokensave/tokensave.db").exists());
+    }
 
     if !all && targets.is_empty() {
         eprintln!("No tokensave projects found in current folder, parents, or children.");
@@ -1723,12 +1712,11 @@ async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     let mut removed = 0usize;
     let mut errors = 0usize;
     let mut wiped_paths: Vec<PathBuf> = Vec::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
 
+    // `targets` is already unique: `gather_local_projects` dedupes via its
+    // own `seen`, and the `--all` branch reads from `projects.path` which is
+    // a primary key. No need for a second per-loop dedupe.
     for project_root in &targets {
-        if !seen.insert(project_root.clone()) {
-            continue;
-        }
         let ts_dir = project_root.join(".tokensave");
         if !ts_dir.exists() {
             continue;
@@ -1759,9 +1747,11 @@ async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
         }
     } else if !wiped_paths.is_empty() {
         if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
-            for p in &wiped_paths {
-                gdb.delete_project(p).await;
-            }
+            let path_strs: Vec<String> = wiped_paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            gdb.delete_projects(&path_strs).await;
         }
     }
 
@@ -1781,20 +1771,7 @@ async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use tokensave::display::format_token_count;
 
     let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
-
-    let project_paths: Vec<PathBuf> = if all {
-        match tokensave::global_db::GlobalDb::open().await {
-            Some(db) => db
-                .list_project_paths()
-                .await
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
-            None => Vec::new(),
-        }
-    } else {
-        gather_local_projects(&home_tokensave)
-    };
+    let project_paths = gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
         if all {
@@ -1856,7 +1833,7 @@ async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
                 + if r.on_disk { 0 } else { " (stale)".len() },
         );
         let size_str = if r.on_disk {
-            format_size(r.size)
+            tokensave::display::format_bytes(r.size)
         } else {
             "—".to_string()
         };
@@ -1880,7 +1857,7 @@ async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     };
     println!(
         "Total: {} on disk · {} tokens saved",
-        format_size(total_size),
+        tokensave::display::format_bytes(total_size),
         total_tokens_str
     );
     Ok(())
@@ -1901,21 +1878,45 @@ fn tokensave_dir_size(dir: &Path) -> u64 {
             return;
         };
         for entry in entries.flatten() {
-            let Ok(ft) = entry.file_type() else {
+            // One stat per entry instead of file_type() + metadata():
+            // `metadata()` already carries the file-type bits, so calling
+            // both means a redundant syscall on filesystems that don't
+            // cache the dirent stat.
+            let Ok(meta) = entry.metadata() else {
                 continue;
             };
-            if ft.is_dir() {
+            if meta.is_dir() {
                 walk(&entry.path(), acc);
-            } else if ft.is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    *acc = acc.saturating_add(meta.len());
-                }
+            } else if meta.is_file() {
+                *acc = acc.saturating_add(meta.len());
             }
         }
     }
     let mut total = 0u64;
     walk(dir, &mut total);
     total
+}
+
+/// Returns the project paths the `wipe` / `list` commands should act on.
+///
+/// `--all` returns every path tracked in the global DB (including stale rows).
+/// Otherwise returns the local discovery from cwd / ancestors / descendants.
+async fn gather_target_projects(
+    all: bool,
+    home_tokensave: &Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    if all {
+        let Some(gdb) = tokensave::global_db::GlobalDb::open().await else {
+            return Vec::new();
+        };
+        gdb.list_project_paths()
+            .await
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    } else {
+        gather_local_projects(home_tokensave)
+    }
 }
 
 /// Returns project roots whose `.tokensave` dir lives in cwd, an ancestor, or a descendant.
@@ -2012,14 +2013,17 @@ fn find_descendant_tokensave(
                 continue;
             }
             let path = entry.path();
-            if let Some(canon) = canon_home_ts {
-                if path.canonicalize().ok().as_ref() == Some(canon) {
-                    continue;
-                }
-            }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str == ".tokensave" {
+                // Only canonicalize when the entry could match the home skip;
+                // doing it for every dir entry would mean one syscall per
+                // entry on tree walks of arbitrary size.
+                if let Some(canon) = canon_home_ts {
+                    if path.canonicalize().ok().as_ref() == Some(canon) {
+                        continue;
+                    }
+                }
                 if path.join("tokensave.db").exists() {
                     if let Some(parent) = path.parent() {
                         let pb = parent.to_path_buf();
@@ -2102,18 +2106,6 @@ fn print_flash_warning(all: bool, targets: &[std::path::PathBuf]) {
     eprintln!();
     eprintln!("\x1b[1;5;33mThis cannot be undone.\x1b[0m");
     eprintln!();
-}
-
-fn format_size(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 /// When invoked with no subcommand, offer to create the index if none exists.
