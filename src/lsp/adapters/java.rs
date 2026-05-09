@@ -49,11 +49,16 @@ impl LspAdapter for JavaAdapter {
     }
 
     fn requires_manifest(&self) -> Option<&'static str> {
-        // The manager checks a single filename. We pick the most common
-        // (Maven). The alternative-manifest fallback is implemented in
-        // `manifest_present` below and replaces the manager's hardcoded
-        // check via `requires_manifest_present`.
+        // Reported as "pom.xml" because that's the canonical Maven
+        // manifest, but `manifest_present` below widens the actual check
+        // to accept Gradle and bare-classpath projects too.
         Some("pom.xml")
+    }
+
+    fn manifest_present(&self, project_root: &Path) -> bool {
+        Self::JAVA_MANIFESTS
+            .iter()
+            .any(|name| project_root.join(name).exists())
     }
 
     fn index_grace_period(&self) -> Duration {
@@ -66,23 +71,10 @@ impl LspAdapter for JavaAdapter {
 }
 
 impl JavaAdapter {
-    /// True when at least one Java build manifest is present in
-    /// `project_root`. Used by the manager when `requires_manifest` returns
-    /// a value but the actual gate is "any of these files."
-    ///
-    /// The LspManager today checks a single filename; this helper exists
-    /// so a future commit can teach the manager to call
-    /// `adapter.manifest_present(root)` instead, removing the single-file
-    /// limitation. Until then, `pom.xml` is the canonical Maven manifest
-    /// and Gradle-only projects need to wait for that follow-up.
-    pub fn manifest_present(project_root: &Path) -> bool {
-        for candidate in &["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"] {
-            if project_root.join(candidate).exists() {
-                return true;
-            }
-        }
-        false
-    }
+    /// Build manifests jdtls accepts for cross-file resolution. Order is
+    /// the empirical commonness in real-world Java projects.
+    const JAVA_MANIFESTS: &'static [&'static str] =
+        &["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"];
 }
 
 #[cfg(test)]
@@ -114,19 +106,26 @@ mod tests {
     fn manifest_present_detects_pom() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("pom.xml"), "<project/>").unwrap();
-        assert!(JavaAdapter::manifest_present(dir.path()));
+        assert!(JavaAdapter.manifest_present(dir.path()));
     }
 
     #[test]
     fn manifest_present_detects_gradle() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("build.gradle.kts"), "").unwrap();
-        assert!(JavaAdapter::manifest_present(dir.path()));
+        assert!(JavaAdapter.manifest_present(dir.path()));
+    }
+
+    #[test]
+    fn manifest_present_detects_classpath() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".classpath"), "<classpath/>").unwrap();
+        assert!(JavaAdapter.manifest_present(dir.path()));
     }
 
     #[test]
     fn manifest_present_returns_false_when_absent() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(!JavaAdapter::manifest_present(dir.path()));
+        assert!(!JavaAdapter.manifest_present(dir.path()));
     }
 }

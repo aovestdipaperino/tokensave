@@ -126,12 +126,13 @@ impl LspManager {
     pub async fn start(&mut self, adapters: &[Box<dyn LspAdapter>]) -> Vec<&'static str> {
         let mut started: Vec<&'static str> = Vec::new();
         for adapter in adapters {
-            // Manifest gate first — a missing Cargo.toml means we should skip
-            // rust-analyzer entirely, not pay the spawn cost.
-            if let Some(manifest) = adapter.requires_manifest() {
-                if !self.project_root.join(manifest).exists() {
-                    continue;
-                }
+            // Manifest gate first — a missing manifest means we should skip
+            // the adapter entirely, not pay the spawn cost. Adapters with
+            // multiple acceptable manifests (e.g. JavaAdapter accepting
+            // Maven or Gradle) override `manifest_present` to widen the
+            // check beyond a single filename.
+            if !adapter.manifest_present(&self.project_root) {
+                continue;
             }
 
             let Some(binary) = adapter.detect() else {

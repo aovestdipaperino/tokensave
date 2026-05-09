@@ -65,11 +65,24 @@ pub trait LspAdapter: Send + Sync {
         None
     }
 
-    /// True if `project_root` must contain `manifest_filename()` for the
-    /// server to provide useful cross-file resolution. When required, the
-    /// adapter is skipped when the manifest is absent.
+    /// Canonical manifest filename this adapter expects in `project_root`.
+    /// When set, the manager calls `manifest_present` to gate spawn; the
+    /// default impl uses this filename as a single-file check, but adapters
+    /// can override `manifest_present` to accept several alternatives
+    /// (e.g. Maven *or* Gradle for Java).
     fn requires_manifest(&self) -> Option<&'static str> {
         None
+    }
+
+    /// True when `project_root` contains a manifest acceptable to this
+    /// adapter. Default impl: when `requires_manifest` returns `Some(name)`,
+    /// the file `project_root/name` must exist; otherwise no gate.
+    /// Override to accept multiple alternative manifests.
+    fn manifest_present(&self, project_root: &Path) -> bool {
+        match self.requires_manifest() {
+            None => true,
+            Some(name) => project_root.join(name).exists(),
+        }
     }
 
     /// Per-server post-initialize grace period. Some servers (rust-analyzer,
