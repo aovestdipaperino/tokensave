@@ -12,6 +12,7 @@
 //! same node IDs the rest of tokensave's tools speak.
 
 pub mod rust;
+pub mod typescript;
 
 use std::path::Path;
 
@@ -76,7 +77,8 @@ pub trait Driver {
 /// diagnostic list. Drivers are run sequentially; any driver-level error
 /// is propagated immediately. Empty when no driver detects the project.
 pub async fn run_all(project_root: &Path, scope: &Scope) -> Result<Vec<Diagnostic>> {
-    let drivers: Vec<Box<dyn Driver + Send + Sync>> = vec![Box::new(rust::CargoDriver)];
+    let drivers: Vec<Box<dyn Driver + Send + Sync>> =
+        vec![Box::new(rust::CargoDriver), Box::new(typescript::TscDriver)];
 
     let mut all = Vec::new();
     for driver in drivers {
