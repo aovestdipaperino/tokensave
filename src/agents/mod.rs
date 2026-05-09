@@ -627,21 +627,104 @@ pub fn copilot_cli_dir(home: &Path) -> PathBuf {
     home.join(".copilot")
 }
 
-/// Backfill `installed_agents` for users upgrading from older versions.
-/// Scans all agents and checks if tokensave is already configured.
-pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::UserConfig) {
-    if !config.installed_agents.is_empty() {
-        return; // already populated
-    }
-    let mut found = Vec::new();
+/// Returns agent IDs that have tokensave configured under `home` but are
+/// absent from `current`. Pure — does no I/O on the config file.
+pub fn detect_missing_installed_agents(home: &Path, current: &[String]) -> Vec<String> {
+    let mut additions = Vec::new();
     for ag in all_integrations() {
-        if ag.has_tokensave(home) {
-            found.push(ag.id().to_string());
+        let id = ag.id().to_string();
+        if ag.has_tokensave(home) && !current.iter().any(|i| i == &id) {
+            additions.push(id);
         }
     }
-    if !found.is_empty() {
-        config.installed_agents = found;
-        config.save();
+    additions
+}
+
+/// Backfill `installed_agents` for users upgrading from older versions.
+///
+/// Always scans every agent and adds any that have tokensave configured
+/// (e.g. an `~/.claude.json` MCP server entry) but are absent from
+/// `installed_agents`. Without the additive scan, a user who installed
+/// agent A first and agent B later would have only A in the list, so
+/// `tokensave reinstall` would silently skip B and its tool permissions
+/// would never be refreshed when new tools ship.
+pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::UserConfig) {
+    let additions = detect_missing_installed_agents(home, &config.installed_agents);
+    if additions.is_empty() {
+        return;
+    }
+    config.installed_agents.extend(additions);
+    config.save();
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod migrate_tests {
+    use super::*;
+    use std::fs;
+
+    /// Writes a minimal `~/.claude.json` so `ClaudeIntegration::has_tokensave`
+    /// returns true for the given fake home.
+    fn install_claude_marker(home: &Path) {
+        let claude_json = home.join(".claude.json");
+        fs::write(
+            &claude_json,
+            r#"{"mcpServers":{"tokensave":{"command":"tokensave","args":["serve"]}}}"#,
+        )
+        .unwrap();
+    }
+
+    /// Regression test for the bug where `tokensave reinstall` skipped Claude
+    /// when another agent (e.g. copilot) was already in `installed_agents`.
+    /// `migrate_installed_agents` previously returned early as soon as the
+    /// list was non-empty, so Claude never got tracked and its tool perms
+    /// never refreshed.
+    #[test]
+    fn detects_claude_when_another_agent_already_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        install_claude_marker(dir.path());
+
+        let current = vec!["copilot".to_string()];
+        let additions = detect_missing_installed_agents(dir.path(), &current);
+
+        assert!(
+            additions.iter().any(|id| id == "claude"),
+            "claude must be detected even when copilot is already in the list, got {additions:?}"
+        );
+    }
+
+    #[test]
+    fn detects_claude_when_list_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        install_claude_marker(dir.path());
+
+        let additions = detect_missing_installed_agents(dir.path(), &[]);
+
+        assert!(additions.iter().any(|id| id == "claude"));
+    }
+
+    #[test]
+    fn no_additions_when_claude_already_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        install_claude_marker(dir.path());
+
+        let current = vec!["claude".to_string()];
+        let additions = detect_missing_installed_agents(dir.path(), &current);
+
+        assert!(
+            !additions.contains(&"claude".to_string()),
+            "claude is already tracked; must not be re-added, got {additions:?}"
+        );
+    }
+
+    #[test]
+    fn empty_home_yields_no_additions() {
+        let dir = tempfile::tempdir().unwrap();
+        let additions = detect_missing_installed_agents(dir.path(), &[]);
+        assert!(
+            additions.is_empty(),
+            "no agent files in home → no additions, got {additions:?}"
+        );
     }
 }
 
