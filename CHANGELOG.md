@@ -45,6 +45,21 @@ First public preview of the 5.0 line. Tracks the `release5` branch; available on
 - **`find_struct_literals` skips string and char literals** — a struct shape inside `"Foo { x: 1 }"` no longer fires as a constructor site. Char-literal detection distinguishes `'a'` (closing apostrophe within identifier range) from lifetime annotations like `'static` (no closing apostrophe).
 - **`handle_diagnostics` hoists `get_nodes_by_file` out of the per-diagnostic loop** — a multi-error file (a missing import cascading) used to do N round-trips per file; one round-trip now suffices via a `HashMap<file, Vec<Node>>`.
 
+## [4.3.12] - 2026-05-09
+
+### Changed
+- **The beta channel is open again** — `tokensave channel beta` was hard-gated to `"the beta channel is not available at this time"` while the prior 4.5.x beta line was being merged into stable. With v5.0.0-beta.1 published on the prerelease channel, the gate is removed: `switch_channel` now resolves `"beta"` through the same path as `"stable"` and downloads the latest GitHub prerelease. The `unknown channel` error message also lists `beta` as a valid target again.
+- **Retired the "beta channel has been merged into stable" nudge** in `main.rs`. Beta users (anyone whose binary version contains `-`) used to see the nudge on every invocation; with the channel reopened the nudge is no longer correct. Beta users now stay on beta until they explicitly run `tokensave channel stable`.
+
+### Fixed
+- **`tokensave wipe` no longer leaks the global DB into the wipe set when `$HOME` is symlinked** — the home `.tokensave` skip relied on lexical path equality, so a user whose `$HOME` resolves through a symlink (e.g. macOS `/Users/x` vs the canonical `/private/var/...`) could see `~/.tokensave` show up as a wipe target if the descendant walk reached it via the canonical chain. The skip now canonicalizes both the home path and every candidate before comparing.
+
+### Changed (carried forward from the prior unreleased section)
+- **Descendant walk for `tokensave wipe` / `tokensave list` is now iterative with cycle protection** — `find_descendant_tokensave` used to recurse, which made deep trees a stack-overflow risk and relied entirely on `file_type()` skipping symlinks for cycle safety. It now uses an explicit worklist plus a canonical-path `visited` set, so the walk is bounded even if a directory cycle slips past the symlink filter (e.g. Windows junctions).
+- **`tokensave doctor` purges stale global-DB entries in batched statements** — purging used to issue one `DELETE` per stale row, which meant N serial round-trips against libsql for a stale-store cleanup (the case that prompted this: 216 deletes). A new `GlobalDb::delete_projects(&[String])` issues one `DELETE … WHERE path IN (…)` per chunk of 256, so the same 216-row purge is now one round-trip.
+- **`gather_local_projects_from` is now a separately-exported helper** — extracts the pure discovery logic from the cwd-driven `gather_local_projects` wrapper so the ancestor + descendant walk can be unit-tested without mutating the process's working directory. Backed by 7 new tests covering cwd / ancestor-only / descendant-only / ancestor+descendant dedup / `node_modules` skip / canonical home-skip / empty-dir.
+- **Cleared `clippy::map_unwrap_or` warning in `display::shuffle_flags`** — the xorshift seed now uses `map_or` instead of `map(...).unwrap_or(...)`. Behavior unchanged.
+
 ## [4.3.11] - 2026-05-09
 
 ### Added

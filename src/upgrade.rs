@@ -637,15 +637,11 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     let method = cloud::detect_install_method();
 
     let target_is_beta = match target_channel {
-        "beta" => {
-            return Err(TokenSaveError::Config {
-                message: "the beta channel is not available at this time".to_string(),
-            });
-        }
+        "beta" => true,
         "stable" => false,
         other => {
             return Err(TokenSaveError::Config {
-                message: format!("unknown channel '{other}'. Valid channels: stable"),
+                message: format!("unknown channel '{other}'. Valid channels: stable, beta"),
             });
         }
     };
