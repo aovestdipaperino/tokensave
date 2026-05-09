@@ -2546,3 +2546,183 @@ async fn test_by_qualified_name_requires_param() {
     };
     assert!(format!("{err}").contains("qualified_name"));
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_read
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_read_full_returns_file_content() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "full"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["mode"], "full");
+    let body = payload["body"].as_str().unwrap();
+    assert!(body.contains("fn helper"), "body should include helper fn");
+    assert!(body.contains("Hello"), "body should include greeting");
+    assert!(payload["token_count"].as_u64().unwrap() > 0);
+    assert!(!payload["digest"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_read_lines_returns_slice() {
+    let (cg, _dir) = setup_project().await;
+    let full_result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "full"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let full_payload: Value = serde_json::from_str(extract_text(&full_result.value)).unwrap();
+    let full_body = full_payload["body"].as_str().unwrap();
+    let helper_line = full_body
+        .lines()
+        .position(|l| l.contains("pub fn helper"))
+        .map(|i| (i + 1) as u32)
+        .expect("helper line not found");
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({
+            "file": "src/utils.rs",
+            "mode": "lines",
+            "lines": format!("{helper_line}-{helper_line}"),
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["mode"], "lines");
+    let body = payload["body"].as_str().unwrap();
+    assert!(body.contains("pub fn helper"), "got: {body}");
+    assert!(
+        !body.contains("format_greeting"),
+        "should be one line only, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_read_map_lists_top_level_symbols() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "map"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["mode"], "map");
+    let body_str = payload["body"].as_str().unwrap();
+    let body: Value = serde_json::from_str(body_str).unwrap();
+    let symbols = body["symbols"].as_array().unwrap();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        names.contains(&"helper"),
+        "map should include helper, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"format_greeting"),
+        "map should include format_greeting, got: {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_read_signatures_filters_to_callable_kinds() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "signatures"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(payload["mode"], "signatures");
+    let body_str = payload["body"].as_str().unwrap();
+    let body: Value = serde_json::from_str(body_str).unwrap();
+    let sigs = body["signatures"].as_array().unwrap();
+    assert!(!sigs.is_empty(), "should include at least one signature");
+    let helper_sig = sigs
+        .iter()
+        .find(|s| s["name"].as_str() == Some("helper"))
+        .expect("helper signature missing");
+    assert!(helper_sig["signature"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_read_cache_hit_returns_unchanged_stub() {
+    let (cg, _dir) = setup_project().await;
+    let _ = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "full"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "full"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(
+        payload["unchanged"].as_bool(),
+        Some(true),
+        "second call should be served from cache, got: {payload}"
+    );
+    assert_eq!(payload["mode"], "full");
+    assert!(payload["body"].is_null(), "stub must not include body");
+}
+
+#[tokio::test]
+async fn test_read_invalid_mode_errors() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "nope"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "unknown mode should error");
+}
+
+#[tokio::test]
+async fn test_read_lines_requires_lines_arg() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({"file": "src/utils.rs", "mode": "lines"}),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err(), "lines mode without lines arg should error");
+}

@@ -136,6 +136,7 @@ pub async fn handle_tool_call(
         "tokensave_session_end" => handle_session_end(cg, args, scope_prefix).await,
         "tokensave_body" => handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => handle_todos(cg, args, scope_prefix).await,
+        "tokensave_read" => handle_read(cg, args).await,
         "tokensave_callers_for" => handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => handle_by_qualified_name(cg, args).await,
         _ => Err(TokenSaveError::Config {
@@ -4551,6 +4552,164 @@ async fn handle_body(
     })
 }
 
+/// Handles `tokensave_read` — mode-aware file read with cross-session caching.
+///
+/// On every call we look up `(project_id, file_path, mode, args_hash)` in the
+/// `read_cache` table. The row is served only when its `mtime_ns` matches the
+/// file's current `mtime_ns`; otherwise the row is recomputed and replaces
+/// the stale one. A cache hit returns a small `{"unchanged": true, ...}` stub
+/// instead of the full body, so revisiting the same file repeatedly across
+/// sessions is near-free.
+async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_cache::{self, GLOBAL_SESSION};
+    use crate::context::read_modes::{
+        self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
+    };
+
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+
+    let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
+    let mode = ReadMode::parse(mode_str).ok_or_else(|| TokenSaveError::Config {
+        message: format!("unknown mode '{mode_str}'; expected one of full, lines, map, signatures"),
+    })?;
+
+    let line_range = if mode == ReadMode::Lines {
+        let raw =
+            args.get("lines")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "mode='lines' requires the 'lines' argument (e.g. '120-180')"
+                        .to_string(),
+                })?;
+        Some(LineRange::parse(raw).ok_or_else(|| TokenSaveError::Config {
+            message: format!("invalid 'lines' value '{raw}'; expected 'A' or 'A-B'"),
+        })?)
+    } else {
+        None
+    };
+
+    let project_root = cg.project_root().to_path_buf();
+    let project_id = project_root.to_string_lossy().to_string();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    let display_file = if abs_path.starts_with(&project_root) {
+        abs_path
+            .strip_prefix(&project_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(rel_path.clone())
+    } else {
+        rel_path.clone()
+    };
+
+    let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
+        message: format!("cannot read file metadata for '{file}': {e}"),
+    })?;
+
+    // Stable hash of the inputs that affect output. The mode itself is part
+    // of the key separately so we don't need to include it here.
+    let hash_input = json!({
+        "lines": args.get("lines").cloned(),
+    });
+    let args_hash = read_cache::args_hash(&hash_input);
+
+    let conn = cg.db().conn();
+
+    if let Some(cached) = read_cache::get(
+        conn,
+        &project_id,
+        GLOBAL_SESSION,
+        &display_file,
+        mode.as_str(),
+        &args_hash,
+        mtime_ns,
+    )
+    .await?
+    {
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": cached.mtime_ns,
+            "digest": cached.digest,
+            "token_count": cached.token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
+    }
+
+    let body_text = match mode {
+        ReadMode::Full => {
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_full(&source)
+        }
+        ReadMode::Lines => {
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_lines(&source, line_range.expect("validated above"))
+        }
+        ReadMode::Map => {
+            let v = render_map(cg.db(), &display_file).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+        ReadMode::Signatures => {
+            let v = render_signatures(cg.db(), &display_file).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+    };
+
+    let token_count = read_modes::estimate_tokens(&body_text);
+    let digest = read_cache::digest_bytes(body_text.as_bytes());
+
+    read_cache::put(
+        conn,
+        &project_id,
+        GLOBAL_SESSION,
+        &display_file,
+        mtime_ns,
+        mode.as_str(),
+        &args_hash,
+        &digest,
+        body_text.as_bytes(),
+        token_count,
+    )
+    .await?;
+
+    let payload = json!({
+        "file": display_file,
+        "mode": mode.as_str(),
+        "mtime_ns": mtime_ns,
+        "digest": digest,
+        "token_count": token_count,
+        "body": body_text,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
 /// Default marker kinds recognised by `tokensave_todos`.
 const DEFAULT_TODO_KINDS: &[&str] = &[
     "TODO",
@@ -4804,7 +4963,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 52);
+        assert_eq!(tools.len(), 53);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));

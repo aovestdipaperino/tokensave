@@ -130,6 +130,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_session_end(),
         def_body(),
         def_todos(),
+        def_read(),
         def_callers_for(),
         def_by_qualified_name(),
     ];
@@ -1301,6 +1302,38 @@ fn def_session_end() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {}
+        }),
+    )
+}
+
+fn def_read() -> ToolDefinition {
+    def(
+        "tokensave_read",
+        "Read File (mode-aware)",
+        "Read a file or its symbol map. Modes: 'full' (entire file), 'lines' \
+         (1-based inclusive byte-range slice via the 'lines' arg, e.g. '120-180'), \
+         'map' (flat list of every top-level symbol from the graph — no source \
+         bytes touched), 'signatures' (functions and types with their cached \
+         signature). Cross-session cached: a re-call on an unchanged file returns \
+         a tiny stub with 'unchanged: true'.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative or absolute path to the file (e.g. 'src/sync.rs')."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["full", "lines", "map", "signatures"],
+                    "description": "Read mode. Default: 'full'."
+                },
+                "lines": {
+                    "type": "string",
+                    "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'."
+                }
+            },
+            "required": ["file"]
         }),
     )
 }
