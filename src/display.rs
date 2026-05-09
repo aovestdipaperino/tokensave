@@ -218,6 +218,34 @@ fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
 }
 
 /// Print the top title row: version (left) + country flags (right).
+/// Returns a shuffled copy of `flags` using xorshift64 seeded from time + PID.
+///
+/// Avoids pulling in `rand` for what is purely a cosmetic per-render shuffle.
+fn shuffle_flags(flags: &[String]) -> Vec<String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut out = flags.to_vec();
+    if out.len() < 2 {
+        return out;
+    }
+    let mut state: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0xdead_beef_cafe_babe)
+        .wrapping_add(u64::from(std::process::id()));
+    if state == 0 {
+        state = 0xdead_beef_cafe_babe;
+    }
+    for i in (1..out.len()).rev() {
+        // xorshift64
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let j = (state % (i as u64 + 1)) as usize;
+        out.swap(i, j);
+    }
+    out
+}
+
 fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let version = env!("CARGO_PKG_VERSION");
     let daemon_running = crate::daemon::running_daemon_pid().is_some();
@@ -242,9 +270,11 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
         return;
     }
 
-    // Build flags string, capped at MAX_DISPLAY_FLAGS and fitting within available width
-    let capped = &country_flags[..country_flags.len().min(MAX_DISPLAY_FLAGS)];
-    let has_overflow = country_flags.len() > MAX_DISPLAY_FLAGS;
+    // Shuffle on each render so a different sample is shown when the list is
+    // longer than `MAX_DISPLAY_FLAGS` and gets truncated by available width.
+    let shuffled = shuffle_flags(country_flags);
+    let capped = &shuffled[..shuffled.len().min(MAX_DISPLAY_FLAGS)];
+    let has_overflow = shuffled.len() > MAX_DISPLAY_FLAGS;
     let mut flags_str = String::new();
     let mut display_width = 0;
     let flag_width = 2; // emoji flags are 2 columns wide
