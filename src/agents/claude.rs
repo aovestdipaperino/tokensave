@@ -1467,16 +1467,11 @@ mod tests {
     #[test]
     fn normalize_and_backfill_rewrites_project_settings_file() {
         use std::io::Write as _;
-        let dir = std::env::temp_dir().join(format!(
-            "tokensave-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("settings.json");
+        // `tempfile::TempDir` gives a per-test unique path; the previous
+        // PID + nanos scheme collided when the two `normalize_and_backfill_*`
+        // tests ran in parallel under coarse-resolution clocks.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
         let contents = r#"{
   "hooks": {
     "Stop": [{
@@ -1503,23 +1498,13 @@ mod tests {
         // All three events should now be present (backfill).
         assert!(parsed["hooks"]["PreToolUse"].is_array());
         assert!(parsed["hooks"]["UserPromptSubmit"].is_array());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn normalize_and_backfill_skips_file_without_tokensave_hook() {
         use std::io::Write as _;
-        let dir = std::env::temp_dir().join(format!(
-            "tokensave-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("settings.json");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
         let contents = r#"{"permissions": {"allow": ["Bash"]}}
 "#;
         std::fs::File::create(&path)
@@ -1534,8 +1519,6 @@ mod tests {
             after, contents,
             "file without tokensave hook must be untouched"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------------
