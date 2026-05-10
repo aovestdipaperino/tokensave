@@ -112,7 +112,7 @@ Limited structural graph value but sometimes requested.
 | **TOML** | `.toml` | `tree-sitter-toml` (0.20.0) | Low | Tables, keys, arrays. Same as YAML — config parsing. |
 | **CSS/SCSS** | `.css`, `.scss` | `tree-sitter-css` (0.25.0) | Low | Selectors, rules, variables, mixins (SCSS). Limited graph edges. |
 | **HTML** | `.html` | `tree-sitter-html` (0.23.2) | Low | Elements, attributes, component references. Mostly useful as an inner parser for Svelte/Vue/Astro. |
-| **Markdown** | `.md` | `tree-sitter-markdown` (0.7.1) | Very low | Headings, links, code blocks. Near-zero graph value — only useful for doc cross-references. |
+| **Markdown** | `.md` | `tree-sitter-grammars/tree-sitter-markdown` (block + inline) | Very low | Headings, links, code blocks. Near-zero graph value — only useful for doc cross-references. YAML/TOML frontmatter is parsed as opaque metadata. |
 
 ### Shader Languages
 

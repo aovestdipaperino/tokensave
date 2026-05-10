@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.13] - 2026-05-10
+
+### Changed
+- **Switched to `tree-sitter-grammars/tree-sitter-markdown` (block + inline split parsers)** — the previously-vendored `ikatyang/tree-sitter-markdown` (last updated 2023, GLR-heavy without native frontmatter handling) hung the indexer on otherwise-fine markdown files containing YAML frontmatter. Specifically, the old grammar parsed `---\n…\n---` content as ordinary markdown, where 6/8/10-space-indented YAML lines were simultaneously valid as both deeply-nested list-item continuations and as indented code blocks; tree-sitter's GLR explored all alternatives in parallel, with the surviving-versions count growing exponentially per line. A real-world 18 KB resume.md hung the worker indefinitely; a 4.4 KB minimal reproducer was bisected and is now a regression fixture (`tests/fixtures/markdown_yaml_frontmatter_hang.md`). The new grammar emits an opaque `(minus_metadata)` / `(plus_metadata)` node for frontmatter, so the markdown rules never see the YAML — the same 4.4 KB reproducer parses in ~7 ms, the full 18 KB file in ~16 ms. The markdown extractor was rewritten for the new AST (block parser produces `(atx_heading … heading_content: (inline …))`, headings still become `Module` nodes; the inline parser is run over each `(inline)` byte range via `set_included_ranges` to extract `(inline_link)` for `Uses` edges). All 16 existing markdown extraction tests still pass; 3 new regression tests guard the migration.
+
+### Added
+- **Per-file extraction timeout** — every extractor round trip is now wrapped in a watchdog (configurable via `extraction_timeout_secs` in `~/.tokensave/config.toml`, default 60 s). A file whose extractor doesn't respond in time has its worker subprocess killed via `Child::kill()` and is recorded in `SyncResult.skipped_paths` with reason `"extractor timed out (>Ns)"`. Worker crashes (the existing failure path) are now also recorded with reason `"extractor crashed (...)"` instead of disappearing silently. This bounds the worst case for any future grammar pathology — `tokensave sync` can no longer hang forever on a single malformed file.
+
 ## [4.3.12] - 2026-05-09
 
 ### Changed
