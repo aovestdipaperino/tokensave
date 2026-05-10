@@ -25,8 +25,9 @@ use std::collections::VecDeque;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -213,7 +214,12 @@ impl WorkerPool {
     /// once per file. Returns one tuple per successfully-processed file;
     /// files whose worker crashed or that had no extractor / read error are
     /// silently skipped (logged to stderr).
-    pub fn extract_files<F>(self, files: Vec<String>, on_progress: F) -> Vec<ExtractTuple>
+    pub fn extract_files<F>(
+        self,
+        files: Vec<String>,
+        on_progress: F,
+        per_file_timeout: Duration,
+    ) -> ExtractFilesOutcome
     where
         F: Fn(usize, usize, &str) + Send + Sync + 'static,
     {
@@ -221,6 +227,7 @@ impl WorkerPool {
         let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(files.into_iter().collect()));
         let results: Arc<Mutex<Vec<ExtractTuple>>> =
             Arc::new(Mutex::new(Vec::with_capacity(total)));
+        let skipped: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let progress_count = Arc::new(AtomicUsize::new(0));
         let on_progress = Arc::new(on_progress);
 
@@ -230,6 +237,7 @@ impl WorkerPool {
             .map(|worker| {
                 let queue = queue.clone();
                 let results = results.clone();
+                let skipped = skipped.clone();
                 let progress_count = progress_count.clone();
                 let on_progress = on_progress.clone();
                 let project_root = self.project_root.clone();
@@ -241,12 +249,14 @@ impl WorkerPool {
                         worker,
                         queue,
                         results,
+                        skipped,
                         progress_count,
                         on_progress,
                         project_root,
                         self_path,
                         token,
                         total,
+                        per_file_timeout,
                     );
                 })
             })
@@ -260,10 +270,24 @@ impl WorkerPool {
         // reference. `into_inner` returns `Some` in that case; if it ever
         // returns `None` (concurrent leak), prefer an empty result over a
         // panic — the sync continues and the user just sees zero changes.
-        Arc::into_inner(results)
+        let results = Arc::into_inner(results)
             .and_then(|m| m.into_inner().ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let skipped = Arc::into_inner(skipped)
+            .and_then(|m| m.into_inner().ok())
+            .unwrap_or_default();
+        ExtractFilesOutcome { results, skipped }
     }
+}
+
+/// Result of [`WorkerPool::extract_files`].
+#[derive(Debug, Default)]
+pub struct ExtractFilesOutcome {
+    /// Successfully-extracted files.
+    pub results: Vec<ExtractTuple>,
+    /// Files where extraction timed out or repeatedly crashed. Reported as
+    /// `(path, reason)` so callers can surface them in `SyncResult.skipped_paths`.
+    pub skipped: Vec<(String, String)>,
 }
 
 // `worker_thread` is the body of a `thread::spawn` closure that takes
@@ -276,12 +300,14 @@ fn worker_thread<F>(
     mut worker: WorkerHandle,
     queue: Arc<Mutex<VecDeque<String>>>,
     results: Arc<Mutex<Vec<ExtractTuple>>>,
+    skipped: Arc<Mutex<Vec<(String, String)>>>,
     progress_count: Arc<AtomicUsize>,
     on_progress: Arc<F>,
     project_root: PathBuf,
     self_path: PathBuf,
     token: [u8; TOKEN_LEN],
     total: usize,
+    per_file_timeout: Duration,
 ) where
     F: Fn(usize, usize, &str) + Send + Sync,
 {
@@ -299,12 +325,12 @@ fn worker_thread<F>(
             file_path: file_path.clone(),
         };
 
-        let outcome = round_trip(&mut worker, &req);
+        let outcome = round_trip_with_timeout(&mut worker, &req, per_file_timeout);
         let n = progress_count.fetch_add(1, Ordering::Relaxed) + 1;
         on_progress(n, total, &file_path);
 
         match outcome {
-            Ok(resp) => {
+            RoundTripOutcome::Ok(resp) => {
                 if let Some(data) = resp.data {
                     results
                         .lock()
@@ -318,8 +344,37 @@ fn worker_thread<F>(
                         ));
                 }
             }
-            Err(e) => {
+            RoundTripOutcome::Timeout => {
+                eprintln!(
+                    "[tokensave] extractor timed out on {file_path} after {}s; skipping",
+                    per_file_timeout.as_secs()
+                );
+                skipped
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((
+                        file_path,
+                        format!("extractor timed out (>{}s)", per_file_timeout.as_secs()),
+                    ));
+                // The worker subprocess was killed by the watchdog. Respawn so
+                // the next file gets a fresh process.
+                match spawn_worker(&self_path, &token) {
+                    Ok(new_worker) => worker = new_worker,
+                    Err(e) => {
+                        eprintln!(
+                            "[tokensave] failed to respawn worker after timeout: {e}; \
+                             this thread is giving up, remaining workers continue"
+                        );
+                        return;
+                    }
+                }
+            }
+            RoundTripOutcome::Err(e) => {
                 eprintln!("[tokensave] extraction worker crashed on {file_path}: {e}, respawning");
+                skipped
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((file_path, format!("extractor crashed ({e})")));
                 // Old `worker` is dropped here, reaping the dead child.
                 match spawn_worker(&self_path, &token) {
                     Ok(new_worker) => worker = new_worker,
@@ -336,14 +391,73 @@ fn worker_thread<F>(
     }
 }
 
-fn round_trip(worker: &mut WorkerHandle, req: &ExtractRequest) -> io::Result<ExtractResponse> {
-    let stdin = worker
-        .stdin
-        .as_mut()
-        .ok_or_else(|| io::Error::other("worker stdin already closed"))?;
-    write_message(stdin, req)?;
-    stdin.flush()?;
-    read_message(&mut worker.stdout)
+/// Outcome of a single round trip. Distinguishes graceful timeout from a
+/// worker crash so the caller can surface the right reason in `skipped_paths`.
+enum RoundTripOutcome {
+    Ok(ExtractResponse),
+    Timeout,
+    Err(io::Error),
+}
+
+/// Sends one extract request and reads the response, killing the worker
+/// process and returning [`RoundTripOutcome::Timeout`] if the read takes
+/// longer than `timeout`. The worker's child handle is `kill()`ed in place
+/// to unblock the read; the caller is expected to `spawn_worker` a fresh
+/// subprocess after either a timeout or a crash.
+fn round_trip_with_timeout(
+    worker: &mut WorkerHandle,
+    req: &ExtractRequest,
+    timeout: Duration,
+) -> RoundTripOutcome {
+    let stdin = match worker.stdin.as_mut() {
+        Some(s) => s,
+        None => return RoundTripOutcome::Err(io::Error::other("worker stdin already closed")),
+    };
+    if let Err(e) = write_message(stdin, req).and_then(|_| stdin.flush()) {
+        return RoundTripOutcome::Err(e);
+    }
+
+    // Split-borrow `stdout` (owned by the read thread) and `child` (owned by
+    // the watchdog thread). Rust allows this because they're disjoint fields
+    // of `*worker`.
+    let WorkerHandle {
+        ref mut stdout,
+        ref mut child,
+        ..
+    } = *worker;
+
+    let timed_out = AtomicBool::new(false);
+    let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<()>();
+
+    let read_result: io::Result<ExtractResponse> = std::thread::scope(|s| {
+        // `move` the Receiver into the watchdog so it owns it (Receiver
+        // is `Send` but not `Sync`). `&timed_out` and `&mut *child` are
+        // borrowed from the outer scope under `'scope`.
+        let timed_out = &timed_out;
+        s.spawn(move || {
+            // Watchdog: if the read doesn't finish in `timeout`, kill the
+            // child so the read returns EOF and unblocks. The kill failing
+            // (child already exited) is fine — we just won't have a clean
+            // way to distinguish "crashed at exactly the wrong moment" from
+            // "timed out", and that's OK; both cases get respawned.
+            if cancel_rx.recv_timeout(timeout).is_err() {
+                timed_out.store(true, Ordering::SeqCst);
+                let _ = child.kill();
+            }
+        });
+        let r = read_message(stdout);
+        let _ = cancel_tx.send(());
+        r
+    });
+
+    if timed_out.load(Ordering::SeqCst) {
+        RoundTripOutcome::Timeout
+    } else {
+        match read_result {
+            Ok(resp) => RoundTripOutcome::Ok(resp),
+            Err(e) => RoundTripOutcome::Err(e),
+        }
+    }
 }
 
 fn spawn_worker(self_path: &Path, token: &[u8; TOKEN_LEN]) -> io::Result<WorkerHandle> {

@@ -70,6 +70,13 @@ pub struct UserConfig {
     /// silent reinstall when the binary is upgraded.
     #[serde(default)]
     pub last_installed_version: String,
+
+    /// Per-file extraction timeout in seconds. The worker is killed and
+    /// the file is recorded in `SyncResult.skipped_paths` if a single
+    /// file's extraction takes longer. Bounds the worst case from any
+    /// pathological grammar / input combo.
+    #[serde(default = "default_extraction_timeout_secs")]
+    pub extraction_timeout_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -78,6 +85,10 @@ fn default_true() -> bool {
 
 fn default_daemon_debounce() -> String {
     "2s".to_string()
+}
+
+fn default_extraction_timeout_secs() -> u64 {
+    60
 }
 
 impl Default for UserConfig {
@@ -98,6 +109,7 @@ impl Default for UserConfig {
             last_flags_fetch_at: 0,
             last_pricing_fetch_at: 0,
             last_installed_version: String::new(),
+            extraction_timeout_secs: default_extraction_timeout_secs(),
         }
     }
 }

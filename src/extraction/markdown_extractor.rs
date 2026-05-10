@@ -1,13 +1,20 @@
-/// Tree-sitter based Markdown source code extractor.
-///
-/// Uses the vendored unified `tree-sitter-markdown` grammar, which parses
-/// both block (headings, paragraphs, code blocks) and inline (links,
-/// emphasis, code spans) constructs in a single tree. We walk that tree
-/// once: `atx_heading` nodes produce `Module` nodes, and `link` nodes
-/// emit `Uses` edges to referenced source files.
+//! Tree-sitter based Markdown source code extractor.
+//!
+//! Uses `tree-sitter-grammars/tree-sitter-markdown` (a split grammar):
+//!
+//!   * `block::LANGUAGE` parses block-level structure (sections, headings,
+//!     paragraphs, lists). Inline content is left as opaque `(inline)` nodes.
+//!   * `inline::LANGUAGE` is run over each `(inline)` node's byte range to
+//!     produce links, emphasis, etc. We use `Parser::set_included_ranges`
+//!     so the inline tree's byte/row positions stay in the original source.
+//!
+//! `atx_heading` / `setext_heading` nodes become `Module` nodes; `inline_link`
+//! nodes whose destination is a project-local source file emit `Uses` edges.
+//! Frontmatter (`(minus_metadata)`, `(plus_metadata)`) is skipped — the
+//! grammar makes it opaque, so we don't recurse into it.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use tree_sitter::{Node as TsNode, Parser, Tree};
+use tree_sitter::{Node as TsNode, Parser, Range, Tree};
 
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, Visibility,
@@ -25,6 +32,9 @@ struct ExtractionState {
     /// going *down* the stack. Headings of equal or shallower level pop
     /// the stack so we always parent to the nearest ancestor heading.
     node_stack: Vec<(String, String, usize)>,
+    /// One inline parser, lazily initialised, reused for every `(inline)`
+    /// node we encounter to avoid re-creating it per heading/paragraph.
+    inline_parser: Option<Parser>,
 }
 
 impl ExtractionState {
@@ -40,6 +50,7 @@ impl ExtractionState {
             source: source.as_bytes().to_vec(),
             timestamp,
             node_stack: Vec::new(),
+            inline_parser: None,
         }
     }
 
@@ -47,6 +58,28 @@ impl ExtractionState {
         node.utf8_text(&self.source)
             .unwrap_or("<invalid utf8>")
             .to_string()
+    }
+
+    /// Parse the byte range covered by `inline_node` with the inline grammar
+    /// and return the resulting tree, or `None` if parsing fails. The tree's
+    /// byte/row positions are anchored in the original source via
+    /// `set_included_ranges`.
+    fn parse_inline(&mut self, inline_node: TsNode<'_>) -> Option<Tree> {
+        let parser = self.inline_parser.get_or_insert_with(|| {
+            let mut p = Parser::new();
+            let _ = p.set_language(&tokensave_large_treesitters::markdown::inline::LANGUAGE.into());
+            p
+        });
+        let range = Range {
+            start_byte: inline_node.start_byte(),
+            end_byte: inline_node.end_byte(),
+            start_point: inline_node.start_position(),
+            end_point: inline_node.end_position(),
+        };
+        if parser.set_included_ranges(&[range]).is_err() {
+            return None;
+        }
+        parser.parse(&self.source, None)
     }
 }
 
@@ -85,17 +118,10 @@ impl MarkdownExtractor {
             .node_stack
             .push((file_path.to_string(), file_node_id, 0));
 
-        match Self::parse(source) {
-            Ok(tree) => {
-                let root = tree.root_node();
-                Self::visit(&mut state, root);
-            }
-            Err(_msg) => {
-                // Parse failed; skip extraction rather than creating a self-loop.
-            }
+        if let Ok(tree) = Self::parse(source) {
+            let root = tree.root_node();
+            Self::visit(&mut state, root);
         }
-
-        state.node_stack.pop();
 
         ExtractionResult {
             nodes: state.nodes,
@@ -116,14 +142,17 @@ impl MarkdownExtractor {
             .ok_or_else(|| "tree-sitter parse returned None".to_string())
     }
 
-    /// Walks the unified markdown tree. `atx_heading` nodes become `Module`
-    /// nodes; `link` nodes emit `Uses` edges. All other nodes are descended
-    /// into so links nested inside paragraphs, list items, etc. are found.
+    /// Walks the block tree. `atx_heading` / `setext_heading` produce `Module`
+    /// nodes; `(inline)` nodes are re-parsed with the inline grammar to find
+    /// links. Frontmatter (`(minus_metadata)`, `(plus_metadata)`) is opaque
+    /// per the grammar — we never descend into it.
     fn visit(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
-            "atx_heading" => Self::visit_heading(state, node),
-            // TODO: setext_heading (H1\n===, H2\n---).
-            "link" => Self::visit_link(state, node),
+            "atx_heading" | "setext_heading" => Self::visit_heading(state, node),
+            "minus_metadata" | "plus_metadata" => {
+                // Opaque YAML/TOML frontmatter — don't descend.
+            }
+            "inline" => Self::visit_inline(state, node),
             _ => Self::visit_children(state, node),
         }
     }
@@ -141,25 +170,19 @@ impl MarkdownExtractor {
     }
 
     fn visit_heading(state: &mut ExtractionState, node: TsNode<'_>) {
-        // Count `#` characters in the leading marker — robust against
-        // grammar versions that name the marker `atx_h{1..6}_marker`.
-        let level = node
-            .children(&mut node.walk())
-            .find(|n| n.kind().starts_with("atx_h") && n.kind().ends_with("_marker"))
-            .map_or(1, |m| {
-                state.node_text(m).chars().filter(|c| *c == '#').count()
-            })
-            .clamp(1, 6);
+        let level = Self::heading_level(node);
 
-        // The heading title lives in the `heading_content` child of an
-        // `atx_heading` in the vendored unified markdown grammar.
-        let title_node = node
-            .children(&mut node.walk())
-            .find(|n| n.kind() == "heading_content")
+        // Block grammar exposes the heading text as the `heading_content`
+        // field, which points to an `(inline)` node containing the text.
+        let title = node
+            .child_by_field_name("heading_content")
             .map(|n| state.node_text(n).trim().to_string())
             .unwrap_or_default();
 
-        if title_node.is_empty() {
+        if title.is_empty() {
+            // Still recurse into the heading body so any `(inline)` children
+            // (which would be unusual but not impossible) get their links.
+            Self::visit_children(state, node);
             return;
         }
 
@@ -174,26 +197,26 @@ impl MarkdownExtractor {
 
         let kind = NodeKind::Module;
         let parent_name = &state.node_stack[state.node_stack.len() - 1].0;
-        let qualified_name = format!("{parent_name}::{title_node}");
+        let qualified_name = format!("{parent_name}::{title}");
         let id = generate_node_id(
             &state.file_path,
             &kind,
-            &title_node,
+            &title,
             node.start_position().row as u32,
         );
 
         let node_obj = Node {
             id: id.clone(),
             kind,
-            name: title_node.clone(),
-            qualified_name: qualified_name.clone(),
+            name: title.clone(),
+            qualified_name,
             file_path: state.file_path.clone(),
             start_line: node.start_position().row as u32,
             attrs_start_line: node.start_position().row as u32,
             end_line: node.end_position().row as u32,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
-            signature: Some(format!("{} {}", "#".repeat(level), title_node)),
+            signature: Some(format!("{} {}", "#".repeat(level), title)),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -217,20 +240,63 @@ impl MarkdownExtractor {
         }
 
         state.nodes.push(node_obj);
-        state.node_stack.push((title_node, id, level));
+        state.node_stack.push((title, id, level));
 
-        // Recurse into the heading so links inside it (e.g.
+        // Recurse so links inside the heading text (e.g.
         // `## See [main](src/main.rs)`) become `Uses` edges parented to
-        // the heading we just pushed. Links lower down in the document
-        // use whichever heading is on top of `node_stack` when they're
-        // visited, which is the same heading until a sibling/larger
-        // heading pops it.
+        // this heading.
         Self::visit_children(state, node);
     }
 
-    /// Emits a `Uses` edge for a markdown link whose destination references
-    /// a source file. External (`http(s)://`) and non-code-extension links
-    /// are skipped to avoid low-signal edges.
+    /// Returns the ATX heading level (1-6) for `atx_heading` / `setext_heading`.
+    /// ATX uses `atx_h{1..6}_marker` children; setext uses level-1 (`===`) or
+    /// level-2 (`---`) underlines, identified by the marker child kind.
+    fn heading_level(node: TsNode<'_>) -> usize {
+        for child in node.children(&mut node.walk()) {
+            let k = child.kind();
+            if let Some(rest) = k.strip_prefix("atx_h") {
+                if let Some(d) = rest.strip_suffix("_marker") {
+                    if let Ok(n) = d.parse::<usize>() {
+                        return n.clamp(1, 6);
+                    }
+                }
+            }
+            if k == "setext_h1_underline" {
+                return 1;
+            }
+            if k == "setext_h2_underline" {
+                return 2;
+            }
+        }
+        1
+    }
+
+    /// Re-parse the `(inline)` node's byte range with the inline grammar and
+    /// collect any `inline_link` nodes as `Uses` edges.
+    fn visit_inline(state: &mut ExtractionState, inline_node: TsNode<'_>) {
+        let Some(inline_tree) = state.parse_inline(inline_node) else {
+            return;
+        };
+        let root = inline_tree.root_node();
+        Self::collect_links(state, root);
+    }
+
+    fn collect_links(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.kind() == "inline_link" || node.kind() == "image" {
+            Self::visit_link(state, node);
+            // Inline links can nest inside images and vice versa; keep walking.
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_links(state, cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn visit_link(state: &mut ExtractionState, node: TsNode<'_>) {
         let Some(url_node) = node
             .children(&mut node.walk())

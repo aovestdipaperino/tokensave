@@ -47,24 +47,34 @@ type ExtractTuple = (String, ExtractionResult, String, u64, i64);
 /// Falls back to in-process extraction with `safe_extract` if the worker
 /// pool cannot start (e.g. when running under `cargo test`, where
 /// `current_exe()` points at the test harness rather than the tokensave
-/// binary). Either way, returns one tuple per successfully-processed file;
-/// crashed and unreadable files are skipped.
+/// binary). Either way, returns one tuple per successfully-processed file
+/// plus a list of `(path, reason)` pairs for files that timed out or
+/// repeatedly crashed during extraction.
 fn extract_files_isolated(
     project_root: &Path,
     registry: &crate::extraction::LanguageRegistry,
     files: Vec<String>,
-) -> Vec<ExtractTuple> {
+) -> (Vec<ExtractTuple>, Vec<(String, String)>) {
     if should_use_subprocess() {
         let workers = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        let timeout = std::time::Duration::from_secs(
+            crate::user_config::UserConfig::load().extraction_timeout_secs,
+        );
         match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
-            Ok(pool) => return pool.extract_files(files, |_, _, _| {}),
+            Ok(pool) => {
+                let outcome = pool.extract_files(files, |_, _, _| {}, timeout);
+                return (outcome.results, outcome.skipped);
+            }
             Err(e) => eprintln!(
                 "[tokensave] could not spawn extraction worker pool ({e}), \
                  falling back to in-process extraction"
             ),
         }
     }
-    extract_files_in_process(project_root, registry, &files)
+    (
+        extract_files_in_process(project_root, registry, &files),
+        Vec::new(),
+    )
 }
 
 fn extract_files_in_process(
@@ -669,7 +679,8 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
-        let extractions: Vec<_> = extract_files_isolated(&project_root, registry, files.clone());
+        let (extractions, _skipped) =
+            extract_files_isolated(&project_root, registry, files.clone());
 
         // 4. Collect all data
         let mut all_nodes = Vec::new();
@@ -851,7 +862,7 @@ impl TokenSave {
 
         // Extract graph data from the files in parallel (subprocess-isolated)
         let _ = stat_map; // worker re-stats internally; map kept for potential future use
-        let sync_extractions: Vec<_> =
+        let (sync_extractions, _skipped_extractions) =
             extract_files_isolated(project_root, registry, file_paths.to_vec());
 
         // Phase 1: insert all nodes (and metadata) so cross-file edges
@@ -1090,8 +1101,11 @@ impl TokenSave {
 
         let phase_start = Instant::now();
         let _ = stat_map; // worker re-stats internally
-        let sync_extractions: Vec<_> =
+        let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) =
             extract_files_isolated(project_root, registry, to_index.clone());
+        // Surface extractor timeouts/crashes in `SyncResult.skipped_paths`
+        // so the user can see them in `tokensave sync --doctor`.
+        skipped.extend(sync_skipped);
 
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
