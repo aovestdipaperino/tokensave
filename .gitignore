@@ -3,7 +3,13 @@
 .codegraph
 .tokensave
 .mcp.json
-.claude/settings.local.json
+.claude/
 docs/superpowers
 /local-only
 .worktrees
+.agents/
+.codex/
+.rtk/
+.sentrux/
+cache/
+generated-illustrations/
