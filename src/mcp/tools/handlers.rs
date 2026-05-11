@@ -4457,12 +4457,14 @@ async fn handle_session_end(
     })
 }
 
-/// Extract lines `start_line..=end_line` (1-based, inclusive) from `source`.
+/// Extract the source spanning tree-sitter rows `start_line..=end_line`
+/// (0-based, inclusive) from `source`. Node line fields are stored as the
+/// raw tree-sitter row index, so the caller passes them through unchanged.
 /// Returns the empty string if the range is out of bounds.
 fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
     let lines: Vec<&str> = source.lines().collect();
-    let start = (start_line.saturating_sub(1)) as usize;
-    let end = (end_line as usize).min(lines.len());
+    let start = start_line as usize;
+    let end = (end_line as usize).saturating_add(1).min(lines.len());
     if start >= lines.len() || start >= end {
         return String::new();
     }
@@ -4531,8 +4533,8 @@ async fn handle_body(
             "qualified_name": n.qualified_name,
             "kind": n.kind.as_str(),
             "file": n.file_path,
-            "start_line": n.start_line,
-            "end_line": n.end_line,
+            "start_line": n.start_line.saturating_add(1),
+            "end_line": n.end_line.saturating_add(1),
             "signature": n.signature,
             "body": body,
         }));

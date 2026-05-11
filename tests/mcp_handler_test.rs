@@ -2230,7 +2230,8 @@ async fn test_body_returns_full_function_source() {
     let text = extract_text(&result.value);
     let output: Value = serde_json::from_str(text).unwrap();
     assert_eq!(output["match_count"].as_u64().unwrap(), 1);
-    let body = output["matches"][0]["body"].as_str().unwrap();
+    let m = &output["matches"][0];
+    let body = m["body"].as_str().unwrap();
     assert!(
         body.contains("fn format_greeting"),
         "body should contain the function signature, got: {body}"
@@ -2238,6 +2239,33 @@ async fn test_body_returns_full_function_source() {
     assert!(
         body.contains("Hello"),
         "body should contain the function body, got: {body}"
+    );
+    // Regression for issue #62: the function's outer closing brace must be
+    // included so the body is byte-exact usable as an Edit `old_string`.
+    assert!(
+        body.trim_end().ends_with('}'),
+        "body should end with the function's closing brace, got: {body:?}"
+    );
+    // Line numbers are surfaced 1-based so they match what the user sees in
+    // their editor and what Edit-style tools expect.
+    let start_line = m["start_line"].as_u64().unwrap() as usize;
+    let end_line = m["end_line"].as_u64().unwrap() as usize;
+    assert!(start_line >= 1, "start_line should be 1-based");
+    assert!(
+        end_line >= start_line,
+        "end_line should not precede start_line"
+    );
+    let file_rel = m["file"].as_str().unwrap();
+    let file_abs = _dir.path().join(file_rel);
+    let source = std::fs::read_to_string(&file_abs).unwrap();
+    let lines: Vec<&str> = source.lines().collect();
+    let end_line_text = lines
+        .get(end_line - 1)
+        .copied()
+        .unwrap_or_else(|| panic!("end_line {end_line} out of bounds in {file_rel}"));
+    assert!(
+        end_line_text.trim_end().ends_with('}'),
+        "end_line ({end_line}) should point at the closing brace; line text: {end_line_text:?}"
     );
 }
 

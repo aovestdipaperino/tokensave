@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.14] - 2026-05-11
+
+### Fixed
+- **`tokensave_body` no longer drops the function's outer closing brace (issue #62)** — `handle_body` returned the source spanning `start_line..end_line`, but stored line fields are tree-sitter rows (0-based) while `extract_lines` was written assuming 1-based inclusive inputs. The mismatch meant `lines[start..end_line]` exclusive — one short, lopping off the trailing `}` (or any language's outer block closer sitting on its own line). Inner braces were unaffected because they were never on the boundary. `extract_lines` now treats inputs as 0-based row indices and slices inclusively, so the returned body is byte-exact usable as an `Edit` tool `old_string`. Regression added in `test_body_returns_full_function_source` (`tests/mcp_handler_test.rs`) — verified failing pre-fix with `body: "\nfn format_greeting(name: &str) -> String {\n    format!(\"Hello, {}!\", name)"` (closing `}` missing).
+
+### Changed
+- **`tokensave_body` now exposes `start_line` / `end_line` as 1-based file line numbers** — they were previously the raw 0-based tree-sitter row indices, which read as "off by one" against the line numbers any editor or `Edit`-style tool displays. The values now match what users see when they open the file, so the reported `end_line` is the line containing the function's closing brace. The shift is local to `handle_body`; other handlers still expose `node.start_line` as-is.
+
 ## [4.3.13] - 2026-05-10
 
 ### Changed
