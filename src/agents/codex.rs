@@ -76,10 +76,13 @@ impl AgentIntegration for CodexIntegration {
         if !config.exists() {
             return false;
         }
-        let toml = super::load_toml_file(&config);
-        toml.get("mcp_servers")
-            .and_then(|v| v.get("tokensave"))
-            .is_some()
+        // If the file is unparseable, conservatively report "not installed"
+        // so the caller treats it like a fresh install path.
+        super::load_toml_file(&config).is_ok_and(|toml| {
+            toml.get("mcp_servers")
+                .and_then(|v| v.get("tokensave"))
+                .is_some()
+        })
     }
 }
 
@@ -89,7 +92,7 @@ impl AgentIntegration for CodexIntegration {
 
 /// Register MCP server and auto-approve tools in ~/.codex/config.toml.
 fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
-    let mut config = load_toml_file(config_path);
+    let mut config = load_toml_file(config_path)?;
 
     // Ensure [mcp_servers.tokensave] exists
     let table = config
@@ -192,7 +195,7 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
     if !config_path.exists() {
         return Ok(());
     }
-    let mut config = load_toml_file(config_path);
+    let mut config = load_toml_file(config_path)?;
     let Some(table) = config.as_table_mut() else {
         return Ok(());
     };
@@ -282,7 +285,13 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
         return;
     }
 
-    let config = load_toml_file(config_path);
+    let config = match load_toml_file(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            dc.fail(&format!("{e}"));
+            return;
+        }
+    };
     let has_server = config
         .get("mcp_servers")
         .and_then(|v| v.get("tokensave"))

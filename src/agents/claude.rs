@@ -13,8 +13,9 @@ use serde_json::json;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    backup_config_file, expected_tool_perms, load_json_file_strict, safe_write_json_file,
-    write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    backup_and_write_json, backup_config_file, expected_tool_perms, load_json_file_strict,
+    safe_write_json_file, write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext,
+    InstallContext,
 };
 
 /// Claude Code agent.
@@ -329,9 +330,7 @@ fn install_clean_local_config() {
                             eprintln!(
                                 "\x1b[32m✔\x1b[0m Removed local .mcp.json (using global config only)"
                             );
-                        } else {
-                            let pretty = serde_json::to_string_pretty(&mcp_val).unwrap_or_default();
-                            std::fs::write(&mcp_json_path, format!("{pretty}\n")).ok();
+                        } else if backup_and_write_json(&mcp_json_path, &mcp_val) {
                             eprintln!("\x1b[32m✔\x1b[0m Removed tokensave from local .mcp.json (using global config only)");
                         }
                     }
@@ -400,14 +399,11 @@ fn clean_local_settings_file(project_path: &Path, local_settings_path: &Path) {
             let claude_dir = project_path.join(".claude");
             std::fs::remove_dir(&claude_dir).ok();
         }
-    } else {
-        let pretty = serde_json::to_string_pretty(&local_val).unwrap_or_default();
-        if std::fs::write(local_settings_path, format!("{pretty}\n")).is_ok() {
-            eprintln!(
-                "\x1b[32m✔\x1b[0m Removed tokensave entries from {} (should only be in global config)",
-                local_settings_path.display()
-            );
-        }
+    } else if backup_and_write_json(local_settings_path, &local_val) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave entries from {} (should only be in global config)",
+            local_settings_path.display()
+        );
     }
 }
 
@@ -448,9 +444,7 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             claude_json_path.display()
         );
-    } else {
-        let pretty = serde_json::to_string_pretty(&claude_json).unwrap_or_default();
-        std::fs::write(claude_json_path, format!("{pretty}\n")).ok();
+    } else if backup_and_write_json(claude_json_path, &claude_json) {
         eprintln!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             claude_json_path.display()
@@ -475,9 +469,7 @@ fn uninstall_settings(settings_path: &Path) {
     modified |= uninstall_hook(&mut settings);
     modified |= uninstall_permissions(&mut settings);
 
-    if modified {
-        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(settings_path, format!("{pretty}\n")).ok();
+    if modified && backup_and_write_json(settings_path, &settings) {
         eprintln!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
     }
 }
@@ -866,8 +858,7 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
     }
 
     if repaired {
-        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
-        if std::fs::write(settings_path, format!("{pretty}\n")).is_ok() {
+        if backup_and_write_json(settings_path, &settings) {
             dc.pass("Auto-repaired hook(s)");
         } else {
             dc.fail("Could not write settings.json to repair hooks");
@@ -975,14 +966,11 @@ fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) ->
                 mcp_json_path.display()
             ));
         }
-    } else {
-        let pretty = serde_json::to_string_pretty(&mcp_val).unwrap_or_default();
-        if std::fs::write(mcp_json_path, format!("{pretty}\n")).is_ok() {
-            dc.warn(&format!(
-                "Removed tokensave entry from {} (should only be in global config)",
-                mcp_json_path.display()
-            ));
-        }
+    } else if backup_and_write_json(mcp_json_path, &mcp_val) {
+        dc.warn(&format!(
+            "Removed tokensave entry from {} (should only be in global config)",
+            mcp_json_path.display()
+        ));
     }
     true
 }
@@ -1043,14 +1031,11 @@ fn doctor_clean_local_settings(
             let claude_dir = project_path.join(".claude");
             std::fs::remove_dir(&claude_dir).ok();
         }
-    } else {
-        let pretty = serde_json::to_string_pretty(&local_val).unwrap_or_default();
-        if std::fs::write(local_settings_path, format!("{pretty}\n")).is_ok() {
-            dc.warn(&format!(
-                "Removed tokensave entries from {} (should only be in global config)",
-                local_settings_path.display()
-            ));
-        }
+    } else if backup_and_write_json(local_settings_path, &local_val) {
+        dc.warn(&format!(
+            "Removed tokensave entries from {} (should only be in global config)",
+            local_settings_path.display()
+        ));
     }
     true
 }
@@ -1155,8 +1140,7 @@ fn normalize_and_backfill_settings_file(path: &Path) {
     install_hook_quiet(&mut settings, &bin);
     let after = serde_json::to_string(&settings).unwrap_or_default();
     if before != after {
-        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(path, format!("{pretty}\n")).ok();
+        backup_and_write_json(path, &settings);
     }
 }
 

@@ -410,6 +410,19 @@ pub fn write_json_file(path: &Path, value: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort "back up and write" for uninstall paths.
+///
+/// Mirrors the install pattern (`backup_config_file` then
+/// `safe_write_json_file`) but swallows errors so the rest of the uninstall
+/// can continue. Returns `true` when the new content reached disk.
+///
+/// Issue #63: every config rewrite must leave a `.bak` so the user can
+/// recover if anything goes wrong.
+pub fn backup_and_write_json(path: &Path, value: &serde_json::Value) -> bool {
+    let backup = backup_config_file(path).ok().flatten();
+    safe_write_json_file(path, value, backup.as_deref()).is_ok()
+}
+
 /// Finds the tokensave binary path.
 ///
 /// On Windows the returned path uses forward slashes so it can be safely
@@ -787,20 +800,60 @@ pub fn pick_integrations_interactive(
     Ok((to_install, to_uninstall))
 }
 
-/// Load a TOML file, returning an empty table on missing/invalid.
-pub fn load_toml_file(path: &Path) -> toml::Value {
-    if path.exists() {
-        let contents = std::fs::read_to_string(path).unwrap_or_default();
-        contents
-            .parse::<toml::Value>()
-            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
-    } else {
-        toml::Value::Table(toml::map::Map::new())
+/// Load a TOML file as a document.
+///
+/// Returns an empty table when the file does not exist. When the file exists
+/// but cannot be parsed as a TOML document, returns a [`TokenSaveError::Config`]
+/// so callers do not silently overwrite the user's data (see issue #63).
+pub fn load_toml_file(path: &Path) -> Result<toml::Value> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
     }
+    let contents = std::fs::read_to_string(path).map_err(|e| TokenSaveError::Config {
+        message: format!("failed to read {}: {e}", path.display()),
+    })?;
+    if contents.trim().is_empty() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    // NOTE: `str.parse::<toml::Value>()` parses a single TOML value in toml v1,
+    // not a document — using it here would treat any well-formed config.toml as
+    // unparseable and silently drop its contents. Use `toml::from_str` instead.
+    let table: toml::Table = toml::from_str(&contents).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "failed to parse {} as TOML: {e}. Refusing to overwrite — fix the file or remove it manually.",
+            path.display()
+        ),
+    })?;
+    Ok(toml::Value::Table(table))
 }
 
-/// Write a TOML value to a file.
+/// Copy `path` to `<path>.bak` if it exists. Used before overwriting a user
+/// config so an unexpected change is recoverable (issue #63).
+fn backup_file(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    let backup = std::path::PathBuf::from(backup);
+    std::fs::copy(path, &backup).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "failed to back up {} to {}: {e}",
+            path.display(),
+            backup.display()
+        ),
+    })?;
+    eprintln!(
+        "\x1b[32m✔\x1b[0m Backed up {} to {}",
+        path.display(),
+        backup.display()
+    );
+    Ok(())
+}
+
+/// Write a TOML value to a file, backing up any existing file first.
 pub fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
+    backup_file(path)?;
     let contents = toml::to_string_pretty(value).unwrap_or_else(|_| String::new());
     std::fs::write(path, contents).map_err(|e| TokenSaveError::Config {
         message: format!("failed to write {}: {e}", path.display()),

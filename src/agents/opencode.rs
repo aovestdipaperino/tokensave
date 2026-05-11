@@ -14,8 +14,8 @@ use serde_json::json;
 use crate::errors::{Result, TokenSaveError};
 
 use super::{
-    backup_config_file, load_json_file, load_json_file_strict, safe_write_json_file,
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
+    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// `OpenCode` agent.
@@ -229,9 +229,7 @@ fn uninstall_mcp_server(config_path: &Path) {
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             config_path.display()
         );
-    } else {
-        let pretty = serde_json::to_string_pretty(&config).unwrap_or_default();
-        std::fs::write(config_path, format!("{pretty}\n")).ok();
+    } else if backup_and_write_json(config_path, &config) {
         eprintln!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             config_path.display()

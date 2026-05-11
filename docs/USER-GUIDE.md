@@ -202,6 +202,16 @@ Each agent gets an appropriate configuration: MCP server registration, tool perm
 
 The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook and the background daemon (more on those below).
 
+#### Config backups
+
+Whenever tokensave rewrites an agent config file — on `install`, on `uninstall`, or when the `doctor` auto-repairs hooks — it first copies the original to a sibling `.bak` file in the same directory. For example:
+
+- `~/.codex/config.toml` → `~/.codex/config.toml.bak`
+- `~/.cursor/mcp.json` → `~/.cursor/mcp.json.bak`
+- `~/.claude.json` → `~/.claude.json.bak`
+
+If anything goes wrong (a typo, an unexpected rewrite, an unknown bug), restore with `cp <path>.bak <path>`. The `.bak` is always the **exact bytes** of whatever was on disk just before the write; tokensave never deletes or rotates it, so the most recent backup is the file you want.
+
 ### Removing an integration
 
 ```bash

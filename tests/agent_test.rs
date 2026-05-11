@@ -489,16 +489,19 @@ fn test_codex_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     CodexIntegration.install(&ctx).unwrap();
-    assert!(home.join(".codex/config.toml").exists());
+    let config_path = home.join(".codex/config.toml");
+    assert!(config_path.exists());
 
     CodexIntegration.uninstall(&ctx).unwrap();
 
-    // Note: The uninstall uses load_toml_file which returns empty due to
-    // toml::Value parse limitation. As a result, uninstall cannot find and
-    // remove the mcp_servers entry. The config file is left empty after
-    // uninstall because the empty table is written back. This documents
-    // current behavior.
-    // AGENTS.md should be removed though (uses text-based removal)
+    // After uninstall, the config (which only contained tokensave) becomes
+    // empty and is removed; or, if other content existed, the tokensave
+    // server is dropped but the rest is preserved.
+    assert!(
+        !config_path.exists(),
+        "config.toml with only tokensave should be removed on uninstall"
+    );
+
     let agents_md = home.join(".codex/AGENTS.md");
     if agents_md.exists() {
         let content = std::fs::read_to_string(&agents_md).unwrap();
@@ -507,6 +510,342 @@ fn test_codex_install_then_uninstall() {
             "AGENTS.md should not have tokensave rules after uninstall"
         );
     }
+}
+
+#[test]
+fn test_codex_install_preserves_existing_config() {
+    // Regression test for issue #63: installing tokensave used to wipe out the
+    // entire ~/.codex/config.toml because load_toml_file silently returned an
+    // empty table.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let config_path = home.join(".codex/config.toml");
+    let original = "\
+model = \"o4-mini\"
+approval_policy = \"on-failure\"
+
+[mcp_servers.other]
+command = \"other-bin\"
+args = [\"--flag\"]
+";
+    std::fs::write(&config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    CodexIntegration.install(&ctx).unwrap();
+
+    // A backup of the original must exist.
+    let backup = home.join(".codex/config.toml.bak");
+    assert!(backup.exists(), "install must back up the existing config");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+
+    // The new config must keep the user's settings.
+    let new_contents = std::fs::read_to_string(&config_path).unwrap();
+    let parsed: toml::Table = toml::from_str(&new_contents).unwrap();
+    assert_eq!(
+        parsed.get("model").and_then(|v| v.as_str()),
+        Some("o4-mini"),
+        "top-level user keys must be preserved"
+    );
+    assert_eq!(
+        parsed.get("approval_policy").and_then(|v| v.as_str()),
+        Some("on-failure"),
+    );
+    let servers = parsed
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .expect("mcp_servers should still be a table");
+    assert!(
+        servers.contains_key("other"),
+        "pre-existing mcp_servers entries must be preserved"
+    );
+    assert!(
+        servers.contains_key("tokensave"),
+        "tokensave should be registered alongside existing servers"
+    );
+}
+
+#[test]
+fn test_codex_install_refuses_unparseable_config() {
+    // Issue #63 guard: if the existing config can't be parsed, refuse to
+    // overwrite rather than silently replacing the user's content.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let config_path = home.join(".codex/config.toml");
+    let original = "this is not valid TOML {{{{";
+    std::fs::write(&config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    let result = CodexIntegration.install(&ctx);
+    assert!(
+        result.is_err(),
+        "install must fail when existing config.toml is unparseable"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original,
+        "the broken config must be left untouched so the user can fix it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #63 regression: every agent must back up an existing config before
+// overwriting it, and the user's pre-existing content must survive install.
+// ---------------------------------------------------------------------------
+
+/// Seed `config_path` with `original`, run the integration's install, then
+/// assert that a `.bak` was created with the original bytes and that the new
+/// content still contains the user's `marker` substring.
+fn assert_install_backs_up_and_preserves(
+    agent: &dyn AgentIntegration,
+    home: &Path,
+    config_path: &Path,
+    original: &str,
+    marker: &str,
+) {
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    agent.install(&ctx).expect("install should succeed");
+
+    let mut backup = config_path.as_os_str().to_owned();
+    backup.push(".bak");
+    let backup = std::path::PathBuf::from(backup);
+    assert!(
+        backup.exists(),
+        "{}: install must back up the existing config to {}",
+        agent.name(),
+        backup.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "{}: backup must contain the exact original bytes",
+        agent.name()
+    );
+
+    let new = std::fs::read_to_string(config_path).unwrap();
+    assert!(
+        new.contains(marker),
+        "{}: user's pre-existing content (marker {marker:?}) must be preserved, got:\n{new}",
+        agent.name(),
+    );
+}
+
+#[test]
+fn test_claude_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".claude.json");
+    let original = r#"{
+  "theme": "solarized",
+  "mcpServers": {
+    "other": { "command": "other-bin", "args": ["--flag"] }
+  }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ClaudeIntegration, home, &path, original, "solarized");
+}
+
+#[test]
+fn test_gemini_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".gemini/settings.json");
+    let original = r#"{
+  "theme": "dark",
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&GeminiIntegration, home, &path, original, "\"theme\"");
+}
+
+#[test]
+fn test_cursor_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".cursor/mcp.json");
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&CursorIntegration, home, &path, original, "other-bin");
+}
+
+#[test]
+fn test_opencode_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".config/opencode/opencode.json");
+    let original = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": { "other": { "type": "local", "command": ["other-bin"] } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&OpenCodeIntegration, home, &path, original, "other-bin");
+}
+
+#[test]
+fn test_zed_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Application Support/Zed/settings.json");
+    #[cfg(target_os = "linux")]
+    let path = home.join(".config/zed/settings.json");
+    #[cfg(target_os = "windows")]
+    let path = home.join("AppData/Roaming/Zed/settings.json");
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let path = home.join(".config/zed/settings.json");
+
+    let original = r#"{
+  "theme": "One Dark",
+  "context_servers": { "other": { "command": { "path": "other-bin", "args": [] } } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ZedIntegration, home, &path, original, "One Dark");
+}
+
+#[test]
+fn test_cline_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    #[cfg(target_os = "linux")]
+    let path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
+    #[cfg(target_os = "windows")]
+    let path = home.join("AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
+
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ClineIntegration, home, &path, original, "other-bin");
+}
+
+#[test]
+fn test_roo_code_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    #[cfg(target_os = "linux")]
+    let path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    #[cfg(target_os = "windows")]
+    let path = home.join("AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&RooCodeIntegration, home, &path, original, "other-bin");
+}
+
+#[test]
+fn test_cursor_uninstall_backs_up_config_with_other_content() {
+    // Regression for issue #63: uninstall paths must also back up the file
+    // before rewriting, so a botched rewrite is recoverable.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    let path = home.join(".cursor/mcp.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let original = r#"{
+  "mcpServers": {
+    "tokensave": { "command": "/usr/local/bin/tokensave", "args": ["serve"] },
+    "other": { "command": "other-bin" }
+  }
+}
+"#;
+    std::fs::write(&path, original).unwrap();
+
+    CursorIntegration.uninstall(&ctx).unwrap();
+
+    let backup = home.join(".cursor/mcp.json.bak");
+    assert!(
+        backup.exists(),
+        "uninstall must back up the existing config before rewriting it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "backup must contain the exact pre-uninstall bytes"
+    );
+    let new = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        new.contains("other-bin") && !new.contains("tokensave"),
+        "uninstall must drop tokensave but keep other servers; got:\n{new}"
+    );
+}
+
+#[test]
+fn test_kilo_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".config/kilo/kilo.jsonc");
+    let original = r#"{
+  // user comment about their workflow
+  "mcp": { "other": { "type": "local", "command": ["other-bin"], "enabled": true } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&KiloIntegration, home, &path, original, "other-bin");
+}
+
+#[test]
+fn test_antigravity_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = home.join(".gemini/antigravity/mcp_config.json");
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(
+        &AntigravityIntegration,
+        home,
+        &path,
+        original,
+        "other-bin",
+    );
+}
+
+#[test]
+fn test_copilot_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Application Support/Code/User/settings.json");
+    #[cfg(target_os = "linux")]
+    let path = home.join(".config/Code/User/settings.json");
+    #[cfg(target_os = "windows")]
+    let path = home.join("AppData/Roaming/Code/User/settings.json");
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let path = home.join(".config/Code/User/settings.json");
+
+    let original = r#"{
+  "editor.fontSize": 14,
+  "workbench.colorTheme": "Default Dark+"
+}
+"#;
+    assert_install_backs_up_and_preserves(
+        &CopilotIntegration,
+        home,
+        &path,
+        original,
+        "Default Dark+",
+    );
 }
 
 #[test]
@@ -640,10 +979,6 @@ fn test_healthcheck_gemini_clean_install() {
 
 #[test]
 fn test_healthcheck_codex_after_install() {
-    // Note: Codex healthcheck uses load_toml_file internally, which always
-    // returns an empty table due to the toml::Value parse limitation.
-    // Therefore healthcheck always reports the MCP server as not registered.
-    // This test documents the current behavior.
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
@@ -655,10 +990,9 @@ fn test_healthcheck_codex_after_install() {
         project_path: home.to_path_buf(),
     };
     CodexIntegration.healthcheck(&mut dc, &hctx);
-    // Healthcheck reports 1 issue (MCP server not found) due to parse limitation
     assert_eq!(
-        dc.issues, 1,
-        "Codex healthcheck reports MCP not found due to toml::Value parse limitation"
+        dc.issues, 0,
+        "Codex healthcheck should pass after a clean install"
     );
 }
 
@@ -882,38 +1216,42 @@ fn test_write_json_file() {
 
 #[test]
 fn test_load_toml_file_missing() {
-    let val = load_toml_file(Path::new("/nonexistent/file.toml"));
+    let val = load_toml_file(Path::new("/nonexistent/file.toml")).unwrap();
     assert!(val.is_table());
     assert!(val.as_table().unwrap().is_empty());
 }
 
 #[test]
 fn test_load_toml_file_valid() {
-    // Note: in toml v1.x, `str.parse::<toml::Value>()` treats the input as a
-    // single TOML *value* (string, number, etc.), NOT as a full TOML document.
-    // Therefore `load_toml_file` always falls back to an empty table for normal
-    // TOML files. This is a known limitation. Verify the fallback behavior.
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.toml");
     std::fs::write(&path, "key = \"value\"\nnumber = 42\n").unwrap();
-    let val = load_toml_file(&path);
-    assert!(val.is_table(), "load_toml_file should return a table");
-    // The current implementation falls back to empty table because
-    // `str.parse::<toml::Value>()` does not parse full TOML documents.
-    // This test documents the current behavior.
+    let val = load_toml_file(&path).expect("valid TOML should parse as document");
+    let table = val.as_table().expect("top-level should be a table");
+    assert_eq!(table.get("key").and_then(|v| v.as_str()), Some("value"));
+    assert_eq!(table.get("number").and_then(|v| v.as_integer()), Some(42));
+}
+
+#[test]
+fn test_load_toml_file_invalid_returns_err() {
+    // Bug #63: invalid TOML used to silently return an empty table, which let
+    // install_mcp_server wipe out the user's config. Now it must surface an
+    // error so the caller refuses to overwrite.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad.toml");
+    std::fs::write(&path, "{{{{not valid toml").unwrap();
     assert!(
-        val.as_table().unwrap().is_empty(),
-        "load_toml_file returns empty table due to toml::Value parse limitation"
+        load_toml_file(&path).is_err(),
+        "unparseable TOML must surface as error, not silently empty"
     );
 }
 
 #[test]
-fn test_load_toml_file_invalid_returns_empty() {
+fn test_load_toml_file_empty_file_returns_empty_table() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad.toml");
-    std::fs::write(&path, "{{{{not valid toml").unwrap();
-    let val = load_toml_file(&path);
-    assert!(val.is_table());
+    let path = dir.path().join("empty.toml");
+    std::fs::write(&path, "").unwrap();
+    let val = load_toml_file(&path).expect("empty file should be treated as empty table");
     assert!(val.as_table().unwrap().is_empty());
 }
 
@@ -929,6 +1267,49 @@ fn test_write_toml_file() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("key"));
     assert!(content.contains("value"));
+}
+
+#[test]
+fn test_write_toml_file_backs_up_existing() {
+    // Issue #63: overwriting an existing config must always leave a .bak copy
+    // so the user can recover if anything goes wrong.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    let original = "preserved = \"keep me\"\n";
+    std::fs::write(&path, original).unwrap();
+
+    let mut table = toml::map::Map::new();
+    table.insert(
+        "new".to_string(),
+        toml::Value::String("content".to_string()),
+    );
+    write_toml_file(&path, &toml::Value::Table(table)).unwrap();
+
+    let backup = dir.path().join("config.toml.bak");
+    assert!(
+        backup.exists(),
+        "write must create a .bak of the prior file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "the backup must contain the exact previous bytes"
+    );
+}
+
+#[test]
+fn test_write_toml_file_no_backup_when_no_prior_file() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("fresh.toml");
+    let mut table = toml::map::Map::new();
+    table.insert("k".to_string(), toml::Value::String("v".to_string()));
+    write_toml_file(&path, &toml::Value::Table(table)).unwrap();
+
+    let backup = dir.path().join("fresh.toml.bak");
+    assert!(
+        !backup.exists(),
+        "no backup should be created on first write"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,17 +1481,12 @@ fn test_has_tokensave_codex() {
     let home = dir.path();
     assert!(!CodexIntegration.has_tokensave(home));
 
-    // Note: CodexIntegration.has_tokensave uses load_toml_file internally, which
-    // always returns an empty table due to the toml::Value parse limitation.
-    // Therefore has_tokensave always returns false for codex, even after install.
-    // This test documents the current behavior.
     let ctx = make_install_ctx(home);
     CodexIntegration.install(&ctx).unwrap();
-    // The config file exists but has_tokensave returns false due to parse limitation
     assert!(home.join(".codex/config.toml").exists());
     assert!(
-        !CodexIntegration.has_tokensave(home),
-        "has_tokensave returns false due to toml::Value parse limitation"
+        CodexIntegration.has_tokensave(home),
+        "has_tokensave should detect tokensave after a clean install"
     );
 }
 

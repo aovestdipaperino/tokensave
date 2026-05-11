@@ -12,8 +12,8 @@ use serde_json::json;
 use crate::errors::Result;
 
 use super::{
-    backup_config_file, load_jsonc_file, load_jsonc_file_strict, safe_write_json_file,
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    backup_and_write_json, backup_config_file, load_jsonc_file, load_jsonc_file_strict,
+    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// Kilo CLI agent.
@@ -119,9 +119,7 @@ fn uninstall_mcp_server(config_path: &Path) {
         let Some(servers) = settings.get_mut("mcp").and_then(|v| v.as_object_mut()) else {
             return;
         };
-        if servers.remove("tokensave").is_some() {
-            let pretty = serde_json::to_string_pretty(&settings).unwrap_or_default();
-            std::fs::write(config_path, format!("{pretty}\n")).ok();
+        if servers.remove("tokensave").is_some() && backup_and_write_json(config_path, &settings) {
             eprintln!(
                 "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
                 config_path.display()
@@ -146,12 +144,12 @@ fn uninstall_mcp_server(config_path: &Path) {
         return;
     }
 
-    let pretty = serde_json::to_string_pretty(&settings).unwrap_or_default();
-    std::fs::write(config_path, format!("{pretty}\n")).ok();
-    eprintln!(
-        "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
-        config_path.display()
-    );
+    if backup_and_write_json(config_path, &settings) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
+            config_path.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

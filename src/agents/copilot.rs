@@ -11,9 +11,9 @@ use serde_json::json;
 use crate::errors::Result;
 
 use super::{
-    backup_config_file, load_json_file, load_json_file_strict, load_jsonc_file,
-    load_jsonc_file_strict, safe_write_json_file, AgentIntegration, DoctorCounters,
-    HealthcheckContext, InstallContext,
+    backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
+    load_jsonc_file, load_jsonc_file_strict, safe_write_json_file, AgentIntegration,
+    DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// GitHub Copilot agent.
@@ -207,13 +207,14 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
         }
     }
 
-    // Always write back (never delete settings.json — it has other VS Code settings)
-    let pretty = serde_json::to_string_pretty(&settings).unwrap_or_default();
-    std::fs::write(settings_path, format!("{pretty}\n")).ok();
-    eprintln!(
-        "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
-        settings_path.display()
-    );
+    // Always write back (never delete settings.json — it has other VS Code settings).
+    // backup_and_write_json leaves a .bak so any mistake is recoverable (issue #63).
+    if backup_and_write_json(settings_path, &settings) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
+            settings_path.display()
+        );
+    }
 }
 
 /// Remove MCP server entry from Copilot CLI's ~/.copilot/mcp-config.json.
@@ -250,9 +251,7 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
-    } else {
-        let pretty = serde_json::to_string_pretty(&settings).unwrap_or_default();
-        std::fs::write(settings_path, format!("{pretty}\n")).ok();
+    } else if backup_and_write_json(settings_path, &settings) {
         eprintln!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()

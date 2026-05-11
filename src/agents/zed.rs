@@ -10,8 +10,8 @@ use serde_json::json;
 use crate::errors::Result;
 
 use super::{
-    backup_config_file, load_jsonc_file, load_jsonc_file_strict, safe_write_json_file,
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    backup_and_write_json, backup_config_file, load_jsonc_file, load_jsonc_file_strict,
+    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// Zed agent.
@@ -146,13 +146,14 @@ fn uninstall_context_server(settings_path: &Path) {
             .map(|o| o.remove("context_servers"));
     }
 
-    // Always write back (never delete settings.json — it has other Zed settings)
-    let pretty = serde_json::to_string_pretty(&settings).unwrap_or_default();
-    std::fs::write(settings_path, format!("{pretty}\n")).ok();
-    eprintln!(
-        "\x1b[32m✔\x1b[0m Removed tokensave context server from {}",
-        settings_path.display()
-    );
+    // Always write back (never delete settings.json — it has other Zed settings).
+    // backup_and_write_json leaves a .bak so any mistake is recoverable (issue #63).
+    if backup_and_write_json(settings_path, &settings) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave context server from {}",
+            settings_path.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

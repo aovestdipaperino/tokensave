@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.15] - 2026-05-11
+
+### Fixed
+- **Installing the Codex integration no longer wipes `~/.codex/config.toml` (issue #63)** — `load_toml_file` used `contents.parse::<toml::Value>()`, which in the `toml = "1"` crate parses a single TOML *value* rather than a *document*. Any well-formed `config.toml` therefore parsed as an error and silently fell back to an empty table; `install_mcp_server` then serialized that empty-plus-tokensave table back over the file, erasing every other key the user had set (model, approval_policy, other `[mcp_servers.*]` entries, comments). `load_toml_file` now uses `toml::from_str::<toml::Table>` so real documents round-trip, returns `Result` instead of swallowing errors, and refuses to overwrite when an existing file cannot be parsed (so a typo or partial edit leaves the original intact for the user to fix). `doctor_check_config`, `install_mcp_server`, `uninstall_mcp_server`, and `CodexIntegration::has_tokensave` were updated to handle the `Result` shape — the doctor now reports parse errors as a failed check, and `has_tokensave` returns `false` on parse error rather than panicking.
+
+### Changed
+- **Every config-file write across all agent integrations now leaves a `.bak` copy first.** Previously only install paths went through `backup_config_file`; uninstall paths and `doctor` auto-repair paths called `std::fs::write` directly, so a corrupted serialization or a bug in the rewrite logic could destroy the user's settings with no recovery. A new shared `backup_and_write_json` helper (in `src/agents/mod.rs`) wraps `backup_config_file` + `safe_write_json_file` with best-effort error handling suited to uninstall flows. Every agent's uninstall path (claude, cursor, copilot, cline, zed, kilo, roo-code, opencode, gemini) now goes through this helper, as do the claude `doctor` auto-repair and local-settings-cleanup paths. The Codex TOML write path (`write_toml_file`) also creates a `.bak` before writing for the same reason. Eight per-agent install-side regression tests plus a cursor uninstall-side regression test were added to `tests/agent_test.rs` to guard the new invariant.
+
 ## [4.3.14] - 2026-05-11
 
 ### Fixed
