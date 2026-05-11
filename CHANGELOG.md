@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.16] - 2026-05-11
+
+### Fixed
+- **Windows CI failure introduced by v4.3.15's zed regression test** — `test_zed_install_preserves_existing_config` seeded `AppData/Roaming/Zed/settings.json` on Windows, but `zed_config_dir` actually uses `.config/zed/settings.json` on every non-macOS platform (Linux *and* Windows). The hand-written `#[cfg(target_os = "windows")]` branch in the test silently diverged from the production helper, so the test wrote the seed to one path and the install wrote to another — backup never appeared at the seeded location and the test failed. The Windows job (Linux passed, since its branch happened to be correct) was the only one to catch the drift.
+
+### Changed
+- **`AgentIntegration::primary_config_path(home) -> Option<PathBuf>`** — new trait method that returns the single config file the integration rewrites on install/uninstall. Every agent that goes through `safe_write_json_file` or `write_toml_file` implements it (claude, gemini, cursor, opencode, zed, cline, roo-code, copilot, kilo, antigravity, codex); vibe leaves the default `None` because its TOML config is append-only and has no rewrite path. Regression tests in `tests/agent_test.rs` now call `agent.primary_config_path(home)` instead of duplicating platform-conditional path logic — the production helper is the single source of truth, so a future `zed_config_dir`-style change can't drift between tests and reality. A meta-test (`test_every_tested_agent_advertises_primary_config_path`) walks every integration covered by the install regression suite and asserts the method returns `Some(path)` under the test home, so a new integration added without wiring it up fails fast with a clear message instead of producing a confusing missing-backup panic later.
+
 ## [4.3.15] - 2026-05-11
 
 ### Fixed

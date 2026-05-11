@@ -70,6 +70,18 @@ pub trait AgentIntegration {
     fn has_tokensave(&self, _home: &Path) -> bool {
         false
     }
+
+    /// The single config file this agent rewrites on install / uninstall, if
+    /// any. Returning `Some(path)` lets tests (and any future external tool)
+    /// ask the integration for its own path instead of re-deriving it via
+    /// `#[cfg(target_os = ...)]`, which is how the v4.3.15 zed regression
+    /// test silently disagreed with the Windows install path. Implementors
+    /// should return the same path the install helper writes to, including
+    /// any platform-conditional branching. Returning `None` means "no single
+    /// primary config" (e.g. an append-only TOML file with no rewrite path).
+    fn primary_config_path(&self, _home: &Path) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// Context passed to [`AgentIntegration::install`] and [`AgentIntegration::uninstall`].

@@ -84,6 +84,10 @@ impl AgentIntegration for AntigravityIntegration {
         home.join(".gemini/antigravity").is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(mcp_config_path(home))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let mcp_path = mcp_config_path(home);
         if !mcp_path.exists() {

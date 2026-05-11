@@ -71,6 +71,10 @@ impl AgentIntegration for CodexIntegration {
         home.join(".codex").is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(home.join(".codex/config.toml"))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let config = home.join(".codex").join("config.toml");
         if !config.exists() {

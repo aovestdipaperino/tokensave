@@ -83,6 +83,10 @@ impl AgentIntegration for ClaudeIntegration {
         home.join(".claude").is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(home.join(".claude.json"))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let claude_json = home.join(".claude.json");
         if !claude_json.exists() {

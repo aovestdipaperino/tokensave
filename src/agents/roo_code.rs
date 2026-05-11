@@ -86,6 +86,10 @@ impl AgentIntegration for RooCodeIntegration {
         roo_ext_dir(home).is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<PathBuf> {
+        Some(roo_ext_dir(home).join("settings/cline_mcp_settings.json"))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let settings_path = roo_ext_dir(home).join("settings/cline_mcp_settings.json");
         if !settings_path.exists() {

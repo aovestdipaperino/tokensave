@@ -68,6 +68,10 @@ impl AgentIntegration for OpenCodeIntegration {
         home.join(".config").join("opencode").is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(opencode_config_path(home))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let config_path = opencode_config_path(home);
         if !config_path.exists() {

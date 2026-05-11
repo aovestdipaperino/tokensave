@@ -67,6 +67,10 @@ impl AgentIntegration for CopilotIntegration {
         super::vscode_data_dir(home).join("User").is_dir() || super::copilot_cli_dir(home).is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(super::vscode_data_dir(home).join("User/settings.json"))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let vscode_settings_path = super::vscode_data_dir(home).join("User/settings.json");
         let cli_settings_path = super::copilot_cli_dir(home).join("mcp-config.json");

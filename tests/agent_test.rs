@@ -594,18 +594,24 @@ fn test_codex_install_refuses_unparseable_config() {
 // overwriting it, and the user's pre-existing content must survive install.
 // ---------------------------------------------------------------------------
 
-/// Seed `config_path` with `original`, run the integration's install, then
-/// assert that a `.bak` was created with the original bytes and that the new
-/// content still contains the user's `marker` substring.
+/// Seed the agent's primary config with `original`, run install, then assert
+/// that a `.bak` was created with the original bytes and that the new content
+/// still contains the user's `marker` substring.
+///
+/// The path is taken from `agent.primary_config_path(home)` so a future change
+/// to platform-conditional path logic (e.g. zed v4.3.15 Windows incident)
+/// can't drift between tests and production.
 fn assert_install_backs_up_and_preserves(
     agent: &dyn AgentIntegration,
     home: &Path,
-    config_path: &Path,
     original: &str,
     marker: &str,
 ) {
+    let config_path = agent
+        .primary_config_path(home)
+        .unwrap_or_else(|| panic!("{} must implement primary_config_path", agent.name()));
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-    std::fs::write(config_path, original).unwrap();
+    std::fs::write(&config_path, original).unwrap();
 
     let ctx = make_install_ctx(home);
     agent.install(&ctx).expect("install should succeed");
@@ -626,7 +632,7 @@ fn assert_install_backs_up_and_preserves(
         agent.name()
     );
 
-    let new = std::fs::read_to_string(config_path).unwrap();
+    let new = std::fs::read_to_string(&config_path).unwrap();
     assert!(
         new.contains(marker),
         "{}: user's pre-existing content (marker {marker:?}) must be preserved, got:\n{new}",
@@ -637,8 +643,6 @@ fn assert_install_backs_up_and_preserves(
 #[test]
 fn test_claude_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".claude.json");
     let original = r#"{
   "theme": "solarized",
   "mcpServers": {
@@ -646,110 +650,70 @@ fn test_claude_install_preserves_existing_config() {
   }
 }
 "#;
-    assert_install_backs_up_and_preserves(&ClaudeIntegration, home, &path, original, "solarized");
+    assert_install_backs_up_and_preserves(&ClaudeIntegration, dir.path(), original, "solarized");
 }
 
 #[test]
 fn test_gemini_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".gemini/settings.json");
     let original = r#"{
   "theme": "dark",
   "mcpServers": { "other": { "command": "other-bin" } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&GeminiIntegration, home, &path, original, "\"theme\"");
+    assert_install_backs_up_and_preserves(&GeminiIntegration, dir.path(), original, "\"theme\"");
 }
 
 #[test]
 fn test_cursor_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".cursor/mcp.json");
     let original = r#"{
   "mcpServers": { "other": { "command": "other-bin" } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&CursorIntegration, home, &path, original, "other-bin");
+    assert_install_backs_up_and_preserves(&CursorIntegration, dir.path(), original, "other-bin");
 }
 
 #[test]
 fn test_opencode_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".config/opencode/opencode.json");
     let original = r#"{
   "$schema": "https://opencode.ai/config.json",
   "mcp": { "other": { "type": "local", "command": ["other-bin"] } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&OpenCodeIntegration, home, &path, original, "other-bin");
+    assert_install_backs_up_and_preserves(&OpenCodeIntegration, dir.path(), original, "other-bin");
 }
 
 #[test]
 fn test_zed_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    #[cfg(target_os = "macos")]
-    let path = home.join("Library/Application Support/Zed/settings.json");
-    #[cfg(target_os = "linux")]
-    let path = home.join(".config/zed/settings.json");
-    #[cfg(target_os = "windows")]
-    let path = home.join("AppData/Roaming/Zed/settings.json");
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let path = home.join(".config/zed/settings.json");
-
     let original = r#"{
   "theme": "One Dark",
   "context_servers": { "other": { "command": { "path": "other-bin", "args": [] } } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&ZedIntegration, home, &path, original, "One Dark");
+    assert_install_backs_up_and_preserves(&ZedIntegration, dir.path(), original, "One Dark");
 }
 
 #[test]
 fn test_cline_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    #[cfg(target_os = "macos")]
-    let path = home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
-    #[cfg(target_os = "linux")]
-    let path = home.join(
-        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
-    );
-    #[cfg(target_os = "windows")]
-    let path = home.join("AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let path = home.join(
-        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
-    );
-
     let original = r#"{
   "mcpServers": { "other": { "command": "other-bin" } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&ClineIntegration, home, &path, original, "other-bin");
+    assert_install_backs_up_and_preserves(&ClineIntegration, dir.path(), original, "other-bin");
 }
 
 #[test]
 fn test_roo_code_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    #[cfg(target_os = "macos")]
-    let path = home.join("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
-    #[cfg(target_os = "linux")]
-    let path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
-    #[cfg(target_os = "windows")]
-    let path = home.join("AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
-
     let original = r#"{
   "mcpServers": { "other": { "command": "other-bin" } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&RooCodeIntegration, home, &path, original, "other-bin");
+    assert_install_backs_up_and_preserves(&RooCodeIntegration, dir.path(), original, "other-bin");
 }
 
 #[test]
@@ -793,29 +757,24 @@ fn test_cursor_uninstall_backs_up_config_with_other_content() {
 #[test]
 fn test_kilo_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".config/kilo/kilo.jsonc");
     let original = r#"{
   // user comment about their workflow
   "mcp": { "other": { "type": "local", "command": ["other-bin"], "enabled": true } }
 }
 "#;
-    assert_install_backs_up_and_preserves(&KiloIntegration, home, &path, original, "other-bin");
+    assert_install_backs_up_and_preserves(&KiloIntegration, dir.path(), original, "other-bin");
 }
 
 #[test]
 fn test_antigravity_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let path = home.join(".gemini/antigravity/mcp_config.json");
     let original = r#"{
   "mcpServers": { "other": { "command": "other-bin" } }
 }
 "#;
     assert_install_backs_up_and_preserves(
         &AntigravityIntegration,
-        home,
-        &path,
+        dir.path(),
         original,
         "other-bin",
     );
@@ -824,16 +783,6 @@ fn test_antigravity_install_preserves_existing_config() {
 #[test]
 fn test_copilot_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    #[cfg(target_os = "macos")]
-    let path = home.join("Library/Application Support/Code/User/settings.json");
-    #[cfg(target_os = "linux")]
-    let path = home.join(".config/Code/User/settings.json");
-    #[cfg(target_os = "windows")]
-    let path = home.join("AppData/Roaming/Code/User/settings.json");
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let path = home.join(".config/Code/User/settings.json");
-
     let original = r#"{
   "editor.fontSize": 14,
   "workbench.colorTheme": "Default Dark+"
@@ -841,11 +790,43 @@ fn test_copilot_install_preserves_existing_config() {
 "#;
     assert_install_backs_up_and_preserves(
         &CopilotIntegration,
-        home,
-        &path,
+        dir.path(),
         original,
         "Default Dark+",
     );
+}
+
+/// Meta-test: every agent that goes through `assert_install_backs_up_and_preserves`
+/// above must also actually return a path from `primary_config_path`. Catches
+/// the case where a new integration is added without wiring up the method,
+/// which would otherwise only surface as a confusing panic in CI.
+#[test]
+fn test_every_tested_agent_advertises_primary_config_path() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let agents: Vec<(&dyn AgentIntegration, &str)> = vec![
+        (&ClaudeIntegration, "claude"),
+        (&GeminiIntegration, "gemini"),
+        (&CursorIntegration, "cursor"),
+        (&OpenCodeIntegration, "opencode"),
+        (&ZedIntegration, "zed"),
+        (&ClineIntegration, "cline"),
+        (&RooCodeIntegration, "roo-code"),
+        (&CopilotIntegration, "copilot"),
+        (&KiloIntegration, "kilo"),
+        (&AntigravityIntegration, "antigravity"),
+        (&CodexIntegration, "codex"),
+    ];
+    for (agent, id) in agents {
+        let path = agent
+            .primary_config_path(home)
+            .unwrap_or_else(|| panic!("{id} must implement primary_config_path"));
+        assert!(
+            path.starts_with(home),
+            "{id}: primary_config_path must be under the home arg, got {}",
+            path.display()
+        );
+    }
 }
 
 #[test]

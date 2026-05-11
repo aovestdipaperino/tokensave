@@ -80,6 +80,10 @@ impl AgentIntegration for CursorIntegration {
         home.join(".cursor").is_dir()
     }
 
+    fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
+        Some(home.join(".cursor/mcp.json"))
+    }
+
     fn has_tokensave(&self, home: &Path) -> bool {
         let mcp_path = home.join(".cursor/mcp.json");
         if !mcp_path.exists() {
