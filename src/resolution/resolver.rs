@@ -11,29 +11,78 @@ use crate::types::*;
 /// that create false edges when matched by name alone.
 const CROSS_FILE_BLOCKLIST: &[&str] = &[
     // Rust std types / prelude
-    "Result", "Option", "String", "Vec", "Box", "Arc", "Rc",
-    "Ok", "Err", "Some", "None",
+    "Result",
+    "Option",
+    "String",
+    "Vec",
+    "Box",
+    "Arc",
+    "Rc",
+    "Ok",
+    "Err",
+    "Some",
+    "None",
     // Ubiquitous trait methods
-    "fmt", "format", "display", "to_string",
-    "clone", "clone_from",
+    "fmt",
+    "format",
+    "display",
+    "to_string",
+    "clone",
+    "clone_from",
     "default",
-    "from", "into", "try_from", "try_into",
-    "new", "build", "builder",
-    "parse", "from_str",
-    "eq", "ne", "cmp", "partial_cmp", "hash",
-    "next", "iter", "into_iter",
+    "from",
+    "into",
+    "try_from",
+    "try_into",
+    "new",
+    "build",
+    "builder",
+    "parse",
+    "from_str",
+    "eq",
+    "ne",
+    "cmp",
+    "partial_cmp",
+    "hash",
+    "next",
+    "iter",
+    "into_iter",
     "drop",
-    "deref", "deref_mut",
-    "as_ref", "as_mut",
-    "borrow", "borrow_mut",
-    "read", "write", "flush", "close",
-    "len", "is_empty", "contains",
-    "push", "pop", "insert", "remove", "get",
-    "unwrap", "expect", "map", "and_then", "or_else", "unwrap_or",
+    "deref",
+    "deref_mut",
+    "as_ref",
+    "as_mut",
+    "borrow",
+    "borrow_mut",
+    "read",
+    "write",
+    "flush",
+    "close",
+    "len",
+    "is_empty",
+    "contains",
+    "push",
+    "pop",
+    "insert",
+    "remove",
+    "get",
+    "unwrap",
+    "expect",
+    "map",
+    "and_then",
+    "or_else",
+    "unwrap_or",
     // Common test/assertion names
-    "assert", "assert_eq", "assert_ne", "debug_assert",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
     // Common patterns matched across files
-    "run", "start", "stop", "init", "setup",
+    "run",
+    "start",
+    "stop",
+    "init",
+    "setup",
 ];
 
 /// Infer a coarse language tag from a file path extension.
@@ -120,6 +169,12 @@ impl<'a> ReferenceResolver<'a> {
         let mut suffix_cache: HashMap<String, Vec<String>> = HashMap::new();
 
         for node in all_nodes {
+            // Skip Use nodes — they represent import statements, not definitions.
+            // Including them causes false cross-file edges when two files share
+            // the same `use std::path::Path` import.
+            if node.kind == NodeKind::Use {
+                continue;
+            }
             name_cache
                 .entry(node.name.clone())
                 .or_default()
@@ -201,6 +256,35 @@ impl<'a> ReferenceResolver<'a> {
     ///
     /// Returns `None` if no strategy can resolve the reference.
     pub fn resolve_one(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        // Skip `Uses` edges whose reference name is a stdlib, external crate,
+        // or wildcard import path. These create false cross-file edges when
+        // two files both `use std::path::Path` — the resolver matches the name
+        // against nodes in the other file instead of recognizing it as a shared
+        // external import.
+        if uref.reference_kind == EdgeKind::Uses {
+            let name = &uref.reference_name;
+            if name.starts_with("std::")
+                || name.starts_with("core::")
+                || name.starts_with("alloc::")
+                || name.starts_with("serde")
+                || name.starts_with("tokio::")
+                || name.starts_with("rayon::")
+                || name.starts_with("clap::")
+                || name.starts_with("glob::")
+                || name.starts_with("libsql::")
+                || name.starts_with("sha2::")
+                || name.starts_with("tree_sitter::")
+                || name.starts_with("serde_json::")
+                || name.starts_with("toml::")
+                || name.starts_with("tempfile::")
+                || name.starts_with("dirs::")
+                || name.starts_with("bincode::")
+                || name.contains("::*")
+            {
+                return None;
+            }
+        }
+
         // Strategy 1: qualified name match
         if uref.reference_name.contains("::") {
             if let Some(resolved) = self.try_qualified_match(uref) {
