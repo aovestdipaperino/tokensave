@@ -4098,7 +4098,19 @@ async fn handle_test_risk(
         .map(|n| (n.id.clone(), n.file_path.clone()))
         .collect();
 
-    // Source functions/methods (exclude test files, exclude test-named nodes)
+    // Collect all function/method IDs to check for #[test] annotations.
+    let fn_ids: Vec<String> = all_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .map(|n| n.id.clone())
+        .collect();
+    let test_annotated_fns = cg
+        .get_test_annotated_node_ids(&fn_ids)
+        .await
+        .unwrap_or_default();
+
+    // Source functions/methods (exclude test files, test-named nodes,
+    // #[test]-annotated functions, and functions inside #[cfg(test)] modules).
     let source_fns: Vec<_> = all_nodes
         .iter()
         .filter(|n| {
@@ -4107,6 +4119,8 @@ async fn handle_test_risk(
                 && !n.name.starts_with("test_")
                 && !n.name.starts_with("test")
                 && !n.file_path.contains("/test")
+                && !test_annotated_fns.contains(&n.id)
+                && !n.qualified_name.contains("::tests::")
         })
         .filter(|n| {
             path_prefix.is_none_or(|pfx| {
