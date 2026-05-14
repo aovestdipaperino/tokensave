@@ -556,6 +556,31 @@ fn restart_daemon() {
     }
 }
 
+fn brew_upgrade_command() -> (&'static str, [&'static str; 2]) {
+    ("brew", ["upgrade", "tokensave"])
+}
+
+fn run_brew_upgrade(current: &str) -> Result<String> {
+    let (program, args) = brew_upgrade_command();
+    eprintln!(
+        "Delegating upgrade to Homebrew: {program} {}",
+        args.join(" ")
+    );
+
+    let status = std::process::Command::new(program)
+        .args(args)
+        .status()
+        .map_err(io_err("failed to run Homebrew upgrade"))?;
+
+    if status.success() {
+        Ok(current.to_string())
+    } else {
+        Err(TokenSaveError::Config {
+            message: format!("Homebrew upgrade failed with status: {status}"),
+        })
+    }
+}
+
 /// Check for a newer version and perform the upgrade if one is available.
 ///
 /// Stops the daemon before replacing the binary and restarts it after if
@@ -573,6 +598,11 @@ pub fn run_upgrade() -> Result<String> {
         InstallMethod::Unknown => "",
     };
     eprintln!("Current version: v{current} ({channel} channel{method_suffix})");
+
+    if matches!(method, InstallMethod::Brew) {
+        return run_brew_upgrade(current);
+    }
+
     eprintln!("Checking for updates...");
 
     let latest = cloud::fetch_latest_version().ok_or_else(|| TokenSaveError::Config {
@@ -738,6 +768,14 @@ mod tests {
     #[test]
     fn test_current_platform_not_unknown() {
         assert_ne!(current_platform(), "unknown");
+    }
+
+    #[test]
+    fn brew_upgrade_command_delegates_to_homebrew() {
+        let (program, args) = brew_upgrade_command();
+
+        assert_eq!(program, "brew");
+        assert_eq!(args, ["upgrade", "tokensave"]);
     }
 
     #[test]
