@@ -9,6 +9,8 @@ use tokensave::context::{format_context_as_json, format_context_as_markdown};
 use tokensave::tokensave::TokenSave;
 use tokensave::types::*;
 
+mod serve;
+
 /// Alias for the shared timestamp utility.
 fn current_unix_timestamp() -> i64 {
     tokensave::tokensave::current_timestamp()
@@ -782,7 +784,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             limit,
         } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
             let results = cg.search(&search, limit).await?;
             if results.is_empty() {
                 println!("No results found for '{}'", search);
@@ -808,7 +810,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             format,
         } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
             let output_format = if format == "json" {
                 OutputFormat::Json
             } else {
@@ -836,7 +838,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             json,
         } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
             let mut files = cg.get_all_files().await?;
             files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -891,7 +893,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             quiet,
         } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
 
             // Collect changed files from args and/or stdin
             let mut changed: Vec<String> = files;
@@ -910,7 +912,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 return Ok(());
             }
 
-            let affected = find_affected_tests(&cg, &changed, depth, filter.as_deref()).await?;
+            let affected =
+                serve::find_affected_tests(&cg, &changed, depth, filter.as_deref()).await?;
 
             if json {
                 let output = serde_json::json!({
@@ -1119,18 +1122,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             // Track the first stdin line if we need to peek at `initialize` roots.
             let mut peeked_line: Option<String> = None;
-            let cg = match ensure_initialized(&project_path).await {
+            let cg = match serve::ensure_initialized(&project_path).await {
                 Ok(cg) => cg,
                 Err(_) => {
                     // CWD-based discovery failed (e.g. VS Code launched us from ~).
                     // Fall back to the global DB's registered projects.
-                    match resolve_serve_from_global_db().await {
-                        Some(p) => ensure_initialized(&p).await?,
+                    match serve::resolve_serve_from_global_db().await {
+                        Some(p) => serve::ensure_initialized(&p).await?,
                         None => {
                             // Last resort: peek at the first stdin line for MCP
                             // `initialize` roots (e.g. VS Code multi-folder workspace).
-                            match resolve_serve_from_mcp_roots(&mut peeked_line).await {
-                                Some(p) => ensure_initialized(&p).await?,
+                            match serve::resolve_serve_from_mcp_roots(&mut peeked_line).await {
+                                Some(p) => serve::ensure_initialized(&p).await?,
                                 None => {
                                     return Err(tokensave::errors::TokenSaveError::Config {
                                         message: format!(
@@ -1196,13 +1199,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         },
         Commands::CurrentCounter { path } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
             let value = cg.get_local_counter().await?;
             println!("{value}");
         }
         Commands::ResetCounter { path } => {
             let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let cg = serve::ensure_initialized(&project_path).await?;
             let prev = cg.get_local_counter().await?;
             cg.reset_local_counter().await?;
             eprintln!("Local counter reset (was {prev})");
@@ -2242,137 +2245,8 @@ fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     }
 }
 
-/// Opens an existing project, or tells the user to run `tokensave init` first.
-async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
-    if TokenSave::is_initialized(project_path) {
-        return TokenSave::open(project_path).await;
-    }
-    Err(tokensave::errors::TokenSaveError::Config {
-        message: format!(
-            "no TokenSave index found at '{}' — run 'tokensave init' first",
-            project_path.display()
-        ),
-    })
-}
-
-/// Fallback for `serve`: when CWD-based discovery fails, check the global DB
-/// for registered projects. When multiple projects exist, pick the best match
-/// against cwd: prefer a project that is an ancestor of cwd (cwd is inside the
-/// project), then a project that is a descendant of cwd (project is under cwd).
-/// Among multiple matches, the deepest (most specific) path wins.
-async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
-    let gdb = tokensave::global_db::GlobalDb::open().await?;
-    let mut paths: Vec<String> = gdb.list_project_paths().await;
-    // Keep only projects whose .tokensave dir still exists on disk.
-    paths.retain(|p| {
-        std::path::Path::new(p)
-            .join(".tokensave/tokensave.db")
-            .exists()
-    });
-    if paths.len() == 1 {
-        return Some(std::path::PathBuf::from(paths.remove(0)));
-    }
-    if paths.is_empty() {
-        return None;
-    }
-
-    // Multiple projects — try to resolve using cwd.
-    let cwd = std::env::current_dir().ok()?;
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
-
-    // Priority 1: cwd is inside a project (project is ancestor of cwd).
-    // Pick the deepest ancestor (most specific match).
-    let mut ancestors: Vec<_> = paths
-        .iter()
-        .filter_map(|p| {
-            let pp = std::path::Path::new(p).canonicalize().ok()?;
-            cwd.starts_with(&pp)
-                .then(|| (pp.components().count(), p.clone()))
-        })
-        .collect();
-    ancestors.sort_by(|a, b| b.0.cmp(&a.0)); // deepest first
-    if let Some((_, best)) = ancestors.into_iter().next() {
-        return Some(std::path::PathBuf::from(best));
-    }
-
-    // Priority 2: a project is under cwd (cwd is ancestor of project).
-    // Pick the shallowest descendant (closest child).
-    let mut descendants: Vec<_> = paths
-        .iter()
-        .filter_map(|p| {
-            let pp = std::path::Path::new(p).canonicalize().ok()?;
-            pp.starts_with(&cwd)
-                .then(|| (pp.components().count(), p.clone()))
-        })
-        .collect();
-    descendants.sort_by(|a, b| a.0.cmp(&b.0)); // shallowest first
-    if let Some((_, best)) = descendants.into_iter().next() {
-        return Some(std::path::PathBuf::from(best));
-    }
-
-    // No cwd-based match — report the ambiguity.
-    eprintln!("Multiple tokensave projects found — pass -p <path> to select one:");
-    for p in &paths {
-        eprintln!("  {p}");
-    }
-    None
-}
-
-/// Last-resort fallback for `serve`: peek at the first stdin line to read the
-/// MCP `initialize` request's `roots` array.  If a root matches a registered
-/// project, return its path.  The raw line is stored in `out` so the caller
-/// can replay it into the MCP transport (the server still needs to see it).
-async fn resolve_serve_from_mcp_roots(out: &mut Option<String>) -> Option<std::path::PathBuf> {
-    use tokio::io::AsyncBufReadExt;
-    let stdin = tokio::io::stdin();
-    let mut reader = tokio::io::BufReader::new(stdin);
-    let mut line = String::new();
-    // Read the first non-empty line (should be the `initialize` request).
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => return None, // EOF
-            Ok(_) => {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    break;
-                }
-            }
-            Err(_) => return None,
-        }
-    }
-    *out = Some(line.trim().to_string());
-
-    let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-    let roots = parsed.pointer("/params/roots").and_then(|v| v.as_array())?;
-
-    let gdb = tokensave::global_db::GlobalDb::open().await?;
-    let mut registered: Vec<String> = gdb.list_project_paths().await;
-    registered.retain(|p| {
-        std::path::Path::new(p)
-            .join(".tokensave/tokensave.db")
-            .exists()
-    });
-
-    // Try each root URI — first match wins.
-    for root in roots {
-        let uri = root.get("uri").and_then(|v| v.as_str()).unwrap_or_default();
-        let root_path = uri.strip_prefix("file://").unwrap_or(uri);
-        let root_path = std::path::Path::new(root_path);
-        // Exact match: the root IS a registered project.
-        if let Some(hit) = registered
-            .iter()
-            .find(|p| std::path::Path::new(p) == root_path)
-        {
-            return Some(std::path::PathBuf::from(hit));
-        }
-        // Walk up from the root to find the nearest enclosing project.
-        if let Some(discovered) = tokensave::config::discover_project_root(root_path) {
-            return Some(discovered);
-        }
-    }
-    None
-}
+// ensure_initialized, resolve_serve_from_global_db, resolve_serve_from_mcp_roots,
+// and find_affected_tests have been moved to src/serve.rs.
 
 /// Best-effort: register this project in the user-level global DB and
 /// accumulate the token-saved delta into the pending upload counter.
@@ -2472,75 +2346,6 @@ fn check_for_update(
 // - src/display.rs (status table rendering)
 // - src/doctor.rs (health checks)
 // - src/tokensave.rs (is_test_file)
-
-/// BFS through file dependents to find test files affected by changes.
-async fn find_affected_tests(
-    cg: &TokenSave,
-    changed_files: &[String],
-    max_depth: usize,
-    custom_filter: Option<&str>,
-) -> tokensave::errors::Result<Vec<String>> {
-    debug_assert!(
-        !changed_files.is_empty(),
-        "find_affected_tests called with no changed files"
-    );
-    debug_assert!(
-        max_depth > 0,
-        "find_affected_tests max_depth must be positive"
-    );
-    use std::collections::{HashSet, VecDeque};
-
-    let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
-
-    // Pre-compute files with inline test modules.
-    let files_with_inline_tests = cg
-        .get_files_with_test_annotations()
-        .await
-        .unwrap_or_default();
-    let matches_test = |path: &str| -> bool {
-        if let Some(ref g) = custom_glob {
-            g.matches(path)
-        } else {
-            tokensave::tokensave::is_test_file(path) || files_with_inline_tests.contains(path)
-        }
-    };
-
-    let mut affected: HashSet<String> = HashSet::new();
-    let mut visited: HashSet<String> = HashSet::new();
-
-    // Seed: changed files that are themselves tests go directly into the result
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for file in changed_files {
-        if matches_test(file) {
-            affected.insert(file.clone());
-        }
-        if visited.insert(file.clone()) {
-            queue.push_back((file.clone(), 0));
-        }
-    }
-
-    // BFS through file dependents
-    while let Some((file, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let dependents = cg.get_file_dependents(&file).await?;
-        for dep in dependents {
-            if !visited.insert(dep.clone()) {
-                continue;
-            }
-            if matches_test(&dep) {
-                affected.insert(dep.clone());
-            } else {
-                queue.push_back((dep, depth + 1));
-            }
-        }
-    }
-
-    let mut result: Vec<String> = affected.into_iter().collect();
-    result.sort();
-    Ok(result)
-}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
