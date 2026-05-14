@@ -647,6 +647,32 @@ pub fn vscode_data_dir(home: &Path) -> PathBuf {
     }
 }
 
+/// Returns the platform-specific VS Code Insiders data directory.
+pub fn vscode_insiders_data_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/Code - Insiders")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".config/Code - Insiders")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata_path = PathBuf::from(&appdata);
+            if appdata_path.starts_with(home) {
+                return appdata_path.join("Code - Insiders");
+            }
+        }
+        home.join("AppData/Roaming/Code - Insiders")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        home.join(".config/Code - Insiders")
+    }
+}
+
 /// Returns the GitHub Copilot CLI config directory.
 pub fn copilot_cli_dir(home: &Path) -> PathBuf {
     home.join(".copilot")

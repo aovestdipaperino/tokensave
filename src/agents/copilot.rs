@@ -33,6 +33,11 @@ impl AgentIntegration for CopilotIntegration {
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
 
         install_vscode_mcp_server(&vscode_settings_path, &ctx.tokensave_bin)?;
+        let insiders_settings_path =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
+        if insiders_settings_path.parent().is_some_and(|p| p.exists()) {
+            install_vscode_mcp_server(&insiders_settings_path, &ctx.tokensave_bin)?;
+        }
         install_cli_mcp_server(&cli_settings_path, &ctx.tokensave_bin)?;
 
         eprintln!();
@@ -47,6 +52,9 @@ impl AgentIntegration for CopilotIntegration {
         let vscode_settings_path = super::vscode_data_dir(&ctx.home).join("User/settings.json");
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
         uninstall_vscode_mcp_server(&vscode_settings_path);
+        let insiders_settings_path =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
+        uninstall_vscode_mcp_server(&insiders_settings_path);
         uninstall_cli_mcp_server(&cli_settings_path);
 
         eprintln!();
@@ -59,12 +67,15 @@ impl AgentIntegration for CopilotIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         eprintln!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
-        doctor_check_vscode_settings(dc, &ctx.home);
+        doctor_check_vscode_settings(dc, &super::vscode_data_dir(&ctx.home), "VS Code");
+        doctor_check_vscode_settings(dc, &super::vscode_insiders_data_dir(&ctx.home), "VS Code Insiders");
         doctor_check_cli_settings(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        super::vscode_data_dir(home).join("User").is_dir() || super::copilot_cli_dir(home).is_dir()
+        super::vscode_data_dir(home).join("User").is_dir()
+            || super::vscode_insiders_data_dir(home).join("User").is_dir()
+            || super::copilot_cli_dir(home).is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
@@ -73,10 +84,22 @@ impl AgentIntegration for CopilotIntegration {
 
     fn has_tokensave(&self, home: &Path) -> bool {
         let vscode_settings_path = super::vscode_data_dir(home).join("User/settings.json");
+        let insiders_settings_path =
+            super::vscode_insiders_data_dir(home).join("User/settings.json");
         let cli_settings_path = super::copilot_cli_dir(home).join("mcp-config.json");
 
         let vscode_has_tokensave = if vscode_settings_path.exists() {
             let json = load_jsonc_file(&vscode_settings_path);
+            json.get("mcp")
+                .and_then(|v| v.get("servers"))
+                .and_then(|v| v.get("tokensave"))
+                .is_some()
+        } else {
+            false
+        };
+
+        let insiders_has_tokensave = if insiders_settings_path.exists() {
+            let json = load_jsonc_file(&insiders_settings_path);
             json.get("mcp")
                 .and_then(|v| v.get("servers"))
                 .and_then(|v| v.get("tokensave"))
@@ -94,7 +117,7 @@ impl AgentIntegration for CopilotIntegration {
             false
         };
 
-        vscode_has_tokensave || cli_has_tokensave
+        vscode_has_tokensave || insiders_has_tokensave || cli_has_tokensave
     }
 }
 
@@ -265,13 +288,13 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check VS Code settings.json has tokensave MCP server registered.
-fn doctor_check_vscode_settings(dc: &mut DoctorCounters, home: &Path) {
-    let settings_path = super::vscode_data_dir(home).join("User/settings.json");
+/// Check VS Code (or VS Code Insiders) settings.json has tokensave MCP server registered.
+fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, label: &str) {
+    let settings_path = vscode_dir.join("User/settings.json");
 
     if !settings_path.exists() {
         dc.warn(&format!(
-            "{} not found — run `tokensave install --agent copilot` if you use GitHub Copilot in VS Code",
+            "{} not found — run `tokensave install --agent copilot` if you use GitHub Copilot in {label}",
             settings_path.display()
         ));
         return;
