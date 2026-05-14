@@ -485,11 +485,16 @@ pub struct HealthDimensions {
     pub equality: f64,
     pub redundancy: f64,
     pub modularity: f64,
+    /// Penalty for overuse of `/// skip-test-coverage` annotations.
+    /// 1.0 = no skips, decays towards 0.0 as skip ratio increases.
+    pub coverage_discipline: f64,
 }
 
 /// Computes quality signal (0–10000) from geometric mean of all five dimensions.
 /// Formula: `(product of all 5).powf(1.0/5.0) * 10000.0`, rounded.
 /// Zero in any dimension → 0.
+/// A low-weight multiplicative penalty for `coverage_discipline` reduces
+/// the score by up to 10% when skip-test-coverage is overused.
 pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
     let product = dims.acyclicity * dims.depth * dims.equality * dims.redundancy * dims.modularity;
 
@@ -497,5 +502,8 @@ pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
         return 0;
     }
 
-    (product.powf(1.0 / 5.0) * 10_000.0).round() as u32
+    let base = (product.powf(1.0 / 5.0) * 10_000.0).round();
+    // Low-weight penalty: skip-test-coverage overuse reduces score by up to 10%.
+    let penalized = base * (0.9 + 0.1 * dims.coverage_discipline);
+    penalized.round() as u32
 }

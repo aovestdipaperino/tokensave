@@ -1799,6 +1799,11 @@ impl TokenSave {
         self.db.get_files_with_test_annotations().await
     }
 
+    /// Returns all node IDs marked with `/// skip-test-coverage`.
+    pub async fn get_skip_test_coverage_node_ids(&self) -> Result<HashSet<String>> {
+        self.db.get_skip_test_coverage_node_ids().await
+    }
+
     /// Returns incoming edges for many target nodes in one round-trip.
     /// Empty `kinds` matches every edge kind.
     pub async fn get_incoming_edges_bulk(

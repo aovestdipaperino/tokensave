@@ -939,6 +939,29 @@ impl Database {
         Ok(result)
     }
 
+    /// Returns all node IDs whose docstring contains `skip-test-coverage`.
+    pub async fn get_skip_test_coverage_node_ids(&self) -> Result<HashSet<String>> {
+        let sql = "SELECT id FROM nodes WHERE docstring LIKE '%skip-test-coverage%'";
+        let mut rows = self
+            .conn()
+            .query(sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query skip-test-coverage nodes: {e}"),
+                operation: "get_skip_test_coverage_node_ids".to_string(),
+            })?;
+        let mut result = HashSet::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read skip-test-coverage row: {e}"),
+            operation: "get_skip_test_coverage_node_ids".to_string(),
+        })? {
+            if let Ok(id) = row.get::<String>(0) {
+                result.insert(id);
+            }
+        }
+        Ok(result)
+    }
+
     /// Returns all nodes whose `qualified_name` matches the given string.
     ///
     /// Multiple rows can share a qualified name (overloads, generic

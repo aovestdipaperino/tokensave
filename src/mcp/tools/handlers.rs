@@ -3905,6 +3905,7 @@ async fn handle_health(
                 "equality": (snap.equality * 10000.0).round() / 10000.0,
                 "redundancy": (snap.redundancy * 10000.0).round() / 10000.0,
                 "modularity": (snap.modularity * 10000.0).round() / 10000.0,
+                "coverage_discipline": snap.coverage_discipline,
             }
         })
     } else {
@@ -4108,9 +4109,14 @@ async fn handle_test_risk(
         .get_test_annotated_node_ids(&fn_ids)
         .await
         .unwrap_or_default();
+    let skip_coverage = cg
+        .get_skip_test_coverage_node_ids()
+        .await
+        .unwrap_or_default();
 
     // Source functions/methods (exclude test files, test-named nodes,
-    // #[test]-annotated functions, and functions inside #[cfg(test)] modules).
+    // #[test]-annotated functions, functions inside #[cfg(test)] modules,
+    // and functions marked with `/// skip-test-coverage`).
     let source_fns: Vec<_> = all_nodes
         .iter()
         .filter(|n| {
@@ -4120,6 +4126,7 @@ async fn handle_test_risk(
                 && !n.name.starts_with("test")
                 && !n.file_path.contains("/test")
                 && !test_annotated_fns.contains(&n.id)
+                && !skip_coverage.contains(&n.id)
                 && !n.qualified_name.contains("::tests::")
         })
         .filter(|n| {
@@ -4168,6 +4175,15 @@ async fn handle_test_risk(
 
     let total_functions = source_fns.len();
     let tested_count = source_fns.iter().filter(|n| tested.contains(&n.id)).count();
+    let skipped_count = all_nodes
+        .iter()
+        .filter(|n| {
+            matches!(n.kind, NodeKind::Function | NodeKind::Method)
+                && skip_coverage.contains(&n.id)
+                && !crate::tokensave::is_test_file(&n.file_path)
+                && !n.qualified_name.contains("::tests::")
+        })
+        .count();
 
     // Compute risk scores
     let mut risks: Vec<RiskEntry> = source_fns
@@ -4247,6 +4263,7 @@ async fn handle_test_risk(
         "summary": {
             "total_functions": total_functions,
             "tested": tested_count,
+            "skipped": skipped_count,
             "coverage_pct": coverage_pct,
             "top_risk_untested": top_risk_untested,
         }
@@ -4273,6 +4290,7 @@ struct HealthSnapshot {
     equality: f64,
     redundancy: f64,
     modularity: f64,
+    coverage_discipline: f64,
 }
 
 /// Computes all 5 health dimensions and the composite signal for a given scope.
@@ -4344,12 +4362,31 @@ async fn compute_health_snapshot(
 
     let (modularity, _) = modularity_score(&adj);
 
+    // coverage_discipline: penalise overuse of skip-test-coverage annotations.
+    let skip_coverage = cg
+        .get_skip_test_coverage_node_ids()
+        .await
+        .unwrap_or_default();
+    let skipped_in_scope = nodes
+        .iter()
+        .filter(|n| {
+            matches!(n.kind, NodeKind::Function | NodeKind::Method)
+                && skip_coverage.contains(&n.id)
+        })
+        .count();
+    let coverage_discipline = if total_fns == 0 {
+        1.0
+    } else {
+        (1.0 - skipped_in_scope as f64 / total_fns as f64).clamp(0.0, 1.0)
+    };
+
     let dims = HealthDimensions {
         acyclicity,
         depth,
         equality,
         redundancy,
         modularity,
+        coverage_discipline,
     };
     let quality_signal = compute_composite_health(&dims);
 
@@ -4361,6 +4398,7 @@ async fn compute_health_snapshot(
         equality,
         redundancy,
         modularity,
+        coverage_discipline,
     })
 }
 
@@ -4386,6 +4424,7 @@ async fn handle_session_start(
             "equality": snap.equality,
             "redundancy": snap.redundancy,
             "modularity": snap.modularity,
+            "coverage_discipline": snap.coverage_discipline,
         },
         "timestamp": crate::tokensave::current_timestamp(),
     });
@@ -4474,6 +4513,7 @@ async fn handle_session_end(
         "equality",
         "redundancy",
         "modularity",
+        "coverage_discipline",
     ];
     let after_vals = [
         snap.acyclicity,
@@ -4481,6 +4521,7 @@ async fn handle_session_end(
         snap.equality,
         snap.redundancy,
         snap.modularity,
+        snap.coverage_discipline,
     ];
 
     let mut dimensions = serde_json::Map::new();

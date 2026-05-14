@@ -959,6 +959,7 @@ fn test_composite_health_all_perfect() {
         equality: 1.0,
         redundancy: 1.0,
         modularity: 1.0,
+        coverage_discipline: 1.0,
     };
     assert_eq!(compute_composite_health(&dims), 10000);
 }
@@ -971,6 +972,7 @@ fn test_composite_health_one_zero() {
         equality: 1.0,
         redundancy: 1.0,
         modularity: 1.0,
+        coverage_discipline: 1.0,
     };
     assert_eq!(compute_composite_health(&dims), 0);
 }
@@ -983,6 +985,7 @@ fn test_composite_health_mixed() {
         equality: 0.9,
         redundancy: 0.6,
         modularity: 0.5,
+        coverage_discipline: 1.0,
     };
     let score = compute_composite_health(&dims);
     assert!(
