@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`coverage_discipline` health penalty reduced from 10% to 2% (issue #76)** — annotating genuinely untestable functions with `/// skip-test-coverage` was dropping `quality_signal` despite improving `coverage_pct`, because the penalty had no positive counterbalance (coverage doesn't feed into the composite health score). Max penalty reduced so honest annotation is not punished.
+
 ## [4.4.0] - 2026-05-14
 
 ### Fixed
