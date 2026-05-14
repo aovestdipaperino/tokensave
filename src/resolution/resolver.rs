@@ -6,6 +6,36 @@ use rayon::prelude::*;
 use crate::db::Database;
 use crate::types::*;
 
+/// Names that are too common to resolve across files reliably.
+/// These are standard library types, trait methods, and ubiquitous constructors
+/// that create false edges when matched by name alone.
+const CROSS_FILE_BLOCKLIST: &[&str] = &[
+    // Rust std types / prelude
+    "Result", "Option", "String", "Vec", "Box", "Arc", "Rc",
+    "Ok", "Err", "Some", "None",
+    // Ubiquitous trait methods
+    "fmt", "format", "display", "to_string",
+    "clone", "clone_from",
+    "default",
+    "from", "into", "try_from", "try_into",
+    "new", "build", "builder",
+    "parse", "from_str",
+    "eq", "ne", "cmp", "partial_cmp", "hash",
+    "next", "iter", "into_iter",
+    "drop",
+    "deref", "deref_mut",
+    "as_ref", "as_mut",
+    "borrow", "borrow_mut",
+    "read", "write", "flush", "close",
+    "len", "is_empty", "contains",
+    "push", "pop", "insert", "remove", "get",
+    "unwrap", "expect", "map", "and_then", "or_else", "unwrap_or",
+    // Common test/assertion names
+    "assert", "assert_eq", "assert_ne", "debug_assert",
+    // Common patterns matched across files
+    "run", "start", "stop", "init", "setup",
+];
+
 /// Infer a coarse language tag from a file path extension.
 fn lang_from_path(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
@@ -65,6 +95,9 @@ pub struct ReferenceResolver<'a> {
     suffix_cache: HashMap<String, Vec<String>>,
     /// All known symbol names (short + qualified + suffixes) for pre-filtering.
     known_names: HashSet<String>,
+    /// Maps file_path to the set of qualified names imported by that file.
+    /// Built from Use nodes. Used to prefer candidates that the caller imports.
+    import_index: HashMap<String, HashSet<String>>,
 }
 
 impl<'a> ReferenceResolver<'a> {
@@ -129,12 +162,31 @@ impl<'a> ReferenceResolver<'a> {
             known_names.insert(key.clone());
         }
 
+        // Build import index: for each Use node, record which qualified names
+        // the file imports. The Use node's `name` is the import path (e.g.
+        // "crate::types::*", "std::path::Path"). We index the last segment.
+        let mut import_index: HashMap<String, HashSet<String>> = HashMap::new();
+        for node in all_nodes {
+            if node.kind == NodeKind::Use {
+                // The name field contains the full use path.
+                // Extract the imported name (last segment after ::).
+                let imported = node.name.rsplit("::").next().unwrap_or(&node.name);
+                if imported != "*" {
+                    import_index
+                        .entry(node.file_path.clone())
+                        .or_default()
+                        .insert(imported.to_string());
+                }
+            }
+        }
+
         Self {
             db,
             name_cache,
             qualified_name_cache,
             suffix_cache,
             known_names,
+            import_index,
         }
     }
 
@@ -197,7 +249,8 @@ impl<'a> ReferenceResolver<'a> {
         let mut unresolved: Vec<UnresolvedRef> = hopeless.into_iter().cloned().collect();
         for (uref, res) in results {
             match res {
-                Some(r) => resolved.push(r),
+                Some(r) if r.confidence >= 0.6 => resolved.push(r),
+                Some(_) => unresolved.push(uref.clone()), // below confidence floor
                 None => unresolved.push(uref.clone()),
             }
         }
@@ -265,6 +318,25 @@ impl<'a> ReferenceResolver<'a> {
 
     /// Strategy 2: exact name match using the name cache.
     fn try_exact_name_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        // Skip cross-file resolution for blocklisted names (too ambiguous).
+        if CROSS_FILE_BLOCKLIST.contains(&uref.reference_name.as_str()) {
+            // Still allow same-file resolution.
+            let candidates = self.name_cache.get(&uref.reference_name)?;
+            let same_file: Vec<_> = candidates
+                .iter()
+                .filter(|n| n.file_path == uref.file_path)
+                .collect();
+            if same_file.len() == 1 {
+                return Some(ResolvedRef {
+                    original: uref.clone(),
+                    target_node_id: same_file[0].id.clone(),
+                    confidence: 0.9,
+                    resolved_by: "same-file-blocklist".to_string(),
+                });
+            }
+            return None;
+        }
+
         let candidates = self.name_cache.get(&uref.reference_name)?;
 
         if candidates.len() == 1 {
@@ -287,7 +359,7 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         // Multiple candidates -- score them and pick the best.
-        let best = Self::find_best_match(uref, candidates)?;
+        let best = Self::find_best_match(uref, candidates, &self.import_index)?;
 
         Some(ResolvedRef {
             original: uref.clone(),
@@ -302,6 +374,23 @@ impl<'a> ReferenceResolver<'a> {
         uref: &UnresolvedRef,
         simple_name: &str,
     ) -> Option<ResolvedRef> {
+        if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
+            let candidates = self.name_cache.get(simple_name)?;
+            let same_file: Vec<_> = candidates
+                .iter()
+                .filter(|n| n.file_path == uref.file_path)
+                .collect();
+            if same_file.len() == 1 {
+                return Some(ResolvedRef {
+                    original: uref.clone(),
+                    target_node_id: same_file[0].id.clone(),
+                    confidence: 0.9,
+                    resolved_by: "same-file-blocklist".to_string(),
+                });
+            }
+            return None;
+        }
+
         let candidates = self.name_cache.get(simple_name)?;
 
         if candidates.len() == 1 {
@@ -323,7 +412,7 @@ impl<'a> ReferenceResolver<'a> {
             });
         }
 
-        let best = Self::find_best_match(uref, candidates)?;
+        let best = Self::find_best_match(uref, candidates, &self.import_index)?;
 
         Some(ResolvedRef {
             original: uref.clone(),
@@ -342,7 +431,12 @@ impl<'a> ReferenceResolver<'a> {
     /// - Exported / pub visibility: +10
     /// - Callable kind (function/method) when the ref kind is `Calls`: +25
     /// - Line proximity (same file only): +20 - (`line_distance` / 10)
-    fn find_best_match(uref: &UnresolvedRef, candidates: &[Node]) -> Option<Node> {
+    /// - Import match (caller imports this name): +30
+    fn find_best_match(
+        uref: &UnresolvedRef,
+        candidates: &[Node],
+        import_index: &HashMap<String, HashSet<String>>,
+    ) -> Option<Node> {
         if candidates.is_empty() {
             return None;
         }
@@ -394,6 +488,13 @@ impl<'a> ReferenceResolver<'a> {
                 )
             {
                 score += 25;
+            }
+
+            // Import match bonus: caller explicitly imports a name that matches
+            if let Some(imports) = import_index.get(&uref.file_path) {
+                if imports.contains(&node.name) {
+                    score += 30;
+                }
             }
 
             if score > best_score {
