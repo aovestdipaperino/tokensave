@@ -46,7 +46,10 @@ impl AgentIntegration for CopilotIntegration {
         install_prompt_rules(&vscode_instructions)?;
         let insiders_instructions =
             super::vscode_insiders_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
-        if super::vscode_insiders_data_dir(&ctx.home).join("User").exists() {
+        if super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .exists()
+        {
             install_prompt_rules(&insiders_instructions)?;
         }
         let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
@@ -89,7 +92,11 @@ impl AgentIntegration for CopilotIntegration {
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         eprintln!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
         doctor_check_vscode_settings(dc, &super::vscode_data_dir(&ctx.home), "VS Code");
-        doctor_check_vscode_settings(dc, &super::vscode_insiders_data_dir(&ctx.home), "VS Code Insiders");
+        doctor_check_vscode_settings(
+            dc,
+            &super::vscode_insiders_data_dir(&ctx.home),
+            "VS Code Insiders",
+        );
         doctor_check_cli_settings(dc, &ctx.home);
     }
 

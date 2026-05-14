@@ -4370,8 +4370,7 @@ async fn compute_health_snapshot(
     let skipped_in_scope = nodes
         .iter()
         .filter(|n| {
-            matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                && skip_coverage.contains(&n.id)
+            matches!(n.kind, NodeKind::Function | NodeKind::Method) && skip_coverage.contains(&n.id)
         })
         .count();
     let coverage_discipline = if total_fns == 0 {

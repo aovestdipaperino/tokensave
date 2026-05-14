@@ -791,7 +791,10 @@ fn test_check() {
         .iter()
         .filter(|r| r.from_node_id == test_fn.id && r.reference_kind == EdgeKind::Calls)
         .collect();
-    let ref_names: Vec<&str> = call_refs.iter().map(|r| r.reference_name.as_str()).collect();
+    let ref_names: Vec<&str> = call_refs
+        .iter()
+        .map(|r| r.reference_name.as_str())
+        .collect();
     assert!(
         ref_names.contains(&"check_count"),
         "expected call to check_count inside macro, got: {ref_names:?}"
@@ -827,7 +830,10 @@ fn use_foo() {
         .iter()
         .filter(|r| r.from_node_id == use_fn.id && r.reference_kind == EdgeKind::Calls)
         .collect();
-    let ref_names: Vec<&str> = call_refs.iter().map(|r| r.reference_name.as_str()).collect();
+    let ref_names: Vec<&str> = call_refs
+        .iter()
+        .map(|r| r.reference_name.as_str())
+        .collect();
 
     // Foo::new() produces "Foo::new" — should resolve via qualified match.
     assert!(

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-05-14
+
+### Fixed
+- **Rust extractor now detects function calls inside macro invocations (issue #72)** — `assert!(check_count(5))` previously only created a Calls edge to `assert`, missing `check_count`. The extractor now walks into `token_tree` nodes inside macros to find nested call patterns.
+- **`test_risk` denominator no longer includes test functions (issue #73)** — functions with `#[test]` annotations and functions inside `::tests::` modules are now excluded from `total_functions` and the coverage percentage denominator.
+- **Rust extractor resolves instance method calls (issue #74)** — `instance.method()` now emits an additional unresolved ref with just the method name, allowing the resolver to match it against `impl` method definitions. Previously only associated function calls (`Type::new()`) were resolved.
+
+### Added
+- **`/// skip-test-coverage` doc comment convention (issue #75)** — mark genuinely untestable functions to exclude them from `test_risk` coverage calculations. The `skipped` count appears in the summary. A `coverage_discipline` health dimension penalises overuse (up to 10% quality signal reduction).
+- **VS Code Insiders support for the Copilot installer (issue #69)** — `tokensave install --agent copilot` now also configures `Code - Insiders/User/settings.json` alongside the regular VS Code path.
+- **Copilot prompt instructions (issue #70)** — the Copilot installer now writes `copilot-instructions.md` with tokensave MCP tool guidance to VS Code (`User/prompts/`), VS Code Insiders, and Copilot CLI (`~/.copilot/`).
+
 ## [4.3.18] - 2026-05-14
 
 ### Fixed
