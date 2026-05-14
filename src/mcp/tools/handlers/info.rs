@@ -1,0 +1,1022 @@
+//! Status, files, type_hierarchy, body, todos, simplify_scan, port_status,
+//! port_order tool handlers.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+
+use serde_json::{json, Value};
+
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
+use crate::types::{NodeKind, Visibility};
+
+use super::super::ToolResult;
+use super::{effective_path, require_node_id, truncate_response, unique_file_paths};
+
+/// Handles `tokensave_status` tool calls.
+pub(super) async fn handle_status(
+    cg: &TokenSave,
+    server_stats: Option<Value>,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let stats = cg.get_stats().await?;
+    let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
+    if let Some(ss) = server_stats {
+        output["server"] = ss;
+    }
+
+    // Branch info
+    if let Some(branch) = cg.active_branch() {
+        output["active_branch"] = json!(branch);
+        let ts_dir = crate::config::get_tokensave_dir(cg.project_root());
+        if let Some(meta) = crate::branch_meta::load_branch_meta(&ts_dir) {
+            if let Some(entry) = meta.branches.get(branch) {
+                if let Some(ref parent) = entry.parent {
+                    output["parent_branch"] = json!(parent);
+                }
+            }
+        }
+    }
+    if cg.is_fallback() {
+        output["branch_fallback"] = json!(true);
+        if let Some(warning) = cg.fallback_warning() {
+            output["branch_warning"] = json!(warning);
+        }
+    }
+
+    // Git commit staleness: count commits since last index
+    let stale_commit_count = cg.git_commits_since(stats.last_updated as i64);
+    if stale_commit_count > 0 {
+        output["stale_commits"] = json!(stale_commit_count);
+        output["stale_warning"] = json!(format!(
+            "{} commit(s) since last sync. Run `tokensave sync` to update the index.",
+            stale_commit_count
+        ));
+    }
+
+    // File-level staleness summary (sample up to 100 files for efficiency)
+    let all_files = cg.get_all_files().await.unwrap_or_default();
+    let sample_paths: Vec<String> = all_files.iter().take(100).map(|f| f.path.clone()).collect();
+    let stale_files = cg.check_file_staleness(&sample_paths).await;
+    if !stale_files.is_empty() {
+        output["stale_files"] = json!(stale_files.len());
+    }
+
+    if let Some(prefix) = scope_prefix {
+        output["scope_prefix"] = json!(prefix);
+    }
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_files` tool calls.
+pub(super) async fn handle_files(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_files expects an object argument");
+    let mut files = cg.get_all_files().await?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // Apply directory prefix filter
+    if let Some(dir) = effective_path(&args, scope_prefix) {
+        let prefix = if dir.ends_with('/') {
+            dir.to_string()
+        } else {
+            format!("{dir}/")
+        };
+        files.retain(|f| f.path.starts_with(&prefix) || f.path == dir);
+    }
+
+    // Apply glob pattern filter
+    if let Some(pat) = args.get("pattern").and_then(|v| v.as_str()) {
+        if let Ok(glob) = glob::Pattern::new(pat) {
+            files.retain(|f| glob.matches(&f.path));
+        }
+    }
+
+    // Listing files is metadata-only — no source code is served, so no tokens saved.
+    let touched_files = vec![];
+
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("grouped");
+
+    let output = if format == "flat" {
+        files
+            .iter()
+            .map(|f| format!("{} ({} symbols, {} bytes)", f.path, f.node_count, f.size))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        // Grouped by directory
+        let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for f in &files {
+            let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
+            #[allow(clippy::map_unwrap_or)]
+            let name = f
+                .path
+                .rfind('/')
+                .map(|i| &f.path[i + 1..])
+                .unwrap_or(&f.path);
+            groups
+                .entry(dir)
+                .or_default()
+                .push(format!("{} ({} symbols)", name, f.node_count));
+        }
+        let mut lines = Vec::new();
+        lines.push(format!("{} indexed files", files.len()));
+        for (dir, entries) in &groups {
+            lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
+            for entry in entries {
+                lines.push(format!("  {entry}"));
+            }
+        }
+        lines.join("\n")
+    };
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Default node kinds for port comparisons.
+const PORT_DEFAULT_KINDS: &[&str] = &[
+    "function",
+    "method",
+    "class",
+    "struct",
+    "interface",
+    "trait",
+    "enum",
+    "module",
+];
+
+/// Returns the compatibility group for a node kind string used in port matching.
+///
+/// Kinds in the same group are considered cross-language equivalents:
+/// - group 0: class, struct (cross-language data type)
+/// - group 1: function
+/// - group 2: method
+/// - group 3: interface, trait
+/// - group 4: enum
+/// - group 5: module
+fn kind_compat_group(kind: &str) -> u8 {
+    match kind {
+        "class" | "struct" => 0,
+        "function" => 1,
+        "method" => 2,
+        "interface" | "trait" => 3,
+        "enum" => 4,
+        "module" => 5,
+        _ => 255,
+    }
+}
+
+/// Handles `tokensave_port_status` tool calls.
+pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_port_status expects an object argument"
+    );
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let target_dir = args
+        .get("target_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: target_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let source_nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let target_nodes = cg.get_nodes_by_dir(target_dir, &kinds).await?;
+
+    // Build target lookup: (lowercase_name, compat_group) -> Vec<&Node>
+    let mut target_map: HashMap<(String, u8), Vec<&crate::types::Node>> = HashMap::new();
+    for node in &target_nodes {
+        let key = (
+            node.name.to_lowercase(),
+            kind_compat_group(node.kind.as_str()),
+        );
+        target_map.entry(key).or_default().push(node);
+    }
+
+    let mut matched_symbols: Vec<Value> = Vec::new();
+    let mut matched_target_ids: HashSet<String> = HashSet::new();
+    let mut unmatched_by_file: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for src_node in &source_nodes {
+        let key = (
+            src_node.name.to_lowercase(),
+            kind_compat_group(src_node.kind.as_str()),
+        );
+        if let Some(targets) = target_map.get(&key) {
+            // Take the first match
+            let tgt = targets[0];
+            matched_symbols.push(json!({
+                "name": src_node.name,
+                "source_kind": src_node.kind.as_str(),
+                "target_kind": tgt.kind.as_str(),
+                "source_file": src_node.file_path,
+                "target_file": tgt.file_path,
+            }));
+            matched_target_ids.insert(tgt.id.clone());
+        } else {
+            unmatched_by_file
+                .entry(src_node.file_path.clone())
+                .or_default()
+                .push(json!({
+                    "name": src_node.name,
+                    "kind": src_node.kind.as_str(),
+                    "line": src_node.start_line,
+                }));
+        }
+    }
+
+    // Target-only symbols (in target but no source match)
+    let target_only: Vec<Value> = target_nodes
+        .iter()
+        .filter(|n| !matched_target_ids.contains(&n.id))
+        .map(|n| {
+            json!({
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+            })
+        })
+        .collect();
+
+    let source_count = source_nodes.len();
+    let matched_count = matched_symbols.len();
+    let unmatched_count = source_count - matched_count;
+    let coverage = if source_count > 0 {
+        (matched_count as f64 / source_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let touched_files = unique_file_paths(
+        source_nodes
+            .iter()
+            .chain(target_nodes.iter())
+            .map(|n| n.file_path.as_str()),
+    );
+
+    let result = json!({
+        "source_dir": source_dir,
+        "target_dir": target_dir,
+        "source_count": source_count,
+        "target_count": target_nodes.len(),
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "target_only": target_only.len(),
+        "coverage_percent": (coverage * 10.0).round() / 10.0,
+        "unmatched_by_file": unmatched_by_file,
+        "matched_symbols": matched_symbols,
+        "target_only_symbols": target_only,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_port_order` tool calls.
+pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_port_order expects an object argument"
+    );
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.min(500) as usize);
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let total_symbols = nodes.len();
+
+    if nodes.is_empty() {
+        let result = json!({
+            "source_dir": source_dir,
+            "total_symbols": 0,
+            "returned": 0,
+            "levels": [],
+            "cycles": [],
+        });
+        let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": formatted }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    // Build node ID lookup
+    let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let node_map: HashMap<&str, &crate::types::Node> =
+        nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let id_set: HashSet<&str> = node_ids.iter().map(std::string::String::as_str).collect();
+
+    // Get internal edges (dependency edges between these nodes)
+    let edges = cg.get_internal_edges(&node_ids).await?;
+
+    // Build adjacency list and in-degree map for Kahn's algorithm.
+    // Edge direction: source depends on target (source calls/uses target),
+    // so in the dependency graph, source -> target means "source needs target".
+    // For topological sort, we want nodes with in_degree 0 (nothing depends on
+    // them internally, OR they have no dependencies). Actually, for porting
+    // order we want leaves first = nodes that DON'T depend on other internal
+    // nodes. So in-degree in the dependency DAG = number of things this node
+    // depends on = outgoing edges in the call/uses graph.
+    //
+    // Reframe: dependency_graph[A] = {B, C} means A depends on B and C.
+    // in_degree[A] = number of nodes A depends on.
+    // Kahn's starts with in_degree 0 = nodes with no dependencies = safe to port first.
+    let dep_edge_kinds: HashSet<&str> = ["calls", "uses", "extends", "implements"]
+        .iter()
+        .copied()
+        .collect();
+
+    let mut dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+
+    // Initialize all nodes
+    for id in &node_ids {
+        dep_graph.entry(id.as_str()).or_default();
+        in_degree.entry(id.as_str()).or_insert(0);
+    }
+
+    // reverse_dep_graph[B] = list of nodes that depend on B.
+    // When B is sorted, we decrement in_degree for each of its reverse deps.
+    let mut reverse_dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    for id in &node_ids {
+        reverse_dep_graph.entry(id.as_str()).or_default();
+    }
+
+    for edge in &edges {
+        if !dep_edge_kinds.contains(edge.kind.as_str()) {
+            continue;
+        }
+        if !id_set.contains(edge.source.as_str()) || !id_set.contains(edge.target.as_str()) {
+            continue;
+        }
+        // source depends on target: add dependency source -> target
+        dep_graph
+            .entry(edge.source.as_str())
+            .or_default()
+            .push(edge.target.as_str());
+        // reverse: target is depended on by source
+        reverse_dep_graph
+            .entry(edge.target.as_str())
+            .or_default()
+            .push(edge.source.as_str());
+        *in_degree.entry(edge.source.as_str()).or_insert(0) += 1;
+    }
+
+    // Kahn's algorithm (BFS topological sort)
+    let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+    for (&id, &deg) in &in_degree {
+        if deg == 0 {
+            queue.push_back(id);
+        }
+    }
+
+    let mut levels: Vec<Vec<&str>> = Vec::new();
+    let mut sorted_set: HashSet<&str> = HashSet::new();
+    let mut emitted = 0usize;
+
+    while !queue.is_empty() && emitted < limit {
+        let mut current_level: Vec<&str> = Vec::new();
+        let level_size = queue.len();
+        for _ in 0..level_size {
+            // Safety: we checked queue is non-empty above and iterate exactly level_size times
+            let Some(id) = queue.pop_front() else { break };
+            if sorted_set.contains(id) {
+                continue;
+            }
+            sorted_set.insert(id);
+            current_level.push(id);
+            emitted += 1;
+            if emitted >= limit {
+                break;
+            }
+        }
+
+        // For each sorted node, decrement in-degree of nodes that depend on it.
+        for &sorted_id in &current_level {
+            if let Some(dependents) = reverse_dep_graph.get(sorted_id) {
+                for &dep_id in dependents {
+                    if sorted_set.contains(dep_id) {
+                        continue;
+                    }
+                    let deg = in_degree.entry(dep_id).or_insert(0);
+                    if *deg > 0 {
+                        *deg -= 1;
+                    }
+                    if *deg == 0 {
+                        queue.push_back(dep_id);
+                    }
+                }
+            }
+        }
+
+        if !current_level.is_empty() {
+            levels.push(current_level);
+        }
+    }
+
+    // Detect cycles: any unsorted nodes form cycles
+    let cycle_node_ids: Vec<&str> = node_ids
+        .iter()
+        .map(std::string::String::as_str)
+        .filter(|id| !sorted_set.contains(id))
+        .collect();
+
+    // Group cycles: find strongly connected components among remaining nodes
+    // For simplicity, report all cycle nodes as one group with a note.
+    let mut cycles_json: Vec<Value> = Vec::new();
+    if !cycle_node_ids.is_empty() {
+        let cycle_names: Vec<&str> = cycle_node_ids
+            .iter()
+            .filter_map(|id| node_map.get(id).map(|n| n.name.as_str()))
+            .collect();
+        cycles_json.push(json!({
+            "symbols": cycle_names,
+            "note": "Mutual dependency — port together"
+        }));
+    }
+
+    // Build output levels
+    let levels_json: Vec<Value> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, level_ids)| {
+            let description = if i == 0 {
+                "No internal dependencies — port these first".to_string()
+            } else {
+                format!("Depends only on levels 0–{}", i - 1)
+            };
+
+            let symbols: Vec<Value> = level_ids
+                .iter()
+                .filter_map(|id| {
+                    let node = node_map.get(id)?;
+                    // Find what this node depends on (for depends_on field)
+                    let deps: Vec<&str> = dep_graph
+                        .get(id)
+                        .map(|d| {
+                            d.iter()
+                                .filter_map(|dep_id| node_map.get(dep_id).map(|n| n.name.as_str()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let mut sym = json!({
+                        "name": node.name,
+                        "kind": node.kind.as_str(),
+                        "file": node.file_path,
+                        "line": node.start_line,
+                    });
+                    if !deps.is_empty() {
+                        sym["depends_on"] = json!(deps);
+                    }
+                    Some(sym)
+                })
+                .collect();
+
+            json!({
+                "level": i,
+                "description": description,
+                "symbols": symbols,
+            })
+        })
+        .collect();
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let result = json!({
+        "source_dir": source_dir,
+        "total_symbols": total_symbols,
+        "returned": emitted,
+        "levels": levels_json,
+        "cycles": cycles_json,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_simplify_scan` tool calls.
+pub(super) async fn handle_simplify_scan(
+    cg: &TokenSave,
+    args: Value,
+    _scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let mut duplications: Vec<Value> = Vec::new();
+    let mut dead_introductions: Vec<Value> = Vec::new();
+    let mut complexity_warnings: Vec<Value> = Vec::new();
+    let mut coupling_warnings: Vec<Value> = Vec::new();
+
+    for file in &files {
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+
+        for node in &nodes {
+            // 1. Duplication: find similar symbols elsewhere
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                let similar = cg.search(&node.name, 5).await.unwrap_or_default();
+                let dupes: Vec<Value> = similar
+                    .iter()
+                    .filter(|s| {
+                        s.node.id != node.id && s.score > 0.8 && s.node.file_path != node.file_path
+                    })
+                    .map(|d| {
+                        json!({
+                            "name": d.node.name,
+                            "file": d.node.file_path,
+                            "line": d.node.start_line,
+                            "score": d.score,
+                        })
+                    })
+                    .collect();
+                if !dupes.is_empty() {
+                    duplications.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "similar_to": dupes,
+                    }));
+                }
+            }
+
+            // 2. Dead code: function/method with no incoming edges
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method)
+                && node.visibility != Visibility::Pub
+                && node.name != "main"
+                && !node.name.starts_with("test_")
+            {
+                let incoming = cg.get_incoming_edges(&node.id).await.unwrap_or_default();
+                if incoming.is_empty() {
+                    dead_introductions.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "reason": "no incoming edges (unreferenced)",
+                    }));
+                }
+            }
+
+            // 3. Complexity: check if function exceeds threshold
+            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                let lines = node.end_line.saturating_sub(node.start_line) as usize;
+                let fan_out = cg
+                    .get_outgoing_edges(&node.id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::types::EdgeKind::Calls))
+                    .count();
+                let score = lines + fan_out * 3;
+                if score > 100 {
+                    complexity_warnings.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": node.start_line,
+                        "lines": lines,
+                        "fan_out": fan_out,
+                        "score": score,
+                    }));
+                }
+            }
+        }
+
+        // 4. Coupling: check file fan_in
+        let file_deps = cg.get_file_dependents(file).await.unwrap_or_default();
+        if file_deps.len() > 15 {
+            coupling_warnings.push(json!({
+                "file": file,
+                "fan_in": file_deps.len(),
+                "warning": "high fan-in — changes here affect many dependents",
+            }));
+        }
+    }
+
+    let output = json!({
+        "duplications": duplications,
+        "dead_introductions": dead_introductions,
+        "complexity_warnings": complexity_warnings,
+        "coupling_warnings": coupling_warnings,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: files,
+    })
+}
+
+/// Handles `tokensave_type_hierarchy` tool calls.
+pub(super) async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_id = require_node_id(&args)?;
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(10) as usize);
+
+    let root = cg
+        .get_node(node_id)
+        .await?
+        .ok_or_else(|| TokenSaveError::Config {
+            message: format!("node not found: {node_id}"),
+        })?;
+
+    let mut output = format!(
+        "{} ({}) -- {}:{}\n",
+        root.name,
+        root.kind.as_str(),
+        root.file_path,
+        root.start_line
+    );
+    let mut all_files: Vec<String> = vec![root.file_path.clone()];
+
+    // Recursively build the hierarchy
+    build_type_tree(cg, &root.id, max_depth, 0, &mut output, &mut all_files).await;
+
+    let touched_files = unique_file_paths(all_files.iter().map(std::string::String::as_str));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
+        touched_files,
+    })
+}
+
+/// Recursively appends type hierarchy lines to the output string.
+fn build_type_tree<'a>(
+    cg: &'a TokenSave,
+    node_id: &'a str,
+    max_depth: usize,
+    depth: usize,
+    output: &'a mut String,
+    all_files: &'a mut Vec<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        if depth >= max_depth {
+            return;
+        }
+
+        let incoming = cg.get_incoming_edges(node_id).await.unwrap_or_default();
+        let pad = "  ".repeat(depth);
+
+        for edge in &incoming {
+            if !matches!(
+                edge.kind,
+                crate::types::EdgeKind::Implements | crate::types::EdgeKind::Extends
+            ) {
+                continue;
+            }
+            if let Ok(Some(child)) = cg.get_node(&edge.source).await {
+                let _ = writeln!(
+                    output,
+                    "{}|- {} {} ({}) -- {}:{}",
+                    pad,
+                    edge.kind.as_str(),
+                    child.name,
+                    child.kind.as_str(),
+                    child.file_path,
+                    child.start_line,
+                );
+                all_files.push(child.file_path.clone());
+                build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
+            }
+        }
+    })
+}
+
+/// Extract the source spanning tree-sitter rows `start_line..=end_line`
+/// (0-based, inclusive) from `source`. Node line fields are stored as the
+/// raw tree-sitter row index, so the caller passes them through unchanged.
+/// Returns the empty string if the range is out of bounds.
+fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = start_line as usize;
+    let end = (end_line as usize).saturating_add(1).min(lines.len());
+    if start >= lines.len() || start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+/// Handles `tokensave_body` tool calls.
+pub(super) async fn handle_body(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.clamp(1, 20) as usize);
+
+    // Search broadly so we have enough candidates to filter by exact name.
+    let raw = cg.search(symbol, (limit * 4).max(20)).await?;
+    let raw = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+
+    // Prefer exact name or qualified-name matches; fall back to ranked search.
+    let exact: Vec<_> = raw
+        .iter()
+        .filter(|r| r.node.name == symbol || r.node.qualified_name == symbol)
+        .collect();
+    let chosen: Vec<_> = if exact.is_empty() {
+        raw.iter().take(limit).collect()
+    } else {
+        exact.into_iter().take(limit).collect()
+    };
+
+    if chosen.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("No symbol named '{symbol}' found.") }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let project_root = cg.project_root();
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    for result in &chosen {
+        let n = &result.node;
+        let abs_path = project_root.join(&n.file_path);
+        let body = match crate::sync::read_source_file(&abs_path) {
+            Ok(source) => extract_lines(&source, n.start_line, n.end_line),
+            Err(_) => String::from("<file unreadable>"),
+        };
+        if !touched.contains(&n.file_path) {
+            touched.push(n.file_path.clone());
+        }
+        matches.push(json!({
+            "id": n.id,
+            "name": n.name,
+            "qualified_name": n.qualified_name,
+            "kind": n.kind.as_str(),
+            "file": n.file_path,
+            "start_line": n.start_line.saturating_add(1),
+            "end_line": n.end_line.saturating_add(1),
+            "signature": n.signature,
+            "body": body,
+        }));
+    }
+
+    let output = json!({
+        "match_count": matches.len(),
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// Default marker kinds recognised by `tokensave_todos`.
+const DEFAULT_TODO_KINDS: &[&str] = &[
+    "TODO",
+    "FIXME",
+    "XXX",
+    "HACK",
+    "WIP",
+    "NOTE",
+    "UNIMPLEMENTED",
+];
+
+/// True if `text` contains `marker` as a standalone uppercase word
+/// (case-insensitive, surrounded by non-alphanumeric characters or string ends).
+fn contains_marker_word(text: &str, marker: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    let marker_lower = marker.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mlen = marker_lower.len();
+    let mut idx = 0;
+    while idx + mlen <= bytes.len() {
+        if &bytes[idx..idx + mlen] == marker_lower.as_bytes() {
+            let before_ok =
+                idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric() && bytes[idx - 1] != b'_';
+            let after_ok = idx + mlen == bytes.len()
+                || (!bytes[idx + mlen].is_ascii_alphanumeric() && bytes[idx + mlen] != b'_');
+            if before_ok && after_ok {
+                return Some(idx);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Handles `tokensave_todos` tool calls.
+pub(super) async fn handle_todos(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_uppercase))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| {
+            DEFAULT_TODO_KINDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+    let path = effective_path(&args, scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.min(2000) as usize);
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut markers: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut by_kind: HashMap<String, u64> = HashMap::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = path {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+        // Cache nodes per file so enclosing-symbol lookup is one DB call per file.
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = (idx as u32) + 1;
+            for kind in &kinds {
+                if contains_marker_word(line, kind).is_some() {
+                    let enclosing = nodes
+                        .iter()
+                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                        .map(|n| n.qualified_name.clone());
+                    *by_kind.entry(kind.clone()).or_insert(0) += 1;
+                    markers.push(json!({
+                        "kind": kind,
+                        "file": file.path,
+                        "line": line_no,
+                        "text": line.trim(),
+                        "enclosing": enclosing,
+                    }));
+                    if !touched.contains(&file.path) {
+                        touched.push(file.path.clone());
+                    }
+                    if markers.len() >= limit {
+                        break 'outer;
+                    }
+                    break; // one marker per line is enough
+                }
+            }
+        }
+    }
+
+    let counts = serde_json::to_value(&by_kind).unwrap_or(json!({}));
+    let output = json!({
+        "match_count": markers.len(),
+        "by_kind": counts,
+        "markers": markers,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}

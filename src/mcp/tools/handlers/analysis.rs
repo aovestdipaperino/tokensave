@@ -1,0 +1,912 @@
+//! Structural analysis tool handlers: dead_code, hotspots, circular,
+//! coupling, rank, largest, recursion, complexity, distribution,
+//! unused_imports, god_class, doc_coverage, inheritance_depth, module_api.
+
+use std::collections::{HashMap, HashSet};
+
+use serde_json::{json, Value};
+
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
+use crate::types::{NodeKind, Visibility};
+
+use super::super::ToolResult;
+use super::{effective_path, filter_by_scope, truncate_response, unique_file_paths};
+
+/// Handles `tokensave_dead_code` tool calls.
+pub(super) async fn handle_dead_code(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<NodeKind> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || vec![NodeKind::Function, NodeKind::Method],
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(NodeKind::from_str))
+                .collect()
+        },
+    );
+
+    let dead = cg.find_dead_code(&kinds).await?;
+    let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
+
+    let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = dead
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "signature": n.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "dead_code_count": items.len(),
+        "symbols": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_module_api` tool calls.
+pub(super) async fn handle_module_api(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path = effective_path(&args, scope_prefix).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: path".to_string(),
+    })?;
+
+    let all_nodes = cg.get_all_nodes().await?;
+
+    // Filter to nodes in matching files (exact path or directory prefix)
+    let prefix = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    };
+
+    let mut pub_nodes: Vec<&crate::types::Node> = all_nodes
+        .iter()
+        .filter(|n| {
+            n.visibility == Visibility::Pub
+                && (n.file_path == path || n.file_path.starts_with(&prefix))
+        })
+        .collect();
+
+    pub_nodes.sort_by(|a, b| {
+        a.file_path
+            .cmp(&b.file_path)
+            .then(a.start_line.cmp(&b.start_line))
+    });
+
+    let touched_files = unique_file_paths(pub_nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = pub_nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "signature": n.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "path": path,
+        "public_symbol_count": items.len(),
+        "symbols": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_circular` tool calls.
+pub(super) async fn handle_circular(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
+    let cycles = cg.find_circular_dependencies().await?;
+
+    let items: Vec<Value> = cycles.iter().map(|cycle| json!(cycle)).collect();
+
+    let output = json!({
+        "cycle_count": cycles.len(),
+        "cycles": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_hotspots` tool calls.
+pub(super) async fn handle_hotspots(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+    debug_assert!(limit > 0, "handle_hotspots limit must be positive");
+
+    let all_edges = cg.get_all_edges().await?;
+
+    // Count incoming + outgoing edges per node
+    let mut connectivity: HashMap<String, (usize, usize)> = HashMap::new();
+    for edge in &all_edges {
+        connectivity.entry(edge.source.clone()).or_insert((0, 0)).1 += 1; // outgoing
+        connectivity.entry(edge.target.clone()).or_insert((0, 0)).0 += 1; // incoming
+    }
+
+    // Sort by total connectivity descending
+    let mut sorted: Vec<(String, usize, usize)> = connectivity
+        .into_iter()
+        .map(|(id, (inc, out))| (id, inc, out))
+        .collect();
+    sorted.sort_by_key(|x| std::cmp::Reverse(x.1 + x.2));
+    sorted.truncate(limit);
+
+    // Resolve node details
+    let mut items: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for (node_id, incoming, outgoing) in &sorted {
+        if let Some(node) = cg.get_node(node_id).await? {
+            touched.push(node.file_path.clone());
+            items.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "incoming": incoming,
+                "outgoing": outgoing,
+                "total": incoming + outgoing,
+            }));
+        }
+    }
+
+    if let Some(prefix) = scope_prefix {
+        let with_slash = if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{prefix}/")
+        };
+        items.retain(|item| {
+            item["file"]
+                .as_str()
+                .is_some_and(|f| f.starts_with(&with_slash) || f == prefix)
+        });
+        touched.retain(|f| f.starts_with(&with_slash) || f == prefix);
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
+
+    let output = json!({
+        "hotspot_count": items.len(),
+        "hotspots": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_unused_imports` tool calls.
+pub(super) async fn handle_unused_imports(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let _ = args; // currently unused beyond scope filtering
+    let all_nodes = cg.get_all_nodes().await?;
+
+    // Find all Use nodes
+    let use_nodes: Vec<&crate::types::Node> = all_nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .filter(|n| {
+            scope_prefix.is_none_or(|prefix| {
+                let with_slash = if prefix.ends_with('/') {
+                    prefix.to_string()
+                } else {
+                    format!("{prefix}/")
+                };
+                n.file_path.starts_with(&with_slash) || n.file_path == prefix
+            })
+        })
+        .collect();
+
+    let mut unused: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    for use_node in &use_nodes {
+        // Check if this use node has any outgoing edges (it references something)
+        // or if any other node references it via incoming edges
+        let incoming = cg.get_incoming_edges(&use_node.id).await?;
+        let outgoing = cg.get_outgoing_edges(&use_node.id).await?;
+
+        // A use node is "unused" if nothing references it (no incoming edges)
+        // and it doesn't create any connections (no outgoing edges beyond contains)
+        let has_meaningful_outgoing = outgoing
+            .iter()
+            .any(|e| e.kind != crate::types::EdgeKind::Contains);
+
+        if incoming.is_empty() && !has_meaningful_outgoing {
+            touched.push(use_node.file_path.clone());
+            unused.push(json!({
+                "id": use_node.id,
+                "name": use_node.name,
+                "file": use_node.file_path,
+                "line": use_node.start_line,
+            }));
+        }
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
+
+    let output = json!({
+        "unused_import_count": unused.len(),
+        "imports": unused,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_rank` tool calls.
+pub(super) async fn handle_rank(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    use crate::types::EdgeKind;
+    debug_assert!(args.is_object(), "handle_rank expects an object argument");
+
+    let edge_kind_str = args
+        .get("edge_kind")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: edge_kind".to_string(),
+        })?;
+
+    let edge_kind = EdgeKind::from_str(edge_kind_str).ok_or_else(|| TokenSaveError::Config {
+        message: format!(
+            "invalid edge_kind '{edge_kind_str}'. Valid values: implements, extends, calls, uses, contains, annotates, derives_macro"
+        ),
+    })?;
+
+    let direction = args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("incoming");
+
+    let incoming = match direction {
+        "incoming" => true,
+        "outgoing" => false,
+        _ => {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "invalid direction '{direction}'. Valid values: incoming, outgoing"
+                ),
+            });
+        }
+    };
+
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(NodeKind::from_str);
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg
+        .get_ranked_nodes_by_edge_kind(&edge_kind, node_kind.as_ref(), incoming, path_prefix, limit)
+        .await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, count)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "count": count,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "edge_kind": edge_kind_str,
+        "direction": direction,
+        "node_kind_filter": args.get("node_kind").and_then(|v| v.as_str()),
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_largest` tool calls.
+pub(super) async fn handle_largest(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(NodeKind::from_str);
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg
+        .get_largest_nodes(node_kind.as_ref(), path_prefix, limit)
+        .await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, lines)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "start_line": node.start_line,
+                "end_line": node.end_line,
+                "lines": lines,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "node_kind_filter": args.get("node_kind").and_then(|v| v.as_str()),
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_coupling` tool calls.
+pub(super) async fn handle_coupling(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let direction = args
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fan_in");
+
+    let fan_in = match direction {
+        "fan_in" => true,
+        "fan_out" => false,
+        _ => {
+            return Err(TokenSaveError::Config {
+                message: format!("invalid direction '{direction}'. Valid values: fan_in, fan_out"),
+            });
+        }
+    };
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg.get_file_coupling(fan_in, path_prefix, limit).await?;
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(file, count)| {
+            json!({
+                "file": file,
+                "coupled_files": count,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "direction": direction,
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_inheritance_depth` tool calls.
+pub(super) async fn handle_inheritance_depth(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg.get_inheritance_depth(path_prefix, limit).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, depth)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "depth": depth,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_distribution` tool calls.
+pub(super) async fn handle_distribution(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_distribution expects an object argument"
+    );
+    let path_prefix = effective_path(&args, scope_prefix);
+    let summary = args
+        .get("summary")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let results = cg.get_node_distribution(path_prefix).await?;
+
+    let output = if summary {
+        // Aggregate counts across all files
+        let mut totals: HashMap<String, u64> = HashMap::new();
+        for (_file, kind, count) in &results {
+            *totals.entry(kind.clone()).or_insert(0) += count;
+        }
+        let mut sorted: Vec<(String, u64)> = totals.into_iter().collect();
+        sorted.sort_by_key(|x| std::cmp::Reverse(x.1));
+
+        let items: Vec<Value> = sorted
+            .iter()
+            .map(|(kind, count)| json!({ "kind": kind, "count": count }))
+            .collect();
+
+        json!({
+            "path_filter": path_prefix,
+            "mode": "summary",
+            "total_kinds": items.len(),
+            "distribution": items,
+        })
+    } else {
+        // Per-file breakdown, grouped by file
+        let mut by_file: Vec<(String, Vec<Value>)> = Vec::new();
+        let mut current_file = String::new();
+        for (file, kind, count) in &results {
+            if *file != current_file {
+                current_file.clone_from(file);
+                by_file.push((file.clone(), Vec::new()));
+            }
+            if let Some(last) = by_file.last_mut() {
+                last.1.push(json!({ "kind": kind, "count": count }));
+            }
+        }
+
+        let items: Vec<Value> = by_file
+            .iter()
+            .map(|(file, kinds)| json!({ "file": file, "kinds": kinds }))
+            .collect();
+
+        json!({
+            "path_filter": path_prefix,
+            "mode": "per_file",
+            "file_count": items.len(),
+            "files": items,
+        })
+    };
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_recursion` tool calls.
+///
+/// Detects cycles in the call graph using iterative DFS on the calls-only
+/// edge subgraph. Each cycle is a vec of node IDs forming the loop.
+pub(super) async fn handle_recursion(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    debug_assert!(limit > 0, "handle_recursion limit must be positive");
+
+    let call_edges = cg.get_call_edges(path_prefix).await?;
+
+    // Build adjacency list
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    for (src, tgt) in &call_edges {
+        adj.entry(src.clone()).or_default().push(tgt.clone());
+    }
+
+    // Iterative DFS cycle detection
+    let mut cycles: Vec<Vec<String>> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut on_stack: HashSet<String> = HashSet::new();
+
+    let all_nodes: Vec<String> = adj.keys().cloned().collect();
+
+    for start in &all_nodes {
+        if visited.contains(start) {
+            continue;
+        }
+        // Iterative DFS: stack of (node, neighbor_list, index, path_so_far)
+        let mut stack: Vec<(String, Vec<String>, usize)> = Vec::new();
+        let mut path: Vec<String> = Vec::new();
+
+        let neighbors = adj.get(start).cloned().unwrap_or_default();
+        visited.insert(start.clone());
+        on_stack.insert(start.clone());
+        path.push(start.clone());
+        stack.push((start.clone(), neighbors, 0));
+
+        while let Some(frame) = stack.last_mut() {
+            let idx = frame.2;
+            if idx >= frame.1.len() {
+                let Some((node, _, _)) = stack.pop() else {
+                    break;
+                };
+                path.pop();
+                on_stack.remove(&node);
+                continue;
+            }
+            frame.2 += 1;
+            let neighbor = frame.1[idx].clone();
+
+            if !visited.contains(&neighbor) {
+                let nb_neighbors = adj.get(&neighbor).cloned().unwrap_or_default();
+                visited.insert(neighbor.clone());
+                on_stack.insert(neighbor.clone());
+                path.push(neighbor.clone());
+                stack.push((neighbor, nb_neighbors, 0));
+            } else if on_stack.contains(&neighbor) {
+                // Found a cycle
+                let mut cycle = Vec::new();
+                let mut found = false;
+                for item in &path {
+                    if *item == neighbor {
+                        found = true;
+                    }
+                    if found {
+                        cycle.push(item.clone());
+                    }
+                }
+                cycle.push(neighbor.clone());
+                cycles.push(cycle);
+                if cycles.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if cycles.len() >= limit {
+            break;
+        }
+    }
+
+    // Resolve node details for each cycle
+    let mut cycle_items: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for cycle in &cycles {
+        let mut chain: Vec<Value> = Vec::new();
+        for node_id in cycle {
+            if let Some(node) = cg.get_node(node_id).await? {
+                touched.push(node.file_path.clone());
+                chain.push(json!({
+                    "id": node.id,
+                    "name": node.name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": node.start_line,
+                }));
+            } else {
+                chain.push(json!({ "id": node_id }));
+            }
+        }
+        cycle_items.push(json!({
+            "length": cycle.len() - 1,
+            "chain": chain,
+        }));
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
+
+    let output = json!({
+        "cycle_count": cycle_items.len(),
+        "cycles": cycle_items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_complexity` tool calls.
+pub(super) async fn handle_complexity(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let node_kind = args
+        .get("node_kind")
+        .and_then(|v| v.as_str())
+        .and_then(NodeKind::from_str);
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg
+        .get_complexity_ranked(node_kind.as_ref(), path_prefix, limit)
+        .await?;
+
+    let touched_files =
+        unique_file_paths(results.iter().map(|(n, _, _, _, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, lines, fan_out, fan_in, score)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "lines": lines,
+                "cyclomatic_complexity": node.branches + 1,
+                "branches": node.branches,
+                "loops": node.loops,
+                "returns": node.returns,
+                "max_nesting": node.max_nesting,
+                "unsafe_blocks": node.unsafe_blocks,
+                "unchecked_calls": node.unchecked_calls,
+                "assertions": node.assertions,
+                "fan_out": fan_out,
+                "fan_in": fan_in,
+                "score": score,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "formula": "lines + (fan_out × 3) + fan_in",
+        "note": "cyclomatic_complexity = branches + 1 (computed from AST during extraction)",
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_doc_coverage` tool calls.
+pub(super) async fn handle_doc_coverage(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.min(500) as usize);
+
+    let results = cg
+        .get_undocumented_public_symbols(path_prefix, limit)
+        .await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|n| n.file_path.as_str()));
+
+    // Group by file for readability
+    let mut by_file: HashMap<String, Vec<Value>> = HashMap::new();
+    for node in &results {
+        by_file
+            .entry(node.file_path.clone())
+            .or_default()
+            .push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "line": node.start_line,
+                "signature": node.signature,
+            }));
+    }
+
+    let mut file_items: Vec<Value> = by_file
+        .into_iter()
+        .map(|(file, symbols)| {
+            json!({
+                "file": file,
+                "count": symbols.len(),
+                "symbols": symbols,
+            })
+        })
+        .collect();
+    file_items.sort_by(|a, b| b["count"].as_u64().cmp(&a["count"].as_u64()));
+
+    let output = json!({
+        "path_filter": path_prefix,
+        "total_undocumented": results.len(),
+        "file_count": file_items.len(),
+        "files": file_items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_god_class` tool calls.
+pub(super) async fn handle_god_class(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    let path_prefix = effective_path(&args, scope_prefix);
+
+    let results = cg.get_god_classes(path_prefix, limit).await?;
+
+    let touched_files = unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(node, methods, fields, total)| {
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": node.start_line,
+                "methods": methods,
+                "fields": fields,
+                "total_members": total,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "result_count": items.len(),
+        "ranking": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
