@@ -765,3 +765,35 @@ pub fn make(name: String, count: usize) -> Result<MyType, MyError> {
         "Returns MyError missing: {returns:?}"
     );
 }
+
+#[test]
+fn test_rust_call_inside_macro_invocation() {
+    let source = r#"
+fn check_count(n: usize) -> bool { n > 0 }
+
+fn test_check() {
+    assert!(check_count(5));
+    println!("{}", check_count(3));
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let test_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "test_check")
+        .expect("test_check function");
+
+    let call_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == test_fn.id && r.reference_kind == EdgeKind::Calls)
+        .collect();
+    let ref_names: Vec<&str> = call_refs.iter().map(|r| r.reference_name.as_str()).collect();
+    assert!(
+        ref_names.contains(&"check_count"),
+        "expected call to check_count inside macro, got: {ref_names:?}"
+    );
+}

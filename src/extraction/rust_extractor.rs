@@ -1140,6 +1140,17 @@ impl RustExtractor {
                             column: child.start_position().column as u32,
                             file_path: state.file_path.clone(),
                         });
+                        // Recurse into macro arguments to find nested calls.
+                        Self::extract_call_sites(state, child, fn_node_id);
+                    }
+                    // Inside a macro's token_tree, the grammar does not produce
+                    // call_expression nodes. Instead, a function call appears as
+                    // an identifier immediately followed by a token_tree sibling
+                    // (e.g. `check_count(5)` → identifier "check_count" + token_tree
+                    // "(5)"). Detect that pattern and emit Calls edges, then recurse
+                    // into the token_tree to handle further nesting.
+                    "token_tree" => {
+                        Self::extract_calls_in_token_tree(state, child, fn_node_id);
                     }
                     // Skip nested function definitions — they are handled separately.
                     "function_item" => {}
@@ -1151,6 +1162,58 @@ impl RustExtractor {
                     break;
                 }
             }
+        }
+    }
+
+    /// Scan the children of a `token_tree` node (macro argument list) for
+    /// function-call patterns: an `identifier` immediately followed by a
+    /// `token_tree` sibling is treated as a call.  We also recurse into nested
+    /// `token_tree` nodes so that deeply-nested calls are found too.
+    fn extract_calls_in_token_tree(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        // Collect the named children so we can look ahead by one position.
+        let mut children = Vec::new();
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                children.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+
+        let mut i = 0;
+        while i < children.len() {
+            let cur = children[i];
+            if cur.kind() == "identifier" {
+                // Check whether the next sibling is a token_tree (call arguments).
+                if i + 1 < children.len() && children[i + 1].kind() == "token_tree" {
+                    let callee_name = state.node_text(cur);
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: fn_node_id.to_string(),
+                        reference_name: callee_name,
+                        reference_kind: EdgeKind::Calls,
+                        line: cur.start_position().row as u32,
+                        column: cur.start_position().column as u32,
+                        file_path: state.file_path.clone(),
+                    });
+                    // Recurse into the argument token_tree for further nested calls.
+                    Self::extract_calls_in_token_tree(state, children[i + 1], fn_node_id);
+                    i += 2; // skip the token_tree we just handled
+                    continue;
+                }
+            } else if cur.kind() == "token_tree" {
+                // Standalone token_tree (e.g. `{…}` or `(…)` block) — recurse.
+                Self::extract_calls_in_token_tree(state, cur, fn_node_id);
+            } else if cur.kind() == "macro_invocation" {
+                // Nested macro inside a macro — handled via extract_call_sites.
+                Self::extract_call_sites(state, cur, fn_node_id);
+            }
+            i += 1;
         }
     }
 
