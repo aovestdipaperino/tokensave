@@ -503,7 +503,7 @@ pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
     }
 
     let base = (product.powf(1.0 / 5.0) * 10_000.0).round();
-    // Low-weight penalty: skip-test-coverage overuse reduces score by up to 10%.
-    let penalized = base * (0.9 + 0.1 * dims.coverage_discipline);
+    // Low-weight penalty: skip-test-coverage overuse reduces score by up to 2%.
+    let penalized = base * (0.98 + 0.02 * dims.coverage_discipline);
     penalized.round() as u32
 }
