@@ -561,6 +561,16 @@ fn brew_upgrade_command() -> (&'static str, [&'static str; 2]) {
 }
 
 fn run_brew_upgrade(current: &str) -> Result<String> {
+    eprintln!("Updating Homebrew formula cache...");
+    let update_ok = std::process::Command::new("brew")
+        .args(["update", "--quiet"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !update_ok {
+        eprintln!("  warning: `brew update` failed — continuing with existing cache");
+    }
+
     let (program, args) = brew_upgrade_command();
     eprintln!(
         "Delegating upgrade to Homebrew: {program} {}",

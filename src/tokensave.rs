@@ -9,7 +9,8 @@ use walkdir::WalkDir;
 use crate::branch;
 use crate::branch_meta::{self, BranchMeta};
 use crate::config::{
-    get_tokensave_dir, is_excluded, is_included, load_config, save_config, TokenSaveConfig,
+    get_tokensave_dir, is_excluded, is_excluded_dir, is_included, load_config, save_config,
+    TokenSaveConfig,
 };
 use crate::context::ContextBuilder;
 use crate::db::Database;
@@ -1274,12 +1275,10 @@ impl TokenSave {
                 // Prune directories covered by an exclude glob before descending.
                 // This prevents entering large trees (e.g. node_modules) and
                 // avoids following symlinks that cycle back into source directories.
-                // Probing with a dummy filename matches patterns of the form
-                // `dir/**` without needing to parse the glob syntax.
                 if e.file_type().is_dir() {
                     if let Ok(rel) = e.path().strip_prefix(root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        if is_excluded(&format!("{rel_str}/_"), config) {
+                        if is_excluded_dir(&rel_str, config) {
                             return false;
                         }
                     }

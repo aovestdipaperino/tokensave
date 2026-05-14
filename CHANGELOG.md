@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`tokensave upgrade` no longer breaks Homebrew installs (issue #67)** — previously, self-upgrading a Homebrew-managed install mutated the Cellar directly, leaving Homebrew's recorded keg state inconsistent and causing later `brew upgrade` to fail. `tokensave upgrade` now detects Homebrew installs and delegates to `brew update && brew upgrade tokensave`. (PR #68, thanks @lesbass)
+- **Exclude globs now match nested directories (issue #64)** — the default `node_modules/**` pattern only excluded top-level `node_modules/`, not nested ones like `projectA/node_modules/`. Changed default to `**/node_modules/**`. Also added `is_excluded_dir()` so bare patterns like `**/dist` correctly prune directories during scanning without requiring a trailing `/**`.
+
 ## [4.3.16] - 2026-05-11
 
 ### Fixed

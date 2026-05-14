@@ -51,7 +51,7 @@ impl Default for TokenSaveConfig {
                 "target/**".to_string(),
                 ".git/**".to_string(),
                 ".tokensave/**".to_string(),
-                "node_modules/**".to_string(),
+                "**/node_modules/**".to_string(),
                 "vendor/**".to_string(),
                 "**/*.min.*".to_string(),
                 "bin/**".to_string(),
@@ -282,6 +282,34 @@ pub fn is_included(path: &str, config: &TokenSaveConfig) -> bool {
     false
 }
 
+/// Returns `true` if a directory should be pruned during scanning.
+///
+/// Matches `dir/_` against exclude patterns (for `dir/**`-style globs) and
+/// also matches `dir` itself (for bare `**/dirname`-style globs).  This
+/// ensures that patterns like `**/node_modules` and `**/node_modules/**`
+/// both trigger directory pruning in `scan_files_walkdir`.
+pub fn is_excluded_dir(dir_path: &str, config: &TokenSaveConfig) -> bool {
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+
+    for pattern_str in &config.exclude {
+        if let Ok(pattern) = Pattern::new(pattern_str) {
+            // Try both the dummy-file probe (catches dir/**) and the bare
+            // directory path (catches **/dirname).
+            if pattern.matches_with(&format!("{dir_path}/_"), match_opts)
+                || pattern.matches_with(dir_path, match_opts)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Returns `true` if the file matches any of the configured exclude patterns.
 pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     let match_opts = glob::MatchOptions {
@@ -304,7 +332,7 @@ pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{is_excluded, is_ignored_by_git, is_included, TokenSaveConfig};
+    use super::{is_excluded, is_excluded_dir, is_ignored_by_git, is_included, TokenSaveConfig};
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -338,6 +366,39 @@ mod tests {
         assert!(is_included(".config/secret/key.rs", &config));
         // But also matched by exclude glob
         assert!(is_excluded(".config/secret/key.rs", &config));
+    }
+
+    #[test]
+    fn test_default_excludes_nested_node_modules() {
+        let config = TokenSaveConfig::default();
+        // Top-level node_modules — should be excluded
+        assert!(is_excluded("node_modules/express/index.js", &config));
+        // Nested node_modules inside a sub-project — must also be excluded
+        assert!(is_excluded("projectA/node_modules/express/index.js", &config));
+        assert!(is_excluded("packages/web/node_modules/react/index.js", &config));
+    }
+
+    #[test]
+    fn test_dir_pruning_pattern_matches_nested_dirs() {
+        // scan_files_walkdir checks is_excluded("{dir}/_") for directory pruning.
+        // Patterns like **/node_modules/** must match the dummy-file probe.
+        let config = TokenSaveConfig::default();
+        assert!(is_excluded("node_modules/_", &config));
+        assert!(is_excluded("projectA/node_modules/_", &config));
+    }
+
+    #[test]
+    fn test_is_excluded_dir_bare_pattern() {
+        // Users may write "**/node_modules" (no trailing /**).
+        // is_excluded_dir should match both bare and /**-suffixed patterns.
+        let config = TokenSaveConfig {
+            exclude: vec!["**/dist".to_string()],
+            ..TokenSaveConfig::default()
+        };
+        assert!(is_excluded_dir("dist", &config));
+        assert!(is_excluded_dir("packages/web/dist", &config));
+        // Files inside dist should still be caught by accept_file's is_excluded
+        // but dir pruning prevents even walking into the directory.
     }
 
     #[test]
