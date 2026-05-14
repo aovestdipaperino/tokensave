@@ -1117,22 +1117,30 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             let original_cwd = std::env::current_dir().ok();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
+            // Track the first stdin line if we need to peek at `initialize` roots.
+            let mut peeked_line: Option<String> = None;
             let cg = match ensure_initialized(&project_path).await {
                 Ok(cg) => cg,
                 Err(_) => {
                     // CWD-based discovery failed (e.g. VS Code launched us from ~).
                     // Fall back to the global DB's registered projects.
-                    let fallback = resolve_serve_from_global_db().await;
-                    match fallback {
+                    match resolve_serve_from_global_db().await {
                         Some(p) => ensure_initialized(&p).await?,
                         None => {
-                            return Err(tokensave::errors::TokenSaveError::Config {
-                                message: format!(
-                                    "no TokenSave index found at '{}' and no projects registered in the global database — run 'tokensave init' in your project first",
-                                    project_path.display()
-                                ),
+                            // Last resort: peek at the first stdin line for MCP
+                            // `initialize` roots (e.g. VS Code multi-folder workspace).
+                            match resolve_serve_from_mcp_roots(&mut peeked_line).await {
+                                Some(p) => ensure_initialized(&p).await?,
+                                None => {
+                                    return Err(tokensave::errors::TokenSaveError::Config {
+                                        message: format!(
+                                            "no TokenSave index found at '{}' and no projects registered in the global database — run 'tokensave init' in your project first",
+                                            project_path.display()
+                                        ),
+                                    }
+                                    .into());
+                                }
                             }
-                            .into());
                         }
                     }
                 }
@@ -1140,7 +1148,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Compute scope prefix: relative path from project root to original cwd
             let scope_prefix = original_cwd.and_then(|cwd| {
-                cwd.strip_prefix(&project_path)
+                cwd.strip_prefix(cg.project_root())
                     .ok()
                     .filter(|rel| !rel.as_os_str().is_empty())
                     .map(|rel| rel.to_string_lossy().into_owned())
@@ -1166,6 +1174,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             let server = tokensave::mcp::McpServer::new(cg, scope_prefix).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
+            // If we peeked at stdin to read `initialize` roots, replay that line.
+            if let Some(line) = peeked_line {
+                server.handle_and_write(&line, &mut transport).await;
+            }
             server.run(&mut transport).await?;
 
             // Stop the watcher when the server exits.
@@ -2244,8 +2256,10 @@ async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<To
 }
 
 /// Fallback for `serve`: when CWD-based discovery fails, check the global DB
-/// for registered projects. Returns the single registered project path, or
-/// `None` if zero or multiple projects are registered.
+/// for registered projects. When multiple projects exist, pick the best match
+/// against cwd: prefer a project that is an ancestor of cwd (cwd is inside the
+/// project), then a project that is a descendant of cwd (project is under cwd).
+/// Among multiple matches, the deepest (most specific) path wins.
 async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
     let gdb = tokensave::global_db::GlobalDb::open().await?;
     let mut paths: Vec<String> = gdb.list_project_paths().await;
@@ -2256,16 +2270,108 @@ async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
             .exists()
     });
     if paths.len() == 1 {
-        Some(std::path::PathBuf::from(paths.remove(0)))
-    } else if paths.len() > 1 {
-        eprintln!("Multiple tokensave projects found — pass -p <path> to select one:");
-        for p in &paths {
-            eprintln!("  {p}");
-        }
-        None
-    } else {
-        None
+        return Some(std::path::PathBuf::from(paths.remove(0)));
     }
+    if paths.is_empty() {
+        return None;
+    }
+
+    // Multiple projects — try to resolve using cwd.
+    let cwd = std::env::current_dir().ok()?;
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+
+    // Priority 1: cwd is inside a project (project is ancestor of cwd).
+    // Pick the deepest ancestor (most specific match).
+    let mut ancestors: Vec<_> = paths
+        .iter()
+        .filter_map(|p| {
+            let pp = std::path::Path::new(p).canonicalize().ok()?;
+            cwd.starts_with(&pp)
+                .then(|| (pp.components().count(), p.clone()))
+        })
+        .collect();
+    ancestors.sort_by(|a, b| b.0.cmp(&a.0)); // deepest first
+    if let Some((_, best)) = ancestors.into_iter().next() {
+        return Some(std::path::PathBuf::from(best));
+    }
+
+    // Priority 2: a project is under cwd (cwd is ancestor of project).
+    // Pick the shallowest descendant (closest child).
+    let mut descendants: Vec<_> = paths
+        .iter()
+        .filter_map(|p| {
+            let pp = std::path::Path::new(p).canonicalize().ok()?;
+            pp.starts_with(&cwd)
+                .then(|| (pp.components().count(), p.clone()))
+        })
+        .collect();
+    descendants.sort_by(|a, b| a.0.cmp(&b.0)); // shallowest first
+    if let Some((_, best)) = descendants.into_iter().next() {
+        return Some(std::path::PathBuf::from(best));
+    }
+
+    // No cwd-based match — report the ambiguity.
+    eprintln!("Multiple tokensave projects found — pass -p <path> to select one:");
+    for p in &paths {
+        eprintln!("  {p}");
+    }
+    None
+}
+
+/// Last-resort fallback for `serve`: peek at the first stdin line to read the
+/// MCP `initialize` request's `roots` array.  If a root matches a registered
+/// project, return its path.  The raw line is stored in `out` so the caller
+/// can replay it into the MCP transport (the server still needs to see it).
+async fn resolve_serve_from_mcp_roots(out: &mut Option<String>) -> Option<std::path::PathBuf> {
+    use tokio::io::AsyncBufReadExt;
+    let stdin = tokio::io::stdin();
+    let mut reader = tokio::io::BufReader::new(stdin);
+    let mut line = String::new();
+    // Read the first non-empty line (should be the `initialize` request).
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => return None, // EOF
+            Ok(_) => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    break;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    *out = Some(line.trim().to_string());
+
+    let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let roots = parsed.pointer("/params/roots").and_then(|v| v.as_array())?;
+
+    let gdb = tokensave::global_db::GlobalDb::open().await?;
+    let mut registered: Vec<String> = gdb.list_project_paths().await;
+    registered.retain(|p| {
+        std::path::Path::new(p)
+            .join(".tokensave/tokensave.db")
+            .exists()
+    });
+
+    // Try each root URI — first match wins.
+    for root in roots {
+        let uri = root.get("uri").and_then(|v| v.as_str()).unwrap_or_default();
+        let root_path = uri.strip_prefix("file://").unwrap_or(uri);
+        let root_path = std::path::Path::new(root_path);
+        // Exact match: the root IS a registered project.
+        if let Some(hit) = registered
+            .iter()
+            .find(|p| std::path::Path::new(p) == root_path)
+        {
+            return Some(std::path::PathBuf::from(hit));
+        }
+        // Walk up from the root to find the nearest enclosing project.
+        if let Some(discovered) = tokensave::config::discover_project_root(root_path) {
+            return Some(discovered);
+        }
+    }
+    None
 }
 
 /// Best-effort: register this project in the user-level global DB and
@@ -2386,11 +2492,16 @@ async fn find_affected_tests(
 
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
 
+    // Pre-compute files with inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
     let matches_test = |path: &str| -> bool {
         if let Some(ref g) = custom_glob {
             g.matches(path)
         } else {
-            tokensave::tokensave::is_test_file(path)
+            tokensave::tokensave::is_test_file(path) || files_with_inline_tests.contains(path)
         }
     };
 

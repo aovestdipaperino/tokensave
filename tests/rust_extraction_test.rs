@@ -308,6 +308,83 @@ pub mod inner {
 }
 
 #[test]
+fn test_rust_cfg_test_module_annotations() {
+    let source = r#"
+pub fn production_code() -> i32 { 42 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_production_code() {
+        assert_eq!(production_code(), 42);
+    }
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // The tests module should exist.
+    let modules: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Module && n.name == "tests")
+        .collect();
+    assert_eq!(modules.len(), 1, "expected 'tests' module");
+
+    // #[cfg(test)] should produce an AnnotationUsage annotating the module.
+    let cfg_annotations: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates && e.target == modules[0].id)
+        .collect();
+    assert!(
+        !cfg_annotations.is_empty(),
+        "expected #[cfg(test)] to annotate the 'tests' module"
+    );
+    let cfg_source = result
+        .nodes
+        .iter()
+        .find(|n| n.id == cfg_annotations[0].source)
+        .expect("annotation source node");
+    assert_eq!(cfg_source.kind, NodeKind::AnnotationUsage);
+    assert_eq!(cfg_source.name, "cfg");
+    assert!(
+        cfg_source
+            .signature
+            .as_deref()
+            .unwrap_or("")
+            .contains("cfg(test)"),
+        "annotation signature should contain cfg(test)"
+    );
+
+    // #[test] should annotate the test function.
+    let test_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "test_production_code")
+        .expect("test function");
+    let test_annotations: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates && e.target == test_fn.id)
+        .collect();
+    assert!(
+        !test_annotations.is_empty(),
+        "expected #[test] to annotate the test function"
+    );
+    let test_annot = result
+        .nodes
+        .iter()
+        .find(|n| n.id == test_annotations[0].source)
+        .expect("test annotation node");
+    assert_eq!(test_annot.kind, NodeKind::AnnotationUsage);
+    assert_eq!(test_annot.name, "test");
+}
+
+#[test]
 fn test_rust_complexity_branches_and_loops() {
     let source = r#"
 fn complex(x: i32) -> i32 {

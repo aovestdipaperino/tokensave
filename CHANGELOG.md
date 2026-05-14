@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.18] - 2026-05-14
+
+### Fixed
+- **Inline `#[cfg(test)]` test modules are now recognized as test coverage** — `test_map`, `health`, `test_risk`, `affected`, `impact`, and `commit_context` previously only detected tests by file path patterns (`tests/`, `_test.`, etc.). Functions annotated with `#[test]` inside inline `#[cfg(test)] mod tests { ... }` blocks in source files (226 such functions in tokensave's own codebase) were invisible to coverage analysis. The Rust extractor now emits `Annotates` edges from `#[cfg(test)]` to modules, and all test-detection handlers query `#[test]` annotations via the graph in addition to checking file paths.
+- **`tokensave serve` resolves the correct project in multi-folder workspaces (issue #66 reopened)** — when multiple projects are registered in the global DB, the `serve` fallback now picks the project closest to cwd (ancestor match first, then descendant match) instead of failing with an ambiguity error. As a last resort, the server peeks at the MCP `initialize` request's `roots` array to discover the workspace folder the client is working in.
+
 ## [4.3.17] - 2026-05-14
 
 ### Fixed

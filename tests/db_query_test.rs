@@ -2252,3 +2252,80 @@ async fn test_attrs_start_line_round_trips_through_db() {
     assert_eq!(fetched.start_line, 10);
     assert_eq!(fetched.attrs_start_line, 6);
 }
+
+// -------------------------------------------------------------------------
+// get_test_annotated_node_ids
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_test_annotated_node_ids_finds_test_functions() {
+    let (db, _dir) = setup_db().await;
+
+    // A source function and a test function in the same file.
+    let src_fn = sample_node("fn_prod", "production_code", "src/lib.rs");
+    let mut test_fn = sample_node("fn_test", "test_production_code", "src/lib.rs");
+    test_fn.start_line = 20;
+
+    // The #[test] annotation node.
+    let mut annot = sample_node("annot_test", "test", "src/lib.rs");
+    annot.kind = NodeKind::AnnotationUsage;
+    annot.start_line = 19;
+    annot.signature = Some("#[test]".to_string());
+
+    db.insert_nodes(&[src_fn, test_fn, annot])
+        .await
+        .expect("insert_nodes failed");
+
+    // Annotates edge: #[test] -> test function.
+    let edge = sample_edge("annot_test", "fn_test", EdgeKind::Annotates);
+    db.insert_edges(&[edge]).await.expect("insert_edges failed");
+
+    // Query with both candidates; only the annotated one should be returned.
+    let candidates = vec!["fn_prod".to_string(), "fn_test".to_string()];
+    let result = db
+        .get_test_annotated_node_ids(&candidates)
+        .await
+        .expect("query failed");
+    assert_eq!(result.len(), 1);
+    assert!(result.contains("fn_test"));
+    assert!(!result.contains("fn_prod"));
+}
+
+#[tokio::test]
+async fn test_get_test_annotated_node_ids_empty_input() {
+    let (db, _dir) = setup_db().await;
+    let result = db
+        .get_test_annotated_node_ids(&[])
+        .await
+        .expect("should not fail on empty input");
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_files_with_test_annotations() {
+    let (db, _dir) = setup_db().await;
+
+    // Two files: one with inline tests, one without.
+    let src_fn = sample_node("fn1", "foo", "src/lib.rs");
+    let mut test_fn = sample_node("fn2", "test_foo", "src/lib.rs");
+    test_fn.start_line = 30;
+    let other_fn = sample_node("fn3", "bar", "src/other.rs");
+
+    let mut annot = sample_node("annot1", "test", "src/lib.rs");
+    annot.kind = NodeKind::AnnotationUsage;
+    annot.start_line = 29;
+
+    db.insert_nodes(&[src_fn, test_fn, other_fn, annot])
+        .await
+        .expect("insert_nodes failed");
+
+    let edge = sample_edge("annot1", "fn2", EdgeKind::Annotates);
+    db.insert_edges(&[edge]).await.expect("insert_edges failed");
+
+    let result = db
+        .get_files_with_test_annotations()
+        .await
+        .expect("query failed");
+    assert!(result.contains("src/lib.rs"));
+    assert!(!result.contains("src/other.rs"));
+}

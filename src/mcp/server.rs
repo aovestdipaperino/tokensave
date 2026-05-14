@@ -233,6 +233,31 @@ impl McpServer {
         }
     }
 
+    /// Process a single raw JSON-RPC line and write the response.
+    /// Used to replay a peeked `initialize` message that was consumed before
+    /// the server's main loop started.
+    pub async fn handle_and_write(
+        &self,
+        line: &str,
+        transport: &mut impl super::transport::McpTransport,
+    ) {
+        let parsed: std::result::Result<super::transport::JsonRpcRequest, _> =
+            serde_json::from_str(line);
+        let response = match parsed {
+            Ok(request) => self.handle_request(&request).await,
+            Err(e) => Some(super::transport::JsonRpcResponse::error(
+                Value::Null,
+                super::transport::ErrorCode::ParseError,
+                format!("failed to parse JSON-RPC request: {e}"),
+            )),
+        };
+        if let Some(resp) = response {
+            let json_str = serde_json::to_string(&resp).unwrap_or_default();
+            let _ = transport.write_line(&json_str).await;
+            let _ = transport.flush().await;
+        }
+    }
+
     /// Runs the server, reading JSON-RPC requests from stdin and writing
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.

@@ -1,5 +1,5 @@
 // Rust guideline compliant 2025-10-17
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use libsql::params;
 
@@ -860,6 +860,83 @@ impl Database {
             })?;
 
         collect_rows(&mut rows, row_to_edge, "get_incoming_edges_bulk").await
+    }
+
+    /// Returns the subset of `candidate_ids` that are annotated with `#[test]`
+    /// (i.e. targeted by an `Annotates` edge from an `annotation_usage` node
+    /// named `"test"`).
+    pub async fn get_test_annotated_node_ids(
+        &self,
+        candidate_ids: &[String],
+    ) -> Result<HashSet<String>> {
+        if candidate_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let placeholders: Vec<String> =
+            (1..=candidate_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT DISTINCT e.target \
+             FROM edges e \
+             JOIN nodes n ON e.source = n.id \
+             WHERE n.kind = 'annotation_usage' \
+               AND n.name = 'test' \
+               AND e.kind = 'annotates' \
+               AND e.target IN ({})",
+            placeholders.join(", ")
+        );
+        let param_values: Vec<libsql::Value> = candidate_ids
+            .iter()
+            .map(|id| libsql::Value::Text(id.clone()))
+            .collect();
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query test-annotated nodes: {e}"),
+                operation: "get_test_annotated_node_ids".to_string(),
+            })?;
+        let mut result = HashSet::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read test-annotated row: {e}"),
+            operation: "get_test_annotated_node_ids".to_string(),
+        })? {
+            if let Ok(id) = row.get::<String>(0) {
+                result.insert(id);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Returns all file paths that contain at least one node annotated with
+    /// `#[test]` (useful for detecting inline test modules in source files).
+    pub async fn get_files_with_test_annotations(&self) -> Result<HashSet<String>> {
+        let sql = "SELECT DISTINCT t.file_path \
+                   FROM edges e \
+                   JOIN nodes n ON e.source = n.id \
+                   JOIN nodes t ON e.target = t.id \
+                   WHERE n.kind = 'annotation_usage' \
+                     AND n.name = 'test' \
+                     AND e.kind = 'annotates' \
+                     AND t.kind IN ('function', 'method')";
+        let mut rows = self
+            .conn()
+            .query(sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query test-annotation files: {e}"),
+                operation: "get_files_with_test_annotations".to_string(),
+            })?;
+        let mut result = HashSet::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read test-annotation file row: {e}"),
+            operation: "get_files_with_test_annotations".to_string(),
+        })? {
+            if let Ok(path) = row.get::<String>(0) {
+                result.insert(path);
+            }
+        }
+        Ok(result)
     }
 
     /// Returns all nodes whose `qualified_name` matches the given string.

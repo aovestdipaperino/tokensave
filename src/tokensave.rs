@@ -1,5 +1,5 @@
 // Rust guideline compliant 2025-10-17
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1784,6 +1784,19 @@ impl TokenSave {
     /// Returns incoming edges to a target node.
     pub async fn get_incoming_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
         self.db.get_incoming_edges(node_id, &[]).await
+    }
+
+    /// Returns the subset of `candidate_ids` that have a `#[test]` annotation.
+    pub async fn get_test_annotated_node_ids(
+        &self,
+        candidate_ids: &[String],
+    ) -> Result<HashSet<String>> {
+        self.db.get_test_annotated_node_ids(candidate_ids).await
+    }
+
+    /// Returns all file paths containing at least one `#[test]`-annotated function.
+    pub async fn get_files_with_test_annotations(&self) -> Result<HashSet<String>> {
+        self.db.get_files_with_test_annotations().await
     }
 
     /// Returns incoming edges for many target nodes in one round-trip.

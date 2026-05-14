@@ -358,8 +358,16 @@ async fn handle_context(
                 let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
                 for node in &nodes {
                     let callers = cg.get_callers(&node.id, 2).await.unwrap_or_default();
+                    let caller_ids: Vec<String> =
+                        callers.iter().map(|(n, _)| n.id.clone()).collect();
+                    let test_annotated = cg
+                        .get_test_annotated_node_ids(&caller_ids)
+                        .await
+                        .unwrap_or_default();
                     for (caller, _) in &callers {
-                        if crate::tokensave::is_test_file(&caller.file_path) {
+                        if crate::tokensave::is_test_file(&caller.file_path)
+                            || test_annotated.contains(&caller.id)
+                        {
                             test_files.insert(caller.file_path.clone());
                         }
                     }
@@ -715,11 +723,16 @@ async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let custom_filter = args.get("filter").and_then(|v| v.as_str());
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
 
+    // Pre-compute files with inline test modules for test detection.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
     let matches_test = |path: &str| -> bool {
         if let Some(ref g) = custom_glob {
             g.matches(path)
         } else {
-            crate::tokensave::is_test_file(path)
+            crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path)
         }
     };
 
@@ -848,6 +861,14 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
     let mut affected_tests: HashSet<String> = HashSet::new();
     let mut all_touched_files: Vec<String> = Vec::new();
 
+    // Pre-compute files containing inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+    let has_tests =
+        |path: &str| crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path);
+
     for file in &files {
         let nodes = cg.get_nodes_by_file(file).await?;
         for node in &nodes {
@@ -871,7 +892,7 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
                         "file": impacted.file_path,
                         "line": impacted.start_line,
                     }));
-                    if crate::tokensave::is_test_file(&impacted.file_path) {
+                    if has_tests(&impacted.file_path) {
                         affected_tests.insert(impacted.file_path.clone());
                     }
                 }
@@ -883,7 +904,7 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
     for file in &files {
-        if crate::tokensave::is_test_file(file) {
+        if has_tests(file) {
             affected_tests.insert(file.clone());
         }
         if visited.insert(file.clone()) {
@@ -899,7 +920,7 @@ async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> 
             if !visited.insert(dep.clone()) {
                 continue;
             }
-            if crate::tokensave::is_test_file(&dep) {
+            if has_tests(&dep) {
                 affected_tests.insert(dep.clone());
             } else {
                 queue.push_back((dep, d + 1));
@@ -2706,8 +2727,8 @@ fn git_commit_log(
 }
 
 /// Classify a file path into a semantic role.
-fn classify_file_role(path: &str) -> &'static str {
-    if crate::tokensave::is_test_file(path) {
+fn classify_file_role(path: &str, files_with_inline_tests: &HashSet<String>) -> &'static str {
+    if crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path) {
         return "test";
     }
     let lower = path.to_lowercase();
@@ -2756,11 +2777,17 @@ async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult
         });
     }
 
+    // Pre-compute files with inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+
     let mut file_roles: Vec<Value> = Vec::new();
     let mut symbols_by_role: HashMap<&str, Vec<Value>> = HashMap::new();
 
     for file in &changed_files {
-        let role = classify_file_role(file);
+        let role = classify_file_role(file, &files_with_inline_tests);
         let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
         file_roles.push(json!({"file": file, "role": role, "symbols": nodes.len()}));
 
@@ -2829,8 +2856,16 @@ async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let mut test_files_changed: Vec<String> = Vec::new();
     let mut impacted_modules: HashSet<String> = HashSet::new();
 
+    // Pre-compute files with inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+    let has_tests =
+        |path: &str| crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path);
+
     for file in &changed_files {
-        if crate::tokensave::is_test_file(file) {
+        if has_tests(file) {
             test_files_changed.push(file.clone());
         }
 
@@ -2873,14 +2908,14 @@ async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     // Find transitively affected test files
     let mut affected_tests: HashSet<String> = HashSet::new();
     for file in &changed_files {
-        if crate::tokensave::is_test_file(file) {
+        if has_tests(file) {
             continue;
         }
         let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
         for node in &nodes {
             let impact = cg.get_impact_radius(&node.id, 2).await.unwrap_or_default();
             for impacted in &impact.nodes {
-                if crate::tokensave::is_test_file(&impacted.file_path) {
+                if has_tests(&impacted.file_path) {
                     affected_tests.insert(impacted.file_path.clone());
                 }
             }
@@ -3063,9 +3098,17 @@ async fn handle_test_map(
         }
 
         let callers = cg.get_callers(&node.id, 3).await.unwrap_or_default();
+        // Batch-check which callers have #[test] annotations (inline test modules).
+        let caller_ids: Vec<String> = callers.iter().map(|(n, _)| n.id.clone()).collect();
+        let test_annotated = cg
+            .get_test_annotated_node_ids(&caller_ids)
+            .await
+            .unwrap_or_default();
         let test_callers: Vec<Value> = callers
             .iter()
-            .filter(|(n, _)| crate::tokensave::is_test_file(&n.file_path))
+            .filter(|(n, _)| {
+                crate::tokensave::is_test_file(&n.file_path) || test_annotated.contains(&n.id)
+            })
             .map(|(n, _)| {
                 all_test_files.insert(n.file_path.clone());
                 json!({
@@ -4085,14 +4128,26 @@ async fn handle_test_risk(
         }
     }
 
-    // Determine which nodes are tested: called by nodes in test files
+    // Determine which nodes are tested: called by nodes in test files or
+    // by #[test]-annotated functions (inline test modules).
+    let call_source_ids: Vec<String> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .map(|e| e.source.clone())
+        .collect();
+    let test_annotated_callers = cg
+        .get_test_annotated_node_ids(&call_source_ids)
+        .await
+        .unwrap_or_default();
     let mut tested: HashSet<String> = HashSet::new();
     for e in &all_edges {
         if e.kind == EdgeKind::Calls {
-            if let Some(caller_file) = node_to_file.get(&e.source) {
-                if crate::tokensave::is_test_file(caller_file) {
-                    tested.insert(e.target.clone());
-                }
+            let is_test = node_to_file
+                .get(&e.source)
+                .is_some_and(|f| crate::tokensave::is_test_file(f))
+                || test_annotated_callers.contains(&e.source);
+            if is_test {
+                tested.insert(e.target.clone());
             }
         }
     }

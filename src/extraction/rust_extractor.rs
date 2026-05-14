@@ -787,6 +787,9 @@ impl RustExtractor {
             });
         }
 
+        // Extract attribute annotations (e.g. #[cfg(test)]).
+        Self::extract_annotations_from_modifiers(state, node, &id);
+
         // Visit the module body.
         state.node_stack.push((name, id));
         if let Some(body) = node.child_by_field_name("body") {
