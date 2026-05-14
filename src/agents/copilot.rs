@@ -117,8 +117,7 @@ fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Resul
     settings["mcp"]["servers"]["tokensave"] = json!({
         "type": "stdio",
         "command": tokensave_bin,
-        "args": ["serve", "-p", "${workspaceFolder}"],
-        "cwd": "${workspaceFolder}"
+        "args": ["serve"]
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
@@ -148,8 +147,7 @@ fn install_cli_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<(
     settings["mcpServers"]["tokensave"] = json!({
         "type": "stdio",
         "command": tokensave_bin,
-        "args": ["serve", "-p", "${workspaceFolder}"],
-        "cwd": "${workspaceFolder}"
+        "args": ["serve"]
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
