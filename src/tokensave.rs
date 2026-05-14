@@ -900,7 +900,8 @@ impl TokenSave {
 
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
-            let resolver = ReferenceResolver::new(&self.db).await;
+            let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolution = resolver.resolve_all(&unresolved);
@@ -1164,7 +1165,8 @@ impl TokenSave {
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
-                let resolver = ReferenceResolver::new(&self.db).await;
+                let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+                let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
                 let resolution = resolver.resolve_all(&unresolved);
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {

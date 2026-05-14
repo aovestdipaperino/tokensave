@@ -13,22 +13,7 @@ use serde_json::Value;
 use crate::accounting::classifier;
 use crate::accounting::pricing;
 use crate::global_db::GlobalDb;
-
-/// A single parsed turn ready for DB insertion.
-pub struct CostTurn {
-    pub message_id: String,
-    pub project_hash: String,
-    pub session_id: String,
-    pub model: String,
-    pub timestamp: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cost_usd: f64,
-    pub category: String,
-    pub tool_names: String,
-}
+use crate::types::CostTurn;
 
 /// Find all JSONL session files under `~/.claude/projects/`.
 fn find_session_files() -> Vec<PathBuf> {

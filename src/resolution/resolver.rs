@@ -83,6 +83,39 @@ const CROSS_FILE_BLOCKLIST: &[&str] = &[
     "stop",
     "init",
     "setup",
+    // Stdlib method names that collide with user-defined functions
+    "status",
+    "modified",
+    "output",
+    "exists",
+    "join",
+    "display",
+    "to_owned",
+    "collect",
+    "filter",
+    "find",
+    "take",
+    "skip",
+    "count",
+    "sum",
+    "max",
+    "min",
+    "sort",
+    "extend",
+    "chain",
+    "zip",
+    "enumerate",
+    "flatten",
+    "open",
+    "create",
+    "metadata",
+    "canonicalize",
+    "spawn",
+    "wait",
+    "send",
+    "recv",
+    "lock",
+    "try_lock",
 ];
 
 /// Infer a coarse language tag from a file path extension.
@@ -150,19 +183,7 @@ pub struct ReferenceResolver<'a> {
 }
 
 impl<'a> ReferenceResolver<'a> {
-    /// Creates a new resolver, loading all nodes from the database into
-    /// in-memory caches.
-    ///
-    /// # Panics
-    ///
-    /// This method does not panic. If the database query fails the caches will
-    /// simply be empty.
-    pub async fn new(db: &'a Database) -> Self {
-        let all_nodes = db.get_all_nodes().await.unwrap_or_default();
-        Self::from_nodes(db, &all_nodes)
-    }
-
-    /// Creates a resolver from pre-loaded nodes, skipping the database roundtrip.
+    /// Creates a resolver from pre-loaded nodes.
     pub fn from_nodes(db: &'a Database, all_nodes: &[Node]) -> Self {
         let mut name_cache: HashMap<String, Vec<Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<String, Vec<Node>> = HashMap::new();

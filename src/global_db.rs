@@ -179,7 +179,7 @@ impl GlobalDb {
     // ── Accounting: turns table ──────────────────────────────────────
 
     /// Insert a parsed turn. Returns `true` if inserted, `false` if duplicate.
-    pub async fn insert_turn(&self, turn: &crate::accounting::parser::CostTurn) -> bool {
+    pub async fn insert_turn(&self, turn: &crate::types::CostTurn) -> bool {
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO turns

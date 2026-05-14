@@ -73,7 +73,7 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
 #[tokio::test]
 async fn test_resolve_exact_name_match() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -101,7 +101,7 @@ async fn test_resolve_exact_name_match() {
 #[tokio::test]
 async fn test_resolve_qualified_name_match() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -126,7 +126,7 @@ async fn test_resolve_qualified_name_match() {
 #[tokio::test]
 async fn test_resolve_all() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let refs = vec![UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -147,7 +147,7 @@ async fn test_resolve_all() {
 #[tokio::test]
 async fn test_unresolvable_reference() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let uref = UnresolvedRef {
         from_node_id: "function:caller".to_string(),
@@ -167,7 +167,7 @@ async fn test_unresolvable_reference() {
 #[tokio::test]
 async fn test_unresolvable_in_resolve_all() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let refs = vec![
         UnresolvedRef {
@@ -198,7 +198,7 @@ async fn test_unresolvable_in_resolve_all() {
 #[tokio::test]
 async fn test_creates_edges_from_resolved() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let resolved = ResolvedRef {
         original: UnresolvedRef {
@@ -321,7 +321,7 @@ async fn test_multiple_candidates_best_match_scoring() {
         .await
         .expect("failed to insert caller");
 
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     // Reference from src/main.rs should prefer the same-file candidate.
     let uref = UnresolvedRef {
@@ -350,7 +350,7 @@ async fn test_multiple_candidates_best_match_scoring() {
 #[tokio::test]
 async fn test_create_edges_empty_input() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let edges = resolver.create_edges(&[]);
     assert!(edges.is_empty());
@@ -359,7 +359,7 @@ async fn test_create_edges_empty_input() {
 #[tokio::test]
 async fn test_resolve_all_empty_input() {
     let (_dir, db) = setup_db_with_nodes().await;
-    let resolver = ReferenceResolver::new(&db).await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
 
     let result = resolver.resolve_all(&[]);
     assert_eq!(result.total, 0);
