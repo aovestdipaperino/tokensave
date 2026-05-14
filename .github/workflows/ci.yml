@@ -33,6 +33,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-test
 
       - name: Run tests
         run: cargo test --workspace
