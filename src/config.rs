@@ -374,8 +374,14 @@ mod tests {
         // Top-level node_modules — should be excluded
         assert!(is_excluded("node_modules/express/index.js", &config));
         // Nested node_modules inside a sub-project — must also be excluded
-        assert!(is_excluded("projectA/node_modules/express/index.js", &config));
-        assert!(is_excluded("packages/web/node_modules/react/index.js", &config));
+        assert!(is_excluded(
+            "projectA/node_modules/express/index.js",
+            &config
+        ));
+        assert!(is_excluded(
+            "packages/web/node_modules/react/index.js",
+            &config
+        ));
     }
 
     #[test]

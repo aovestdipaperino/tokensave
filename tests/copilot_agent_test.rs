@@ -84,10 +84,7 @@ fn test_install_creates_vscode_settings_with_mcp_server() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(args, vec!["serve"], "args should be just [\"serve\"]");
-    assert!(
-        ts.get("cwd").is_none(),
-        "cwd should not be set (issue #66)"
-    );
+    assert!(ts.get("cwd").is_none(), "cwd should not be set (issue #66)");
 }
 
 #[test]
@@ -118,10 +115,7 @@ fn test_install_creates_cli_config_with_mcp_server() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(args, vec!["serve"], "args should be just [\"serve\"]");
-    assert!(
-        ts.get("cwd").is_none(),
-        "cwd should not be set (issue #66)"
-    );
+    assert!(ts.get("cwd").is_none(), "cwd should not be set (issue #66)");
 }
 
 #[test]
