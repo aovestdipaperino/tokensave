@@ -246,7 +246,7 @@ jobs:
           }
           EOF
 
-          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" scoop-repo
+          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-bucket.git" scoop-repo
           cd scoop-repo
           mkdir -p bucket
           cp ../tokensave-beta.json bucket/tokensave-beta.json

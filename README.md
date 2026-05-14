@@ -92,7 +92,7 @@ brew install aovestdipaperino/tap/tokensave
 **Scoop (Windows):**
 
 ```powershell
-scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-tokensave
+scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
 scoop install tokensave
 ```
 
