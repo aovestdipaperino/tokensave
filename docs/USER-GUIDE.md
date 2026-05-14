@@ -459,11 +459,26 @@ When running as an MCP server, tokensave exposes 41 tools that AI agents can cal
 
 | Tool | What it does |
 |------|-------------|
-| `tokensave_health` | Composite quality signal (0–10000) from five dimensions: acyclicity, depth, equality, redundancy, modularity. The single number to track over time. |
+| `tokensave_health` | Composite quality signal (0–10000) from five structural dimensions (acyclicity, depth, equality, redundancy, modularity) with a low-weight penalty for `/// skip-test-coverage` overuse. The single number to track over time. |
 | `tokensave_gini` | Gini inequality coefficient for any metric (complexity, lines, fan-in, fan-out, members). Finds god files and uneven distributions. |
 | `tokensave_dependency_depth` | Longest file-level dependency chains — the critical paths where upstream changes ripple through the most layers. |
 | `tokensave_dsm` | Design Structure Matrix showing file dependencies as clusters, density stats, or an NxN grid. Reveals hidden coupling patterns. |
 | `tokensave_test_risk` | Risk-weighted test gaps combining complexity, coupling, git churn, and test coverage. Answers "where should the next test go?" |
+
+### Test Coverage Conventions
+
+#### `/// skip-test-coverage`
+
+Mark functions that are genuinely untestable in unit tests (e.g. infrastructure-dependent, framework-invoked, or private helpers tested only transitively):
+
+```rust
+/// skip-test-coverage
+pub async fn produce(&mut self, topic: &str, batch: Bytes) -> io::Result<i64> { ... }
+```
+
+Marked functions are excluded from `tokensave_test_risk` coverage calculations, giving you an accurate picture of testable-code coverage. The `skipped` count appears in the summary so you can track how many functions use the annotation.
+
+**Health penalty:** The `coverage_discipline` dimension (visible in `tokensave_health` and `tokensave_session_start`/`session_end`) penalises overuse. Each skipped function lowers the score proportionally — a few genuine exclusions have negligible impact, but marking 50%+ of your codebase as untestable will visibly reduce your quality signal. This encourages using the annotation for its intended purpose rather than as a way to game coverage numbers.
 
 ### Structural analysis
 
