@@ -1114,12 +1114,27 @@ impl RustExtractor {
                             let callee_name = state.node_text(callee);
                             state.unresolved_refs.push(UnresolvedRef {
                                 from_node_id: fn_node_id.to_string(),
-                                reference_name: callee_name,
+                                reference_name: callee_name.clone(),
                                 reference_kind: EdgeKind::Calls,
                                 line: child.start_position().row as u32,
                                 column: child.start_position().column as u32,
                                 file_path: state.file_path.clone(),
                             });
+                            // For dot-calls (e.g. `instance.method()`), also emit
+                            // a ref with just the method name so the resolver can
+                            // match it against impl method definitions.
+                            if let Some(method_name) = callee_name.rsplit('.').next() {
+                                if method_name != callee_name {
+                                    state.unresolved_refs.push(UnresolvedRef {
+                                        from_node_id: fn_node_id.to_string(),
+                                        reference_name: method_name.to_string(),
+                                        reference_kind: EdgeKind::Calls,
+                                        line: child.start_position().row as u32,
+                                        column: child.start_position().column as u32,
+                                        file_path: state.file_path.clone(),
+                                    });
+                                }
+                            }
                         }
                         // Also recurse into the call expression for nested calls.
                         Self::extract_call_sites(state, child, fn_node_id);

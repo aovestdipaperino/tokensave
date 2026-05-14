@@ -797,3 +797,46 @@ fn test_check() {
         "expected call to check_count inside macro, got: {ref_names:?}"
     );
 }
+
+#[test]
+fn test_rust_method_call_on_instance() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn new() -> Self { Foo }
+    fn bar(&self) -> i32 { 42 }
+}
+
+fn use_foo() {
+    let f = Foo::new();
+    let _ = f.bar();
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let use_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "use_foo")
+        .expect("use_foo function");
+
+    let call_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == use_fn.id && r.reference_kind == EdgeKind::Calls)
+        .collect();
+    let ref_names: Vec<&str> = call_refs.iter().map(|r| r.reference_name.as_str()).collect();
+
+    // Foo::new() produces "Foo::new" — should resolve via qualified match.
+    assert!(
+        ref_names.contains(&"Foo::new"),
+        "expected Foo::new call, got: {ref_names:?}"
+    );
+    // f.bar() should also produce "bar" (method-name hint).
+    assert!(
+        ref_names.contains(&"bar"),
+        "expected 'bar' method-name ref from f.bar(), got: {ref_names:?}"
+    );
+}
