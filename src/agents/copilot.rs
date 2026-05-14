@@ -40,6 +40,18 @@ impl AgentIntegration for CopilotIntegration {
         }
         install_cli_mcp_server(&cli_settings_path, &ctx.tokensave_bin)?;
 
+        // Install prompt rules
+        let vscode_instructions =
+            super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        install_prompt_rules(&vscode_instructions)?;
+        let insiders_instructions =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        if super::vscode_insiders_data_dir(&ctx.home).join("User").exists() {
+            install_prompt_rules(&insiders_instructions)?;
+        }
+        let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
+        install_prompt_rules(&cli_instructions)?;
+
         eprintln!();
         eprintln!("Setup complete. Next steps:");
         eprintln!("  1. cd into your project and run: tokensave init");
@@ -56,6 +68,15 @@ impl AgentIntegration for CopilotIntegration {
             super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
         uninstall_vscode_mcp_server(&insiders_settings_path);
         uninstall_cli_mcp_server(&cli_settings_path);
+
+        let vscode_instructions =
+            super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        uninstall_prompt_rules(&vscode_instructions);
+        let insiders_instructions =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        uninstall_prompt_rules(&insiders_instructions);
+        let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
+        uninstall_prompt_rules(&cli_instructions);
 
         eprintln!();
         eprintln!("Uninstall complete. Tokensave has been removed from GitHub Copilot.");
@@ -280,6 +301,101 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
         eprintln!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt rules helpers
+// ---------------------------------------------------------------------------
+
+/// Append prompt rules to a copilot-instructions.md file (idempotent).
+fn install_prompt_rules(instructions_path: &Path) -> Result<()> {
+    use std::io::Write;
+    let marker = "## Prefer tokensave MCP tools";
+    let existing = if instructions_path.exists() {
+        std::fs::read_to_string(instructions_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if existing.contains(marker) {
+        eprintln!(
+            "  {} already contains tokensave rules, skipping",
+            instructions_path.display()
+        );
+        return Ok(());
+    }
+    if let Some(parent) = instructions_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(instructions_path)
+        .map_err(|e| crate::errors::TokenSaveError::Config {
+            message: format!("failed to open {}: {e}", instructions_path.display()),
+        })?;
+    write!(
+        f,
+        "\n{marker}\n\n\
+        Before reading source files or scanning the codebase, use the tokensave MCP tools \
+        (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
+        `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
+        They provide instant semantic results from a pre-built knowledge graph and are \
+        faster than file reads.\n\n\
+        If a code analysis question cannot be fully answered by tokensave MCP tools, \
+        try querying the SQLite database directly at `.tokensave/tokensave.db` \
+        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
+        that go beyond what the built-in tools expose.\n"
+    )
+    .map_err(|e| crate::errors::TokenSaveError::Config {
+        message: format!("failed to write {}: {e}", instructions_path.display()),
+    })?;
+    eprintln!(
+        "\x1b[32m✔\x1b[0m Added tokensave rules to {}",
+        instructions_path.display()
+    );
+    Ok(())
+}
+
+/// Remove tokensave rules from a copilot-instructions.md file.
+fn uninstall_prompt_rules(instructions_path: &Path) {
+    if !instructions_path.exists() {
+        return;
+    }
+    let Ok(contents) = std::fs::read_to_string(instructions_path) else {
+        return;
+    };
+    if !contents.contains("tokensave") {
+        return;
+    }
+    let marker = "## Prefer tokensave MCP tools";
+    let Some(start) = contents.find(marker) else {
+        return;
+    };
+    let after_marker = start + marker.len();
+    let end = contents[after_marker..]
+        .find("\n## ")
+        .map_or(contents.len(), |pos| after_marker + pos);
+    let mut new_contents = String::new();
+    new_contents.push_str(contents[..start].trim_end());
+    let remainder = &contents[end..];
+    if !remainder.is_empty() {
+        new_contents.push_str("\n\n");
+        new_contents.push_str(remainder.trim_start());
+    }
+    let new_contents = new_contents.trim().to_string();
+    if new_contents.is_empty() {
+        std::fs::remove_file(instructions_path).ok();
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
+            instructions_path.display()
+        );
+    } else {
+        std::fs::write(instructions_path, format!("{new_contents}\n")).ok();
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
+            instructions_path.display()
         );
     }
 }
