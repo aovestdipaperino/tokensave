@@ -1161,41 +1161,28 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let project_path = tokensave::config::resolve_path(path);
             let cg = serve::ensure_initialized(&project_path).await?;
 
-            let queries_path = match queries {
-                Some(p) => std::path::PathBuf::from(p),
-                None => {
-                    // Prefer the project-local default if present.
-                    let local = project_path.join("benchmarks/queries/default.toml");
-                    if local.exists() {
-                        local
-                    } else {
-                        // Fall back to the binary-embedded default — write to a temp file
-                        // so the file-based loader can use it without a separate code path.
-                        let embedded = include_str!("../benchmarks/queries/default.toml");
-                        let tmp = std::env::temp_dir().join("tokensave-bench-default.toml");
-                        std::fs::write(&tmp, embedded).map_err(|e| {
-                            tokensave::errors::TokenSaveError::Config {
-                                message: format!("failed to write embedded query file: {e}"),
-                            }
-                        })?;
-                        tmp
-                    }
-                }
+            let opts = tokensave::bench::BenchOptions {
+                format: if json {
+                    tokensave::bench::OutputFormat::Json
+                } else {
+                    tokensave::bench::OutputFormat::Markdown
+                },
+                max_nodes,
             };
 
-            let report = tokensave::bench::run_bench(
-                &cg,
-                &queries_path,
-                tokensave::bench::BenchOptions {
-                    format: if json {
-                        tokensave::bench::OutputFormat::Json
-                    } else {
-                        tokensave::bench::OutputFormat::Markdown
-                    },
-                    max_nodes,
-                },
-            )
-            .await?;
+            let report = match queries {
+                Some(p) => {
+                    tokensave::bench::run_bench(&cg, std::path::Path::new(&p), opts).await?
+                }
+                None => {
+                    tokensave::bench::run_bench_with_toml(
+                        &cg,
+                        tokensave::bench::DEFAULT_QUERIES_TOML,
+                        opts,
+                    )
+                    .await?
+                }
+            };
 
             if json {
                 println!("{}", tokensave::bench::format_report_json(&report));

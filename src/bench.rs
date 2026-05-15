@@ -69,7 +69,11 @@ impl Default for BenchOptions {
     }
 }
 
-/// Run the bench. Returns the full report; caller prints.
+/// The embedded default query set. Compiled into the binary so `tokensave bench`
+/// works without any external file dependency.
+pub const DEFAULT_QUERIES_TOML: &str = include_str!("../benchmarks/queries/default.toml");
+
+/// Run the bench from a TOML query file on disk.
 pub async fn run_bench(
     cg: &TokenSave,
     queries_path: &Path,
@@ -78,7 +82,17 @@ pub async fn run_bench(
     let raw = std::fs::read_to_string(queries_path).map_err(|e| TokenSaveError::Config {
         message: format!("failed to read query file {}: {e}", queries_path.display()),
     })?;
-    let parsed: QueryFile = toml::from_str(&raw).map_err(|e| TokenSaveError::Config {
+    run_bench_with_toml(cg, &raw, opts).await
+}
+
+/// Run the bench from an in-memory TOML string. Used by the CLI's default path
+/// (avoids a filesystem dependency on the embedded query set).
+pub async fn run_bench_with_toml(
+    cg: &TokenSave,
+    toml_str: &str,
+    opts: BenchOptions,
+) -> Result<BenchReport> {
+    let parsed: QueryFile = toml::from_str(toml_str).map_err(|e| TokenSaveError::Config {
         message: format!("failed to parse query file as TOML: {e}"),
     })?;
 
