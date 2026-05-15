@@ -130,7 +130,10 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
     // the same node N times for the same path.
     let files: Vec<String> = {
         let mut seen: HashSet<String> = HashSet::new();
-        files.into_iter().filter(|f| seen.insert(f.clone())).collect()
+        files
+            .into_iter()
+            .filter(|f| seen.insert(f.clone()))
+            .collect()
     };
 
     // Pre-compute files containing inline test modules.

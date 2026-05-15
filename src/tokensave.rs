@@ -1744,7 +1744,7 @@ impl TokenSave {
                 pattern,
                 "-r",
                 rewrite,
-                "-d",
+                "-U",
                 abs_path.to_string_lossy().as_ref(),
             ])
             .output()

@@ -1745,6 +1745,49 @@ async fn ast_grep_rewrite_has_literal_fallback_when_binary_missing() {
 }
 
 #[tokio::test]
+async fn ast_grep_rewrite_uses_current_cli_update_flag() {
+    if !tokensave::mcp::tools::ast_grep_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        "pub fn caller() { old_name(); }\npub fn old_name() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_ast_grep_rewrite",
+        json!({"path": "src/lib.rs", "pattern": "old_name()", "rewrite": "new_name()"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["success"].as_bool(), Some(true), "{output}");
+    let content = fs::read_to_string(project.join("src/lib.rs")).unwrap();
+    assert!(
+        content.contains("new_name();"),
+        "ast-grep rewrite should apply with the installed CLI: {content}"
+    );
+    assert!(
+        !output["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unexpected argument '-d'"),
+        "rewrite must not use the removed -d flag: {output}"
+    );
+}
+
+#[tokio::test]
 async fn test_multi_str_replace_unsupported_file_type_succeeds() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();

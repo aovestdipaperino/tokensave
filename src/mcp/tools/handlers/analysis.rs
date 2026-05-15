@@ -810,89 +810,33 @@ pub(super) async fn handle_recursion(
 
     debug_assert!(limit > 0, "handle_recursion limit must be positive");
 
-    let call_edges = cg.get_call_edges(path_prefix).await?;
+    let call_edges = cg.get_call_edges_with_lines(path_prefix).await?;
 
-    // Build adjacency list
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for (src, tgt) in &call_edges {
-        adj.entry(src.clone()).or_default().push(tgt.clone());
-    }
+    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut node_cache: HashMap<String, Option<crate::types::Node>> = HashMap::new();
+    let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
 
-    // Iterative DFS cycle detection
-    let mut cycles: Vec<Vec<String>> = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut on_stack: HashSet<String> = HashSet::new();
-
-    let all_nodes: Vec<String> = adj.keys().cloned().collect();
-
-    for start in &all_nodes {
-        if visited.contains(start) {
-            continue;
-        }
-        // Iterative DFS: stack of (node, neighbor_list, index, path_so_far)
-        let mut stack: Vec<(String, Vec<String>, usize)> = Vec::new();
-        let mut path: Vec<String> = Vec::new();
-
-        let neighbors = adj.get(start).cloned().unwrap_or_default();
-        visited.insert(start.clone());
-        on_stack.insert(start.clone());
-        path.push(start.clone());
-        stack.push((start.clone(), neighbors, 0));
-
-        while let Some(frame) = stack.last_mut() {
-            let idx = frame.2;
-            if idx >= frame.1.len() {
-                let Some((node, _, _)) = stack.pop() else {
-                    break;
-                };
-                path.pop();
-                on_stack.remove(&node);
+    for (src, tgt, line) in &call_edges {
+        if src == tgt {
+            let Some(node) = cached_node(cg, &mut node_cache, src).await? else {
+                continue;
+            };
+            if !is_direct_self_call(cg, &mut source_cache, &node, *line) {
                 continue;
             }
-            frame.2 += 1;
-            let neighbor = frame.1[idx].clone();
-
-            if !visited.contains(&neighbor) {
-                let nb_neighbors = adj.get(&neighbor).cloned().unwrap_or_default();
-                visited.insert(neighbor.clone());
-                on_stack.insert(neighbor.clone());
-                path.push(neighbor.clone());
-                stack.push((neighbor, nb_neighbors, 0));
-            } else if on_stack.contains(&neighbor) {
-                // Found a cycle
-                let mut cycle = Vec::new();
-                let mut found = false;
-                for item in &path {
-                    if *item == neighbor {
-                        found = true;
-                    }
-                    if found {
-                        cycle.push(item.clone());
-                    }
-                }
-                cycle.push(neighbor.clone());
-                // Drop length-1 self-cycles. In practice these come from
-                // resolver fuzzy-binding (e.g. `self.push()` inside one
-                // `impl X { fn push }` bound to a sibling impl's `push` of
-                // the same name on the same node id) or from genuine but
-                // trivial self-recursion. Agents asking "what's recursive
-                // in this codebase" want multi-step cycles, not self-loops.
-                let mut distinct = cycle.clone();
-                distinct.sort();
-                distinct.dedup();
-                if distinct.len() < 2 {
-                    continue;
-                }
-                cycles.push(cycle);
-                if cycles.len() >= limit {
-                    break;
-                }
-            }
         }
-        if cycles.len() >= limit {
-            break;
-        }
+        adj.entry(src.clone()).or_default().insert(tgt.clone());
+        adj.entry(tgt.clone()).or_default();
     }
+
+    let mut cycles: Vec<Vec<String>> = crate::graph::scc::tarjan_scc(&adj)
+        .into_iter()
+        .filter(|scc| crate::graph::scc::is_cyclic_scc(scc, &adj))
+        .filter_map(|mut scc| cycle_path_for_scc(&mut scc, &adj))
+        .collect();
+
+    cycles.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    cycles.truncate(limit);
 
     // Resolve node details for each cycle
     let mut cycle_items: Vec<Value> = Vec::new();
@@ -933,6 +877,196 @@ pub(super) async fn handle_recursion(
         }),
         touched_files,
     })
+}
+
+async fn cached_node(
+    cg: &TokenSave,
+    cache: &mut HashMap<String, Option<crate::types::Node>>,
+    id: &str,
+) -> Result<Option<crate::types::Node>> {
+    if let Some(node) = cache.get(id) {
+        return Ok(node.clone());
+    }
+    let node = cg.get_node(id).await?;
+    cache.insert(id.to_string(), node.clone());
+    Ok(node)
+}
+
+fn cached_source(
+    cg: &TokenSave,
+    cache: &mut HashMap<String, Option<String>>,
+    file_path: &str,
+) -> Option<String> {
+    if let Some(source) = cache.get(file_path) {
+        return source.clone();
+    }
+    let abs = cg.project_root().join(file_path);
+    let source = std::fs::read_to_string(abs).ok();
+    cache.insert(file_path.to_string(), source.clone());
+    source
+}
+
+fn is_direct_self_call(
+    cg: &TokenSave,
+    source_cache: &mut HashMap<String, Option<String>>,
+    node: &crate::types::Node,
+    edge_line: Option<u32>,
+) -> bool {
+    let Some(source) = cached_source(cg, source_cache, &node.file_path) else {
+        return false;
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return false;
+    }
+
+    let mut candidate_lines: Vec<u32> = edge_line.into_iter().collect();
+    if let Some(line) = edge_line {
+        candidate_lines.push(line.saturating_sub(1));
+        candidate_lines.push(line.saturating_add(1));
+    }
+    candidate_lines.sort_unstable();
+    candidate_lines.dedup();
+
+    for line in candidate_lines {
+        let Some(text) = lines.get(line as usize) else {
+            continue;
+        };
+        if looks_like_function_declaration(text, &node.name) {
+            continue;
+        }
+        if has_qualified_call(text, node) || has_bare_call(text, &node.name) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn looks_like_function_declaration(line: &str, name: &str) -> bool {
+    let Some(pos) = line.find(name) else {
+        return false;
+    };
+    let prefix = &line[..pos];
+    (prefix.contains("fn ")
+        || prefix.contains("function ")
+        || prefix.contains("def ")
+        || prefix.contains("sub "))
+        && call_suffix_starts(&line[pos + name.len()..])
+}
+
+fn parent_type_name(node: &crate::types::Node) -> Option<&str> {
+    let needle = format!("::{}", node.name);
+    node.qualified_name
+        .strip_suffix(&needle)
+        .and_then(|parent| parent.rsplit("::").next())
+        .filter(|parent| !parent.is_empty())
+}
+
+fn has_qualified_call(line: &str, node: &crate::types::Node) -> bool {
+    let Some(parent) = parent_type_name(node) else {
+        return false;
+    };
+    let type_call = format!("{parent}::{}", node.name);
+    if line
+        .match_indices(&type_call)
+        .any(|(idx, _)| call_suffix_starts(&line[idx + type_call.len()..]))
+    {
+        return true;
+    }
+
+    let self_call = format!("Self::{}", node.name);
+    if line
+        .match_indices(&self_call)
+        .any(|(idx, _)| call_suffix_starts(&line[idx + self_call.len()..]))
+    {
+        return true;
+    }
+
+    let self_method_call = format!("self.{}", node.name);
+    line.match_indices(&self_method_call)
+        .any(|(idx, _)| call_suffix_starts(&line[idx + self_method_call.len()..]))
+}
+
+fn has_bare_call(line: &str, name: &str) -> bool {
+    line.match_indices(name).any(|(idx, _)| {
+        let before_ok = idx == 0 || !is_ident_byte(line.as_bytes()[idx - 1]);
+        if before_ok {
+            let prefix = line[..idx].trim_end();
+            if prefix.ends_with('.') || prefix.ends_with(':') {
+                return false;
+            }
+        }
+        let after_idx = idx + name.len();
+        before_ok && call_suffix_starts(&line[after_idx..])
+    })
+}
+
+fn call_suffix_starts(suffix: &str) -> bool {
+    suffix.trim_start().starts_with('(')
+}
+
+fn cycle_path_for_scc(
+    scc: &mut [String],
+    adj: &HashMap<String, HashSet<String>>,
+) -> Option<Vec<String>> {
+    scc.sort();
+    let scc_set: HashSet<&str> = scc.iter().map(std::string::String::as_str).collect();
+    if scc.len() == 1 {
+        let id = scc[0].clone();
+        if adj
+            .get(&id)
+            .is_some_and(|neighbors| neighbors.contains(&id))
+        {
+            return Some(vec![id.clone(), id]);
+        }
+        return None;
+    }
+
+    for start in scc.iter() {
+        let mut path = vec![start.clone()];
+        let mut seen: HashSet<String> = HashSet::from([start.clone()]);
+        if dfs_cycle_path(start, start, &scc_set, adj, &mut path, &mut seen) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn dfs_cycle_path(
+    current: &str,
+    start: &str,
+    scc_set: &HashSet<&str>,
+    adj: &HashMap<String, HashSet<String>>,
+    path: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) -> bool {
+    let Some(neighbors) = adj.get(current) else {
+        return false;
+    };
+    let mut neighbors: Vec<&str> = neighbors
+        .iter()
+        .map(std::string::String::as_str)
+        .filter(|n| scc_set.contains(n))
+        .collect();
+    neighbors.sort_unstable();
+
+    for neighbor in neighbors {
+        if neighbor == start && path.len() > 1 {
+            path.push(start.to_string());
+            return true;
+        }
+        if !seen.insert(neighbor.to_string()) {
+            continue;
+        }
+        path.push(neighbor.to_string());
+        if dfs_cycle_path(neighbor, start, scc_set, adj, path, seen) {
+            return true;
+        }
+        path.pop();
+        seen.remove(neighbor);
+    }
+    false
 }
 
 /// Handles `tokensave_complexity` tool calls.
