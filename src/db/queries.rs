@@ -969,21 +969,75 @@ impl Database {
     /// `idx_nodes_qualified_name` index for cross-run lookups by name,
     /// independent of content-hash IDs that change on edits.
     pub async fn get_nodes_by_qualified_name(&self, qname: &str) -> Result<Vec<Node>> {
-        let sql = "SELECT id, kind, name, qualified_name, file_path,
+        // Exact match first — preserves the precise-lookup contract.
+        let exact_sql = "SELECT id, kind, name, qualified_name, file_path,
                           start_line, end_line, start_column, end_column,
                           docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
                    FROM nodes
                    WHERE qualified_name = ?1";
-        let mut rows =
-            self.conn()
-                .query(sql, params![qname])
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query by qualified_name: {e}"),
-                    operation: "get_nodes_by_qualified_name".to_string(),
-                })?;
+        let mut rows = self
+            .conn()
+            .query(exact_sql, params![qname])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query by qualified_name: {e}"),
+                operation: "get_nodes_by_qualified_name".to_string(),
+            })?;
 
-        collect_rows(&mut rows, row_to_node, "get_nodes_by_qualified_name").await
+        let exact: Vec<Node> =
+            collect_rows(&mut rows, row_to_node, "get_nodes_by_qualified_name").await?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        // Fallback strategy depends on whether the user passed a qualified
+        // form or just a bare identifier:
+        //
+        // - `Type::method` (contains `::`) → suffix match. Recovers from
+        //   extractor quirks (duplicated path segments, file-path prefixes
+        //   the caller doesn't know about) and lets callers pass partial
+        //   module paths. The leading `%` defeats `idx_nodes_qualified_name`,
+        //   so this is a full table scan bounded by `LIMIT 50` — cheap at
+        //   typical graph sizes.
+        //
+        // - `foo` (no `::`) → exact `name = ?` match. Uses `idx_nodes_name`,
+        //   so it stays fast. Multiple nodes may share a name (overloads,
+        //   `new()` constructors), `LIMIT 50` is a safety net.
+        let (sql, pattern) = if qname.contains("::") {
+            (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
+                 FROM nodes
+                 WHERE qualified_name LIKE ?1
+                 LIMIT 50",
+                format!("%::{qname}"),
+            )
+        } else {
+            (
+                "SELECT id, kind, name, qualified_name, file_path,
+                        start_line, end_line, start_column, end_column,
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
+                 FROM nodes
+                 WHERE name = ?1
+                 LIMIT 50",
+                qname.to_string(),
+            )
+        };
+        let mut fallback_rows = self
+            .conn()
+            .query(sql, params![pattern.as_str()])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query by qualified_name fallback: {e}"),
+                operation: "get_nodes_by_qualified_name".to_string(),
+            })?;
+        collect_rows(
+            &mut fallback_rows,
+            row_to_node,
+            "get_nodes_by_qualified_name",
+        )
+        .await
     }
 
     /// Returns nodes ranked by edge count for a given edge kind and direction,

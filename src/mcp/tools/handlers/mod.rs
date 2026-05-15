@@ -178,6 +178,7 @@ pub async fn handle_tool_call(
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => graph::handle_by_qualified_name(cg, args).await,
         "tokensave_signature" => graph::handle_signature(cg, args).await,
+        "tokensave_impls" => graph::handle_impls(cg, args).await,
         "tokensave_record_decision" => memory::handle_record_decision(cg, args).await,
         "tokensave_record_code_area" => memory::handle_record_code_area(cg, args).await,
         "tokensave_session_recall" => memory::handle_session_recall(cg, args).await,
@@ -203,7 +204,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 56);
+        assert_eq!(tools.len(), 57);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -213,6 +214,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_callers_for"));
         assert!(tool_names.contains(&"tokensave_by_qualified_name"));
         assert!(tool_names.contains(&"tokensave_signature"));
+        assert!(tool_names.contains(&"tokensave_impls"));
         assert!(tool_names.contains(&"tokensave_impact"));
         assert!(tool_names.contains(&"tokensave_node"));
         assert!(tool_names.contains(&"tokensave_status"));

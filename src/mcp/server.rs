@@ -661,14 +661,13 @@ impl McpServer {
     /// Returns the `SQLite` schema documentation as a markdown resource.
     /// Sourced from `src/db/migrations.rs::create_schema` — keep in sync.
     fn read_resource_schema(id: Value) -> JsonRpcResponse {
-        let text = SCHEMA_MARKDOWN;
         JsonRpcResponse::success(
             id,
             json!({
                 "contents": [{
                     "uri": "tokensave://schema",
                     "mimeType": "text/markdown",
-                    "text": text
+                    "text": SCHEMA_MARKDOWN
                 }]
             }),
         )
@@ -990,6 +989,14 @@ impl McpServer {
                             let stale_json = serde_json::to_string(&stale_files)
                                 .unwrap_or_else(|_| "[]".to_string());
                             let marker = format!("\ntokensave_graph_stale: {stale_json}");
+                            // Every handler returns an object with `content`;
+                            // crash hard in debug if a future handler ever
+                            // breaks that contract so we don't silently drop
+                            // the structured staleness signal.
+                            debug_assert!(
+                                result.value.is_object(),
+                                "tool result must be a JSON object so graph_stale can be attached"
+                            );
                             if let Some(obj) = result.value.as_object_mut() {
                                 obj.insert("graph_stale".to_string(), json!(stale_files));
                             }

@@ -133,6 +133,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_callers_for(),
         def_by_qualified_name(),
         def_signature(),
+        def_impls(),
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
@@ -287,6 +288,36 @@ fn def_by_qualified_name() -> ToolDefinition {
     )
 }
 
+fn def_impls() -> ToolDefinition {
+    def(
+        "tokensave_impls",
+        "Trait Implementations",
+        "List `impl` blocks matching a trait, a type, or both. With no filter \
+         returns every impl in the graph (use sparingly). Both arguments \
+         accept short names (e.g. `Display`) or qualified names. Surfaces \
+         information that is otherwise hard to query: trait-method dispatch \
+         targets, which types satisfy a given trait, and which traits a type \
+         implements.",
+        json!({
+            "type": "object",
+            "properties": {
+                "trait": {
+                    "type": "string",
+                    "description": "Trait name to filter by (short or qualified). Omit to include all traits."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Implementing type to filter by (short or qualified). Omit to include all types."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 100)."
+                }
+            }
+        }),
+    )
+}
+
 fn def_signature() -> ToolDefinition {
     def(
         "tokensave_signature",
@@ -341,7 +372,12 @@ fn def_callees() -> ToolDefinition {
     def(
         "tokensave_callees",
         "Callees",
-        "Find all callees of a given node (function, method, etc.) up to a specified depth.",
+        "Find all callees of a given node (function, method, etc.) up to a \
+         specified depth. When a callee resolves to a trait method, the \
+         concrete impl methods reachable through that trait are also \
+         returned, tagged with `dispatch_via_trait: true` and a `dispatch_from` \
+         pointing at the trait method. Pass `resolve_dispatch: false` to \
+         disable this behaviour and get only direct call edges.",
         json!({
             "type": "object",
             "properties": {
@@ -352,6 +388,10 @@ fn def_callees() -> ToolDefinition {
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum traversal depth (default: 3)"
+                },
+                "resolve_dispatch": {
+                    "type": "boolean",
+                    "description": "If true (default), append concrete impl methods for any trait-method callee."
                 }
             },
             "required": ["node_id"]

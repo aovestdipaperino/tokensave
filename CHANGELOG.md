@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-05-15
+
+### Added
+- **`tokensave_impls` tool** — index of `impl Trait for Type` blocks. Accepts optional `trait` and `type` filters (both short and qualified names). With neither, returns every impl in the graph. Surfaces information that was previously buried behind the second-class `Implements` edge: which types satisfy a given trait, which traits a type implements, and the impl blocks themselves with their files and signatures.
+- **Trait dispatch resolution on `tokensave_callees`** — when a callee resolves to a method whose enclosing scope is a trait, the handler walks back via `Implements` edges to surface the concrete impl methods reachable through that trait. New entries are tagged `dispatch_via_trait: true` and carry a `dispatch_from` pointer to the trait method. Pass `resolve_dispatch: false` to opt out and get only direct call edges.
+- **`TokenSave::get_impls(trait, type)`** — public helper backing the new tool.
+- **`TokenSave::get_trait_dispatch_targets(method)`** — public helper that returns every impl-method satisfying a given trait method, used by `handle_callees` to surface dispatch targets.
+
+### Changed
+- **Total MCP tools: 56 → 57** — `tokensave_impls` added.
+- **`tokensave_callees` description and schema** updated to advertise dispatch resolution and the new `resolve_dispatch` argument.
+
+### Fixed
+- **`tokensave_search` ranks definitions above references (PR1 follow-up)** — BM25 alone was placing `use foo` statements ahead of the actual `pub fn foo()` definition because both score similarly when the symbol name matches. `TokenSave::search` now over-fetches and re-ranks: every `NodeKind` carries an explicit bonus (callable defs +3.0, type defs / proto defs +2.5, impl blocks +2.0, values / macros / enum variants +1.0, members +0.5, neutral 0.0, container modules -1.5, annotation usages -2.0, `use` / `include` -3.0). The match is exhaustive so adding a new `NodeKind` forces a re-tune here. Result: searching for `gmres` returns the function before its imports.
+- **`get_nodes_by_qualified_name` falls back to suffix or bare-name match (PR1 follow-up + user feedback)** — strict equality match remains primary. On empty results: queries with `::` retry as `qualified_name LIKE '%::<query>'` (full scan, `LIMIT 50`); queries without `::` retry as `name = ?` using `idx_nodes_name`. Both forms now resolve, e.g. `get_impls`, `TokenSave::get_impls`, and the full doubled path all return the same row. `tokensave_signature` and `tokensave_by_qualified_name` share the lookup so they agree.
+- **Rust extractor no longer doubles the file path in `qualified_name`** — `qualified_prefix()` prepended `self.file_path` even though the file root was already pushed onto `node_stack` at extraction start, producing qnames like `src/foo.rs::src/foo.rs::Type::method`. Now iterates the stack only, yielding `src/foo.rs::Type::method`. Existing DBs will keep the old form until re-indexed (`tokensave sync --force`).
+- **`get_impls` batches the trait lookup (PR2 review follow-up)** — previously one `get_node_by_id` per impl block (N+1). Now collects every Implements-edge target then issues a single `get_nodes_by_ids` to populate the trait map.
+- **`graph_stale` insertion asserts on non-object results (PR1 review follow-up)** — `handle_tools_call` now `debug_assert!`s that the wrapped tool result is a JSON object before attaching the `graph_stale` field, matching the "crash hard on unknown value" convention so a future handler returning a non-object is caught immediately instead of silently dropping the structured staleness signal.
+- **`cost_to_expand` body heuristic documented as Rust-tuned (PR1 review follow-up)** — the `20 tokens/line` rate over-estimates Haskell/Python by ~2-3x; the doc comment now explicitly says so and notes the single-line floor of 20 tokens, since this number is part of the public tool contract.
+
 ## [4.6.0] - 2026-05-15
 
 ### Added

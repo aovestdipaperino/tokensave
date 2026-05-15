@@ -283,6 +283,15 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
 }
 
 /// Handles `tokensave_callees` tool calls.
+///
+/// Beyond the direct `Calls` edges, this handler also surfaces *trait
+/// dispatch targets*: when a callee is a method whose enclosing scope is a
+/// trait, the concrete impl methods reachable through that trait are added
+/// to the result list and tagged with `dispatch_via_trait: true`. The
+/// original trait-method entry is preserved so callers can still see what
+/// they statically called.
+///
+/// Dispatch resolution skipped when `resolve_dispatch=false` is passed.
 pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;
 
@@ -291,11 +300,15 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
         .and_then(serde_json::Value::as_u64)
         .map_or(3, |v| v.min(10) as usize);
 
+    let resolve_dispatch = args
+        .get("resolve_dispatch")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
     let results = cg.get_callees(node_id, max_depth).await?;
+    let mut seen: HashSet<String> = results.iter().map(|(n, _)| n.id.clone()).collect();
 
-    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
-
-    let items: Vec<Value> = results
+    let mut items: Vec<Value> = results
         .iter()
         .map(|(node, edge)| {
             json!({
@@ -305,9 +318,37 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "file": node.file_path,
                 "line": node.start_line,
                 "edge_kind": edge.kind.as_str(),
+                "dispatch_via_trait": false,
             })
         })
         .collect();
+
+    if resolve_dispatch {
+        for (callee, _) in &results {
+            let impls = cg.get_trait_dispatch_targets(callee).await?;
+            for impl_method in impls {
+                if !seen.insert(impl_method.id.clone()) {
+                    continue;
+                }
+                items.push(json!({
+                    "node_id": impl_method.id,
+                    "name": impl_method.name,
+                    "kind": impl_method.kind.as_str(),
+                    "file": impl_method.file_path,
+                    "line": impl_method.start_line,
+                    "edge_kind": "calls",
+                    "dispatch_via_trait": true,
+                    "dispatch_from": callee.id.clone(),
+                }));
+            }
+        }
+    }
+
+    let touched_files = unique_file_paths(
+        items
+            .iter()
+            .filter_map(|v| v.get("file").and_then(Value::as_str)),
+    );
 
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
     Ok(ToolResult {
@@ -734,11 +775,69 @@ pub(super) async fn handle_signature(cg: &TokenSave, args: Value) -> Result<Tool
     })
 }
 
+/// Handles `tokensave_impls` — index of `impl Trait for Type` blocks.
+///
+/// Both `trait` and `type` arguments are optional. With neither, every impl
+/// in the graph is returned (capped by `limit`). Surfaces trait-dispatch
+/// information that is otherwise hidden behind raw `Implements` edges.
+pub(super) async fn handle_impls(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let trait_filter = args.get("trait").and_then(|v| v.as_str());
+    let type_filter = args.get("type").and_then(|v| v.as_str());
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(100, |v| v.min(1000) as usize);
+
+    let mut results = cg.get_impls(trait_filter, type_filter).await?;
+    let truncated = results.len() > limit;
+    results.truncate(limit);
+
+    let touched_files = unique_file_paths(
+        results
+            .iter()
+            .map(|(impl_node, _)| impl_node.file_path.as_str()),
+    );
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(impl_node, trait_node)| {
+            json!({
+                "impl_id": impl_node.id,
+                "type": impl_node.name,
+                "qualified_name": impl_node.qualified_name,
+                "trait": trait_node.as_ref().map(|t| t.name.clone()),
+                "trait_qualified_name": trait_node.as_ref().map(|t| t.qualified_name.clone()),
+                "trait_id": trait_node.as_ref().map(|t| t.id.clone()),
+                "file": impl_node.file_path,
+                "start_line": impl_node.start_line,
+                "end_line": impl_node.end_line,
+                "signature": impl_node.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "count": items.len(),
+        "truncated": truncated,
+        "impls": items,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 /// Approximate token cost of expanding a node's body and its full file.
 ///
-/// `body` uses ~20 tokens/line (≈80 chars/line at 4 chars/token), matching the
-/// heuristic used elsewhere for byte→token conversion. `full_file` uses
-/// `size_bytes / 4`.
+/// `body` uses ~20 tokens/line (≈80 chars/line at 4 chars/token), tuned for
+/// Rust source — denser languages like Haskell or Python will be over-estimated
+/// by ~2-3x and ultra-terse declarations (one-line `use`, single-line `pub fn`)
+/// resolve to the single-line floor of 20 tokens. Good enough to decide whether
+/// to set `include_code=true`; not a reliable absolute count.
+/// `full_file` uses `size_bytes / 4` from the indexed `files.size`.
 pub(super) fn cost_to_expand(node: &crate::types::Node, file_size_bytes: u64) -> Value {
     let line_count = node
         .end_line
