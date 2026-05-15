@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.1] - 2026-05-15
+
+### Added
+- **`tokensave monitor` highlights the last 3 updates** — the most recently active (project, tool) pair renders green, second-to-last orange, third-to-last yellow. Re-firing the same tool moves it to the front rather than duplicating. Cleared on Ctrl+R.
+- **Welcome banner on fresh installs** — when `tokensave` is invoked with no subcommand and the global DB has zero registered projects, print a cyan welcome that explicitly suggests `tokensave init` before the existing "Create one now?" prompt. Returning users see no change.
+
+### Fixed
+- **CI: `clippy::items_after_test_module` denied under Rust 1.95.0** — two test modules from the v4.5.0 work (`gain_tests` in `src/commands.rs`, `gain_format_tests` in `src/display.rs`) were inserted mid-file. Rust 1.95.0 promoted this lint into `clippy::all`, which the project denies project-wide. Both moved to file end.
+- **CI: `cargo fmt` drift across 11 files** — accumulated unwrapped one-line `println!` / `match` / struct literals from the v4.5.0 features; re-formatted to match `rustfmt` expectations.
+
 ## [4.5.0] - 2026-05-15
 
 ### Added
