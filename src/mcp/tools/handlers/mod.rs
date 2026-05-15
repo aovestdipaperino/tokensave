@@ -10,6 +10,7 @@ pub mod git;
 pub mod graph;
 pub mod health;
 pub mod info;
+pub mod memory;
 
 use std::collections::HashSet;
 
@@ -176,6 +177,9 @@ pub async fn handle_tool_call(
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => graph::handle_by_qualified_name(cg, args).await,
+        "tokensave_record_decision" => memory::handle_record_decision(cg, args).await,
+        "tokensave_record_code_area" => memory::handle_record_code_area(cg, args).await,
+        "tokensave_session_recall" => memory::handle_session_recall(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -198,7 +202,7 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 52);
+        assert_eq!(tools.len(), 55);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -253,6 +257,9 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_session_end"));
         assert!(tool_names.contains(&"tokensave_body"));
         assert!(tool_names.contains(&"tokensave_todos"));
+        assert!(tool_names.contains(&"tokensave_record_decision"));
+        assert!(tool_names.contains(&"tokensave_record_code_area"));
+        assert!(tool_names.contains(&"tokensave_session_recall"));
     }
 
     #[test]
@@ -275,6 +282,8 @@ mod tests {
             "tokensave_insert_at",
             "tokensave_ast_grep_rewrite",
             "tokensave_session_start",
+            "tokensave_record_decision",
+            "tokensave_record_code_area",
         ];
         for tool in &tools {
             let ann = tool

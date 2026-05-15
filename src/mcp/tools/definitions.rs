@@ -132,6 +132,9 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_todos(),
         def_callers_for(),
         def_by_qualified_name(),
+        def_record_decision(),
+        def_record_code_area(),
+        def_session_recall(),
     ];
     debug_assert!(
         !definitions.is_empty(),
@@ -1351,6 +1354,97 @@ fn def_todos() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of markers to return (default: 200, max: 2000)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_record_decision() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_record_decision".to_string(),
+        description: "Persist a design or architecture decision so it can be recalled in a future session via tokensave_session_recall. Use for choices the agent or user would otherwise have to re-explain (e.g. \"use JWT for auth — session tokens flagged by legal\"). Stored in the per-project DB.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The decision itself, in one sentence (e.g. \"use JWT for auth\")."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason / context (e.g. \"session tokens flagged by legal\")."
+                },
+                "files": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "File paths that the decision applies to."
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Free-form tags for grouping (e.g. \"security\", \"performance\")."
+                }
+            },
+            "required": ["text"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Record Decision"
+        })),
+        meta: None,
+    }
+}
+
+fn def_record_code_area() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_record_code_area".to_string(),
+        description: "Record that the agent has been working in a code area (a file or directory). The first call sets an optional description; subsequent calls bump the touch counter and update last_touched_at. Recall with tokensave_session_recall.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File or directory path (project-relative)."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional short description of what this area is or what was changed."
+                }
+            },
+            "required": ["path"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Record Code Area"
+        })),
+        meta: None,
+    }
+}
+
+fn def_session_recall() -> ToolDefinition {
+    def(
+        "tokensave_session_recall",
+        "Session Recall",
+        "Recall persisted decisions (and optionally code areas) from past sessions. When `query` is provided, runs FTS5 search across decision text and reason. When omitted, returns the most recent decisions newest-first. Pair with tokensave_record_decision.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "FTS5 query string (e.g. \"auth OR session\"). Omit for newest-first listing."
+                },
+                "since": {
+                    "type": "number",
+                    "description": "Unix timestamp; only return decisions made at-or-after this time."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum decisions to return (default: 20, max: 200)."
+                },
+                "include_code_areas": {
+                    "type": "boolean",
+                    "description": "If true, also return the top-touched code areas (default: false)."
                 }
             }
         }),
