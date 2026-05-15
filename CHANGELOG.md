@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cross-session memory primitives (3 new MCP tools)** — `tokensave_record_decision`, `tokensave_record_code_area`, and `tokensave_session_recall` persist agent decisions and worked-on paths in the per-project DB so they survive across sessions. `session_recall` uses FTS5 for fuzzy retrieval. Backed by two new tables and an FTS mirror added in schema migration v8.
+- **`tokensave gain` CLI for the savings ledger** — every MCP tool call now writes an append-only row to a new `savings_ledger` table in the global DB. `tokensave gain [--all] [--history] [--range 7d] [--json]` reports tokens saved + dollar estimates (Sonnet input pricing, refreshed daily via LiteLLM).
+- **`tokensave bench` reproducible retrieval benchmark** — runs a fixed query set through `tokensave_context` and reports retrieval savings vs a full-file baseline (CCE-style methodology). Ships with a 10-query default set at `benchmarks/queries/default.toml`; `--queries <file>` accepts a custom set. Measured **98% mean retrieval savings on tokensave's own repo** (259K → 4.9K tokens across 10 queries).
+
+### Changed
+- **Schema bumped from v7 to v8** — adds `memory_decisions`, `memory_code_areas`, and the `memory_decisions_fts` virtual table. Existing user DBs upgrade idempotently via `migrate_v8`; fresh installs use the mirrored DDL in `create_schema`. No breaking changes; existing tools and queries continue to work.
+- **`GlobalDb::open()` refactored to delegate to `GlobalDb::open_at(path)`** — enables test isolation via `tempfile::TempDir` without process-wide `HOME` mutation. The public `open()` API is unchanged.
+
 ### Fixed
 - **`coverage_discipline` health penalty reduced from 10% to 2% (issue #76)** — annotating genuinely untestable functions with `/// skip-test-coverage` was dropping `quality_signal` despite improving `coverage_pct`, because the penalty had no positive counterbalance (coverage doesn't feed into the composite health score). Max penalty reduced so honest annotation is not punished.
 
