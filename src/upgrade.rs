@@ -565,8 +565,7 @@ fn run_brew_upgrade(current: &str) -> Result<String> {
     let update_ok = std::process::Command::new("brew")
         .args(["update", "--quiet"])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if !update_ok {
         eprintln!("  warning: `brew update` failed — continuing with existing cache");
     }

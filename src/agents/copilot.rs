@@ -35,7 +35,10 @@ impl AgentIntegration for CopilotIntegration {
         install_vscode_mcp_server(&vscode_settings_path, &ctx.tokensave_bin)?;
         let insiders_settings_path =
             super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
-        if insiders_settings_path.parent().is_some_and(|p| p.exists()) {
+        if insiders_settings_path
+            .parent()
+            .is_some_and(std::path::Path::exists)
+        {
             install_vscode_mcp_server(&insiders_settings_path, &ctx.tokensave_bin)?;
         }
         install_cli_mcp_server(&cli_settings_path, &ctx.tokensave_bin)?;

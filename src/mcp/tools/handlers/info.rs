@@ -1,5 +1,5 @@
-//! Status, files, type_hierarchy, body, todos, simplify_scan, port_status,
-//! port_order tool handlers.
+//! Status, files, `type_hierarchy`, body, todos, `simplify_scan`, `port_status`,
+//! `port_order` tool handlers.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;

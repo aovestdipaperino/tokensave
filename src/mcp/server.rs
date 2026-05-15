@@ -40,6 +40,108 @@ impl ServerStats {
 /// Cache duration for version checks (15 minutes).
 const VERSION_CHECK_INTERVAL: Duration = Duration::from_mins(15);
 
+/// Hand-maintained schema documentation for the `tokensave://schema` resource.
+/// Mirrors `src/db/migrations.rs::create_schema`. Update both together.
+const SCHEMA_MARKDOWN: &str = r"# tokensave SQLite schema
+
+The on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
+under multi-branch mode). All tables are plain SQLite; safe to query with any
+client. WAL mode is used, so readers do not block writers.
+
+## Tables
+
+### `nodes` — every indexed symbol
+- `id` TEXT PRIMARY KEY — content-hashed identifier (changes when symbol moves or renames)
+- `kind` TEXT — e.g. `function`, `struct`, `trait`, `impl`, `method`, `module`, `file`
+- `name` TEXT — local identifier
+- `qualified_name` TEXT — language-style path (e.g. `crate::module::Type::method`)
+- `file_path` TEXT — relative to the project root
+- `start_line`, `end_line` INTEGER — 1-based inclusive line range of the symbol
+- `start_column`, `end_column` INTEGER — 0-based column range
+- `attrs_start_line` INTEGER — first line of leading doc-comments / attributes (or `start_line` if none)
+- `signature` TEXT NULL — extracted source-level signature
+- `docstring` TEXT NULL — leading doc-comment
+- `visibility` TEXT — one of `public`, `pub_crate`, `pub_super`, `private`
+- `is_async` INTEGER (0/1)
+- `branches`, `loops`, `returns`, `max_nesting`, `unsafe_blocks`, `unchecked_calls`, `assertions` INTEGER — complexity metrics
+- `updated_at` INTEGER — UNIX epoch seconds
+
+Indexes: `kind`, `name`, `qualified_name`, `file_path`, `(file_path,start_line)`, `lower(name)`.
+
+### `edges` — directed relationships between nodes
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `source` TEXT — FK → `nodes.id` (CASCADE DELETE)
+- `target` TEXT — FK → `nodes.id` (CASCADE DELETE)
+- `kind` TEXT — one of `contains`, `calls`, `returns`, `type_of`, `uses`, `implements`, `extends`, `annotates`, `derives_macro`, `receives`
+- `line` INTEGER NULL — source line of the relationship
+
+Unique constraint: `(source, target, kind, COALESCE(line, -1))`. Indexes on `source`, `target`, `kind`, `(source,kind)`, `(target,kind)`.
+
+### `files` — index bookkeeping
+- `path` TEXT PRIMARY KEY
+- `content_hash` TEXT — sha256 of file contents at index time
+- `size` INTEGER — file size in bytes
+- `modified_at`, `indexed_at` INTEGER — UNIX epoch seconds
+- `node_count` INTEGER — number of nodes extracted from this file
+
+### `unresolved_refs` — references the resolver could not bind
+- `from_node_id` FK → `nodes.id`
+- `reference_name` TEXT
+- `reference_kind` TEXT
+- `line`, `col` INTEGER
+- `file_path` TEXT
+
+### `vectors` — optional embeddings (semantic search backend)
+- `node_id` PRIMARY KEY FK → `nodes.id`
+- `embedding` BLOB
+- `model` TEXT, `created_at` INTEGER
+
+### `metadata` — key/value store
+Common keys: `tokens_saved`, schema-version markers.
+
+### `memory_decisions`, `memory_code_areas`
+Hand-recorded notes from `tokensave_record_decision` / `tokensave_record_code_area`. FTS5 mirror tables exist for `nodes` (`nodes_fts`) and `memory_decisions` (`memory_decisions_fts`).
+
+## Recipes
+
+### Find every impl block of a trait
+```sql
+SELECT n.id, n.qualified_name, n.file_path, n.start_line
+FROM nodes n
+JOIN edges e ON e.source = n.id
+WHERE e.kind = 'implements'
+  AND e.target IN (SELECT id FROM nodes WHERE qualified_name = ?1);
+```
+
+### Top callers of a node
+```sql
+SELECT n.qualified_name, COUNT(*) AS call_count
+FROM edges e
+JOIN nodes n ON n.id = e.source
+WHERE e.target = ?1 AND e.kind = 'calls'
+GROUP BY n.qualified_name
+ORDER BY call_count DESC
+LIMIT 20;
+```
+
+### Files modified since last index
+Compare `files.modified_at` against the live filesystem mtime — `tokensave_affected` does this with extra git plumbing.
+
+### Largest functions by line span
+```sql
+SELECT qualified_name, file_path, end_line - start_line + 1 AS lines
+FROM nodes
+WHERE kind IN ('function', 'method')
+ORDER BY lines DESC
+LIMIT 20;
+```
+
+## Gotchas
+- `nodes.id` is a content hash, so it changes when the symbol moves. For cross-run lookups use `qualified_name` (or `tokensave_by_qualified_name`).
+- `edges.kind = 'calls'` may reference a *trait method* node rather than the resolved concrete impl — trait dispatch is not currently rewritten.
+- `derives_macro` edges record `#[derive(...)]` usage but generated impls are not in the graph.
+";
+
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
     latest: Option<String>,
@@ -518,6 +620,12 @@ impl McpServer {
                         "name": "Tracked Branches",
                         "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
                         "mimeType": "application/json"
+                    },
+                    {
+                        "uri": "tokensave://schema",
+                        "name": "SQLite Schema",
+                        "description": "Documentation for the .tokensave/tokensave.db schema: tables, columns, indexes, and common query recipes. Use when MCP tools don't cover your query and you need to drop down to raw SQL.",
+                        "mimeType": "text/markdown"
                     }
                 ]
             }),
@@ -541,12 +649,29 @@ impl McpServer {
             "tokensave://files" => self.read_resource_files(id).await,
             "tokensave://overview" => self.read_resource_overview(id).await,
             "tokensave://branches" => self.read_resource_branches(id),
+            "tokensave://schema" => Self::read_resource_schema(id),
             _ => JsonRpcResponse::error(
                 id,
                 ErrorCode::InvalidParams,
                 format!("unknown resource URI: {uri}"),
             ),
         }
+    }
+
+    /// Returns the `SQLite` schema documentation as a markdown resource.
+    /// Sourced from `src/db/migrations.rs::create_schema` — keep in sync.
+    fn read_resource_schema(id: Value) -> JsonRpcResponse {
+        let text = SCHEMA_MARKDOWN;
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://schema",
+                    "mimeType": "text/markdown",
+                    "text": text
+                }]
+            }),
+        )
     }
 
     /// Returns graph statistics as a JSON resource.
@@ -858,12 +983,23 @@ impl McpServer {
                                 stale_files.len(),
                                 stale_files.join(", ")
                             );
+                            // Machine-readable marker so callers can distrust
+                            // any answer referencing these paths. Always
+                            // emitted (as text + structured field) when
+                            // post-sync stale files remain.
+                            let stale_json = serde_json::to_string(&stale_files)
+                                .unwrap_or_else(|_| "[]".to_string());
+                            let marker = format!("\ntokensave_graph_stale: {stale_json}");
+                            if let Some(obj) = result.value.as_object_mut() {
+                                obj.insert("graph_stale".to_string(), json!(stale_files));
+                            }
                             if let Some(content) = result
                                 .value
                                 .get_mut("content")
                                 .and_then(|c| c.as_array_mut())
                             {
                                 content.insert(0, json!({"type": "text", "text": &warning}));
+                                content.push(json!({"type": "text", "text": marker}));
                             }
                         }
                     }

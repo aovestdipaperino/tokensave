@@ -1,6 +1,6 @@
-//! Structural analysis tool handlers: dead_code, hotspots, circular,
-//! coupling, rank, largest, recursion, complexity, distribution,
-//! unused_imports, god_class, doc_coverage, inheritance_depth, module_api.
+//! Structural analysis tool handlers: `dead_code`, `hotspots`, `circular`,
+//! `coupling`, `rank`, `largest`, `recursion`, `complexity`, `distribution`,
+//! `unused_imports`, `god_class`, `doc_coverage`, `inheritance_depth`, `module_api`.
 
 use std::collections::{HashMap, HashSet};
 

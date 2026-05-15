@@ -49,7 +49,7 @@ pub async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
                 .then(|| (pp.components().count(), p.clone()))
         })
         .collect();
-    ancestors.sort_by(|a, b| b.0.cmp(&a.0)); // deepest first
+    ancestors.sort_by_key(|a| std::cmp::Reverse(a.0)); // deepest first
     if let Some((_, best)) = ancestors.into_iter().next() {
         return Some(std::path::PathBuf::from(best));
     }
@@ -64,7 +64,7 @@ pub async fn resolve_serve_from_global_db() -> Option<std::path::PathBuf> {
                 .then(|| (pp.components().count(), p.clone()))
         })
         .collect();
-    descendants.sort_by(|a, b| a.0.cmp(&b.0)); // shallowest first
+    descendants.sort_by_key(|a| a.0); // shallowest first
     if let Some((_, best)) = descendants.into_iter().next() {
         return Some(std::path::PathBuf::from(best));
     }

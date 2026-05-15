@@ -1,5 +1,6 @@
-//! Graph traversal tool handlers: search, context, callers, callees,
-//! impact, node, similar, rename_preview, callers_for, by_qualified_name.
+//! Graph traversal tool handlers: `search`, `context`, `callers`, `callees`,
+//! `impact`, `node`, `similar`, `rename_preview`, `callers_for`, `by_qualified_name`,
+//! `signature`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -368,6 +369,7 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
     match node {
         Some(n) => {
             let touched_files = vec![n.file_path.clone()];
+            let file_size_bytes = cg.get_file_size_bytes(&n.file_path).await;
             let output = json!({
                 "id": n.id,
                 "name": n.name,
@@ -388,6 +390,7 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
                 "unchecked_calls": n.unchecked_calls,
                 "assertions": n.assertions,
                 "cyclomatic_complexity": n.branches + 1,
+                "cost_to_expand": cost_to_expand(&n, file_size_bytes),
             });
             let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
             Ok(ToolResult {
@@ -670,5 +673,81 @@ pub(super) async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Res
             "content": [{ "type": "text", "text": truncate_response(&output) }]
         }),
         touched_files,
+    })
+}
+
+/// Handles `tokensave_signature` — signature-only lookup (no body) by
+/// qualified name or node ID. Returns the public-API surface of a symbol so
+/// callers can avoid reading the source file just to inspect the signature.
+pub(super) async fn handle_signature(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args.get("qualified_name").and_then(|v| v.as_str());
+    let node_id = args
+        .get("node_id")
+        .or_else(|| args.get("id"))
+        .and_then(|v| v.as_str());
+
+    if qname.is_none() && node_id.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "missing required parameter: qualified_name or node_id".to_string(),
+        });
+    }
+
+    let nodes = if let Some(id) = node_id {
+        match cg.get_node(id).await? {
+            Some(n) => vec![n],
+            None => vec![],
+        }
+    } else if let Some(q) = qname {
+        cg.get_nodes_by_qualified_name(q).await?
+    } else {
+        vec![]
+    };
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let mut items: Vec<Value> = Vec::with_capacity(nodes.len());
+    for n in &nodes {
+        let file_size_bytes = cg.get_file_size_bytes(&n.file_path).await;
+        items.push(json!({
+            "node_id": n.id,
+            "name": n.name,
+            "qualified_name": n.qualified_name,
+            "kind": n.kind.as_str(),
+            "visibility": n.visibility.as_str(),
+            "is_async": n.is_async,
+            "signature": n.signature,
+            "docstring": n.docstring,
+            "file": n.file_path,
+            "start_line": n.start_line,
+            "attrs_start_line": n.attrs_start_line,
+            "end_line": n.end_line,
+            "cost_to_expand": cost_to_expand(n, file_size_bytes),
+        }));
+    }
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Approximate token cost of expanding a node's body and its full file.
+///
+/// `body` uses ~20 tokens/line (≈80 chars/line at 4 chars/token), matching the
+/// heuristic used elsewhere for byte→token conversion. `full_file` uses
+/// `size_bytes / 4`.
+pub(super) fn cost_to_expand(node: &crate::types::Node, file_size_bytes: u64) -> Value {
+    let line_count = node
+        .end_line
+        .saturating_sub(node.start_line)
+        .saturating_add(1);
+    let body_tokens = u64::from(line_count) * 20;
+    let full_file_tokens = file_size_bytes / 4;
+    json!({
+        "body": body_tokens,
+        "full_file": full_file_tokens,
     })
 }

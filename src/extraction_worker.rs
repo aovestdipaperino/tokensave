@@ -409,11 +409,10 @@ fn round_trip_with_timeout(
     req: &ExtractRequest,
     timeout: Duration,
 ) -> RoundTripOutcome {
-    let stdin = match worker.stdin.as_mut() {
-        Some(s) => s,
-        None => return RoundTripOutcome::Err(io::Error::other("worker stdin already closed")),
+    let Some(stdin) = worker.stdin.as_mut() else {
+        return RoundTripOutcome::Err(io::Error::other("worker stdin already closed"));
     };
-    if let Err(e) = write_message(stdin, req).and_then(|_| stdin.flush()) {
+    if let Err(e) = write_message(stdin, req).and_then(|()| stdin.flush()) {
         return RoundTripOutcome::Err(e);
     }
 

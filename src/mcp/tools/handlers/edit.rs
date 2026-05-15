@@ -1,5 +1,5 @@
-//! File editing tool handlers: str_replace, multi_str_replace, insert_at,
-//! ast_grep_rewrite.
+//! File editing tool handlers: `str_replace`, `multi_str_replace`, `insert_at`,
+//! `ast_grep_rewrite`.
 
 use serde_json::{json, Value};
 

@@ -1,5 +1,5 @@
-//! Git/branch/diff tool handlers: diff_context, commit_context, pr_context,
-//! changelog, branch_list, branch_search, branch_diff, affected, and
+//! Git/branch/diff tool handlers: `diff_context`, `commit_context`, `pr_context`,
+//! `changelog`, `branch_list`, `branch_search`, `branch_diff`, `affected`, and
 //! git helper functions.
 
 use std::collections::{HashMap, HashSet};

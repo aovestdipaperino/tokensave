@@ -1,4 +1,4 @@
-//! Cross-session memory handlers: record_decision, record_code_area, session_recall.
+//! Cross-session memory handlers: `record_decision`, `record_code_area`, `session_recall`.
 
 use serde_json::{json, Value};
 
@@ -64,15 +64,14 @@ pub(super) async fn handle_record_code_area(cg: &TokenSave, args: Value) -> Resu
 
 pub(super) async fn handle_session_recall(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let query = args.get("query").and_then(|v| v.as_str());
-    let since = args.get("since").and_then(|v| v.as_i64());
+    let since = args.get("since").and_then(serde_json::Value::as_i64);
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|n| (n as usize).clamp(1, 200))
-        .unwrap_or(20);
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |n| (n as usize).clamp(1, 200));
     let include_areas = args
         .get("include_code_areas")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     let decisions = cg.session_recall(query, since, limit).await?;

@@ -1976,6 +1976,15 @@ impl TokenSave {
         self.db.get_all_files().await
     }
 
+    /// Returns the indexed size in bytes for a file path, or `0` if unknown.
+    /// Used to estimate the token cost of expanding a file in responses.
+    pub async fn get_file_size_bytes(&self, path: &str) -> u64 {
+        match self.db.get_file(path).await {
+            Ok(Some(rec)) => rec.size,
+            _ => 0,
+        }
+    }
+
     /// Returns file paths that depend on the given file.
     pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
         let qm = GraphQueryManager::new(&self.db);

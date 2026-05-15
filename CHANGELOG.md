@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-05-15
+
+### Added
+- **`tokensave_signature` tool** — signature-only lookup by `qualified_name` or `node_id`. Returns visibility, signature string (generics, params, return type, where clauses), docstring, kind, and async flag for matching nodes. No body content. Replaces most agent `Read` calls when only the public-API surface of a symbol is needed.
+- **`graph_stale` field on tool results** — when files referenced by a tool result remain stale after the post-call sync attempt, the JSON-RPC response now carries a top-level `graph_stale: ["path", …]` array plus a machine-parseable `tokensave_graph_stale: [...]` text marker. The existing human-readable WARNING is preserved. Closes the silent-drift gap where renamed/deleted symbols could return phantom callers/callees without a programmatic signal.
+- **`cost_to_expand` annotation on node results** — `tokensave_node` and `tokensave_signature` responses now include `cost_to_expand: { body, full_file }` (approximate tokens) so callers can decide whether to set `include_code=true` before re-querying. Body estimate uses ~20 tokens/line; `full_file` uses indexed `files.size / 4`.
+- **`tokensave://schema` MCP resource** — markdown resource documenting the on-disk `.tokensave/tokensave.db` schema: tables, columns, indexes, FKs, common query recipes (impl-of-trait, top callers, largest functions), and gotchas (content-hashed IDs, trait dispatch, derive macros). Makes the SQLite escape hatch usable without trial-and-error.
+- **`TokenSave::get_file_size_bytes(path)`** — public helper that returns the indexed byte size of a file (0 when unknown). Backs the `cost_to_expand` full-file estimate.
+
+### Changed
+- **Total MCP tools: 55 → 56** — `tokensave_signature` added; all existing tools unchanged.
+
+### Fixed
+- **Clippy: project-wide cleanup to restore `-D warnings`** — 43 pre-existing lib errors and 3 bin errors resolved without behavioral change: module doc comments wrap snake_case tool names in backticks; `bench.rs` uses `write!` instead of `format!(..).push_str`; `extraction_worker.rs` converted to `let…else`; redundant closures in `agents/copilot.rs`, `extraction/haskell_extractor.rs`, `mcp/tools/handlers/memory.rs` replaced with method references; `resolution/resolver.rs` merges identical match arms; `serve.rs` uses `sort_by_key`; `upgrade.rs` uses `is_ok_and`; `main.rs` drops a useless `.into()`.
+
 ## [4.5.1] - 2026-05-15
 
 ### Added

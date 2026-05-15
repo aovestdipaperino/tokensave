@@ -857,8 +857,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                                             "no TokenSave index found at '{}' and no projects registered in the global database — run 'tokensave init' in your project first",
                                             project_path.display()
                                         ),
-                                    }
-                                    .into());
+                                    });
                                 }
                             }
                         }

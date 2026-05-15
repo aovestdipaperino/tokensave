@@ -177,7 +177,7 @@ pub struct ReferenceResolver<'a> {
     suffix_cache: HashMap<String, Vec<String>>,
     /// All known symbol names (short + qualified + suffixes) for pre-filtering.
     known_names: HashSet<String>,
-    /// Maps file_path to the set of qualified names imported by that file.
+    /// Maps `file_path` to the set of qualified names imported by that file.
     /// Built from Use nodes. Used to prefer candidates that the caller imports.
     import_index: HashMap<String, HashSet<String>>,
 }
@@ -355,8 +355,7 @@ impl<'a> ReferenceResolver<'a> {
         for (uref, res) in results {
             match res {
                 Some(r) if r.confidence >= 0.6 => resolved.push(r),
-                Some(_) => unresolved.push(uref.clone()), // below confidence floor
-                None => unresolved.push(uref.clone()),
+                Some(_) | None => unresolved.push(uref.clone()), // below confidence floor or unresolved
             }
         }
 

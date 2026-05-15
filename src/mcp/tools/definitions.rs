@@ -132,6 +132,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_todos(),
         def_callers_for(),
         def_by_qualified_name(),
+        def_signature(),
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
@@ -282,6 +283,32 @@ fn def_by_qualified_name() -> ToolDefinition {
                 }
             },
             "required": ["qualified_name"]
+        }),
+    )
+}
+
+fn def_signature() -> ToolDefinition {
+    def(
+        "tokensave_signature",
+        "Signature",
+        "Return the signature-level metadata for symbols matching a qualified \
+         name — visibility, signature string (generics, params, return type, \
+         where clauses), docstring, async flag, and kind. No bodies. Use this \
+         instead of reading source files when you only need the public-API \
+         surface of a function, method, or type. Multiple rows can be \
+         returned (overloads, separate impls).",
+        json!({
+            "type": "object",
+            "properties": {
+                "qualified_name": {
+                    "type": "string",
+                    "description": "The exact qualified name to look up."
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Optional: look up a single node by its ID instead of qualified_name."
+                }
+            }
         }),
     )
 }

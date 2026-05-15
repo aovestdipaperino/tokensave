@@ -5,6 +5,7 @@
 //! reading the full content of every file referenced, vs the tokens in the
 //! actual context response.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -162,10 +163,11 @@ pub async fn run_bench_with_toml(
 /// Convenience: format a report for terminal output.
 pub fn format_report_markdown(report: &BenchReport) -> String {
     let mut s = String::new();
-    s.push_str(&format!(
-        "# tokensave bench — {} queries\n\n",
+    let _ = writeln!(
+        s,
+        "# tokensave bench — {} queries\n",
         report.aggregate.queries
-    ));
+    );
     s.push_str("| # | Query | Baseline | Context | Savings | Files | Nodes |\n");
     s.push_str("|---|---|---:|---:|---:|---:|---:|\n");
     for (i, r) in report.results.iter().enumerate() {
@@ -174,8 +176,9 @@ pub fn format_report_markdown(report: &BenchReport) -> String {
         } else {
             r.task.clone()
         };
-        s.push_str(&format!(
-            "| {} | {} | {} | {} | {:.0}% | {} | {} |\n",
+        let _ = writeln!(
+            s,
+            "| {} | {} | {} | {} | {:.0}% | {} | {} |",
             i + 1,
             task,
             r.baseline_tokens,
@@ -183,15 +186,16 @@ pub fn format_report_markdown(report: &BenchReport) -> String {
             r.savings_pct,
             r.files_referenced,
             r.nodes_returned,
-        ));
+        );
     }
-    s.push_str(&format!(
-        "\n**Aggregate:** {:.0}% mean retrieval savings ({} → {} tokens across {} queries).\n",
+    let _ = writeln!(
+        s,
+        "\n**Aggregate:** {:.0}% mean retrieval savings ({} → {} tokens across {} queries).",
         report.aggregate.mean_savings_pct,
         report.aggregate.total_baseline_tokens,
         report.aggregate.total_context_tokens,
         report.aggregate.queries,
-    ));
+    );
     s
 }
 

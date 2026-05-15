@@ -642,7 +642,7 @@ fn is_temp_dir_name(name: &str) -> bool {
     name.starts_with(".tmp") && name.len() > 4
 }
 
-/// Push a (project, tool_name) pair onto the front of the recent-updates list.
+/// Push a (project, `tool_name`) pair onto the front of the recent-updates list.
 /// If the pair is already present, it is moved to the front (no duplicates).
 /// The list is truncated to the three most recent distinct pairs.
 fn push_recent_update(recent: &mut Vec<(String, String)>, project: &str, tool_name: &str) {

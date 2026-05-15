@@ -255,7 +255,7 @@ impl GlobalDb {
     /// rows actually deleted (0 on any error). Best-effort.
     ///
     /// Chunks the input at 256 paths per statement to stay well clear of
-    /// SQLite's default 999-parameter limit while still reducing N round trips
+    /// `SQLite`'s default 999-parameter limit while still reducing N round trips
     /// to ⌈N/256⌉.
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
         const CHUNK: usize = 256;
