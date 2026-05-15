@@ -799,6 +799,25 @@ impl McpServer {
                     }
                 }
 
+                // Persist to the cross-project savings ledger (best-effort, non-blocking).
+                {
+                    let project_path_str = self.cg.project_root().to_string_lossy().to_string();
+                    let tool_name_owned = tool_name.to_string();
+                    let ts = crate::tokensave::current_timestamp();
+                    tokio::spawn(async move {
+                        if let Some(gdb) = crate::global_db::GlobalDb::open().await {
+                            gdb.record_savings(
+                                &project_path_str,
+                                &tool_name_owned,
+                                raw_file_tokens,
+                                response_tokens,
+                                ts,
+                            )
+                            .await;
+                        }
+                    });
+                }
+
                 // Prepend version-update warning + queue logging notification.
                 if let Some(warning) = self.check_version_update().await {
                     if let Some(content) = result

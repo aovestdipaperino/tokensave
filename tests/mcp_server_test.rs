@@ -1109,3 +1109,53 @@ async fn test_initialize_advertises_logging_capability() {
         "initialize must advertise logging capability, got: {resp}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// search_call_writes_savings_ledger_row
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn search_call_writes_savings_ledger_row() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    // Note: std::env::set_var is process-wide; this test relies on no parallel test
+    // simultaneously mutating HOME. If flake is observed, mark this #[serial_test::serial].
+    std::env::set_var("HOME", tmp_home.path());
+    #[cfg(target_os = "windows")]
+    std::env::set_var("USERPROFILE", tmp_home.path());
+
+    let (server, _proj_tmp) = setup_server().await;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(9001),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "hello" }
+            }),
+        )],
+    )
+    .await;
+
+    // Verify the request completed successfully.
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 9001)
+        .expect("should have a response for id=9001");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "search should not error");
+
+    // Allow the spawned ledger-write task to complete before opening the DB.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let db = tokensave::global_db::GlobalDb::open()
+        .await
+        .expect("global db opens at isolated HOME");
+    let total = db.sum_savings(None, 0).await;
+    assert!(
+        total.calls >= 1,
+        "expected at least one ledger row, got {}",
+        total.calls
+    );
+}
