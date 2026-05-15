@@ -307,6 +307,7 @@ pub fn run() -> std::io::Result<()> {
     let mut reader = MmapReader::open()?;
     let mut last_idx = reader.write_idx();
     let mut entries: Vec<MonitorEntry> = Vec::new();
+    let mut recent_updates: Vec<(String, String)> = Vec::new();
 
     // Populate with existing entries in the ring buffer (up to write_idx).
     let populated = last_idx.min(RING_CAPACITY as u64) as usize;
@@ -320,6 +321,7 @@ pub fn run() -> std::io::Result<()> {
             let slot = (start_slot + i) % RING_CAPACITY;
             if let Some(e) = reader.entry(slot) {
                 if e.delta > 0 {
+                    push_recent_update(&mut recent_updates, &e.project, &e.tool_name);
                     entries.push(e);
                 }
             }
@@ -331,7 +333,13 @@ pub fn run() -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
 
-    let result = monitor_loop(&mut reader, &mut entries, &mut last_idx, &mut stdout);
+    let result = monitor_loop(
+        &mut reader,
+        &mut entries,
+        &mut recent_updates,
+        &mut last_idx,
+        &mut stdout,
+    );
 
     // Restore terminal.
     execute!(stdout, cursor::Show, LeaveAlternateScreen)?;
@@ -420,6 +428,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
 fn monitor_loop(
     reader: &mut MmapReader,
     entries: &mut Vec<MonitorEntry>,
+    recent_updates: &mut Vec<(String, String)>,
     last_idx: &mut u64,
     stdout: &mut std::io::Stdout,
 ) -> std::io::Result<()> {
@@ -444,6 +453,7 @@ fn monitor_loop(
                         if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                     {
                         entries.clear();
+                        recent_updates.clear();
                         scroll_offset = 0;
                     }
                     event::KeyCode::Up => {
@@ -470,6 +480,7 @@ fn monitor_loop(
             for i in *last_idx..current_idx {
                 let slot = (i as usize) % RING_CAPACITY;
                 if let Some(e) = reader.entry(slot) {
+                    push_recent_update(recent_updates, &e.project, &e.tool_name);
                     entries.push(e);
                 }
             }
@@ -543,7 +554,9 @@ fn monitor_loop(
             .collect();
         projects.sort();
 
-        let mut all_lines: Vec<String> = Vec::new();
+        // Each line carries an optional ANSI color prefix; padding is computed
+        // from the plain text length so escape bytes don't affect alignment.
+        let mut all_lines: Vec<(&'static str, String)> = Vec::new();
         let mut grand_total: u64 = 0;
 
         for project in &projects {
@@ -556,13 +569,14 @@ fn monitor_loop(
             let project_total: u64 = methods.values().sum::<u64>();
             grand_total += project_total;
 
-            all_lines.push(format!("{} ({})", project, format_number(project_total)));
+            all_lines.push(("", format!("{} ({})", project, format_number(project_total))));
             for method in &method_lines {
                 let delta = *methods.get(method).unwrap_or(&0);
-                all_lines.push(format!("  {}  {}", method, format_number(delta)));
+                let color = update_color_for(recent_updates, project, method);
+                all_lines.push((color, format!("  {}  {}", method, format_number(delta))));
             }
         }
-        all_lines.push(format!("TOTAL  {}", format_number(grand_total)));
+        all_lines.push(("", format!("TOTAL  {}", format_number(grand_total))));
 
         // Clamp scroll offset to valid range.
         let max_offset = all_lines.len().saturating_sub(log_lines);
@@ -580,9 +594,19 @@ fn monitor_loop(
             write!(stdout, "\r{}\r\n", " ".repeat(w))?;
         }
 
-        for line in visible_lines {
+        for (color, line) in visible_lines {
             let padding = w.saturating_sub(line.len());
-            write!(stdout, "\r{}{}\r\n", line, " ".repeat(padding))?;
+            if color.is_empty() {
+                write!(stdout, "\r{}{}\r\n", line, " ".repeat(padding))?;
+            } else {
+                write!(
+                    stdout,
+                    "\r{}{}\x1b[0m{}\r\n",
+                    color,
+                    line,
+                    " ".repeat(padding)
+                )?;
+            }
         }
 
         // ── Footer ──
@@ -615,6 +639,33 @@ fn is_temp_dir_name(name: &str) -> bool {
     name.starts_with(".tmp") && name.len() > 4
 }
 
+/// Push a (project, tool_name) pair onto the front of the recent-updates list.
+/// If the pair is already present, it is moved to the front (no duplicates).
+/// The list is truncated to the three most recent distinct pairs.
+fn push_recent_update(recent: &mut Vec<(String, String)>, project: &str, tool_name: &str) {
+    recent.retain(|(p, t)| !(p == project && t == tool_name));
+    recent.insert(0, (project.to_string(), tool_name.to_string()));
+    recent.truncate(3);
+}
+
+/// Return the ANSI color prefix for a method line based on its recency.
+/// Latest = green, 2nd latest = orange, 3rd latest = yellow, else no color.
+fn update_color_for(
+    recent: &[(String, String)],
+    project: &str,
+    tool_name: &str,
+) -> &'static str {
+    match recent
+        .iter()
+        .position(|(p, t)| p == project && t == tool_name)
+    {
+        Some(0) => "\x1b[32m",       // green: latest
+        Some(1) => "\x1b[38;5;208m", // orange: 2nd latest
+        Some(2) => "\x1b[33m",       // yellow: 3rd latest
+        _ => "",
+    }
+}
+
 fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
@@ -630,6 +681,47 @@ fn format_number(n: u64) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use super::{push_recent_update, update_color_for};
+
+    #[test]
+    fn push_recent_update_keeps_three_most_recent() {
+        let mut recent: Vec<(String, String)> = Vec::new();
+        push_recent_update(&mut recent, "proj", "tool_a");
+        push_recent_update(&mut recent, "proj", "tool_b");
+        push_recent_update(&mut recent, "proj", "tool_c");
+        push_recent_update(&mut recent, "proj", "tool_d");
+        assert_eq!(recent.len(), 3);
+        // Most recent first.
+        assert_eq!(recent[0].1, "tool_d");
+        assert_eq!(recent[1].1, "tool_c");
+        assert_eq!(recent[2].1, "tool_b");
+    }
+
+    #[test]
+    fn push_recent_update_dedups_and_bumps_to_front() {
+        let mut recent: Vec<(String, String)> = Vec::new();
+        push_recent_update(&mut recent, "proj", "tool_a");
+        push_recent_update(&mut recent, "proj", "tool_b");
+        push_recent_update(&mut recent, "proj", "tool_a"); // already present
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].1, "tool_a");
+        assert_eq!(recent[1].1, "tool_b");
+    }
+
+    #[test]
+    fn update_color_for_returns_three_colors_by_position() {
+        let recent = vec![
+            ("p".to_string(), "newest".to_string()),
+            ("p".to_string(), "mid".to_string()),
+            ("p".to_string(), "oldest".to_string()),
+        ];
+        assert_eq!(update_color_for(&recent, "p", "newest"), "\x1b[32m");
+        assert_eq!(update_color_for(&recent, "p", "mid"), "\x1b[38;5;208m");
+        assert_eq!(update_color_for(&recent, "p", "oldest"), "\x1b[33m");
+        assert_eq!(update_color_for(&recent, "p", "other"), "");
+        assert_eq!(update_color_for(&recent, "other_proj", "newest"), "");
+    }
+
     /// Regression test for issue #39: `tokensave monitor` panicked on
     /// macOS/Linux with "Cannot start a runtime from within a runtime."
     ///
