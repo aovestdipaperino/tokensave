@@ -2574,3 +2574,89 @@ async fn test_by_qualified_name_requires_param() {
     };
     assert!(format!("{err}").contains("qualified_name"));
 }
+
+// ---------------------------------------------------------------------------
+// Memory handler tests (record_decision, record_code_area, session_recall)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_handle_record_decision() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_record_decision",
+        json!({"text": "use JWT", "reason": "legal flagged sessions"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        output.get("id").is_some(),
+        "response should contain 'id', got: {output}"
+    );
+    assert_eq!(
+        output["status"].as_str().unwrap(),
+        "recorded",
+        "status should be 'recorded', got: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_record_code_area() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_record_code_area",
+        json!({"path": "src/auth.rs", "description": "OAuth provider"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        output["status"].as_str().unwrap(),
+        "recorded",
+        "status should be 'recorded', got: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_session_recall_returns_recorded_decision() {
+    let (cg, _dir) = setup_project().await;
+    // Seed a decision first
+    handle_tool_call(
+        &cg,
+        "tokensave_record_decision",
+        json!({"text": "use JWT", "reason": "legal flagged sessions"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // Recall and verify the seeded decision appears
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_session_recall",
+        json!({"query": "JWT"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let decisions = output["decisions"].as_array().expect("decisions should be an array");
+    assert!(
+        !decisions.is_empty(),
+        "recall should return at least one decision after seeding"
+    );
+    let found = decisions.iter().any(|d| {
+        d["text"].as_str().unwrap_or("").contains("JWT")
+    });
+    assert!(found, "seeded 'JWT' decision should appear in recall results");
+}

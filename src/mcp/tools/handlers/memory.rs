@@ -60,7 +60,7 @@ pub(super) async fn handle_session_recall(cg: &TokenSave, args: Value) -> Result
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
+        .map(|n| (n as usize).clamp(1, 200))
         .unwrap_or(20);
     let include_areas = args
         .get("include_code_areas")
