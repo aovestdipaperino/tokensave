@@ -773,25 +773,43 @@ async fn test_v8_creates_memory_tables() {
 
     // memory_decisions table exists with expected columns
     let mut rows = conn
-        .query("SELECT name FROM pragma_table_info('memory_decisions') ORDER BY cid", ())
+        .query(
+            "SELECT name FROM pragma_table_info('memory_decisions') ORDER BY cid",
+            (),
+        )
         .await
         .unwrap();
     let mut cols = Vec::new();
     while let Some(row) = rows.next().await.unwrap() {
         cols.push(row.get::<String>(0).unwrap());
     }
-    assert_eq!(cols, vec!["id", "text", "reason", "created_at", "files", "tags"]);
+    assert_eq!(
+        cols,
+        vec!["id", "text", "reason", "created_at", "files", "tags"]
+    );
 
     // memory_code_areas table exists
     let mut rows = conn
-        .query("SELECT name FROM pragma_table_info('memory_code_areas') ORDER BY cid", ())
+        .query(
+            "SELECT name FROM pragma_table_info('memory_code_areas') ORDER BY cid",
+            (),
+        )
         .await
         .unwrap();
     let mut cols = Vec::new();
     while let Some(row) = rows.next().await.unwrap() {
         cols.push(row.get::<String>(0).unwrap());
     }
-    assert_eq!(cols, vec!["id", "path", "description", "last_touched_at", "touch_count"]);
+    assert_eq!(
+        cols,
+        vec![
+            "id",
+            "path",
+            "description",
+            "last_touched_at",
+            "touch_count"
+        ]
+    );
 
     // FTS table exists
     let mut rows = conn
@@ -801,7 +819,10 @@ async fn test_v8_creates_memory_tables() {
         )
         .await
         .unwrap();
-    assert!(rows.next().await.unwrap().is_some(), "memory_decisions_fts missing");
+    assert!(
+        rows.next().await.unwrap().is_some(),
+        "memory_decisions_fts missing"
+    );
 
     // All three FTS triggers exist
     let mut rows = conn
@@ -834,9 +855,15 @@ async fn test_v7_to_v8_upgrade_path() {
     create_schema(&conn).await.unwrap();
     conn.execute("PRAGMA user_version = 7", ()).await.unwrap();
     // Drop the v8 tables to simulate a true v7 starting state
-    conn.execute("DROP TABLE IF EXISTS memory_decisions_fts", ()).await.unwrap();
-    conn.execute("DROP TABLE IF EXISTS memory_decisions", ()).await.unwrap();
-    conn.execute("DROP TABLE IF EXISTS memory_code_areas", ()).await.unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_decisions_fts", ())
+        .await
+        .unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_decisions", ())
+        .await
+        .unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_code_areas", ())
+        .await
+        .unwrap();
 
     let did_migrate = migrate(&conn).await.unwrap();
     assert!(did_migrate, "expected migrate() to return true");
@@ -858,5 +885,12 @@ async fn test_v7_to_v8_upgrade_path() {
     while let Some(row) = rows.next().await.unwrap() {
         names.push(row.get::<String>(0).unwrap());
     }
-    assert_eq!(names, vec!["memory_code_areas", "memory_decisions", "memory_decisions_fts"]);
+    assert_eq!(
+        names,
+        vec![
+            "memory_code_areas",
+            "memory_decisions",
+            "memory_decisions_fts"
+        ]
+    );
 }

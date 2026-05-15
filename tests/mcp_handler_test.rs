@@ -2650,13 +2650,18 @@ async fn test_handle_session_recall_returns_recorded_decision() {
     .unwrap();
     let text = extract_text(&result.value);
     let output: Value = serde_json::from_str(text).unwrap();
-    let decisions = output["decisions"].as_array().expect("decisions should be an array");
+    let decisions = output["decisions"]
+        .as_array()
+        .expect("decisions should be an array");
     assert!(
         !decisions.is_empty(),
         "recall should return at least one decision after seeding"
     );
-    let found = decisions.iter().any(|d| {
-        d["text"].as_str().unwrap_or("").contains("JWT")
-    });
-    assert!(found, "seeded 'JWT' decision should appear in recall results");
+    let found = decisions
+        .iter()
+        .any(|d| d["text"].as_str().unwrap_or("").contains("JWT"));
+    assert!(
+        found,
+        "seeded 'JWT' decision should appear in recall results"
+    );
 }

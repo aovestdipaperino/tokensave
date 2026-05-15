@@ -429,6 +429,15 @@ struct ListRow {
     tokens: u64,
 }
 
+/// True when the global DB has zero registered projects (or can't be opened
+/// at all) — i.e. the user has not run `tokensave init` anywhere yet.
+async fn is_fresh_install() -> bool {
+    match tokensave::global_db::GlobalDb::open().await {
+        Some(gdb) => gdb.list_project_paths().await.is_empty(),
+        None => true,
+    }
+}
+
 /// When invoked with no subcommand, offer to create the index if none exists.
 pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
     let project_path = tokensave::config::resolve_path(None);
@@ -437,6 +446,14 @@ pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
         let _ = <crate::cli::Cli as clap::CommandFactory>::command().print_help();
         eprintln!();
         return Ok(());
+    }
+    if is_fresh_install().await {
+        eprintln!("\x1b[1;36mWelcome to tokensave!\x1b[0m");
+        eprintln!(
+            "Looks like a new installation. To get started, run \x1b[1mtokensave init\x1b[0m \
+             in your project root."
+        );
+        eprintln!();
     }
     eprint!(
         "No TokenSave index found at '{}'. Create one now? [Y/n] ",
@@ -555,11 +572,15 @@ pub async fn handle_gain(
     let project_filter: Option<String> = if all {
         None
     } else {
-        std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
     };
 
     if history {
-        let rows = gdb.savings_history(project_filter.as_deref(), since as i64).await;
+        let rows = gdb
+            .savings_history(project_filter.as_deref(), since as i64)
+            .await;
         if json_output {
             let arr: Vec<_> = rows
                 .iter()
@@ -579,7 +600,9 @@ pub async fn handle_gain(
         return Ok(());
     }
 
-    let total = gdb.sum_savings(project_filter.as_deref(), since as i64).await;
+    let total = gdb
+        .sum_savings(project_filter.as_deref(), since as i64)
+        .await;
     let usd = estimate_dollars_saved(total.saved_tokens);
 
     if json_output {

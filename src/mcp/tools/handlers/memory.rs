@@ -19,12 +19,20 @@ pub(super) async fn handle_record_decision(cg: &TokenSave, args: Value) -> Resul
     let files: Vec<String> = args
         .get("files")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let tags: Vec<String> = args
         .get("tags")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let id = cg.record_decision(text, reason, &files, &tags).await?;

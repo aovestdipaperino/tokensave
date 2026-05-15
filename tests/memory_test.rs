@@ -26,7 +26,10 @@ async fn record_decision_persists_and_recalls() {
     let hits = cg.session_recall(Some("JWT"), None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].text, "use JWT for auth");
-    assert_eq!(hits[0].reason.as_deref(), Some("session tokens flagged by legal"));
+    assert_eq!(
+        hits[0].reason.as_deref(),
+        Some("session tokens flagged by legal")
+    );
     assert_eq!(hits[0].files, vec!["src/auth.rs"]);
     assert_eq!(hits[0].tags, vec!["security", "decision"]);
 }
@@ -51,7 +54,9 @@ async fn session_recall_orders_newest_first_when_no_query() {
 async fn record_code_area_upserts_touch_count() {
     let (_tmp, cg) = make_project().await;
 
-    cg.record_code_area("src/auth.rs", Some("OAuth provider")).await.unwrap();
+    cg.record_code_area("src/auth.rs", Some("OAuth provider"))
+        .await
+        .unwrap();
     cg.record_code_area("src/auth.rs", None).await.unwrap();
     cg.record_code_area("src/auth.rs", None).await.unwrap();
 
@@ -65,7 +70,9 @@ async fn record_code_area_upserts_touch_count() {
 #[tokio::test]
 async fn session_recall_filters_by_since() {
     let (_tmp, cg) = make_project().await;
-    cg.record_decision("old decision", None, &[], &[]).await.unwrap();
+    cg.record_decision("old decision", None, &[], &[])
+        .await
+        .unwrap();
     // Force a > 1s gap so created_at values differ deterministically.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let cutoff = std::time::SystemTime::now()
@@ -75,7 +82,9 @@ async fn session_recall_filters_by_since() {
     // Force a > 1s gap on the new side too, otherwise the new record could share
     // its created_at with `cutoff` (second-granularity).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    cg.record_decision("new decision", None, &[], &[]).await.unwrap();
+    cg.record_decision("new decision", None, &[], &[])
+        .await
+        .unwrap();
 
     let hits = cg.session_recall(None, Some(cutoff), 10).await.unwrap();
     assert_eq!(hits.len(), 1);

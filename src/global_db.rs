@@ -192,14 +192,20 @@ impl GlobalDb {
             None => self.conn.query(sql_all, params![since]).await,
         };
         let Ok(mut rows) = rows else {
-            return SavingsTotal { saved_tokens: 0, calls: 0 };
+            return SavingsTotal {
+                saved_tokens: 0,
+                calls: 0,
+            };
         };
         match rows.next().await {
             Ok(Some(row)) => SavingsTotal {
                 saved_tokens: row.get::<i64>(0).unwrap_or(0).max(0) as u64,
                 calls: row.get::<i64>(1).unwrap_or(0).max(0) as u64,
             },
-            _ => SavingsTotal { saved_tokens: 0, calls: 0 },
+            _ => SavingsTotal {
+                saved_tokens: 0,
+                calls: 0,
+            },
         }
     }
 
@@ -222,7 +228,9 @@ impl GlobalDb {
             Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
             None => self.conn.query(sql_all, params![since]).await,
         };
-        let Ok(mut rows) = rows else { return Vec::new(); };
+        let Ok(mut rows) = rows else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
             out.push(SavingsDay {

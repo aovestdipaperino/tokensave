@@ -472,11 +472,18 @@ pub fn print_gain_total(project: &str, range: &str, saved_tokens: u64, calls: u6
     println!("  {:<28} {:>12}", "Range", range);
     println!("  {:<28} {:>12}", "Tool calls", calls);
     println!("  {:<28} {:>12}", "Tokens saved", saved_str);
-    println!("  {:<28} {:>12}", "USD saved (Sonnet input)", format!("${usd:.2}"));
+    println!(
+        "  {:<28} {:>12}",
+        "USD saved (Sonnet input)",
+        format!("${usd:.2}")
+    );
 }
 
 pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDay], to_usd: F) {
-    println!("  {:<12} {:>10} {:>8} {:>10}", "Day (UTC)", "Tokens", "Calls", "USD");
+    println!(
+        "  {:<12} {:>10} {:>8} {:>10}",
+        "Day (UTC)", "Tokens", "Calls", "USD"
+    );
     for r in rows {
         let days_since_epoch = r.day / 86_400;
         let date = format_yyyy_mm_dd(days_since_epoch);

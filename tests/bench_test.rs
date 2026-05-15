@@ -38,6 +38,10 @@ task = "what does world do"
     assert_eq!(report.results.len(), 2);
     assert_eq!(report.aggregate.queries, 2);
     for r in &report.results {
-        assert!(r.baseline_tokens > 0, "baseline must be > 0 for query: {}", r.task);
+        assert!(
+            r.baseline_tokens > 0,
+            "baseline must be > 0 for query: {}",
+            r.task
+        );
     }
 }

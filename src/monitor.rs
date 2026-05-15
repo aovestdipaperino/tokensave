@@ -569,7 +569,10 @@ fn monitor_loop(
             let project_total: u64 = methods.values().sum::<u64>();
             grand_total += project_total;
 
-            all_lines.push(("", format!("{} ({})", project, format_number(project_total))));
+            all_lines.push((
+                "",
+                format!("{} ({})", project, format_number(project_total)),
+            ));
             for method in &method_lines {
                 let delta = *methods.get(method).unwrap_or(&0);
                 let color = update_color_for(recent_updates, project, method);
@@ -650,11 +653,7 @@ fn push_recent_update(recent: &mut Vec<(String, String)>, project: &str, tool_na
 
 /// Return the ANSI color prefix for a method line based on its recency.
 /// Latest = green, 2nd latest = orange, 3rd latest = yellow, else no color.
-fn update_color_for(
-    recent: &[(String, String)],
-    project: &str,
-    tool_name: &str,
-) -> &'static str {
+fn update_color_for(recent: &[(String, String)], project: &str, tool_name: &str) -> &'static str {
     match recent
         .iter()
         .position(|(p, t)| p == project && t == tool_name)

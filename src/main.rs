@@ -1157,7 +1157,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Bench { queries, json, path, max_nodes } => {
+        Commands::Bench {
+            queries,
+            json,
+            path,
+            max_nodes,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
             let cg = serve::ensure_initialized(&project_path).await?;
 
@@ -1171,9 +1176,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             };
 
             let report = match queries {
-                Some(p) => {
-                    tokensave::bench::run_bench(&cg, std::path::Path::new(&p), opts).await?
-                }
+                Some(p) => tokensave::bench::run_bench(&cg, std::path::Path::new(&p), opts).await?,
                 None => {
                     tokensave::bench::run_bench_with_toml(
                         &cg,
@@ -1190,7 +1193,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 println!("{}", tokensave::bench::format_report_markdown(&report));
             }
         }
-        Commands::Gain { all, history, range, json } => {
+        Commands::Gain {
+            all,
+            history,
+            range,
+            json,
+        } => {
             commands::handle_gain(all, history, &range, json).await?;
         }
         Commands::Monitor => {

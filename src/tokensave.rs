@@ -2148,14 +2148,16 @@ impl TokenSave {
         tags: &[String],
     ) -> crate::errors::Result<i64> {
         debug_assert!(!text.is_empty(), "decision text must not be empty");
-        let files_json = serde_json::to_string(files).map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_decision files serialization failed: {e}"),
-            operation: "record_decision".to_string(),
-        })?;
-        let tags_json = serde_json::to_string(tags).map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_decision tags serialization failed: {e}"),
-            operation: "record_decision".to_string(),
-        })?;
+        let files_json =
+            serde_json::to_string(files).map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("record_decision files serialization failed: {e}"),
+                operation: "record_decision".to_string(),
+            })?;
+        let tags_json =
+            serde_json::to_string(tags).map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("record_decision tags serialization failed: {e}"),
+                operation: "record_decision".to_string(),
+            })?;
         let now = current_timestamp();
         let conn = self.db.conn();
         conn.execute(
@@ -2188,8 +2190,8 @@ impl TokenSave {
         };
 
         let mut rows = match (query, since) {
-            (Some(q), Some(ts)) => {
-                conn.query(
+            (Some(q), Some(ts)) => conn
+                .query(
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
                      FROM memory_decisions d \
                      JOIN memory_decisions_fts f ON f.rowid = d.id \
@@ -2198,10 +2200,9 @@ impl TokenSave {
                     libsql::params![q, ts, limit],
                 )
                 .await
-                .map_err(db_err)?
-            }
-            (Some(q), None) => {
-                conn.query(
+                .map_err(db_err)?,
+            (Some(q), None) => conn
+                .query(
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
                      FROM memory_decisions d \
                      JOIN memory_decisions_fts f ON f.rowid = d.id \
@@ -2210,27 +2211,24 @@ impl TokenSave {
                     libsql::params![q, limit],
                 )
                 .await
-                .map_err(db_err)?
-            }
-            (None, Some(ts)) => {
-                conn.query(
+                .map_err(db_err)?,
+            (None, Some(ts)) => conn
+                .query(
                     "SELECT id, text, reason, created_at, files, tags \
                      FROM memory_decisions WHERE created_at >= ?1 \
                      ORDER BY created_at DESC LIMIT ?2",
                     libsql::params![ts, limit],
                 )
                 .await
-                .map_err(db_err)?
-            }
-            (None, None) => {
-                conn.query(
+                .map_err(db_err)?,
+            (None, None) => conn
+                .query(
                     "SELECT id, text, reason, created_at, files, tags \
                      FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
                     libsql::params![limit],
                 )
                 .await
-                .map_err(db_err)?
-            }
+                .map_err(db_err)?,
         };
 
         let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
@@ -2287,7 +2285,10 @@ impl TokenSave {
     }
 
     /// List code areas, most-recently-touched first.
-    pub async fn list_code_areas(&self, limit: usize) -> crate::errors::Result<Vec<CodeAreaRecord>> {
+    pub async fn list_code_areas(
+        &self,
+        limit: usize,
+    ) -> crate::errors::Result<Vec<CodeAreaRecord>> {
         let limit = limit.clamp(1, MAX_CODE_AREAS_LIMIT) as i64;
         let conn = self.db.conn();
         let mut rows = conn
