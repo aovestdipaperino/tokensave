@@ -30,6 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Linux runner ships with ~10 GB free, which our 713 MB cache restore
+      # plus the cargo target dir (34 tree-sitter parsers compiled in) can
+      # exceed. See v4.5.1 CI flake: "No space left on device" mid-test.
+      - name: Free disk space (Linux only)
+        if: matrix.name == 'Linux'
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
