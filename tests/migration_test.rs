@@ -768,10 +768,7 @@ async fn test_fts_triggers_exist_after_migration() {
 
 #[tokio::test]
 async fn test_v8_creates_memory_tables() {
-    let tmp = tempfile::tempdir().unwrap();
-    let db_path = tmp.path().join("test.db");
-    let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
-    let conn = db.connect().unwrap();
+    let (conn, _db, _dir) = create_raw_db().await;
     create_schema(&conn).await.unwrap();
 
     // memory_decisions table exists with expected columns
@@ -805,15 +802,34 @@ async fn test_v8_creates_memory_tables() {
         .await
         .unwrap();
     assert!(rows.next().await.unwrap().is_some(), "memory_decisions_fts missing");
+
+    // All three FTS triggers exist
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='trigger' \
+             AND name IN ('memory_decisions_fts_insert', 'memory_decisions_fts_delete', 'memory_decisions_fts_update') \
+             ORDER BY name",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut trigger_names = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        trigger_names.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(
+        trigger_names,
+        vec![
+            "memory_decisions_fts_delete",
+            "memory_decisions_fts_insert",
+            "memory_decisions_fts_update",
+        ]
+    );
 }
 
 #[tokio::test]
 async fn test_v7_to_v8_upgrade_path() {
-    use tokensave::db::migrations::migrate;
-    let tmp = tempfile::tempdir().unwrap();
-    let db_path = tmp.path().join("test.db");
-    let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
-    let conn = db.connect().unwrap();
+    let (conn, _db, _dir) = create_raw_db().await;
 
     create_schema(&conn).await.unwrap();
     conn.execute("PRAGMA user_version = 7", ()).await.unwrap();
