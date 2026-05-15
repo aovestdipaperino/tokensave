@@ -1769,17 +1769,37 @@ impl TokenSave {
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let overfetch = limit.saturating_mul(3).max(30);
         let raw = self.db.search_nodes(query, overfetch).await?;
+        let trimmed_query = query.trim();
         let mut ranked: Vec<SearchResult> = raw
             .into_iter()
             .map(|mut r| {
                 r.score += kind_rank_bonus(&r.node.kind);
+                // Exact-name match boost: when the node's `name` equals the
+                // query verbatim, surface it ahead of partial / qualified-name
+                // matches. Without this, searching for a trait like
+                // `LinearOperator` could be outranked by a `Method` whose
+                // qualified name happens to contain `LinearOperator` (e.g.
+                // a method declared inside the trait body), or by a `Field`
+                // that shares the same simple name.
+                if !trimmed_query.is_empty() && r.node.name == trimmed_query {
+                    r.score += 10.0;
+                }
                 r
             })
             .collect();
+        // Sort by kind tier first (definitions > references), then score
+        // descending. Tier-first avoids any chance that a `use` re-export
+        // (kind tier = `Use`) outscores a real definition because BM25
+        // happened to weight the short re-export row highly. Score is the
+        // secondary key so within a tier we still respect BM25.
         ranked.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            kind_tier(&a.node.kind)
+                .cmp(&kind_tier(&b.node.kind))
+                .then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
         ranked.truncate(limit);
         Ok(ranked)
@@ -2563,6 +2583,87 @@ impl TokenSave {
 /// compiler will force a re-tune here rather than silently defaulting it to
 /// `0.0`, matching the project rule "crash hard if there is an unknown
 /// value".
+/// Coarse ranking tier used as the primary sort key in `search`. Lower
+/// numbers sort first. The tiers separate "real definitions" (functions,
+/// types, traits, …) from "references" (`use`, `module`, annotation usage)
+/// so a re-export can never beat the thing it re-exports, no matter what
+/// BM25 produces for the row.
+fn kind_tier(kind: &NodeKind) -> u8 {
+    match kind {
+        // Tier 0: callable definitions and type definitions — the
+        // "what is this?" answers a user usually wants when searching by
+        // symbol name.
+        NodeKind::Function
+        | NodeKind::Method
+        | NodeKind::StructMethod
+        | NodeKind::Constructor
+        | NodeKind::AbstractMethod
+        | NodeKind::ArrowFunction
+        | NodeKind::Procedure
+        | NodeKind::Struct
+        | NodeKind::Enum
+        | NodeKind::Trait
+        | NodeKind::Class
+        | NodeKind::InnerClass
+        | NodeKind::Interface
+        | NodeKind::InterfaceType
+        | NodeKind::Record
+        | NodeKind::CaseClass
+        | NodeKind::DataClass
+        | NodeKind::SealedClass
+        | NodeKind::TypeAlias
+        | NodeKind::Union
+        | NodeKind::Typedef
+        | NodeKind::Mixin
+        | NodeKind::Extension
+        | NodeKind::Delegate
+        | NodeKind::Template
+        | NodeKind::PascalRecord
+        | NodeKind::ScalaObject
+        | NodeKind::KotlinObject
+        | NodeKind::CompanionObject
+        | NodeKind::Annotation
+        | NodeKind::Event => 0,
+        // Proto definitions (feature-gated)
+        #[cfg(feature = "lang-protobuf")]
+        NodeKind::ProtoMessage | NodeKind::ProtoService | NodeKind::ProtoRpc => 0,
+        // Tier 1: impl blocks — between definitions and references.
+        NodeKind::Impl => 1,
+        // Tier 2: values, macros, members of types.
+        NodeKind::Const
+        | NodeKind::Static
+        | NodeKind::Macro
+        | NodeKind::PreprocessorDef
+        | NodeKind::EnumVariant
+        | NodeKind::Field
+        | NodeKind::ValField
+        | NodeKind::VarField
+        | NodeKind::Property
+        | NodeKind::CSharpProperty
+        | NodeKind::StructTag
+        | NodeKind::InitBlock
+        | NodeKind::Export => 2,
+        // Tier 3: containers (module, namespace, …) — usually not the
+        // answer to "find symbol".
+        NodeKind::Module
+        | NodeKind::Package
+        | NodeKind::Namespace
+        | NodeKind::ScalaPackage
+        | NodeKind::GoPackage
+        | NodeKind::KotlinPackage
+        | NodeKind::PascalUnit
+        | NodeKind::Library
+        | NodeKind::File
+        | NodeKind::GenericParam
+        | NodeKind::PascalProgram => 3,
+        // Tier 4: pure references / annotations — always rank last.
+        NodeKind::Use
+        | NodeKind::Include
+        | NodeKind::AnnotationUsage
+        | NodeKind::Decorator => 4,
+    }
+}
+
 fn kind_rank_bonus(kind: &NodeKind) -> f64 {
     match kind {
         // Callable definitions

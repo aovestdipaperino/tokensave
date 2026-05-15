@@ -208,7 +208,16 @@ mod tests {
     #[test]
     fn test_tool_definitions_complete() {
         let tools = get_tool_definitions();
-        assert_eq!(tools.len(), 60);
+        // ast_grep_rewrite is conditionally registered based on whether the
+        // external `ast-grep` binary is on PATH — agents should never see a
+        // tool that will instantly fail. The count and the per-tool checks
+        // below adapt to the host's capability set.
+        let expected_total = if super::super::definitions::ast_grep_available() {
+            60
+        } else {
+            59
+        };
+        assert_eq!(tools.len(), expected_total);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_search"));
@@ -258,7 +267,11 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_str_replace"));
         assert!(tool_names.contains(&"tokensave_multi_str_replace"));
         assert!(tool_names.contains(&"tokensave_insert_at"));
-        assert!(tool_names.contains(&"tokensave_ast_grep_rewrite"));
+        if super::super::definitions::ast_grep_available() {
+            assert!(tool_names.contains(&"tokensave_ast_grep_rewrite"));
+        } else {
+            assert!(!tool_names.contains(&"tokensave_ast_grep_rewrite"));
+        }
         assert!(tool_names.contains(&"tokensave_gini"));
         assert!(tool_names.contains(&"tokensave_dependency_depth"));
         assert!(tool_names.contains(&"tokensave_health"));

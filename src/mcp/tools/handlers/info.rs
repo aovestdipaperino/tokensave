@@ -544,21 +544,92 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
         if !crate::graph::scc::is_cyclic_scc(&scc, &cycle_adj) {
             continue;
         }
-        let cycle_names: Vec<&str> = scc
+        let scc_set: HashSet<&str> = scc.iter().copied().collect();
+        // Rank symbols within the SCC by in-cycle out-degree (how many
+        // *other* SCC members this symbol depends on). The symbol with the
+        // smallest out-degree is the leaf-most node inside the cycle and is
+        // the natural starting point: porting it requires stubbing the
+        // fewest peers. The symbol with the largest out-degree is the
+        // "hub" — the best candidate to break the cycle by refactoring its
+        // call sites.
+        let mut ranked: Vec<(&str, usize, usize)> = scc
             .iter()
-            .filter_map(|id| node_map.get(id).map(|n| n.name.as_str()))
+            .map(|id| {
+                let out_in_cycle = cycle_adj
+                    .get(id)
+                    .map_or(0, |neighbors| {
+                        neighbors.iter().filter(|n| scc_set.contains(*n)).count()
+                    });
+                // In-degree (within the cycle) — how many SCC members
+                // depend on this symbol. High in-degree = "many callers
+                // inside the cycle", which is another useful break-point
+                // signal.
+                let mut in_in_cycle = 0;
+                for (&src, neighbors) in &cycle_adj {
+                    if !scc_set.contains(src) || src == *id {
+                        continue;
+                    }
+                    if neighbors.contains(id) {
+                        in_in_cycle += 1;
+                    }
+                }
+                (*id, out_in_cycle, in_in_cycle)
+            })
             .collect();
-        let files: HashSet<&str> = scc
+        // Ascending by out-degree → entry-point first; ties broken by
+        // descending in-degree (hub-iness) so the most-referenced "leaf"
+        // surfaces just after the cleanest leaf.
+        ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+
+        let symbols_detailed: Vec<Value> = ranked
             .iter()
-            .filter_map(|id| node_map.get(id).map(|n| n.file_path.as_str()))
+            .filter_map(|(id, out_deg, in_deg)| {
+                let node = node_map.get(id)?;
+                Some(json!({
+                    "name": node.name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": node.start_line,
+                    "in_cycle_out_degree": out_deg,
+                    "in_cycle_in_degree": in_deg,
+                }))
+            })
             .collect();
-        let mut files_vec: Vec<&str> = files.into_iter().collect();
-        files_vec.sort_unstable();
+
+        // Rank files by how many cycle members each contains — the file
+        // with the most members is the best refactor target.
+        let mut file_counts: HashMap<&str, usize> = HashMap::new();
+        for id in &scc {
+            if let Some(n) = node_map.get(id) {
+                *file_counts.entry(n.file_path.as_str()).or_insert(0) += 1;
+            }
+        }
+        let mut files_ranked: Vec<(&str, usize)> =
+            file_counts.into_iter().collect();
+        files_ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let files_json: Vec<Value> = files_ranked
+            .iter()
+            .map(|(path, count)| json!({"file": path, "members_in_cycle": count}))
+            .collect();
+
+        let entry_point = ranked.first().and_then(|(id, _, _)| node_map.get(id));
+        let hub = ranked
+            .iter()
+            .max_by_key(|(_, _out, in_deg)| *in_deg)
+            .and_then(|(id, _, _)| node_map.get(id));
+
         cycles_json.push(json!({
-            "symbols": cycle_names,
-            "files": files_vec,
             "size": scc.len(),
-            "note": "Mutual dependency — port together. Break edges within `files` to escape this cycle."
+            "files": files_json,
+            "symbols": symbols_detailed,
+            "entry_point": entry_point.map(|n| json!({
+                "name": n.name, "file": n.file_path, "line": n.start_line,
+            })),
+            "break_point_candidate": hub.map(|n| json!({
+                "name": n.name, "file": n.file_path, "line": n.start_line,
+                "rationale": "Highest in-cycle in-degree — refactoring its callers is the most effective way to fragment this SCC.",
+            })),
+            "note": "Mutual dependency — port together, starting at `entry_point` and refactoring `break_point_candidate` to split the cycle.",
         }));
     }
 

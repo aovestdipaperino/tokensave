@@ -78,8 +78,13 @@ pub fn get_tool_definitions_with_budget(node_count: u64, budget: u8) -> Vec<Tool
 }
 
 /// Returns the list of all tool definitions exposed by this MCP server.
+///
+/// Tools whose backing dependency is missing on the current host are
+/// filtered out so the model never sees a tool that will immediately
+/// fail when called. Currently this only affects `tokensave_ast_grep_rewrite`,
+/// which shells out to the `ast-grep` binary.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
-    let definitions = vec![
+    let mut definitions = vec![
         def_search(),
         def_context(),
         def_callers(),
@@ -141,6 +146,9 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_code_area(),
         def_session_recall(),
     ];
+    if !ast_grep_available() {
+        definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
+    }
     debug_assert!(
         !definitions.is_empty(),
         "get_tool_definitions returned empty list"
@@ -150,6 +158,20 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         "all tool definitions must have 'tokensave_' prefix"
     );
     definitions
+}
+
+/// Returns true when the external `ast-grep` binary is on PATH. Result is
+/// cached after the first check so we don't fork a subprocess on every
+/// `tools/list` request.
+pub fn ast_grep_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("ast-grep")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    })
 }
 
 // ── alwaysLoad tools (loaded into the model prompt immediately) ─────────

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use definitions::{
-    context_description, explore_call_budget, get_tool_definitions,
+    ast_grep_available, context_description, explore_call_budget, get_tool_definitions,
     get_tool_definitions_with_budget,
 };
 pub use handlers::handle_tool_call;

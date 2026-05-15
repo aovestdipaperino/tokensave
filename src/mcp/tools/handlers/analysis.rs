@@ -42,6 +42,113 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Returns the identifiers a `use` statement brings into scope, parsing
+/// grouped and aliased forms. Examples:
+///   `foo::bar`             → bar
+///   `foo::bar as baz`      → baz
+///   `foo::{a, b}`          → a, b
+///   `foo::{a, b as c}`     → a, c
+///   `foo::{a, nested::b}`  → a, b
+///   `foo::{self, bar}`     → foo, bar   (self brings the module in)
+///   `foo::*`               → (empty, glob — handled separately)
+fn identifiers_from_use_path(path: &str) -> Vec<String> {
+    let trimmed = path.trim().trim_end_matches(';').trim();
+    if trimmed.ends_with('*') {
+        return Vec::new();
+    }
+    if let (Some(open), Some(close)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if close <= open {
+            return Vec::new();
+        }
+        let prefix = trimmed[..open].trim().trim_end_matches("::").trim();
+        let parent = prefix
+            .rsplit("::")
+            .next()
+            .unwrap_or(prefix)
+            .trim()
+            .to_string();
+        let inside = &trimmed[open + 1..close];
+        let mut out: Vec<String> = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        let bytes = inside.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    let item = &inside[start..i];
+                    push_identifier(&mut out, item, &parent);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        push_identifier(&mut out, &inside[start..], &parent);
+        return out;
+    }
+    let last_seg = trimmed.rsplit("::").next().unwrap_or(trimmed).trim();
+    let id = identifier_from_segment(last_seg);
+    if id.is_empty() || id == "*" {
+        Vec::new()
+    } else {
+        vec![id]
+    }
+}
+
+fn push_identifier(out: &mut Vec<String>, item: &str, parent: &str) {
+    let item = item.trim();
+    if item.is_empty() {
+        return;
+    }
+    // Nested group: `foo::{a, sub::{x, y}}` — recurse on the nested part.
+    if item.contains('{') {
+        for id in identifiers_from_use_path(item) {
+            out.push(id);
+        }
+        return;
+    }
+    let last_seg = item.rsplit("::").next().unwrap_or(item).trim();
+    let id = identifier_from_segment(last_seg);
+    if id.is_empty() {
+        return;
+    }
+    if id == "self" {
+        // `use foo::{self, bar}` brings `foo` itself into scope.
+        if !parent.is_empty() {
+            out.push(parent.to_string());
+        }
+        return;
+    }
+    if id == "*" {
+        return;
+    }
+    out.push(id);
+}
+
+/// Resolves a single use-tree segment (no `::`) into the identifier it
+/// brings into scope, accounting for `as` aliases.
+fn identifier_from_segment(seg: &str) -> String {
+    let seg = seg.trim().trim_end_matches(';').trim();
+    if seg.is_empty() {
+        return String::new();
+    }
+    // `foo as bar` → keep `bar`.
+    let after_as = seg.split_whitespace().collect::<Vec<_>>();
+    if let Some(pos) = after_as.iter().position(|w| *w == "as") {
+        if let Some(alias) = after_as.get(pos + 1) {
+            return (*alias).to_string();
+        }
+    }
+    seg.split_whitespace()
+        .next()
+        .unwrap_or(seg)
+        .trim()
+        .to_string()
+}
+
 /// Handles `tokensave_dead_code` tool calls.
 pub(super) async fn handle_dead_code(
     cg: &TokenSave,
@@ -299,24 +406,19 @@ pub(super) async fn handle_unused_imports(
         if use_node.visibility == crate::types::Visibility::Pub {
             continue;
         }
-        // The Use node's `name` is the full import path as written (e.g.
-        // `std::collections::HashSet` or `crate::foo::bar`). The actual
-        // identifier brought into scope is the last `::` segment, modulo
-        // `as` aliases which the extractor preserves in the name.
-        let imported = use_node
-            .name
-            .rsplit("::")
-            .next()
-            .unwrap_or(use_node.name.as_str());
-        // `as` rename: `use foo as bar` → identifier is `bar`.
-        let identifier = imported
-            .split_whitespace()
-            .last()
-            .unwrap_or(imported)
-            .trim_end_matches(';');
-        if identifier.is_empty() || identifier == "*" || identifier == "self" {
-            // Glob and `use self::...` imports are out of scope for this
-            // heuristic — too easy to false-positive.
+        // The Use node's `name` is the full import path as written. Three
+        // shapes show up in real Rust code:
+        //   - `foo::bar`           → single identifier `bar`
+        //   - `foo::bar as baz`    → single identifier `baz`
+        //   - `foo::{a, b as c}`   → grouped: identifiers `a`, `c`
+        // The previous version only handled the first two: it took the last
+        // `::` segment and treated the literal string `{a, b as c}` as one
+        // identifier, which never matched anything and therefore either
+        // flagged every grouped import (false positive) or missed unused
+        // members inside a partially-used group (false negative). Real
+        // codebases lean heavily on grouped imports.
+        let identifiers = identifiers_from_use_path(&use_node.name);
+        if identifiers.is_empty() {
             continue;
         }
 
@@ -331,32 +433,31 @@ pub(super) async fn handle_unused_imports(
             continue;
         };
 
-        // Count word-boundary occurrences of the identifier outside the
-        // use statement's own line range. If zero non-use references
-        // appear, the import is unused.
-        let mut hits = 0;
-        for (line_idx, line) in source.lines().enumerate() {
-            let line_idx = line_idx as u32;
-            // Skip the use statement itself and any line inside it.
-            if line_idx >= use_node.start_line && line_idx <= use_node.end_line {
-                continue;
-            }
-            if has_identifier_match(line, identifier) {
-                hits += 1;
-                if hits > 0 {
+        for identifier in &identifiers {
+            // Count word-boundary occurrences of the identifier outside the
+            // use statement's own line range. If zero non-use references
+            // appear, this particular identifier is unused.
+            let mut found = false;
+            for (line_idx, line) in source.lines().enumerate() {
+                let line_idx = line_idx as u32;
+                if line_idx >= use_node.start_line && line_idx <= use_node.end_line {
+                    continue;
+                }
+                if has_identifier_match(line, identifier) {
+                    found = true;
                     break;
                 }
             }
-        }
-
-        if hits == 0 {
-            touched.push(use_node.file_path.clone());
-            unused.push(json!({
-                "id": use_node.id,
-                "name": use_node.name,
-                "file": use_node.file_path,
-                "line": use_node.start_line,
-            }));
+            if !found {
+                touched.push(use_node.file_path.clone());
+                unused.push(json!({
+                    "id": use_node.id,
+                    "name": use_node.name,
+                    "unused": identifier,
+                    "file": use_node.file_path,
+                    "line": use_node.start_line,
+                }));
+            }
         }
     }
 

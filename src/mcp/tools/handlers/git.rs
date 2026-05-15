@@ -119,10 +119,19 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
         .map_or(2, |v| v.min(10) as usize);
 
     let mut modified_symbols: Vec<Value> = Vec::new();
+    let mut modified_seen: HashSet<String> = HashSet::new();
     let mut impacted_symbols: Vec<Value> = Vec::new();
     let mut impacted_seen: HashSet<String> = HashSet::new();
     let mut affected_tests: HashSet<String> = HashSet::new();
     let mut all_touched_files: Vec<String> = Vec::new();
+    // Callers can (and in the wild do) pass the same path twice — e.g. when
+    // synthesising the list from a directory walk that double-counts symlinked
+    // or canonicalised entries. Dedup early so downstream loops don't emit
+    // the same node N times for the same path.
+    let files: Vec<String> = {
+        let mut seen: HashSet<String> = HashSet::new();
+        files.into_iter().filter(|f| seen.insert(f.clone())).collect()
+    };
 
     // Pre-compute files containing inline test modules.
     let files_with_inline_tests = cg
@@ -136,6 +145,13 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
         let nodes = cg.get_nodes_by_file(file).await?;
         for node in &nodes {
             all_touched_files.push(node.file_path.clone());
+            // Dedup by node id: `get_nodes_by_file` can return the same node
+            // twice if the index contains duplicates from re-extraction, and
+            // even when it doesn't, callers may legitimately want one entry
+            // per node — never one entry per (file, node) pair.
+            if !modified_seen.insert(node.id.clone()) {
+                continue;
+            }
             modified_symbols.push(json!({
                 "id": node.id,
                 "name": node.name,
@@ -255,29 +271,55 @@ fn git_diff_files(
         .map_err(|e| format!("diff init failed: {e}"))?
         .for_each_to_obtain_tree(&to_tree, |change| {
             use gix::object::tree::diff::Change;
+            // `for_each_to_obtain_tree` walks one level at a time — if an
+            // entire subtree was added, deleted, or moved, the entry's
+            // `entry_mode` is a tree, not a blob. We only want file paths
+            // downstream, so skip tree entries before pushing. The earlier
+            // `is_dir()` fallback after-the-fact missed deletions, where the
+            // path no longer exists on disk.
             match &change {
-                Change::Addition { location, .. }
-                | Change::Deletion { location, .. }
-                | Change::Modification { location, .. } => {
-                    changed.push(location.to_string());
+                Change::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Modification {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if !entry_mode.is_tree() {
+                        changed.push(location.to_string());
+                    }
                 }
                 Change::Rewrite {
                     source_location,
                     location,
+                    source_entry_mode,
+                    entry_mode,
                     ..
                 } => {
-                    changed.push(source_location.to_string());
-                    changed.push(location.to_string());
+                    if !source_entry_mode.is_tree() {
+                        changed.push(source_location.to_string());
+                    }
+                    if !entry_mode.is_tree() {
+                        changed.push(location.to_string());
+                    }
                 }
             }
             Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
         })
         .map_err(|e| format!("tree diff failed: {e}"))?;
 
-    // gix yields directory-level entries when an entire subtree changes
-    // (`for_each_to_obtain_tree` is not recursive). Drop any path that
-    // resolves to a directory on disk; downstream handlers
-    // (`changelog`, `commit_context`, `pr_context`) only want file paths.
+    // Belt-and-suspenders: even with the entry_mode check above, drop any
+    // path that resolves to a directory on disk for additions/modifications.
+    // Pure deletions can't be checked this way (the path is gone), which is
+    // exactly why entry_mode.is_tree() above is the load-bearing filter.
     changed.retain(|p| !project_root.join(p).is_dir());
     Ok(changed)
 }

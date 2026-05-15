@@ -129,12 +129,17 @@ impl<'a> GraphQueryManager<'a> {
             " AND visibility != 'public'"
         };
 
-        // `NOT EXISTS ... WHERE target = nodes.id AND kind != 'contains'`:
-        // every node has at least one incoming `Contains` edge from its
-        // parent module/file (that's bookkeeping, not a real reference),
-        // so we must exclude `Contains` before declaring a node dead — or
-        // every single node in the graph would be filtered out by the
-        // unfiltered `NOT EXISTS` and the tool would always return 0.
+        // Only true "use sites" count as evidence that a symbol is alive:
+        // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
+        // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
+        // are emitted by the extractor even for unused code — every Rust
+        // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
+        // struct, every annotation_usage adds an incoming edge that is NOT a
+        // real reference. Previously we excluded only `contains`, so any
+        // attribute on an otherwise-unused function masked it from
+        // dead-code detection — which is why the sonium run reported zero
+        // dead functions across 5,715. The narrower allowlist below restores
+        // the intended semantics: "no real caller / referencer = dead".
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                     start_column, end_column, docstring, signature, visibility,
@@ -148,7 +153,7 @@ impl<'a> GraphQueryManager<'a> {
              AND NOT EXISTS (
                  SELECT 1 FROM edges
                  WHERE target = nodes.id
-                 AND kind != 'contains'
+                 AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )"
         );
 

@@ -93,7 +93,15 @@ fn test_all_error_codes() {
 #[test]
 fn test_tool_definitions_count() {
     let tools = get_tool_definitions();
-    assert_eq!(tools.len(), 60);
+    // `tokensave_ast_grep_rewrite` is registered conditionally on whether
+    // the external `ast-grep` binary is on PATH — hide-when-missing so
+    // agents never receive a tool that will instantly fail.
+    let expected = if tokensave::mcp::tools::ast_grep_available() {
+        60
+    } else {
+        59
+    };
+    assert_eq!(tools.len(), expected);
 }
 
 #[test]

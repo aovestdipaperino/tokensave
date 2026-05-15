@@ -3362,13 +3362,14 @@ pub fn leaf() {}
         cycles.len()
     );
     // No cycle entry should mix both (a,b) and (c,d) names — that would
-    // mean the fix didn't actually separate them.
+    // mean the fix didn't actually separate them. (Each symbol is now an
+    // object: {name, kind, file, line, in_cycle_out_degree, ...}.)
     for c in cycles {
         let names: Vec<&str> = c["symbols"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|s| s.as_str())
+            .filter_map(|s| s["name"].as_str().or_else(|| s.as_str()))
             .collect();
         let has_ab = names.iter().any(|n| *n == "a" || *n == "b");
         let has_cd = names.iter().any(|n| *n == "c" || *n == "d");
@@ -3377,6 +3378,84 @@ pub fn leaf() {}
             "one cycle entry contains both SCCs (a/b mixed with c/d): {names:?}"
         );
     }
+}
+
+/// Regression for new bug-report batch (#25): `tokensave_port_order` must
+/// expose intra-cycle ordering signals so an agent can pick a starting
+/// point inside a 200-symbol SCC instead of staring at an undifferentiated
+/// blob. We expect each cycle entry to carry per-symbol in-cycle degree
+/// data, a file-level member-count breakdown, and explicit `entry_point`
+/// / `break_point_candidate` suggestions.
+#[tokio::test]
+async fn port_order_provides_intra_cycle_ordering() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // a → b → c → a, plus a "hub" h that all three call into and that
+    // calls a back. h is the central node (highest in-cycle in-degree).
+    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(
+        project.join("src/m.rs"),
+        r#"
+pub fn a() { b(); h(); }
+pub fn b() { c(); h(); }
+pub fn c() { a(); h(); }
+pub fn h() { a(); }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_port_order",
+        json!({"source_dir": "src"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    assert!(!cycles.is_empty(), "expected at least one cycle");
+    let cycle = &cycles[0];
+    assert!(
+        cycle["files"].as_array().is_some(),
+        "cycle must carry a `files` breakdown"
+    );
+    let files_arr = cycle["files"].as_array().unwrap();
+    for f in files_arr {
+        assert!(
+            f.is_object() && f["members_in_cycle"].as_u64().is_some(),
+            "files entries must be objects with `members_in_cycle`, got {f}"
+        );
+    }
+    let symbols = cycle["symbols"].as_array().unwrap();
+    for s in symbols {
+        assert!(
+            s["in_cycle_out_degree"].as_u64().is_some(),
+            "each symbol must report in_cycle_out_degree; got {s}"
+        );
+        assert!(
+            s["in_cycle_in_degree"].as_u64().is_some(),
+            "each symbol must report in_cycle_in_degree; got {s}"
+        );
+    }
+    assert!(
+        cycle["entry_point"].is_object(),
+        "cycle must surface a suggested entry_point; got {cycle}"
+    );
+    assert!(
+        cycle["break_point_candidate"].is_object(),
+        "cycle must surface a break_point_candidate; got {cycle}"
+    );
+    // The break point should be `h` (most internal callers).
+    assert_eq!(
+        cycle["break_point_candidate"]["name"].as_str(),
+        Some("h"),
+        "break_point_candidate should be the hub function `h`; got {cycle}"
+    );
 }
 
 /// Regression for bug #9: `tokensave_inheritance_depth` must surface Rust
@@ -3414,4 +3493,429 @@ pub trait Leaf: Middle {}
         .unwrap();
     let depth = leaf["depth"].as_u64().unwrap();
     assert!(depth >= 2, "Leaf depth should be >= 2 hops, got {depth}");
+}
+
+/// Regression for new bug-report batch (#26): `tokensave_circular` must
+/// emit *disjoint* SCCs — no file should appear in more than one cycle
+/// entry. The sonium run reported 216 cycles "sharing long tails", which
+/// would only be possible if the SCC condensation step were broken. This
+/// stress test wires up many disjoint cycles plus DAG-style tails between
+/// them and asserts no file leaks into a second cycle entry.
+#[tokio::test]
+async fn circular_emits_disjoint_sccs_under_load() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let mut lib_rs = String::new();
+    // Build 5 disjoint 3-file cycles with shared DAG tails between them.
+    // Cycle k = (a_k -> b_k -> c_k -> a_k); plus a one-way edge from c_k
+    // to a_{k+1} that introduces a non-cyclic "shared tail" between the
+    // SCCs. Tarjan must still emit each cycle as its own SCC.
+    for k in 0..5 {
+        lib_rs.push_str(&format!("pub mod a{k};\npub mod b{k};\npub mod c{k};\n"));
+    }
+    fs::write(project.join("src/lib.rs"), lib_rs).unwrap();
+    for k in 0..5 {
+        let next = (k + 1) % 5;
+        fs::write(
+            project.join(format!("src/a{k}.rs")),
+            format!("use crate::b{k}::b_fn;\npub fn a_fn() {{ b_fn(); }}\n"),
+        )
+        .unwrap();
+        fs::write(
+            project.join(format!("src/b{k}.rs")),
+            format!("use crate::c{k}::c_fn;\npub fn b_fn() {{ c_fn(); }}\n"),
+        )
+        .unwrap();
+        fs::write(
+            project.join(format!("src/c{k}.rs")),
+            format!(
+                "use crate::a{k}::a_fn;\nuse crate::a{next}::a_fn as next_a;\npub fn c_fn() {{ a_fn(); next_a(); }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_circular", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    // All cycles forming one giant SCC since c_k → a_{k+1} chains them.
+    // The critical invariant is *disjointness*: no file appears twice.
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    for cycle in cycles {
+        let files = cycle.as_array().unwrap();
+        for f in files {
+            let s = f.as_str().unwrap().to_string();
+            assert!(
+                seen.insert(s.clone()),
+                "file {s} appears in more than one cycle entry; SCCs must be disjoint"
+            );
+        }
+    }
+}
+
+/// Regression for new bug-report batch (#24): `tokensave_diff_context`'s
+/// `modified_symbols` must dedup by node id, even when callers pass the
+/// same path multiple times in `files`. The sonium run showed an
+/// `hmatrix.rs` file node listed 7× in a row because the caller had the
+/// same file path duplicated upstream.
+#[tokio::test]
+async fn diff_context_dedupes_modified_symbols_on_duplicate_input() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        "pub struct S; pub fn one() {} pub fn two() {}\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diff_context",
+        json!({"files": ["src/lib.rs", "src/lib.rs", "src/lib.rs"], "depth": 1}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let modified = output["modified_symbols"].as_array().unwrap();
+    let mut ids: Vec<&str> = modified.iter().filter_map(|v| v["id"].as_str()).collect();
+    let before = ids.len();
+    ids.sort();
+    ids.dedup();
+    let after = ids.len();
+    assert_eq!(
+        before, after,
+        "modified_symbols must not contain duplicate ids even when input has the same file 3×; got {before} entries, {after} unique"
+    );
+}
+
+/// Regression for new bug-report batch (#23): when a whole subtree is
+/// removed in a diff, `tokensave_changelog` must not report the deleted
+/// directory under `files_not_indexed`. The previous `is_dir()` filter
+/// missed this case because the path was gone from disk by the time we
+/// checked. The fix uses gix's `entry_mode` flag to skip tree entries
+/// before they're ever pushed into the change list.
+#[tokio::test]
+async fn changelog_filters_deleted_directory_entries() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|_| panic!("git {args:?} failed"));
+    }
+    git(project, &["init"]);
+    git(project, &["config", "user.email", "t@t"]);
+    git(project, &["config", "user.name", "t"]);
+    fs::create_dir_all(project.join("crates/sub")).unwrap();
+    fs::write(project.join("crates/sub/keep.rs"), "pub fn k() {}\n").unwrap();
+    fs::write(project.join("main.rs"), "fn main() {}\n").unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-m", "init"]);
+    // Remove the whole subtree so gix's tree-diff yields a directory-mode
+    // deletion entry.
+    fs::remove_dir_all(project.join("crates")).unwrap();
+    git(project, &["add", "-A"]);
+    git(project, &["commit", "-m", "drop crates"]);
+    let cg = TokenSave::init(project).await.unwrap();
+    // Intentionally skipping `index_all` — the changelog handler reads from
+    // git directly and the sync lock has a pre-existing parallel-test flake.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_changelog",
+        json!({"from_ref": "HEAD~1", "to_ref": "HEAD"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let changed: Vec<String> = output["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    let problematic: Vec<&String> = changed
+        .iter()
+        .filter(|p| !p.ends_with(".rs"))
+        .collect();
+    assert!(
+        problematic.is_empty(),
+        "changed_files should be file paths only (no directories like 'crates' or 'crates/sub'); got problematic={problematic:?} full={changed:?}"
+    );
+}
+
+/// Regression for new bug-report batch (#22): `tokensave_pr_context` must
+/// NOT explode Cargo.toml (or any .toml/.yaml/.json config file) into one
+/// symbol per `[name]`, `[version]`, `[dependencies]` key. On real PRs a
+/// Cargo.toml change with ~30 dependency lines produced ~70 entries that
+/// pushed the response past 760k tokens. Config files should collapse to
+/// a single summary symbol.
+#[tokio::test]
+async fn pr_context_collapses_cargo_toml_keys() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|_| panic!("git {args:?} failed"));
+    }
+    git(project, &["init"]);
+    git(project, &["config", "user.email", "t@t"]);
+    git(project, &["config", "user.name", "t"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-m", "init"]);
+    // Second commit: bloat Cargo.toml with many deps.
+    let mut bloated = String::from(
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    );
+    for i in 0..50 {
+        bloated.push_str(&format!("dep{i} = \"0.1.{i}\"\n"));
+    }
+    fs::write(project.join("Cargo.toml"), &bloated).unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-m", "deps"]);
+
+    let cg = TokenSave::init(project).await.unwrap();
+    // Intentionally skipping `index_all()` — pr_context reads the diff
+    // from git directly and classifies Cargo.toml as `config` before any
+    // index lookup, so we don't need the index to verify the collapse
+    // behaviour. Calling `index_all()` here triggers the pre-existing
+    // SyncLock parallel-test flake (#test_changelog_with_real_git).
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_pr_context",
+        json!({"base_ref": "HEAD~1", "head_ref": "HEAD"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let added = output["added"].as_array().unwrap();
+    let modified = output["modified"].as_array().unwrap();
+    let count_cargo = |arr: &[Value]| -> usize {
+        arr.iter()
+            .filter(|v| v["file"].as_str() == Some("Cargo.toml"))
+            .count()
+    };
+    let cargo_total = count_cargo(added) + count_cargo(modified);
+    assert!(
+        cargo_total <= 1,
+        "Cargo.toml should collapse to at most one summary symbol; got {cargo_total} entries. added={added:?}, modified={modified:?}"
+    );
+    // And the surviving entry must be a config summary, not a regular key.
+    let summary = modified
+        .iter()
+        .find(|v| v["file"].as_str() == Some("Cargo.toml"));
+    assert!(
+        summary.is_some(),
+        "expected one config_summary entry for Cargo.toml in modified; got {modified:?}"
+    );
+    assert_eq!(
+        summary.unwrap()["kind"].as_str(),
+        Some("config_summary"),
+        "Cargo.toml entry should be kind=config_summary"
+    );
+}
+
+/// Regression for new bug-report batch (#21): `tokensave_unused_imports`
+/// must flag genuinely unused identifiers inside grouped `use foo::{A, B}`
+/// imports. Real-world Rust style is dominated by grouped imports
+/// (`use std::collections::{HashMap, HashSet, BTreeMap};`); without
+/// per-identifier splitting, the heuristic could never flag anything from
+/// a grouped import, which is why the user's run reported 0 / 3,404 use
+/// nodes.
+#[tokio::test]
+async fn unused_imports_handles_grouped_use() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+use std::collections::{HashMap, HashSet};
+
+pub fn used() -> HashMap<u32, u32> { HashMap::new() }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let imports = output["imports"].as_array().unwrap();
+    let payloads: Vec<String> = imports
+        .iter()
+        .map(|u| {
+            format!(
+                "{}::{}",
+                u["name"].as_str().unwrap_or(""),
+                u["unused"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    let mentions_hashset = imports.iter().any(|u| {
+        u["unused"]
+            .as_str()
+            .is_some_and(|s| s.contains("HashSet"))
+            || u["name"].as_str().is_some_and(|n| n.contains("HashSet"))
+    });
+    assert!(
+        mentions_hashset,
+        "HashSet from grouped use should be reported as unused; got {payloads:?}"
+    );
+    // Critically, the *used* identifier HashMap must NOT be reported. If the
+    // handler treats the whole grouped use as one opaque identifier it'll
+    // either flag both or neither — both modes are wrong.
+    let any_falsely_flags_hashmap = imports.iter().any(|u| {
+        u["unused"]
+            .as_str()
+            .is_some_and(|s| s == "HashMap")
+    });
+    assert!(
+        !any_falsely_flags_hashmap,
+        "HashMap is used (HashMap::new()) and must not appear in `unused`; got {payloads:?}"
+    );
+}
+
+/// Regression for new bug-report batch (#20): `tokensave_dead_code` must not
+/// consider non-reference edges like `annotates` or `derives_macro` as
+/// "this function is alive" evidence. Previously, a private helper with no
+/// callers but an `#[inline]` (or any other attribute) on it had an
+/// incoming `annotates` edge from the synthesised annotation_usage node,
+/// which the SQL `NOT EXISTS (target = id AND kind != 'contains')` filter
+/// accepted as a live reference. Real-world Rust codebases use attributes
+/// pervasively, which is why the user's run found zero dead functions
+/// across 5,715.
+#[tokio::test]
+async fn dead_code_flags_unreferenced_fn_with_attribute() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+fn caller() {
+    used_helper();
+}
+
+#[inline]
+fn used_helper() {}
+
+#[inline]
+fn dead_helper_with_attr() {}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_dead_code", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let symbols = output["symbols"].as_array().unwrap();
+    let names: Vec<&str> = symbols
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"dead_helper_with_attr"),
+        "private fn with #[inline] and no callers should be dead; got {names:?}"
+    );
+    assert!(
+        !names.contains(&"used_helper"),
+        "used_helper has a real caller and must NOT appear; got {names:?}"
+    );
+}
+
+/// Regression for new bug-report batch (#19): `tokensave_search` must rank
+/// trait/struct/function definitions above `use` re-exports of the same name.
+/// Previously, several `use foo::LinearOperator;` lines could outrank the
+/// `pub trait LinearOperator { … }` definition because BM25 scored short
+/// re-export rows highly. We now force a kind tier ahead of BM25 score so a
+/// real def always beats `use` rows.
+#[tokio::test]
+async fn search_ranks_trait_definition_above_use_reexports() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src/a")).unwrap();
+    fs::create_dir_all(project.join("src/b")).unwrap();
+    fs::create_dir_all(project.join("src/c")).unwrap();
+    fs::create_dir_all(project.join("src/d")).unwrap();
+    fs::create_dir_all(project.join("src/e")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub mod operator;
+pub mod a;
+pub mod b;
+pub mod c;
+pub mod d;
+pub mod e;
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/operator.rs"),
+        "pub trait LinearOperator { fn apply(&self); }\n",
+    )
+    .unwrap();
+    for sub in ["a", "b", "c", "d", "e"] {
+        fs::write(
+            project.join(format!("src/{sub}/mod.rs")),
+            "pub use crate::operator::LinearOperator;\n",
+        )
+        .unwrap();
+    }
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "LinearOperator", "limit": 10}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let items: Value = serde_json::from_str(text).unwrap();
+    let arr = items.as_array().unwrap();
+    let first_kind = arr[0]["kind"].as_str().unwrap_or("");
+    assert_eq!(
+        first_kind, "trait",
+        "first search hit for LinearOperator should be the trait definition, got '{first_kind}' (full: {arr:?})"
+    );
 }
