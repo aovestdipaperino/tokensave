@@ -228,6 +228,21 @@ pub enum Commands {
         #[arg(long)]
         export: Option<String>,
     },
+    /// Show token savings (and dollar estimates) recorded in the global ledger.
+    Gain {
+        /// Show all projects (default: only the current project).
+        #[arg(short, long)]
+        all: bool,
+        /// Print per-day history instead of a single total.
+        #[arg(long)]
+        history: bool,
+        /// Time range: "today", "7d", "30d", "month", or "all" (default: "30d").
+        #[arg(long, default_value = "30d")]
+        range: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Live token savings monitor (global, all projects)
     Monitor,
     /// Manage multi-branch indexing

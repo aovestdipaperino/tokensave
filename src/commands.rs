@@ -525,6 +525,109 @@ pub(crate) async fn init_and_index(
     Ok(cg)
 }
 
+/// Convert raw tokens-saved into a USD estimate using Sonnet input pricing.
+/// Sonnet is the default agent target; output-token savings are not relevant
+/// for retrieval savings.
+pub(crate) fn estimate_dollars_saved(saved_tokens: u64) -> f64 {
+    use tokensave::accounting::pricing;
+    pricing::refresh_if_stale();
+    let price = pricing::lookup("claude-sonnet-4")
+        .map(|p| p.input_per_mtok)
+        .unwrap_or(3.0);
+    (saved_tokens as f64) * price / 1_000_000.0
+}
+
+pub async fn handle_gain(
+    all: bool,
+    history: bool,
+    range: &str,
+    json_output: bool,
+) -> tokensave::errors::Result<()> {
+    let gdb = match tokensave::global_db::GlobalDb::open().await {
+        Some(db) => db,
+        None => {
+            eprintln!("Could not open the global database (~/.tokensave/global.db).");
+            return Ok(());
+        }
+    };
+
+    let since = tokensave::accounting::metrics::parse_range(range);
+    let project_filter: Option<String> = if all {
+        None
+    } else {
+        std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())
+    };
+
+    if history {
+        let rows = gdb.savings_history(project_filter.as_deref(), since as i64).await;
+        if json_output {
+            let arr: Vec<_> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "day": r.day,
+                        "saved_tokens": r.saved_tokens,
+                        "calls": r.calls,
+                        "usd": estimate_dollars_saved(r.saved_tokens),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&arr).unwrap_or_default());
+        } else {
+            tokensave::display::print_gain_history(&rows, estimate_dollars_saved);
+        }
+        return Ok(());
+    }
+
+    let total = gdb.sum_savings(project_filter.as_deref(), since as i64).await;
+    let usd = estimate_dollars_saved(total.saved_tokens);
+
+    if json_output {
+        let out = serde_json::json!({
+            "range": range,
+            "project": project_filter.clone().unwrap_or_else(|| "ALL".to_string()),
+            "saved_tokens": total.saved_tokens,
+            "calls": total.calls,
+            "usd": usd,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        tokensave::display::print_gain_total(
+            project_filter.as_deref().unwrap_or("ALL projects"),
+            range,
+            total.saved_tokens,
+            total.calls,
+            usd,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod gain_tests {
+    use super::estimate_dollars_saved;
+
+    #[test]
+    fn dollars_uses_sonnet_input_price_by_default() {
+        // 1_000_000 tokens × $3 / MTok = $3.00 (Sonnet input price)
+        let usd = estimate_dollars_saved(1_000_000);
+        assert!((usd - 3.0).abs() < 0.01, "expected ~$3.00, got ${usd}");
+    }
+
+    #[test]
+    fn dollars_handles_small_counts() {
+        // 1_000 tokens × $3 / MTok = $0.003
+        let usd = estimate_dollars_saved(1_000);
+        assert!((usd - 0.003).abs() < 0.001);
+    }
+
+    #[test]
+    fn dollars_zero_for_zero_tokens() {
+        assert_eq!(estimate_dollars_saved(0), 0.0);
+    }
+}
+
 /// Print the `--doctor` report after an incremental sync.
 pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     let has_changes = !result.added_paths.is_empty()

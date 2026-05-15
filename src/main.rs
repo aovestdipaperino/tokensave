@@ -1157,6 +1157,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Gain { all, history, range, json } => {
+            commands::handle_gain(all, history, &range, json).await?;
+        }
         Commands::Monitor => {
             if let Err(e) = tokensave::monitor::run() {
                 eprintln!("Monitor error: {e}");

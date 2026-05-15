@@ -466,6 +466,66 @@ fn print_table_rows(rows: &[Vec<(&str, String)>], cell_width: usize, num_cols: u
     }
 }
 
+pub fn print_gain_total(project: &str, range: &str, saved_tokens: u64, calls: u64, usd: f64) {
+    let saved_str = format_token_count(saved_tokens);
+    println!("  {:<28} {:>12}", "Scope", project);
+    println!("  {:<28} {:>12}", "Range", range);
+    println!("  {:<28} {:>12}", "Tool calls", calls);
+    println!("  {:<28} {:>12}", "Tokens saved", saved_str);
+    println!("  {:<28} {:>12}", "USD saved (Sonnet input)", format!("${usd:.2}"));
+}
+
+pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDay], to_usd: F) {
+    println!("  {:<12} {:>10} {:>8} {:>10}", "Day (UTC)", "Tokens", "Calls", "USD");
+    for r in rows {
+        let days_since_epoch = r.day / 86_400;
+        let date = format_yyyy_mm_dd(days_since_epoch);
+        let saved_str = format_token_count(r.saved_tokens);
+        let usd = to_usd(r.saved_tokens);
+        println!(
+            "  {:<12} {:>10} {:>8} {:>10}",
+            date,
+            saved_str,
+            r.calls,
+            format!("${usd:.2}")
+        );
+    }
+}
+
+/// Convert "days since 1970-01-01 UTC" into "YYYY-MM-DD" without external deps
+/// (Howard Hinnant's civil-from-days algorithm).
+fn format_yyyy_mm_dd(z: i64) -> String {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod gain_format_tests {
+    use super::format_yyyy_mm_dd;
+
+    #[test]
+    fn epoch_is_1970_01_01() {
+        assert_eq!(format_yyyy_mm_dd(0), "1970-01-01");
+    }
+
+    #[test]
+    fn known_date_2026_05_15() {
+        // 2026-05-15 = 20589 days since 1970-01-01.
+        let date = format_yyyy_mm_dd(20_589);
+        assert!(date.starts_with("2026-"), "got {date}");
+    }
+}
+
 /// Print node kinds in column-major order.
 fn print_kind_rows(
     sorted_kinds: &[(&String, &u64)],
