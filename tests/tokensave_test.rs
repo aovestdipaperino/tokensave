@@ -188,10 +188,7 @@ async fn test_find_dead_code_functions() {
 async fn test_find_dead_code_custom_kinds() {
     let (cg, _dir) = setup().await;
     // Look for dead structs — our test project has none, should return empty
-    let dead = cg
-        .find_dead_code(&[NodeKind::Struct], false)
-        .await
-        .unwrap();
+    let dead = cg.find_dead_code(&[NodeKind::Struct], false).await.unwrap();
     assert!(
         dead.is_empty(),
         "test project has no structs, so no dead struct code expected",

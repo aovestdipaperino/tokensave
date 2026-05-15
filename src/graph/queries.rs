@@ -359,7 +359,6 @@ impl<'a> GraphQueryManager<'a> {
         Ok(cycles)
     }
 
-
     /// Builds a file-level directed adjacency map from the code graph.
     ///
     /// For each file, collects the files it depends on via `calls` and
@@ -471,4 +470,3 @@ impl<'a> GraphQueryManager<'a> {
         Ok(depth)
     }
 }
-

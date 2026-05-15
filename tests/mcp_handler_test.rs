@@ -2958,10 +2958,9 @@ pub fn caller() { called(); }
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
 
-    let default_result =
-        handle_tool_call(&cg, "tokensave_dead_code", json!({}), None, None)
-            .await
-            .unwrap();
+    let default_result = handle_tool_call(&cg, "tokensave_dead_code", json!({}), None, None)
+        .await
+        .unwrap();
     let default_text = extract_text(&default_result.value);
     let default_output: Value = serde_json::from_str(default_text).unwrap();
     assert_eq!(
@@ -3281,11 +3280,7 @@ async fn circular_reports_one_entry_per_scc_not_per_walk() {
     // Three-file cycle: a uses b, b uses c, c uses a. Multiple DFS walks
     // through this triangle would have reported 3+ "cycles" pre-fix
     // (a→b→c→a, b→c→a→b, c→a→b→c).
-    fs::write(
-        project.join("src/lib.rs"),
-        "mod a; mod b; mod c;\n",
-    )
-    .unwrap();
+    fs::write(project.join("src/lib.rs"), "mod a; mod b; mod c;\n").unwrap();
     fs::write(
         project.join("src/a.rs"),
         "use crate::b::b_fn;\npub fn a_fn() { b_fn(); }\n",

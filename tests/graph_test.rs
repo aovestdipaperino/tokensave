@@ -368,7 +368,10 @@ async fn test_find_dead_code() {
     db.insert_node(&orphan).await.expect("insert orphan failed");
 
     let qm = GraphQueryManager::new(&db);
-    let dead = qm.find_dead_code(&[], false).await.expect("find_dead_code failed");
+    let dead = qm
+        .find_dead_code(&[], false)
+        .await
+        .expect("find_dead_code failed");
 
     let dead_names: Vec<&str> = dead.iter().map(|n| n.name.as_str()).collect();
     assert!(
@@ -393,7 +396,10 @@ async fn test_find_dead_code_excludes_pub() {
         .expect("insert pub_node failed");
 
     let qm = GraphQueryManager::new(&db);
-    let dead = qm.find_dead_code(&[], false).await.expect("find_dead_code failed");
+    let dead = qm
+        .find_dead_code(&[], false)
+        .await
+        .expect("find_dead_code failed");
 
     let dead_names: Vec<&str> = dead.iter().map(|n| n.name.as_str()).collect();
     assert!(
