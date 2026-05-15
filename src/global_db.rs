@@ -9,6 +9,21 @@ use std::path::{Path, PathBuf};
 
 use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
 
+/// Total savings + call count for a project (or all projects when `project` is None).
+#[derive(Debug, Clone)]
+pub struct SavingsTotal {
+    pub saved_tokens: u64,
+    pub calls: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SavingsDay {
+    /// Start-of-day epoch seconds (UTC).
+    pub day: i64,
+    pub saved_tokens: u64,
+    pub calls: u64,
+}
+
 /// User-level database tracking all `TokenSave` projects.
 pub struct GlobalDb {
     conn: Connection,
@@ -21,16 +36,14 @@ pub fn global_db_path() -> Option<PathBuf> {
 }
 
 impl GlobalDb {
-    /// Opens (or creates) the global database. Returns `None` if the home
-    /// directory cannot be determined or the DB fails to open.
-    pub async fn open() -> Option<Self> {
-        let db_path = global_db_path()?;
-
+    /// Opens (or creates) the global database at an explicit path. Returns
+    /// `None` if the directory cannot be created or the DB fails to open.
+    pub async fn open_at(db_path: &std::path::Path) -> Option<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).ok()?;
         }
 
-        let db = Builder::new_local(&db_path).build().await.ok()?;
+        let db = Builder::new_local(db_path).build().await.ok()?;
         let conn = db.connect().ok()?;
 
         conn.execute_batch(
@@ -72,12 +85,29 @@ impl GlobalDb {
                 file_path TEXT PRIMARY KEY,
                 byte_offset INTEGER NOT NULL,
                 mtime INTEGER NOT NULL
-            )",
+            );
+            CREATE TABLE IF NOT EXISTS savings_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                project_path TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                before_tokens INTEGER NOT NULL,
+                after_tokens INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_ts ON savings_ledger(ts);
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path)",
         )
         .await
         .ok()?;
 
         Some(Self { conn, _db: db })
+    }
+
+    /// Opens (or creates) the global database. Returns `None` if the home
+    /// directory cannot be determined or the DB fails to open.
+    pub async fn open() -> Option<Self> {
+        let db_path = global_db_path()?;
+        Self::open_at(&db_path).await
     }
 
     /// Registers or updates a project's tokens-saved count. Best-effort.
@@ -122,6 +152,85 @@ impl GlobalDb {
         let row = rows.next().await.ok()??;
         let total: i64 = row.get(0).ok()?;
         Some(total as u64)
+    }
+
+    /// Insert a new ledger row. Best-effort; errors are logged via `tracing` but never propagated.
+    pub async fn record_savings(
+        &self,
+        project_path: &str,
+        tool_name: &str,
+        before_tokens: u64,
+        after_tokens: u64,
+        ts: i64,
+    ) {
+        let result = self
+            .conn
+            .execute(
+                "INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![ts, project_path, tool_name, before_tokens as i64, after_tokens as i64],
+            )
+            .await;
+        if let Err(e) = result {
+            tracing::debug!("savings_ledger insert failed: {e}");
+        }
+    }
+
+    /// Sum (before-after) across the ledger entries, with `ts >= since`. Optionally
+    /// filter by exact project path. Returns zeros on any DB error.
+    pub async fn sum_savings(&self, project: Option<&str>, since: i64) -> SavingsTotal {
+        let sql_with_project =
+            "SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) \
+             FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2";
+        let sql_all =
+            "SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) \
+             FROM savings_ledger WHERE ts >= ?1";
+
+        let rows = match project {
+            Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
+            None => self.conn.query(sql_all, params![since]).await,
+        };
+        let Ok(mut rows) = rows else {
+            return SavingsTotal { saved_tokens: 0, calls: 0 };
+        };
+        match rows.next().await {
+            Ok(Some(row)) => SavingsTotal {
+                saved_tokens: row.get::<i64>(0).unwrap_or(0).max(0) as u64,
+                calls: row.get::<i64>(1).unwrap_or(0).max(0) as u64,
+            },
+            _ => SavingsTotal { saved_tokens: 0, calls: 0 },
+        }
+    }
+
+    /// Group ledger entries by UTC calendar day. Newest-first.
+    pub async fn savings_history(&self, project: Option<&str>, since: i64) -> Vec<SavingsDay> {
+        let sql_with_project =
+            "SELECT (ts/86400)*86400 AS day, \
+                    COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), \
+                    COUNT(*) \
+             FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 \
+             GROUP BY day ORDER BY day DESC";
+        let sql_all =
+            "SELECT (ts/86400)*86400 AS day, \
+                    COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), \
+                    COUNT(*) \
+             FROM savings_ledger WHERE ts >= ?1 \
+             GROUP BY day ORDER BY day DESC";
+
+        let rows = match project {
+            Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
+            None => self.conn.query(sql_all, params![since]).await,
+        };
+        let Ok(mut rows) = rows else { return Vec::new(); };
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            out.push(SavingsDay {
+                day: row.get::<i64>(0).unwrap_or(0),
+                saved_tokens: row.get::<i64>(1).unwrap_or(0).max(0) as u64,
+                calls: row.get::<i64>(2).unwrap_or(0).max(0) as u64,
+            });
+        }
+        out
     }
 
     /// Removes a project's row from the global DB. Best-effort.
