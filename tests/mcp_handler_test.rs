@@ -2665,3 +2665,539 @@ async fn test_handle_session_recall_returns_recorded_decision() {
         "seeded 'JWT' decision should appear in recall results"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bug-report regressions: sonium-codebase issues
+// ---------------------------------------------------------------------------
+
+/// Regression for bug #1: `tokensave_body` should prefer the `fn foo()` over
+/// a field/variant also named `foo`. Setup mirrors what sonium hit when
+/// searching for `gmres`: the codebase has both a `pub fn gmres(...)` and a
+/// struct field literally named `gmres`. The function — the body the user
+/// actually wants — must outrank the field.
+async fn setup_function_vs_field_collision() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub struct Solvers {
+    pub gmres: u32,
+}
+
+pub fn gmres(x: u32) -> u32 {
+    x + 1
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn body_prefers_function_over_field_with_same_name() {
+    let (cg, _dir) = setup_function_vs_field_collision().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_body",
+        json!({"symbol": "gmres"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let matches = output["matches"].as_array().unwrap();
+    let first = &matches[0];
+    assert_eq!(
+        first["kind"].as_str(),
+        Some("function"),
+        "first match should be the function definition, got {first}"
+    );
+    let body = first["body"].as_str().unwrap();
+    assert!(
+        body.contains("pub fn gmres"),
+        "body should be the function source, got: {body}"
+    );
+}
+
+/// Regression for bug #5: `tokensave_diff_context.impacted_symbols` must not
+/// list the same downstream node more than once. The sonium report showed
+/// the same id appearing 6+ times consecutively when several modified
+/// symbols all reached the same dependent.
+#[tokio::test]
+async fn diff_context_dedupes_impacted_symbols() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // Two functions in `mod.rs` both call `shared` in `dep.rs`. Without dedup,
+    // `shared` appears twice in `impacted_symbols`.
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+mod dep;
+pub fn first() { dep::shared(); }
+pub fn second() { dep::shared(); }
+"#,
+    )
+    .unwrap();
+    fs::write(project.join("src/dep.rs"), "pub fn shared() {}\n").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diff_context",
+        json!({"files": ["src/lib.rs"], "depth": 3}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let impacted = output["impacted_symbols"].as_array().unwrap();
+    let mut ids: Vec<&str> = impacted.iter().filter_map(|v| v["id"].as_str()).collect();
+    ids.sort();
+    let before = ids.len();
+    ids.dedup();
+    let after = ids.len();
+    assert_eq!(
+        before, after,
+        "impacted_symbols must not contain duplicates by id; got {before} entries, {after} unique"
+    );
+}
+
+/// Regression for bug #6: `tokensave_recursion` must not report length-1
+/// self-cycles. The sonium codebase had `gauss_legendre_1d`, `num_elements`,
+/// and three different `push` methods (one per impl block) listed — none of
+/// which were genuinely recursive in source. The resolver had bound
+/// `self.push()` to itself across impls. Per the bug-report's explicit
+/// guidance, length-1 self-cycles are dropped wholesale; agents searching
+/// for "what's recursive in this codebase" want multi-step cycles, not
+/// self-loops which are usually either trivial or resolver-fabricated.
+#[tokio::test]
+async fn recursion_drops_length_one_self_cycles() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub fn recurse(n: u32) -> u32 {
+    if n == 0 { 0 } else { recurse(n - 1) }
+}
+
+pub fn nonrecursive() -> u32 { 42 }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_recursion", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    for cycle in cycles {
+        let chain = cycle["chain"].as_array().unwrap();
+        let distinct: std::collections::HashSet<&str> =
+            chain.iter().filter_map(|n| n["id"].as_str()).collect();
+        assert!(
+            distinct.len() >= 2,
+            "every reported cycle must visit at least 2 distinct nodes; got {chain:?}"
+        );
+    }
+}
+
+/// Regression for bug #4: `tokensave_changelog`'s response must not list
+/// directories under `files_not_indexed`. We construct a small git repo
+/// with a real commit history that touches both a real file and a
+/// (synthesised) directory path then verify the handler filters out the
+/// directory.
+#[tokio::test]
+async fn changelog_filters_directory_paths() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(project)
+        .output()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "t@t"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    fs::create_dir_all(project.join("src/sub")).unwrap();
+    fs::write(project.join("src/sub/keep.rs"), "pub fn k() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    fs::write(
+        project.join("src/sub/keep.rs"),
+        "pub fn k() { let _ = 1; }\n",
+    )
+    .unwrap();
+    fs::write(project.join("src/sub/added.rs"), "pub fn a() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "two"])
+        .current_dir(project)
+        .output()
+        .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    // Intentionally skipping `index_all` — the changelog handler reads from
+    // git directly, not the index, and including the index sync subjects
+    // this test to a pre-existing SyncLock contention flake.
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_changelog",
+        json!({"from_ref": "HEAD~1", "to_ref": "HEAD"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let changed: Vec<&str> = output["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    for entry in &changed {
+        let p = project.join(entry);
+        assert!(
+            !p.is_dir(),
+            "changed_files must not include directories; got {entry:?}"
+        );
+    }
+}
+
+/// Regression for bug #8b: `tokensave_unused_imports` must actually flag
+/// unused imports. The previous implementation tested `incoming.is_empty()`
+/// for every Use node, but Use nodes always have at least one incoming
+/// edge (from their containing module/file via Contains), so the
+/// condition never fired and the tool returned 0 on every real codebase.
+#[tokio::test]
+async fn unused_imports_detects_truly_unused() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+use std::collections::HashMap;
+use std::collections::HashSet;
+mod inner;
+
+pub fn used_one() -> HashMap<u32, u32> { HashMap::new() }
+"#,
+    )
+    .unwrap();
+    fs::write(project.join("src/inner.rs"), "pub fn inner_fn() {}\n").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let imports = output["imports"].as_array().unwrap();
+    let names: Vec<&str> = imports.iter().filter_map(|u| u["name"].as_str()).collect();
+    // `HashSet` is imported but never used in the file body.
+    assert!(
+        names.iter().any(|n| n.contains("HashSet")),
+        "HashSet should be reported as unused; got names={names:?}"
+    );
+}
+
+/// Regression for bug #8a: `tokensave_dead_code` must support `include_public`
+/// so agents can audit pub items with no callers in the indexed scope. The
+/// previous SQL hard-coded `visibility != 'public'`, so on a codebase that
+/// is mostly `pub` the tool reported 0 dead symbols.
+#[tokio::test]
+async fn dead_code_with_include_public_finds_pub_unreferenced() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub fn called() {}
+pub fn never_called_anywhere() {}
+pub fn caller() { called(); }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let default_result =
+        handle_tool_call(&cg, "tokensave_dead_code", json!({}), None, None)
+            .await
+            .unwrap();
+    let default_text = extract_text(&default_result.value);
+    let default_output: Value = serde_json::from_str(default_text).unwrap();
+    assert_eq!(
+        default_output["dead_code_count"].as_u64().unwrap_or(99),
+        0,
+        "default dead_code (no include_public) must still skip pub items"
+    );
+
+    let with_pub = handle_tool_call(
+        &cg,
+        "tokensave_dead_code",
+        json!({"include_public": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let with_pub_text = extract_text(&with_pub.value);
+    let with_pub_output: Value = serde_json::from_str(with_pub_text).unwrap();
+    let symbols: Vec<&str> = with_pub_output["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(
+        symbols.contains(&"never_called_anywhere"),
+        "with include_public, the pub unreferenced fn should appear; got {symbols:?}"
+    );
+}
+
+/// Regression for bug #7: `build_file_adjacency` previously included
+/// `implements` and `extends` edges, which are heavily resolver-fuzzy-bound
+/// to nonsense targets in unrelated files. After the fix, only `uses` and
+/// `calls` edges count for file-level dependency depth.
+#[tokio::test]
+async fn dependency_depth_excludes_implements_and_extends() {
+    // Public helper exposed from the lib for unit-test inspection.
+    use tokensave::graph::queries::GraphQueryManager;
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // file_a derives Debug — extractor emits derives_macro and the
+    // resolver historically pollutes implements edges across files.
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+mod a;
+mod b;
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/a.rs"),
+        r#"
+#[derive(Debug, Clone)]
+pub struct A;
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/b.rs"),
+        r#"
+pub trait T {}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let qm = GraphQueryManager::new(cg.db());
+    let adj = qm.build_file_adjacency(None).await.unwrap();
+    // Neither a.rs nor b.rs imports the other; the only edges between
+    // them would come from implements/extends junk. After the fix, adj
+    // should report no cross-file deps between the two leaf files.
+    let from_a = adj.get("src/a.rs").cloned().unwrap_or_default();
+    let from_b = adj.get("src/b.rs").cloned().unwrap_or_default();
+    assert!(
+        !from_a.contains("src/b.rs"),
+        "src/a.rs must not depend on src/b.rs; got adj={from_a:?}"
+    );
+    assert!(
+        !from_b.contains("src/a.rs"),
+        "src/b.rs must not depend on src/a.rs; got adj={from_b:?}"
+    );
+}
+
+/// Regression for bug #10: `tokensave_circular` must report one entry per
+/// strongly-connected component, not every walk through the cycle. The
+/// sonium codebase had 73 "cycles" that were all different DFS paths
+/// through the same SCC. After the SCC refactor, the same data yields
+/// one entry per genuine component.
+#[tokio::test]
+async fn circular_reports_one_entry_per_scc_not_per_walk() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // Three-file cycle: a uses b, b uses c, c uses a. Multiple DFS walks
+    // through this triangle would have reported 3+ "cycles" pre-fix
+    // (a→b→c→a, b→c→a→b, c→a→b→c).
+    fs::write(
+        project.join("src/lib.rs"),
+        "mod a; mod b; mod c;\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/a.rs"),
+        "use crate::b::b_fn;\npub fn a_fn() { b_fn(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/b.rs"),
+        "use crate::c::c_fn;\npub fn b_fn() { c_fn(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/c.rs"),
+        "use crate::a::a_fn;\npub fn c_fn() { a_fn(); }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_circular", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycle_count = output["cycle_count"].as_u64().unwrap();
+    assert_eq!(
+        cycle_count, 1,
+        "three-file SCC must report exactly one cycle entry, got {cycle_count}"
+    );
+    let cycle = output["cycles"][0].as_array().unwrap();
+    assert_eq!(
+        cycle.len(),
+        3,
+        "the cycle should list all three files in the SCC; got {cycle:?}"
+    );
+}
+
+/// Regression for bug #12: `tokensave_port_order`'s `cycles` output must
+/// expose the SCCs forming each cycle separately, instead of collapsing
+/// all unsorted nodes into a single mega-blob. Without this, on a real
+/// codebase the cycle entry contained 200+ unrelated symbols and the
+/// agent had no way to know what to break first.
+#[tokio::test]
+async fn port_order_reports_separate_scc_groups() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // Two disjoint mutually-recursive pairs: (a, b) and (c, d). Before
+    // the fix, both pairs would be lumped into a single "Mutual
+    // dependency" entry. After the fix, each pair appears as its own
+    // cycle group.
+    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(
+        project.join("src/m.rs"),
+        r#"
+pub fn a() { b(); }
+pub fn b() { a(); }
+pub fn c() { d(); }
+pub fn d() { c(); }
+pub fn leaf() {}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_port_order",
+        json!({"source_dir": "src"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    assert!(
+        cycles.len() >= 2,
+        "expected at least 2 disjoint cycle groups; got {} entries: {cycles:?}",
+        cycles.len()
+    );
+    // No cycle entry should mix both (a,b) and (c,d) names — that would
+    // mean the fix didn't actually separate them.
+    for c in cycles {
+        let names: Vec<&str> = c["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        let has_ab = names.iter().any(|n| *n == "a" || *n == "b");
+        let has_cd = names.iter().any(|n| *n == "c" || *n == "d");
+        assert!(
+            !(has_ab && has_cd),
+            "one cycle entry contains both SCCs (a/b mixed with c/d): {names:?}"
+        );
+    }
+}
+
+/// Regression for bug #9: `tokensave_inheritance_depth` must surface Rust
+/// supertrait chains (`trait T: U`) as `Extends` edges.
+#[tokio::test]
+async fn inheritance_depth_walks_rust_supertraits() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub trait Base {}
+pub trait Middle: Base {}
+pub trait Leaf: Middle {}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_inheritance_depth", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let ranking = output["ranking"].as_array().unwrap();
+    let names: Vec<&str> = ranking.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(
+        names.contains(&"Leaf"),
+        "expected Leaf trait in inheritance_depth ranking; got {names:?}"
+    );
+    let leaf = ranking
+        .iter()
+        .find(|r| r["name"].as_str() == Some("Leaf"))
+        .unwrap();
+    let depth = leaf["depth"].as_u64().unwrap();
+    assert!(depth >= 2, "Leaf depth should be >= 2 hops, got {depth}");
+}

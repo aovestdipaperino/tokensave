@@ -499,7 +499,11 @@ fn def_dead_code() -> ToolDefinition {
     def(
         "tokensave_dead_code",
         "Dead Code",
-        "Find symbols with no incoming edges (potentially unreachable code). Excludes main, test functions, and public items.",
+        "Find symbols with no incoming edges (potentially unreachable code). \
+         Always excludes `main` and `test*` functions. By default also excludes \
+         `pub` items (they may be referenced outside the indexed scope) — pass \
+         `include_public: true` to audit pub items with zero indexed callers, \
+         which is what you want for workspace-internal cleanup.",
         json!({
             "type": "object",
             "properties": {
@@ -507,6 +511,10 @@ fn def_dead_code() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Node kinds to check (default: [\"function\", \"method\"])"
+                },
+                "include_public": {
+                    "type": "boolean",
+                    "description": "When true, do NOT exclude pub items. Default false."
                 }
             }
         }),

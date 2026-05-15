@@ -120,6 +120,7 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
 
     let mut modified_symbols: Vec<Value> = Vec::new();
     let mut impacted_symbols: Vec<Value> = Vec::new();
+    let mut impacted_seen: HashSet<String> = HashSet::new();
     let mut affected_tests: HashSet<String> = HashSet::new();
     let mut all_touched_files: Vec<String> = Vec::new();
 
@@ -143,20 +144,27 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
                 "line": node.start_line,
             }));
 
-            // Get impact radius for each modified symbol
+            // Get impact radius for each modified symbol. The same downstream
+            // node can be reached from several modified symbols (diamond
+            // dependencies) and from itself — dedupe by node id so callers
+            // don't see the same `id` listed N times consecutively.
             let impact = cg.get_impact_radius(&node.id, depth).await?;
             for impacted in &impact.nodes {
-                if impacted.id != node.id {
-                    impacted_symbols.push(json!({
-                        "id": impacted.id,
-                        "name": impacted.name,
-                        "kind": impacted.kind.as_str(),
-                        "file": impacted.file_path,
-                        "line": impacted.start_line,
-                    }));
-                    if has_tests(&impacted.file_path) {
-                        affected_tests.insert(impacted.file_path.clone());
-                    }
+                if impacted.id == node.id {
+                    continue;
+                }
+                if !impacted_seen.insert(impacted.id.clone()) {
+                    continue;
+                }
+                impacted_symbols.push(json!({
+                    "id": impacted.id,
+                    "name": impacted.name,
+                    "kind": impacted.kind.as_str(),
+                    "file": impacted.file_path,
+                    "line": impacted.start_line,
+                }));
+                if has_tests(&impacted.file_path) {
+                    affected_tests.insert(impacted.file_path.clone());
                 }
             }
         }
@@ -266,6 +274,11 @@ fn git_diff_files(
         })
         .map_err(|e| format!("tree diff failed: {e}"))?;
 
+    // gix yields directory-level entries when an entire subtree changes
+    // (`for_each_to_obtain_tree` is not recursive). Drop any path that
+    // resolves to a directory on disk; downstream handlers
+    // (`changelog`, `commit_context`, `pr_context`) only want file paths.
+    changed.retain(|p| !project_root.join(p).is_dir());
     Ok(changed)
 }
 
@@ -446,8 +459,14 @@ fn git_commit_log(
 }
 
 /// Classify a file path into a semantic role.
-fn classify_file_role(path: &str, files_with_inline_tests: &HashSet<String>) -> &'static str {
-    if crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path) {
+///
+/// Inline tests inside source files don't make the file's role "test" —
+/// that bucket is reserved for files that exist purely to host tests
+/// (the path-based check). A `src/foo.rs` with a `#[cfg(test)] mod tests`
+/// at the bottom still has role "source".
+#[allow(clippy::ptr_arg)]
+fn classify_file_role(path: &str, _files_with_inline_tests: &HashSet<String>) -> &'static str {
+    if crate::tokensave::is_test_file(path) {
         return "test";
     }
     let lower = path.to_lowercase();
@@ -598,6 +617,18 @@ pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result
         let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
         file_roles.push(json!({"file": file, "role": role, "symbols": nodes.len()}));
 
+        // Config files (Cargo.toml, *.yaml, package.json, ...) explode into
+        // one node per key. Surface a single summary entry per file instead
+        // — agents only need to know "Cargo.toml changed, N keys touched",
+        // not the name of every dependency listed.
+        if role == "config" {
+            symbols_by_role.entry(role).or_default().push(json!({
+                "file": file,
+                "kind": "config_summary",
+                "config_keys": nodes.len(),
+            }));
+            continue;
+        }
         for node in &nodes {
             symbols_by_role.entry(role).or_default().push(json!({
                 "name": node.name,
@@ -677,6 +708,20 @@ pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<Too
         }
 
         let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+
+        // Config files explode into one node per key — Cargo.toml with 50
+        // dependencies blows past the response budget. Treat them as a
+        // single summary symbol attributed to `symbols_modified` (they're
+        // never "added" since the file pre-exists in a typical PR).
+        if classify_file_role(file, &files_with_inline_tests) == "config" {
+            symbols_modified.push(json!({
+                "file": file,
+                "kind": "config_summary",
+                "config_keys": nodes.len(),
+            }));
+            continue;
+        }
+
         for node in &nodes {
             let sym = json!({
                 "name": node.name,
@@ -1015,4 +1060,36 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
         }),
         touched_files,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_files_classified_as_config_not_source() {
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(classify_file_role("Cargo.toml", &empty), "config");
+        assert_eq!(classify_file_role("package.json", &empty), "config");
+        assert_eq!(classify_file_role("foo.yaml", &empty), "config");
+        assert_eq!(classify_file_role("config.ini", &empty), "config");
+    }
+
+    /// Regression for bug #3 follow-up: a source file with `#[cfg(test)] mod
+    /// tests` at the bottom is still a source file — its role must not flip
+    /// to "test" just because it contains inline tests. Only the path-based
+    /// `is_test_file` check governs role classification.
+    #[test]
+    fn source_file_with_inline_tests_keeps_source_role() {
+        let mut with_inline: HashSet<String> = HashSet::new();
+        with_inline.insert("src/lib.rs".to_string());
+        assert_eq!(classify_file_role("src/lib.rs", &with_inline), "source");
+    }
+
+    #[test]
+    fn path_based_test_files_classify_as_test() {
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(classify_file_role("tests/integration.rs", &empty), "test");
+        assert_eq!(classify_file_role("src/foo_test.rs", &empty), "test");
+    }
 }

@@ -440,12 +440,64 @@ impl RustExtractor {
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
 
+        // Supertrait bounds (`trait Leaf: Middle + Base`) — emit one
+        // unresolved `Extends` ref per bound so the resolver can hook them
+        // up to the corresponding trait nodes. Each bound is a
+        // `type_identifier` reachable through the `bounds: trait_bounds`
+        // field, possibly wrapped in `higher_ranked_trait_bound`. We pull
+        // the right-most identifier from each bound to ignore lifetime
+        // params (`'a`) and generic args.
+        if let Some(bounds) = node.child_by_field_name("bounds") {
+            let mut cursor = bounds.walk();
+            for child in bounds.children(&mut cursor) {
+                let kind = child.kind();
+                if kind == "," || kind == ":" || kind == "+" {
+                    continue;
+                }
+                if let Some(bound_name) = Self::extract_trait_bound_name(state, child) {
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: id.clone(),
+                        reference_name: bound_name,
+                        reference_kind: EdgeKind::Extends,
+                        line: child.start_position().row as u32,
+                        column: child.start_position().column as u32,
+                        file_path: state.file_path.clone(),
+                    });
+                }
+            }
+        }
+
         // Visit trait body: methods inside become Method nodes.
         state.node_stack.push((name, id));
         if let Some(body) = node.child_by_field_name("body") {
             Self::visit_children(state, body);
         }
         state.node_stack.pop();
+    }
+
+    /// Extract the trait identifier from a single bound node. Returns
+    /// `None` for lifetime params or anything that isn't a named trait.
+    fn extract_trait_bound_name(state: &ExtractionState, bound: TsNode<'_>) -> Option<String> {
+        match bound.kind() {
+            "type_identifier" => Some(state.node_text(bound)),
+            // `Module::Trait` or `Trait<Generics>` — take the right-most
+            // identifier so we ignore module paths and generic args.
+            "scoped_type_identifier" | "generic_type" => {
+                let mut cursor = bound.walk();
+                let mut name = None;
+                for c in bound.children(&mut cursor) {
+                    if c.kind() == "type_identifier" {
+                        name = Some(state.node_text(c));
+                    }
+                }
+                name
+            }
+            // `for<'a> Trait` shape.
+            "higher_ranked_trait_bound" => bound
+                .child_by_field_name("type")
+                .and_then(|inner| Self::extract_trait_bound_name(state, inner)),
+            _ => None,
+        }
     }
 
     /// Extract an impl block node and its methods.

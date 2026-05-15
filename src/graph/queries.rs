@@ -104,10 +104,18 @@ impl<'a> GraphQueryManager<'a> {
     /// Excludes:
     /// - Nodes named `"main"` (program entry points).
     /// - Nodes whose name starts with `"test"` (likely test functions).
-    /// - `pub` items at file level (they may be part of a public API).
+    /// - By default, `pub` items (they may be part of a public API). Pass
+    ///   `include_public=true` to drop this exclusion — useful when
+    ///   auditing a workspace where most items are `pub` but only a subset
+    ///   actually have callers in the indexed scope. Without the flag,
+    ///   `pub`-heavy codebases were reporting 0 dead symbols.
     ///
     /// If `kinds` is non-empty, only nodes of the specified kinds are checked.
-    pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+    pub async fn find_dead_code(
+        &self,
+        kinds: &[NodeKind],
+        include_public: bool,
+    ) -> Result<Vec<Node>> {
         let kind_filter = if kinds.is_empty() {
             String::new()
         } else {
@@ -115,7 +123,18 @@ impl<'a> GraphQueryManager<'a> {
                 kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
             format!(" AND kind IN ({})", kind_strs.join(", "))
         };
+        let visibility_filter = if include_public {
+            ""
+        } else {
+            " AND visibility != 'public'"
+        };
 
+        // `NOT EXISTS ... WHERE target = nodes.id AND kind != 'contains'`:
+        // every node has at least one incoming `Contains` edge from its
+        // parent module/file (that's bookkeeping, not a real reference),
+        // so we must exclude `Contains` before declaring a node dead — or
+        // every single node in the graph would be filtered out by the
+        // unfiltered `NOT EXISTS` and the tool would always return 0.
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                     start_column, end_column, docstring, signature, visibility,
@@ -124,9 +143,13 @@ impl<'a> GraphQueryManager<'a> {
              FROM nodes
              WHERE name != 'main'
              AND name NOT LIKE 'test%'
-             AND visibility != 'public'
+             {visibility_filter}
              {kind_filter}
-             AND NOT EXISTS (SELECT 1 FROM edges WHERE target = nodes.id)"
+             AND NOT EXISTS (
+                 SELECT 1 FROM edges
+                 WHERE target = nodes.id
+                 AND kind != 'contains'
+             )"
         );
 
         let mut rows =
@@ -308,46 +331,45 @@ impl<'a> GraphQueryManager<'a> {
 
     /// Detects circular dependencies at the file level.
     ///
-    /// Builds a file-level dependency graph and runs DFS-based cycle detection.
-    /// Returns all cycles found, where each cycle is a vector of file paths.
+    /// Builds a file-level dependency graph and groups files into
+    /// strongly-connected components via Tarjan's algorithm. Returns one
+    /// component per mutually-recursive group of files; trivial
+    /// single-file components without self-loops are filtered out (they
+    /// aren't cycles). Replaces the prior walk-enumeration approach that
+    /// reported 73 overlapping "cycles" on real codebases — each just a
+    /// different DFS path through the same component.
     pub async fn find_circular_dependencies(&self) -> Result<Vec<Vec<String>>> {
-        // Build file-level adjacency list.
         let all_files = self.db.get_all_files().await?;
         let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
-
         for file in &all_files {
             let deps = self.get_file_dependencies(&file.path).await?;
             adj.insert(file.path.clone(), deps.into_iter().collect());
         }
 
-        // DFS-based cycle detection.
-        let mut cycles: Vec<Vec<String>> = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut on_stack: HashSet<String> = HashSet::new();
-        let mut stack: Vec<String> = Vec::new();
-
-        let file_paths: Vec<String> = adj.keys().cloned().collect();
-
-        for file_path in &file_paths {
-            if !visited.contains(file_path) {
-                dfs_cycle_detect(
-                    file_path,
-                    &adj,
-                    &mut visited,
-                    &mut on_stack,
-                    &mut stack,
-                    &mut cycles,
-                );
-            }
+        let sccs = super::scc::tarjan_scc(&adj);
+        let mut cycles: Vec<Vec<String>> = sccs
+            .into_iter()
+            .filter(|s| super::scc::is_cyclic_scc(s, &adj))
+            .collect();
+        // Within each cycle, sort file paths so the output is stable
+        // across runs (Tarjan's stack order is implementation-dependent).
+        for cycle in &mut cycles {
+            cycle.sort_unstable();
         }
-
         Ok(cycles)
     }
 
+
     /// Builds a file-level directed adjacency map from the code graph.
     ///
-    /// For each file, collects all files it depends on via `calls`, `uses`,
-    /// `extends`, or `implements` edges. Self-edges are excluded.
+    /// For each file, collects the files it depends on via `calls` and
+    /// `uses` (imports) edges. Self-edges are excluded. `implements` and
+    /// `extends` are intentionally **not** followed: the Rust resolver
+    /// fuzzy-binds `impl Debug for T` and similar to whatever node happens
+    /// to share the trait's short name, which on real codebases produces
+    /// long chains of spurious file-to-file dependencies (one bug report
+    /// hit 19 levels through a chain of unrelated files terminating in a
+    /// foreign crate's `lib.rs`).
     ///
     /// When `path_prefix` is `Some`, only files under that prefix are included
     /// (both as sources and targets).
@@ -359,7 +381,7 @@ impl<'a> GraphQueryManager<'a> {
                    FROM edges e \
                    JOIN nodes n1 ON e.source = n1.id \
                    JOIN nodes n2 ON e.target = n2.id \
-                   WHERE e.kind IN ('calls', 'uses', 'extends', 'implements') \
+                   WHERE e.kind IN ('calls', 'uses') \
                    AND n1.file_path != n2.file_path";
 
         let mut rows =
@@ -450,74 +472,3 @@ impl<'a> GraphQueryManager<'a> {
     }
 }
 
-/// Iterative DFS for cycle detection on the file dependency graph.
-///
-/// Uses an explicit stack instead of recursion to comply with the
-/// "no recursion" rule (NASA Power of 10, Rule 1).
-fn dfs_cycle_detect(
-    start: &str,
-    adj: &HashMap<String, HashSet<String>>,
-    visited: &mut HashSet<String>,
-    on_stack: &mut HashSet<String>,
-    path: &mut Vec<String>,
-    cycles: &mut Vec<Vec<String>>,
-) {
-    // Each frame: (node, neighbor_index). We materialise the neighbor list
-    // so we can index into it across iterations.
-    let mut call_stack: Vec<(String, Vec<String>, usize)> = Vec::new();
-
-    // Push the initial frame.
-    let neighbors: Vec<String> = adj
-        .get(start)
-        .map(|s| s.iter().cloned().collect())
-        .unwrap_or_default();
-    visited.insert(start.to_string());
-    on_stack.insert(start.to_string());
-    path.push(start.to_string());
-    call_stack.push((start.to_string(), neighbors, 0));
-
-    while let Some(frame) = call_stack.last_mut() {
-        let idx = frame.2;
-        if idx >= frame.1.len() {
-            // All neighbors explored — backtrack.
-            // Safety: we are inside `while let Some(_) = call_stack.last_mut()`,
-            // so pop() is guaranteed to return Some.
-            let Some((node, _, _)) = call_stack.pop() else {
-                break;
-            };
-            path.pop();
-            on_stack.remove(&node);
-            continue;
-        }
-
-        // Advance the iterator for this frame.
-        frame.2 += 1;
-        let neighbor = frame.1[idx].clone();
-
-        if !visited.contains(&neighbor) {
-            // Descend into the neighbor.
-            let nb_neighbors: Vec<String> = adj
-                .get(&neighbor)
-                .map(|s| s.iter().cloned().collect())
-                .unwrap_or_default();
-            visited.insert(neighbor.clone());
-            on_stack.insert(neighbor.clone());
-            path.push(neighbor.clone());
-            call_stack.push((neighbor, nb_neighbors, 0));
-        } else if on_stack.contains(&neighbor) {
-            // Found a cycle — extract it from the current path.
-            let mut cycle = Vec::new();
-            let mut found_start = false;
-            for item in path.iter() {
-                if item == &neighbor {
-                    found_start = true;
-                }
-                if found_start {
-                    cycle.push(item.clone());
-                }
-            }
-            cycle.push(neighbor.clone());
-            cycles.push(cycle);
-        }
-    }
-}

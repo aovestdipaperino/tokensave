@@ -513,24 +513,52 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
         }
     }
 
-    // Detect cycles: any unsorted nodes form cycles
-    let cycle_node_ids: Vec<&str> = node_ids
+    // Detect cycles: any unsorted nodes form cycles.
+    let cycle_node_ids: HashSet<&str> = node_ids
         .iter()
         .map(std::string::String::as_str)
         .filter(|id| !sorted_set.contains(id))
         .collect();
 
-    // Group cycles: find strongly connected components among remaining nodes
-    // For simplicity, report all cycle nodes as one group with a note.
+    // Group cycles into SCCs so multiple disjoint mutually-recursive
+    // groups don't collapse into one mega-cycle. Each non-trivial SCC
+    // becomes its own entry with the files forming it surfaced — gives
+    // the user a clear "break this cycle" target instead of a 200+
+    // symbol blob.
+    let mut cycle_adj: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for (&node_id, neighbors) in &dep_graph {
+        if !cycle_node_ids.contains(node_id) {
+            continue;
+        }
+        let kept: HashSet<&str> = neighbors
+            .iter()
+            .copied()
+            .filter(|n| cycle_node_ids.contains(n))
+            .collect();
+        cycle_adj.insert(node_id, kept);
+    }
+    let sccs = crate::graph::scc::tarjan_scc(&cycle_adj);
+
     let mut cycles_json: Vec<Value> = Vec::new();
-    if !cycle_node_ids.is_empty() {
-        let cycle_names: Vec<&str> = cycle_node_ids
+    for scc in sccs {
+        if !crate::graph::scc::is_cyclic_scc(&scc, &cycle_adj) {
+            continue;
+        }
+        let cycle_names: Vec<&str> = scc
             .iter()
             .filter_map(|id| node_map.get(id).map(|n| n.name.as_str()))
             .collect();
+        let files: HashSet<&str> = scc
+            .iter()
+            .filter_map(|id| node_map.get(id).map(|n| n.file_path.as_str()))
+            .collect();
+        let mut files_vec: Vec<&str> = files.into_iter().collect();
+        files_vec.sort_unstable();
         cycles_json.push(json!({
             "symbols": cycle_names,
-            "note": "Mutual dependency — port together"
+            "files": files_vec,
+            "size": scc.len(),
+            "note": "Mutual dependency — port together. Break edges within `files` to escape this cycle."
         }));
     }
 
@@ -827,20 +855,32 @@ pub(super) async fn handle_body(
         .and_then(serde_json::Value::as_u64)
         .map_or(3, |v| v.clamp(1, 20) as usize);
 
-    // Search broadly so we have enough candidates to filter by exact name.
-    let raw = cg.search(symbol, (limit * 4).max(20)).await?;
-    let raw = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+    // First try an exact-name lookup against the DB — this avoids the BM25
+    // ranker's tendency to bury a definition under unrelated noise when the
+    // bare name is common (e.g. `gmres` exists as both a `pub fn` and a
+    // struct field). Falls back to suffix / name match inside
+    // `get_nodes_by_qualified_name`.
+    let exact_nodes = cg.get_nodes_by_qualified_name(symbol).await?;
+    let exact_nodes = super::filter_by_scope(exact_nodes, scope_prefix, |n| &n.file_path);
 
-    // Prefer exact name or qualified-name matches; fall back to ranked search.
-    let exact: Vec<_> = raw
-        .iter()
-        .filter(|r| r.node.name == symbol || r.node.qualified_name == symbol)
+    // Wrap as SearchResult so the existing scoring/rendering path works.
+    let mut candidates: Vec<crate::types::SearchResult> = exact_nodes
+        .into_iter()
+        .map(|node| crate::types::SearchResult { node, score: 0.0 })
         .collect();
-    let chosen: Vec<_> = if exact.is_empty() {
-        raw.iter().take(limit).collect()
-    } else {
-        exact.into_iter().take(limit).collect()
-    };
+
+    // If exact lookup returned nothing, fall back to BM25 search.
+    if candidates.is_empty() {
+        let raw = cg.search(symbol, (limit * 4).max(20)).await?;
+        candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+    }
+
+    // Whether the matches came from the exact lookup or the search fallback,
+    // sort by `body_kind_preference` so callable / type definitions surface
+    // above fields, variants, uses, etc. This is the bug-#1 fix: when both a
+    // function and a same-named field exist, the function wins.
+    candidates.sort_by_key(|r| body_kind_preference(&r.node.kind));
+    let chosen: Vec<_> = candidates.iter().take(limit).collect();
 
     if chosen.is_empty() {
         return Ok(ToolResult {
@@ -889,6 +929,47 @@ pub(super) async fn handle_body(
         }),
         touched_files: touched,
     })
+}
+
+/// Ordering key used by `handle_body` to choose between same-named symbols.
+/// Lower number = higher preference (sorted ascending). Callable kinds rank
+/// best because the user almost always asks for "show me the body of X"
+/// expecting a function or method; type definitions are next; fields,
+/// variants, use statements come last.
+fn body_kind_preference(kind: &NodeKind) -> u8 {
+    match kind {
+        NodeKind::Function
+        | NodeKind::Method
+        | NodeKind::StructMethod
+        | NodeKind::Constructor
+        | NodeKind::AbstractMethod
+        | NodeKind::ArrowFunction
+        | NodeKind::Procedure => 0,
+        NodeKind::Struct
+        | NodeKind::Enum
+        | NodeKind::Trait
+        | NodeKind::Class
+        | NodeKind::InnerClass
+        | NodeKind::Interface
+        | NodeKind::InterfaceType
+        | NodeKind::Record
+        | NodeKind::CaseClass
+        | NodeKind::DataClass
+        | NodeKind::SealedClass
+        | NodeKind::TypeAlias
+        | NodeKind::Union
+        | NodeKind::Typedef => 1,
+        NodeKind::Impl => 2,
+        NodeKind::Const | NodeKind::Static | NodeKind::Macro | NodeKind::PreprocessorDef => 3,
+        NodeKind::Field
+        | NodeKind::ValField
+        | NodeKind::VarField
+        | NodeKind::Property
+        | NodeKind::CSharpProperty
+        | NodeKind::EnumVariant => 4,
+        NodeKind::Use | NodeKind::Include => 5,
+        _ => 6,
+    }
 }
 
 /// Default marker kinds recognised by `tokensave_todos`.

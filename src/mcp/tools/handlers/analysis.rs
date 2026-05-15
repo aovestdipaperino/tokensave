@@ -13,6 +13,35 @@ use crate::types::{NodeKind, Visibility};
 use super::super::ToolResult;
 use super::{effective_path, filter_by_scope, truncate_response, unique_file_paths};
 
+/// True if `line` contains `identifier` as a whole token (boundaries are
+/// any non-`[A-Za-z0-9_]` char or string ends). Avoids false positives
+/// from substring matches like `Map` inside `HashMap`.
+fn has_identifier_match(line: &str, identifier: &str) -> bool {
+    debug_assert!(!identifier.is_empty(), "identifier must be non-empty");
+    let bytes = line.as_bytes();
+    let id_bytes = identifier.as_bytes();
+    let id_len = id_bytes.len();
+    if bytes.len() < id_len {
+        return false;
+    }
+    let mut i = 0;
+    while i + id_len <= bytes.len() {
+        if &bytes[i..i + id_len] == id_bytes {
+            let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+            let after_ok = i + id_len == bytes.len() || !is_ident_byte(bytes[i + id_len]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// Handles `tokensave_dead_code` tool calls.
 pub(super) async fn handle_dead_code(
     cg: &TokenSave,
@@ -28,7 +57,11 @@ pub(super) async fn handle_dead_code(
         },
     );
 
-    let dead = cg.find_dead_code(&kinds).await?;
+    let include_public = args
+        .get("include_public")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let dead = cg.find_dead_code(&kinds, include_public).await?;
     let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
 
     let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));
@@ -251,19 +284,72 @@ pub(super) async fn handle_unused_imports(
     let mut unused: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
 
+    // Source-text fallback (cheap + cached per file): every Use node is
+    // potentially unused if the imported identifier appears nowhere else in
+    // the file body. The previous graph-only check was unreliable because
+    // the Rust resolver doesn't create `Uses` edges for std/foreign-crate
+    // imports — every `use std::collections::HashSet` had no outgoing edge
+    // regardless of whether it was actually referenced.
+    //
+    // `pub use` re-exports are intentional public aliases; we never report
+    // them as unused.
+    let project_root = cg.project_root();
+    let mut file_cache: HashMap<String, Option<String>> = HashMap::new();
     for use_node in &use_nodes {
-        // Check if this use node has any outgoing edges (it references something)
-        // or if any other node references it via incoming edges
-        let incoming = cg.get_incoming_edges(&use_node.id).await?;
-        let outgoing = cg.get_outgoing_edges(&use_node.id).await?;
+        if use_node.visibility == crate::types::Visibility::Pub {
+            continue;
+        }
+        // The Use node's `name` is the full import path as written (e.g.
+        // `std::collections::HashSet` or `crate::foo::bar`). The actual
+        // identifier brought into scope is the last `::` segment, modulo
+        // `as` aliases which the extractor preserves in the name.
+        let imported = use_node
+            .name
+            .rsplit("::")
+            .next()
+            .unwrap_or(use_node.name.as_str());
+        // `as` rename: `use foo as bar` → identifier is `bar`.
+        let identifier = imported
+            .split_whitespace()
+            .last()
+            .unwrap_or(imported)
+            .trim_end_matches(';');
+        if identifier.is_empty() || identifier == "*" || identifier == "self" {
+            // Glob and `use self::...` imports are out of scope for this
+            // heuristic — too easy to false-positive.
+            continue;
+        }
 
-        // A use node is "unused" if nothing references it (no incoming edges)
-        // and it doesn't create any connections (no outgoing edges beyond contains)
-        let has_meaningful_outgoing = outgoing
-            .iter()
-            .any(|e| e.kind != crate::types::EdgeKind::Contains);
+        let source = file_cache
+            .entry(use_node.file_path.clone())
+            .or_insert_with(|| {
+                let abs = project_root.join(&use_node.file_path);
+                std::fs::read_to_string(&abs).ok()
+            })
+            .clone();
+        let Some(source) = source else {
+            continue;
+        };
 
-        if incoming.is_empty() && !has_meaningful_outgoing {
+        // Count word-boundary occurrences of the identifier outside the
+        // use statement's own line range. If zero non-use references
+        // appear, the import is unused.
+        let mut hits = 0;
+        for (line_idx, line) in source.lines().enumerate() {
+            let line_idx = line_idx as u32;
+            // Skip the use statement itself and any line inside it.
+            if line_idx >= use_node.start_line && line_idx <= use_node.end_line {
+                continue;
+            }
+            if has_identifier_match(line, identifier) {
+                hits += 1;
+                if hits > 0 {
+                    break;
+                }
+            }
+        }
+
+        if hits == 0 {
             touched.push(use_node.file_path.clone());
             unused.push(json!({
                 "id": use_node.id,
@@ -684,6 +770,18 @@ pub(super) async fn handle_recursion(
                     }
                 }
                 cycle.push(neighbor.clone());
+                // Drop length-1 self-cycles. In practice these come from
+                // resolver fuzzy-binding (e.g. `self.push()` inside one
+                // `impl X { fn push }` bound to a sibling impl's `push` of
+                // the same name on the same node id) or from genuine but
+                // trivial self-recursion. Agents asking "what's recursive
+                // in this codebase" want multi-step cycles, not self-loops.
+                let mut distinct = cycle.clone();
+                distinct.sort();
+                distinct.dedup();
+                if distinct.len() < 2 {
+                    continue;
+                }
                 cycles.push(cycle);
                 if cycles.len() >= limit {
                     break;

@@ -76,7 +76,7 @@ pub(super) async fn compute_health_snapshot(
     let equality = (1.0 - gini).clamp(0.0, 1.0);
 
     let dead = cg
-        .find_dead_code(&[NodeKind::Function, NodeKind::Method])
+        .find_dead_code(&[NodeKind::Function, NodeKind::Method], false)
         .await?;
     let dead_in_scope = dead.iter().filter(|n| {
         path_prefix.is_none_or(|pfx| {

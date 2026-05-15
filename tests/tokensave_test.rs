@@ -161,7 +161,10 @@ async fn test_get_file_dependents() {
 #[tokio::test]
 async fn test_find_dead_code_functions() {
     let (cg, _dir) = setup().await;
-    let dead = cg.find_dead_code(&[NodeKind::Function]).await.unwrap();
+    let dead = cg
+        .find_dead_code(&[NodeKind::Function], false)
+        .await
+        .unwrap();
     // The method should return successfully. Private functions without
     // incoming call edges appear as dead code. The exact results depend
     // on the extractor's edge generation (e.g., contains edges may give
@@ -185,7 +188,10 @@ async fn test_find_dead_code_functions() {
 async fn test_find_dead_code_custom_kinds() {
     let (cg, _dir) = setup().await;
     // Look for dead structs — our test project has none, should return empty
-    let dead = cg.find_dead_code(&[NodeKind::Struct]).await.unwrap();
+    let dead = cg
+        .find_dead_code(&[NodeKind::Struct], false)
+        .await
+        .unwrap();
     assert!(
         dead.is_empty(),
         "test project has no structs, so no dead struct code expected",

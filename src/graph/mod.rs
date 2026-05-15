@@ -4,6 +4,9 @@ pub mod traversal;
 /// Query operations for analyzing the code graph.
 pub mod queries;
 
+/// Tarjan's strongly-connected-components algorithm.
+pub mod scc;
+
 /// Structural health analysis algorithms.
 pub mod health;
 

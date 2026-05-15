@@ -1821,9 +1821,18 @@ impl TokenSave {
     }
 
     /// Finds potentially dead code (nodes with no incoming edges).
-    pub async fn find_dead_code(&self, kinds: &[NodeKind]) -> Result<Vec<Node>> {
+    ///
+    /// When `include_public` is `false` (the default), `pub` items are
+    /// excluded — they may be referenced by code outside the indexed
+    /// scope. Pass `true` to also surface pub items with zero indexed
+    /// callers (useful for workspace-internal audits).
+    pub async fn find_dead_code(
+        &self,
+        kinds: &[NodeKind],
+        include_public: bool,
+    ) -> Result<Vec<Node>> {
         let qm = GraphQueryManager::new(&self.db);
-        qm.find_dead_code(kinds).await
+        qm.find_dead_code(kinds, include_public).await
     }
 
     /// Returns all nodes for a given file, ordered by start line.

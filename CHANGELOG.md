@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.12.0] - 2026-05-15
+
+### Added
+- **`src/graph/scc.rs` — Tarjan's strongly-connected-components algorithm.** Iterative (no recursion, no stack-blow risk on deep graphs), generic over node-id type, returns components in reverse-topological order matching what port ranking needs. Used by both `tokensave_circular` and `tokensave_port_order`. Five unit tests cover DAGs, two-node cycles, three-cycle-plus-tail, self-loops, and reverse-topo emission order.
+
+### Fixed
+- **`tokensave_circular` reports one entry per SCC, not per DFS walk (bug #10)** — the previous implementation emitted every distinct DFS path through a cycle, producing 73 overlapping cycle entries on the sonium codebase that all shared a long common tail. `find_circular_dependencies` now computes SCCs via Tarjan and emits one entry per genuine mutually-recursive group, filtering out trivial single-node components that don't have self-loops. The legacy `dfs_cycle_detect` helper and `_legacy_walk_cycles` shim were removed.
+- **`tokensave_port_order` exposes per-SCC cycle groups (bug #12)** — previously, every unsorted node after Kahn's topological sort was lumped into a single "Mutual dependency — port together" entry, so two disjoint mutually-recursive pairs `(a,b)` and `(c,d)` would render as one mega-cycle and lose all signal. The handler now runs Tarjan on the subgraph of unsorted nodes and emits one cycle entry per non-trivial SCC, with the `files` set of each cycle surfaced so the user has a concrete "break this edge" target. Each entry carries `symbols`, `files`, `size`, and a refined `note`.
+
+## [4.11.0] - 2026-05-15
+
+### Fixed
+- **`tokensave_dependency_depth` no longer follows `implements`/`extends` edges (bug #7)** — the resolver fuzzy-binds `impl Debug for T` and similar across unrelated files, producing chains of spurious file-to-file deps (the report observed a 19-level chain spanning 17 unrelated files terminating in a foreign crate). `build_file_adjacency` now follows only `calls` and `uses` edges. Existing `tokensave_health` and `tokensave_circular` callers benefit too — they share the same adjacency builder.
+- **`tokensave_dead_code` no longer reports 0 on `pub`-heavy codebases (bug #8a)** — two fixes: (1) the `NOT EXISTS` subquery now excludes `Contains` edges, which previously masked every node behind its parent's bookkeeping edge; (2) new `include_public: true` argument opts into auditing pub items with no indexed callers, useful for workspace-internal cleanup. Default behaviour (no flag) still excludes pub items as before.
+- **`tokensave_unused_imports` no longer returns 0 on real codebases (bug #8b)** — the previous graph-only check tested `incoming.is_empty()`, but every Use node has at least one Contains edge from its parent, so the predicate never fired. New heuristic reads the source file once (cached per file) and checks whether the imported identifier appears as a whole-word token outside the use statement itself; matches what `cargo`'s own unused-import lint does. `pub use` re-exports, glob imports, and `use self::...` are skipped (intentional aliases / out-of-scope for textual heuristics). Three regression tests cover unused-detection, the dead-code Contains-edge bug, and the new `include_public` opt-in.
+
+### Changed
+- **`TokenSave::find_dead_code` signature** — gained an `include_public: bool` parameter. Existing callers (`tokensave_health`, internal tests) updated to pass `false` to preserve previous semantics.
+
+## [4.10.0] - 2026-05-15
+
+### Fixed
+- **`tokensave_body` prefers callable kinds over same-named fields (bug #1)** — sonium hit a case where querying `gmres` returned only a struct field literally named `gmres` and missed the obvious `pub fn gmres(...)`. The handler now does an exact-name DB lookup first (via the PR1 suffix-fallback path) so the function isn't buried under BM25 noise, then sorts matches by `body_kind_preference()`: callable (0) > type def (1) > impl (2) > value (3) > field/variant (4) > use (5).
+- **`tokensave_changelog` / `commit_context` / `pr_context` no longer list directories (bug #4)** — gix's `for_each_to_obtain_tree` yields directory-level entries when an entire subtree changes. `git_diff_files` now filters out any path that resolves to a directory on disk, so callers see only file paths.
+- **`tokensave_diff_context.impacted_symbols` dedupes by node id (bug #5)** — diamond dependencies caused the same downstream node to appear 6+ times consecutively. `impacted_seen: HashSet<String>` now guards inserts.
+- **`tokensave_recursion` drops length-1 self-cycles (bug #6)** — single-node cycles are almost always either resolver fuzzy-binding (`self.push()` cross-bound across distinct impls of the same name) or trivial self-recursion. Cycles with `< 2` distinct nodes are now filtered out before being added to the result set.
+- **`tokensave_commit_context` / `tokensave_pr_context` collapse config-file symbols (bug #3)** — Cargo.toml's 50+ dependency keys used to each enumerate as a separate "modified symbol", blowing past 50K tokens on a real diff. Both handlers now emit a single `{kind: "config_summary", file, config_keys: N}` entry per file with role `config` (`*.toml` / `*.yaml` / `*.json` / `*.ini` / `*.cfg` / `*.lock`).
+- **`classify_file_role` no longer flags source files with inline tests as "test" (bug #3 follow-up)** — a `src/foo.rs` with `#[cfg(test)] mod tests` at the bottom keeps role `source`. The "test" bucket is reserved for files that exist purely to host tests (path-based check via `is_test_file`). Three unit tests in `mcp::tools::handlers::git::tests` cover the classification matrix.
+- **Rust extractor emits `Extends` edges for supertrait bounds (bug #9)** — `trait Leaf: Middle + Base` now produces unresolved refs with `EdgeKind::Extends` for each bound, so `tokensave_inheritance_depth`'s recursive CTE walks Rust supertrait chains correctly. Bound extraction handles `type_identifier`, `scoped_type_identifier`, `generic_type`, and `higher_ranked_trait_bound`. Existing DBs need a re-index (`tokensave sync --force`) to pick up the new edges.
+
 ## [4.9.0] - 2026-05-15
 
 ### Added
