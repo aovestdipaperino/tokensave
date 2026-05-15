@@ -129,6 +129,38 @@ pub struct TokenSave {
     fallback_warning: Option<String>,
 }
 
+/// A decision recorded by an agent during a session.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecisionRecord {
+    /// Row id.
+    pub id: i64,
+    /// The decision text.
+    pub text: String,
+    /// Optional rationale for the decision.
+    pub reason: Option<String>,
+    /// UNIX timestamp (seconds) when the decision was recorded.
+    pub created_at: i64,
+    /// File paths relevant to this decision.
+    pub files: Vec<String>,
+    /// Arbitrary tags for categorisation.
+    pub tags: Vec<String>,
+}
+
+/// A code area (file path) that an agent has touched during a session.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CodeAreaRecord {
+    /// Row id.
+    pub id: i64,
+    /// Relative file path.
+    pub path: String,
+    /// Optional human-readable description of the area.
+    pub description: Option<String>,
+    /// UNIX timestamp (seconds) of the most recent touch.
+    pub last_touched_at: i64,
+    /// How many times this path has been touched.
+    pub touch_count: u32,
+}
+
 /// Result of a full indexing operation.
 pub struct IndexResult {
     /// Number of files scanned and indexed.
@@ -2096,6 +2128,186 @@ impl TokenSave {
             return 0;
         };
         walk.filter_map(std::result::Result::ok).count()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session memory
+// ---------------------------------------------------------------------------
+
+impl TokenSave {
+    /// Record an agent decision. Returns the new row id.
+    pub async fn record_decision(
+        &self,
+        text: &str,
+        reason: Option<&str>,
+        files: &[String],
+        tags: &[String],
+    ) -> crate::errors::Result<i64> {
+        debug_assert!(!text.is_empty(), "decision text must not be empty");
+        let files_json = serde_json::to_string(files).unwrap_or_else(|_| "[]".to_string());
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+        let now = current_timestamp();
+        let conn = self.db.conn();
+        conn.execute(
+            "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            libsql::params![text, reason, now, files_json, tags_json],
+        )
+        .await
+        .map_err(|e| crate::errors::TokenSaveError::Database {
+            message: format!("record_decision insert failed: {e}"),
+            operation: "record_decision".to_string(),
+        })?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Recall decisions. With `query`, runs FTS5 MATCH against text+reason.
+    /// Without `query`, returns newest-first.
+    pub async fn session_recall(
+        &self,
+        query: Option<&str>,
+        since: Option<i64>,
+        limit: usize,
+    ) -> crate::errors::Result<Vec<DecisionRecord>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let conn = self.db.conn();
+
+        let db_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
+            message: format!("session_recall query failed: {e}"),
+            operation: "session_recall".to_string(),
+        };
+
+        let mut rows = match (query, since) {
+            (Some(q), Some(ts)) => {
+                conn.query(
+                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
+                     FROM memory_decisions d \
+                     JOIN memory_decisions_fts f ON f.rowid = d.id \
+                     WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 \
+                     ORDER BY d.created_at DESC LIMIT ?3",
+                    libsql::params![q, ts, limit],
+                )
+                .await
+                .map_err(db_err)?
+            }
+            (Some(q), None) => {
+                conn.query(
+                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
+                     FROM memory_decisions d \
+                     JOIN memory_decisions_fts f ON f.rowid = d.id \
+                     WHERE memory_decisions_fts MATCH ?1 \
+                     ORDER BY d.created_at DESC LIMIT ?2",
+                    libsql::params![q, limit],
+                )
+                .await
+                .map_err(db_err)?
+            }
+            (None, Some(ts)) => {
+                conn.query(
+                    "SELECT id, text, reason, created_at, files, tags \
+                     FROM memory_decisions WHERE created_at >= ?1 \
+                     ORDER BY created_at DESC LIMIT ?2",
+                    libsql::params![ts, limit],
+                )
+                .await
+                .map_err(db_err)?
+            }
+            (None, None) => {
+                conn.query(
+                    "SELECT id, text, reason, created_at, files, tags \
+                     FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
+                    libsql::params![limit],
+                )
+                .await
+                .map_err(db_err)?
+            }
+        };
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("session_recall row read failed: {e}"),
+                operation: "session_recall".to_string(),
+            })?
+        {
+            let files_json: String = row.get(4).unwrap_or_else(|_| "[]".to_string());
+            let tags_json: String = row.get(5).unwrap_or_else(|_| "[]".to_string());
+            out.push(DecisionRecord {
+                id: row.get(0).unwrap_or(0),
+                text: row.get(1).unwrap_or_default(),
+                reason: row.get(2).ok(),
+                created_at: row.get(3).unwrap_or(0),
+                files: serde_json::from_str(&files_json).unwrap_or_default(),
+                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Record (or update) a code area the agent worked in. Increments `touch_count`
+    /// on re-touch. Description is set on first insert; subsequent `None` values
+    /// preserve the existing description.
+    pub async fn record_code_area(
+        &self,
+        path: &str,
+        description: Option<&str>,
+    ) -> crate::errors::Result<()> {
+        debug_assert!(!path.is_empty(), "code area path must not be empty");
+        let now = current_timestamp();
+        let conn = self.db.conn();
+        conn.execute(
+            "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
+             VALUES (?1, ?2, ?3, 1) \
+             ON CONFLICT(path) DO UPDATE SET \
+                description = COALESCE(excluded.description, memory_code_areas.description), \
+                last_touched_at = excluded.last_touched_at, \
+                touch_count = memory_code_areas.touch_count + 1",
+            libsql::params![path, description, now],
+        )
+        .await
+        .map_err(|e| crate::errors::TokenSaveError::Database {
+            message: format!("record_code_area upsert failed: {e}"),
+            operation: "record_code_area".to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// List code areas, most-recently-touched first.
+    pub async fn list_code_areas(&self, limit: usize) -> crate::errors::Result<Vec<CodeAreaRecord>> {
+        let limit = limit.clamp(1, 500) as i64;
+        let conn = self.db.conn();
+        let mut rows = conn
+            .query(
+                "SELECT id, path, description, last_touched_at, touch_count \
+                 FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1",
+                libsql::params![limit],
+            )
+            .await
+            .map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("list_code_areas query failed: {e}"),
+                operation: "list_code_areas".to_string(),
+            })?;
+        let mut out = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("list_code_areas row read failed: {e}"),
+                operation: "list_code_areas".to_string(),
+            })?
+        {
+            out.push(CodeAreaRecord {
+                id: row.get(0).unwrap_or(0),
+                path: row.get(1).unwrap_or_default(),
+                description: row.get(2).ok(),
+                last_touched_at: row.get(3).unwrap_or(0),
+                touch_count: row.get::<i64>(4).unwrap_or(0) as u32,
+            });
+        }
+        Ok(out)
     }
 }
 
