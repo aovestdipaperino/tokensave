@@ -36,6 +36,8 @@ async fn session_recall_orders_newest_first_when_no_query() {
     let (_tmp, cg) = make_project().await;
 
     cg.record_decision("first", None, &[], &[]).await.unwrap();
+    // current_timestamp() is second-granularity, so we need a >1s gap to guarantee
+    // the two decisions have distinct created_at values for a deterministic ordering.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     cg.record_decision("second", None, &[], &[]).await.unwrap();
 
@@ -58,4 +60,24 @@ async fn record_code_area_upserts_touch_count() {
     assert_eq!(areas[0].path, "src/auth.rs");
     assert_eq!(areas[0].touch_count, 3);
     assert_eq!(areas[0].description.as_deref(), Some("OAuth provider"));
+}
+
+#[tokio::test]
+async fn session_recall_filters_by_since() {
+    let (_tmp, cg) = make_project().await;
+    cg.record_decision("old decision", None, &[], &[]).await.unwrap();
+    // Force a > 1s gap so created_at values differ deterministically.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // Force a > 1s gap on the new side too, otherwise the new record could share
+    // its created_at with `cutoff` (second-granularity).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    cg.record_decision("new decision", None, &[], &[]).await.unwrap();
+
+    let hits = cg.session_recall(None, Some(cutoff), 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].text, "new decision");
 }

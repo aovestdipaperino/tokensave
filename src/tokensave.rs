@@ -2135,6 +2135,9 @@ impl TokenSave {
 // Session memory
 // ---------------------------------------------------------------------------
 
+const MAX_RECALL_LIMIT: usize = 200;
+const MAX_CODE_AREAS_LIMIT: usize = 200;
+
 impl TokenSave {
     /// Record an agent decision. Returns the new row id.
     pub async fn record_decision(
@@ -2145,8 +2148,14 @@ impl TokenSave {
         tags: &[String],
     ) -> crate::errors::Result<i64> {
         debug_assert!(!text.is_empty(), "decision text must not be empty");
-        let files_json = serde_json::to_string(files).unwrap_or_else(|_| "[]".to_string());
-        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+        let files_json = serde_json::to_string(files).map_err(|e| crate::errors::TokenSaveError::Database {
+            message: format!("record_decision files serialization failed: {e}"),
+            operation: "record_decision".to_string(),
+        })?;
+        let tags_json = serde_json::to_string(tags).map_err(|e| crate::errors::TokenSaveError::Database {
+            message: format!("record_decision tags serialization failed: {e}"),
+            operation: "record_decision".to_string(),
+        })?;
         let now = current_timestamp();
         let conn = self.db.conn();
         conn.execute(
@@ -2170,7 +2179,7 @@ impl TokenSave {
         since: Option<i64>,
         limit: usize,
     ) -> crate::errors::Result<Vec<DecisionRecord>> {
-        let limit = limit.clamp(1, 200) as i64;
+        let limit = limit.clamp(1, MAX_RECALL_LIMIT) as i64;
         let conn = self.db.conn();
 
         let db_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
@@ -2224,24 +2233,26 @@ impl TokenSave {
             }
         };
 
+        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
+            message: format!("session_recall row read failed: {e}"),
+            operation: "session_recall".to_string(),
+        };
+        let json_err = |e: serde_json::Error| crate::errors::TokenSaveError::Database {
+            message: format!("session_recall JSON parse failed: {e}"),
+            operation: "session_recall".to_string(),
+        };
+
         let mut out = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("session_recall row read failed: {e}"),
-                operation: "session_recall".to_string(),
-            })?
-        {
-            let files_json: String = row.get(4).unwrap_or_else(|_| "[]".to_string());
-            let tags_json: String = row.get(5).unwrap_or_else(|_| "[]".to_string());
+        while let Some(row) = rows.next().await.map_err(row_err)? {
+            let files_json: String = row.get(4).map_err(row_err)?;
+            let tags_json: String = row.get(5).map_err(row_err)?;
             out.push(DecisionRecord {
-                id: row.get(0).unwrap_or(0),
-                text: row.get(1).unwrap_or_default(),
-                reason: row.get(2).ok(),
-                created_at: row.get(3).unwrap_or(0),
-                files: serde_json::from_str(&files_json).unwrap_or_default(),
-                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                id: row.get(0).map_err(row_err)?,
+                text: row.get(1).map_err(row_err)?,
+                reason: row.get::<Option<String>>(2).map_err(row_err)?,
+                created_at: row.get(3).map_err(row_err)?,
+                files: serde_json::from_str(&files_json).map_err(json_err)?,
+                tags: serde_json::from_str(&tags_json).map_err(json_err)?,
             });
         }
         Ok(out)
@@ -2277,7 +2288,7 @@ impl TokenSave {
 
     /// List code areas, most-recently-touched first.
     pub async fn list_code_areas(&self, limit: usize) -> crate::errors::Result<Vec<CodeAreaRecord>> {
-        let limit = limit.clamp(1, 500) as i64;
+        let limit = limit.clamp(1, MAX_CODE_AREAS_LIMIT) as i64;
         let conn = self.db.conn();
         let mut rows = conn
             .query(
@@ -2290,21 +2301,19 @@ impl TokenSave {
                 message: format!("list_code_areas query failed: {e}"),
                 operation: "list_code_areas".to_string(),
             })?;
+        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
+            message: format!("list_code_areas row read failed: {e}"),
+            operation: "list_code_areas".to_string(),
+        };
+
         let mut out = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("list_code_areas row read failed: {e}"),
-                operation: "list_code_areas".to_string(),
-            })?
-        {
+        while let Some(row) = rows.next().await.map_err(row_err)? {
             out.push(CodeAreaRecord {
-                id: row.get(0).unwrap_or(0),
-                path: row.get(1).unwrap_or_default(),
-                description: row.get(2).ok(),
-                last_touched_at: row.get(3).unwrap_or(0),
-                touch_count: row.get::<i64>(4).unwrap_or(0) as u32,
+                id: row.get(0).map_err(row_err)?,
+                path: row.get(1).map_err(row_err)?,
+                description: row.get::<Option<String>>(2).map_err(row_err)?,
+                last_touched_at: row.get(3).map_err(row_err)?,
+                touch_count: row.get::<i64>(4).map_err(row_err)? as u32,
             });
         }
         Ok(out)
