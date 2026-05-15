@@ -1,0 +1,36 @@
+# Default benchmark queries for `tokensave bench`.
+#
+# Each query simulates an agent asking for context on a real task. The harness
+# runs the query through `cg.build_context(...)`, measures the bytes returned,
+# and compares to a baseline that reads the full content of every file
+# referenced by the resulting context. The ratio is the retrieval savings.
+
+[[query]]
+task = "Where is the MCP tool dispatcher defined?"
+
+[[query]]
+task = "How does incremental sync detect modified files?"
+
+[[query]]
+task = "Where are tree-sitter grammars wired into the extractor worker?"
+
+[[query]]
+task = "How are circular dependencies between files detected?"
+
+[[query]]
+task = "Where is the savings ledger written after each MCP tool call?"
+
+[[query]]
+task = "How does the file-walker respect .gitignore rules?"
+
+[[query]]
+task = "Where is the migration system that bumps PRAGMA user_version?"
+
+[[query]]
+task = "How does the daemon's debounce window batch file-change events?"
+
+[[query]]
+task = "Where is the agent-install command for Claude Code wired up?"
+
+[[query]]
+task = "How is the worldwide token-counter upload throttled?"
