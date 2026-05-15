@@ -1157,6 +1157,52 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Bench { queries, json, path, max_nodes } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
+
+            let queries_path = match queries {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    // Prefer the project-local default if present.
+                    let local = project_path.join("benchmarks/queries/default.toml");
+                    if local.exists() {
+                        local
+                    } else {
+                        // Fall back to the binary-embedded default — write to a temp file
+                        // so the file-based loader can use it without a separate code path.
+                        let embedded = include_str!("../benchmarks/queries/default.toml");
+                        let tmp = std::env::temp_dir().join("tokensave-bench-default.toml");
+                        std::fs::write(&tmp, embedded).map_err(|e| {
+                            tokensave::errors::TokenSaveError::Config {
+                                message: format!("failed to write embedded query file: {e}"),
+                            }
+                        })?;
+                        tmp
+                    }
+                }
+            };
+
+            let report = tokensave::bench::run_bench(
+                &cg,
+                &queries_path,
+                tokensave::bench::BenchOptions {
+                    format: if json {
+                        tokensave::bench::OutputFormat::Json
+                    } else {
+                        tokensave::bench::OutputFormat::Markdown
+                    },
+                    max_nodes,
+                },
+            )
+            .await?;
+
+            if json {
+                println!("{}", tokensave::bench::format_report_json(&report));
+            } else {
+                println!("{}", tokensave::bench::format_report_markdown(&report));
+            }
+        }
         Commands::Gain { all, history, range, json } => {
             commands::handle_gain(all, history, &range, json).await?;
         }

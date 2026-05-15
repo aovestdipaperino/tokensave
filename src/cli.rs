@@ -228,6 +228,21 @@ pub enum Commands {
         #[arg(long)]
         export: Option<String>,
     },
+    /// Run a reproducible retrieval benchmark against the current project.
+    Bench {
+        /// Path to a TOML query file (defaults to the shipped default set).
+        #[arg(long)]
+        queries: Option<String>,
+        /// Output as JSON instead of a markdown table.
+        #[arg(long)]
+        json: bool,
+        /// Project path (default: current directory).
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Max nodes per query (default: 20).
+        #[arg(long, default_value = "20")]
+        max_nodes: usize,
+    },
     /// Show token savings (and dollar estimates) recorded in the global ledger.
     Gain {
         /// Show all projects (default: only the current project).
