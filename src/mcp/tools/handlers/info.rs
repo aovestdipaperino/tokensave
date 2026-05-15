@@ -448,6 +448,15 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
         if !id_set.contains(edge.source.as_str()) || !id_set.contains(edge.target.as_str()) {
             continue;
         }
+        // Self-edges are common resolver artifacts for methods with generic
+        // names (`push`, `new`, `clamp`, `num_rows`) where a call on another
+        // receiver fuzzy-binds back to the current method. They also make a
+        // single symbol unsortable in Kahn's algorithm, producing noisy
+        // singleton cycles instead of useful porting order. Mutual cycles are
+        // still reported below.
+        if edge.source == edge.target {
+            continue;
+        }
         // source depends on target: add dependency source -> target
         dep_graph
             .entry(edge.source.as_str())
@@ -555,11 +564,9 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
         let mut ranked: Vec<(&str, usize, usize)> = scc
             .iter()
             .map(|id| {
-                let out_in_cycle = cycle_adj
-                    .get(id)
-                    .map_or(0, |neighbors| {
-                        neighbors.iter().filter(|n| scc_set.contains(*n)).count()
-                    });
+                let out_in_cycle = cycle_adj.get(id).map_or(0, |neighbors| {
+                    neighbors.iter().filter(|n| scc_set.contains(*n)).count()
+                });
                 // In-degree (within the cycle) — how many SCC members
                 // depend on this symbol. High in-degree = "many callers
                 // inside the cycle", which is another useful break-point
@@ -604,8 +611,7 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
                 *file_counts.entry(n.file_path.as_str()).or_insert(0) += 1;
             }
         }
-        let mut files_ranked: Vec<(&str, usize)> =
-            file_counts.into_iter().collect();
+        let mut files_ranked: Vec<(&str, usize)> = file_counts.into_iter().collect();
         files_ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         let files_json: Vec<Value> = files_ranked
             .iter()

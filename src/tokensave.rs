@@ -1706,13 +1706,34 @@ impl TokenSave {
         let check_output = Command::new("ast-grep").args(["--version"]).output();
 
         if check_output.is_err() {
+            if can_use_literal_rewrite_fallback(pattern) {
+                let mut source = std::fs::read_to_string(&abs_path).map_err(TokenSaveError::Io)?;
+                if !source.contains(pattern) {
+                    return Ok(AstGrepResult {
+                        success: false,
+                        file_path: rel_path.clone(),
+                        pattern: pattern.to_string(),
+                        rewrite: rewrite.to_string(),
+                        message: "pattern not found (built-in literal fallback)".to_string(),
+                    });
+                }
+                source = source.replace(pattern, rewrite);
+                std::fs::write(&abs_path, source).map_err(TokenSaveError::Io)?;
+                self.reindex_file(&rel_path).await?;
+                return Ok(AstGrepResult {
+                    success: true,
+                    file_path: rel_path,
+                    pattern: pattern.to_string(),
+                    rewrite: rewrite.to_string(),
+                    message: "literal rewrite completed using built-in fallback".to_string(),
+                });
+            }
             return Ok(AstGrepResult {
                 success: false,
                 file_path: rel_path.clone(),
                 pattern: pattern.to_string(),
                 rewrite: rewrite.to_string(),
-                message: "ast-grep is not installed. Install with: cargo install ast-grep"
-                    .to_string(),
+                message: "ast-grep is not installed and this pattern needs SGPattern matching. Simple literal rewrites are handled by the built-in fallback.".to_string(),
             });
         }
 
@@ -1754,6 +1775,15 @@ impl TokenSave {
     }
 }
 
+fn can_use_literal_rewrite_fallback(pattern: &str) -> bool {
+    let trimmed = pattern.trim();
+    !trimmed.is_empty()
+        && trimmed == pattern
+        && !pattern.contains('$')
+        && !pattern.contains('\n')
+        && !pattern.contains('\r')
+}
+
 // ---------------------------------------------------------------------------
 // Query delegation
 // ---------------------------------------------------------------------------
@@ -1768,10 +1798,36 @@ impl TokenSave {
     /// statement could outrank the actual `pub fn foo()` definition.
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let overfetch = limit.saturating_mul(3).max(30);
-        let raw = self.db.search_nodes(query, overfetch).await?;
         let trimmed_query = query.trim();
+        let mut raw = self.db.search_nodes(query, overfetch).await?;
+
+        // FTS/BM25 can bury exact symbol definitions below many short import
+        // rows. On Sonium, `LinearOperator` had dozens of `use ...LinearOperator`
+        // rows in the top FTS window while the actual trait definition was
+        // outside `overfetch`, so the kind tier below never saw it. Seed the
+        // candidate set with exact `name = query` hits first, then dedup.
+        if !trimmed_query.is_empty() {
+            let mut exact_names = vec![trimmed_query.to_string()];
+            if let Some(short) = trimmed_query.rsplit("::").next() {
+                if short != trimmed_query && !short.is_empty() {
+                    exact_names.push(short.to_string());
+                }
+            }
+            let exact = self
+                .db
+                .search_nodes_by_exact_name(&exact_names, overfetch)
+                .await?;
+            raw.extend(
+                exact
+                    .into_iter()
+                    .map(|node| SearchResult { node, score: 0.0 }),
+            );
+        }
+
+        let mut seen = HashSet::new();
         let mut ranked: Vec<SearchResult> = raw
             .into_iter()
+            .filter(|r| seen.insert(r.node.id.clone()))
             .map(|mut r| {
                 r.score += kind_rank_bonus(&r.node.kind);
                 // Exact-name match boost: when the node's `name` equals the
@@ -1971,6 +2027,14 @@ impl TokenSave {
     /// Returns calls edges as (`source_id`, `target_id`) pairs for cycle detection.
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
         self.db.get_call_edges(path_prefix).await
+    }
+
+    /// Returns calls edges as (`source_id`, `target_id`, `line`) tuples.
+    pub async fn get_call_edges_with_lines(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, String, Option<u32>)>> {
+        self.db.get_call_edges_with_lines(path_prefix).await
     }
 
     /// Returns functions/methods ranked by composite complexity score.
@@ -2657,10 +2721,7 @@ fn kind_tier(kind: &NodeKind) -> u8 {
         | NodeKind::GenericParam
         | NodeKind::PascalProgram => 3,
         // Tier 4: pure references / annotations — always rank last.
-        NodeKind::Use
-        | NodeKind::Include
-        | NodeKind::AnnotationUsage
-        | NodeKind::Decorator => 4,
+        NodeKind::Use | NodeKind::Include | NodeKind::AnnotationUsage | NodeKind::Decorator => 4,
     }
 }
 

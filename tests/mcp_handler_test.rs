@@ -1712,6 +1712,39 @@ async fn test_str_replace_unsupported_file_type_succeeds() {
 }
 
 #[tokio::test]
+async fn ast_grep_rewrite_has_literal_fallback_when_binary_missing() {
+    if tokensave::mcp::tools::ast_grep_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn old_name() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_ast_grep_rewrite",
+        json!({"path": "src/lib.rs", "pattern": "old_name", "rewrite": "new_name"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["success"].as_bool(), Some(true), "{output}");
+    assert!(
+        fs::read_to_string(project.join("src/lib.rs"))
+            .unwrap()
+            .contains("new_name"),
+        "literal fallback should update the file"
+    );
+}
+
+#[tokio::test]
 async fn test_multi_str_replace_unsupported_file_type_succeeds() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -2772,16 +2805,10 @@ pub fn second() { dep::shared(); }
     );
 }
 
-/// Regression for bug #6: `tokensave_recursion` must not report length-1
-/// self-cycles. The sonium codebase had `gauss_legendre_1d`, `num_elements`,
-/// and three different `push` methods (one per impl block) listed — none of
-/// which were genuinely recursive in source. The resolver had bound
-/// `self.push()` to itself across impls. Per the bug-report's explicit
-/// guidance, length-1 self-cycles are dropped wholesale; agents searching
-/// for "what's recursive in this codebase" want multi-step cycles, not
-/// self-loops which are usually either trivial or resolver-fabricated.
+/// Regression for bug #6 / review P1: `tokensave_recursion` must preserve
+/// genuine direct recursion while filtering length-1 self-edge artifacts.
 #[tokio::test]
-async fn recursion_drops_length_one_self_cycles() {
+async fn recursion_keeps_direct_recursion() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -2804,13 +2831,96 @@ pub fn nonrecursive() -> u32 { 42 }
     let text = extract_text(&result.value);
     let output: Value = serde_json::from_str(text).unwrap();
     let cycles = output["cycles"].as_array().unwrap();
-    for cycle in cycles {
-        let chain = cycle["chain"].as_array().unwrap();
-        let distinct: std::collections::HashSet<&str> =
-            chain.iter().filter_map(|n| n["id"].as_str()).collect();
+    let has_recurse = cycles.iter().any(|cycle| {
+        cycle["chain"].as_array().is_some_and(|chain| {
+            chain
+                .iter()
+                .filter_map(|n| n["name"].as_str())
+                .filter(|name| *name == "recurse")
+                .count()
+                >= 2
+        })
+    });
+    assert!(
+        has_recurse,
+        "direct self-recursive function should be reported; got {cycles:?}"
+    );
+}
+
+#[tokio::test]
+async fn recursion_filters_self_edge_artifacts() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub struct Triplet {
+    rows: Vec<usize>,
+}
+
+impl Triplet {
+    pub fn push(&mut self, row: usize) {
+        self.rows.push(row);
+    }
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_recursion", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    let mentions_push = cycles.iter().any(|cycle| {
+        cycle["chain"]
+            .as_array()
+            .is_some_and(|chain| chain.iter().any(|n| n["name"].as_str() == Some("push")))
+    });
+    assert!(
+        !mentions_push,
+        "`self.rows.push(...)` should not be reported as recursive; got {cycles:?}"
+    );
+}
+
+#[tokio::test]
+async fn recursion_reports_real_cycle_path() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub fn a() { b(); }
+pub fn b() { c(); }
+pub fn c() { a(); }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(&cg, "tokensave_recursion", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    let chain = cycles
+        .iter()
+        .find_map(|cycle| {
+            let chain = cycle["chain"].as_array()?;
+            let names: Vec<&str> = chain.iter().filter_map(|n| n["name"].as_str()).collect();
+            (names.len() == 4).then_some(names)
+        })
+        .expect("expected a three-node cycle path");
+    let valid_edges = [("a", "b"), ("b", "c"), ("c", "a")];
+    for pair in chain.windows(2) {
         assert!(
-            distinct.len() >= 2,
-            "every reported cycle must visit at least 2 distinct nodes; got {chain:?}"
+            valid_edges.contains(&(pair[0], pair[1])),
+            "chain must follow real call edges; got {chain:?}"
         );
     }
 }
@@ -3458,6 +3568,50 @@ pub fn h() { a(); }
     );
 }
 
+/// Regression for the Sonium port-order report: self-edges from fuzzy
+/// resolution (`self.rows.push(...)` inside a method named `push`) should
+/// not make singleton symbols appear as cycles.
+#[tokio::test]
+async fn port_order_ignores_self_edges() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(
+        project.join("src/m.rs"),
+        r#"
+pub struct Triplet {
+    rows: Vec<usize>,
+}
+
+impl Triplet {
+    pub fn push(&mut self, row: usize) {
+        self.rows.push(row);
+    }
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_port_order",
+        json!({"source_dir": "src"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let cycles = output["cycles"].as_array().unwrap();
+    assert!(
+        cycles.is_empty(),
+        "self-edge-only methods should stay out of port_order cycles: {cycles:?}"
+    );
+}
+
 /// Regression for bug #9: `tokensave_inheritance_depth` must surface Rust
 /// supertrait chains (`trait T: U`) as `Extends` edges.
 #[tokio::test]
@@ -3650,10 +3804,7 @@ async fn changelog_filters_deleted_directory_entries() {
         .iter()
         .filter_map(|v| v.as_str().map(String::from))
         .collect();
-    let problematic: Vec<&String> = changed
-        .iter()
-        .filter(|p| !p.ends_with(".rs"))
-        .collect();
+    let problematic: Vec<&String> = changed.iter().filter(|p| !p.ends_with(".rs")).collect();
     assert!(
         problematic.is_empty(),
         "changed_files should be file paths only (no directories like 'crates' or 'crates/sub'); got problematic={problematic:?} full={changed:?}"
@@ -3785,9 +3936,7 @@ pub fn used() -> HashMap<u32, u32> { HashMap::new() }
         })
         .collect();
     let mentions_hashset = imports.iter().any(|u| {
-        u["unused"]
-            .as_str()
-            .is_some_and(|s| s.contains("HashSet"))
+        u["unused"].as_str().is_some_and(|s| s.contains("HashSet"))
             || u["name"].as_str().is_some_and(|n| n.contains("HashSet"))
     });
     assert!(
@@ -3797,11 +3946,9 @@ pub fn used() -> HashMap<u32, u32> { HashMap::new() }
     // Critically, the *used* identifier HashMap must NOT be reported. If the
     // handler treats the whole grouped use as one opaque identifier it'll
     // either flag both or neither — both modes are wrong.
-    let any_falsely_flags_hashmap = imports.iter().any(|u| {
-        u["unused"]
-            .as_str()
-            .is_some_and(|s| s == "HashMap")
-    });
+    let any_falsely_flags_hashmap = imports
+        .iter()
+        .any(|u| u["unused"].as_str().is_some_and(|s| s == "HashMap"));
     assert!(
         !any_falsely_flags_hashmap,
         "HashMap is used (HashMap::new()) and must not appear in `unused`; got {payloads:?}"
@@ -3846,10 +3993,7 @@ fn dead_helper_with_attr() {}
     let text = extract_text(&result.value);
     let output: Value = serde_json::from_str(text).unwrap();
     let symbols = output["symbols"].as_array().unwrap();
-    let names: Vec<&str> = symbols
-        .iter()
-        .filter_map(|s| s["name"].as_str())
-        .collect();
+    let names: Vec<&str> = symbols.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(
         names.contains(&"dead_helper_with_attr"),
         "private fn with #[inline] and no callers should be dead; got {names:?}"

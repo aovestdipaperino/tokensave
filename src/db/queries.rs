@@ -1437,6 +1437,56 @@ impl Database {
         Ok(items)
     }
 
+    /// Returns all `calls` edges with their source line for cycle detection.
+    ///
+    /// Returns `(source_id, target_id, line)` tuples for every `calls` edge.
+    pub async fn get_call_edges_with_lines(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, String, Option<u32>)>> {
+        let op = "get_call_edges_with_lines";
+        let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
+            Some(prefix) => (
+                "SELECT e.source, e.target, e.line FROM edges e
+                 JOIN nodes n ON e.source = n.id
+                 WHERE e.kind = 'calls' AND n.file_path LIKE ?1"
+                    .to_string(),
+                vec![libsql::Value::Text(format!("{prefix}%"))],
+            ),
+            None => (
+                "SELECT source, target, line FROM edges WHERE kind = 'calls'".to_string(),
+                vec![],
+            ),
+        };
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query call edges with lines: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut items = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let source = row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read source: {e}"),
+                operation: op.to_string(),
+            })?;
+            let target = row.get::<String>(1).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read target: {e}"),
+                operation: op.to_string(),
+            })?;
+            let line = row.get::<u32>(2).ok();
+            items.push((source, target, line));
+        }
+
+        Ok(items)
+    }
+
     /// Returns functions/methods ranked by a composite complexity score.
     ///
     /// Complexity = `line_count` + (`call_fan_out` * 3) + `call_fan_in`.
