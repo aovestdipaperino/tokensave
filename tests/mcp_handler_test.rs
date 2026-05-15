@@ -3049,6 +3049,225 @@ pub trait T {}
     );
 }
 
+/// Regression: `tokensave_run_affected_tests` must dispatch the test
+/// functions that are themselves in `changed_paths`. Previously the
+/// handler walked callers of every node in the changed file — but
+/// `#[test]` functions are leaves with no callers, so a PR that only
+/// edits `tests/foo.rs` would return "no tests cover the changed
+/// paths" and skip running anything.
+#[tokio::test]
+async fn run_affected_tests_dispatches_directly_changed_test_files() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn util() -> u32 { 1 }\n").unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "t"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("tests/edited_only.rs"),
+        r#"
+#[test]
+fn edited_only_test() {
+    assert_eq!(2, 2);
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_run_affected_tests",
+        json!({
+            "changed_paths": ["tests/edited_only.rs"],
+            "timeout_secs": 60,
+            "max_tests": 5
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    // If no tests get dispatched the handler short-circuits with a
+    // note: "no tests cover the changed paths (1 file(s))". After the
+    // fix, the test in the edited file itself must be dispatched.
+    let dispatched = output["dispatched_tests"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        dispatched.iter().any(|n| n.contains("edited_only_test")),
+        "expected edited_only_test to be dispatched; got dispatched={dispatched:?} note={:?}",
+        output["note"]
+    );
+}
+
+/// Regression: `tokensave_diagnose` must normalize span paths before
+/// looking them up in the graph. cargo emits absolute and (on Windows)
+/// backslash-separated paths; the graph stores project-relative,
+/// forward-slash paths. Without normalization a diagnostic with span
+/// `/abs/path/to/project/src/lib.rs:42:1` or `src\lib.rs:42:1` resolves
+/// to `node: null` even though the file is indexed.
+#[tokio::test]
+async fn diagnose_normalizes_absolute_and_backslash_paths() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn target() {}\n").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let abs_path = project.join("src/lib.rs");
+    let abs_str = abs_path.to_string_lossy().to_string();
+    let backslash_str = "src\\lib.rs";
+    let cargo_output = format!(
+        "error[E0001]: synthetic error\n  --> {abs_str}:1:1\n   |\n\nerror[E0002]: backslash form\n  --> {backslash_str}:1:1\n   |\n"
+    );
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_diagnose",
+        json!({"cargo_output": cargo_output, "include_callers": false}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let mapped = output["mapped_to_node"].as_u64().unwrap_or(0);
+    assert_eq!(
+        mapped, 2,
+        "both diagnostics should map to nodes after path normalization; got mapped={mapped} full={output:#}"
+    );
+}
+
+/// Regression: PR8's resolver kind-compatibility filter must apply to
+/// the same-file blocklist branches too. Without it, common names like
+/// `new`/`default`/`clone` can still bind a `Calls` reference to a
+/// non-callable same-file symbol — e.g. a const literally named
+/// `default` — when it's the only same-file match for a blocklisted
+/// name.
+#[tokio::test]
+async fn resolver_blocklist_branch_respects_kind_filter() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    // Use a struct named after a blocklisted identifier ("new") plus a
+    // call site that the parser definitely treats as a call_expression.
+    // Pre-fix the resolver's same-file blocklist branch would bind the
+    // Calls ref to this struct because no other "new" lives in the file.
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub struct new;
+
+pub fn caller() {
+    let _ = new();
+    helper();
+}
+
+pub fn helper() {}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let caller_id = find_node_id(&cg, "caller").await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callees",
+        json!({"node_id": caller_id, "max_depth": 1, "resolve_dispatch": false}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let items: Value = serde_json::from_str(text).unwrap();
+    let arr = items.as_array().unwrap();
+    for entry in arr {
+        let kind = entry["kind"].as_str().unwrap_or("");
+        let name = entry["name"].as_str().unwrap_or("");
+        let callable = matches!(
+            kind,
+            "function" | "method" | "struct_method" | "constructor" | "macro" | "arrow_function"
+        );
+        assert!(
+            callable,
+            "caller's callees must be callable kinds; got name={name} kind={kind} full={arr:#?}"
+        );
+    }
+}
+
+/// Regression for bug #11: when an `impl Trait for X` reference cannot
+/// resolve to a real trait node (e.g. `Default` lives in std and isn't
+/// indexed), the resolver MUST NOT fuzzy-bind it to an unrelated node
+/// kind. The sonium codebase had a parser `Token` enum whose `Default`
+/// variant became the target of 150 stray `implements` edges from
+/// manual `impl Default for X` blocks, completely poisoning
+/// `tokensave_rank --edge-kind implements`. Implements/Extends/derives
+/// references must only resolve to trait-shaped targets.
+#[tokio::test]
+async fn implements_refs_dont_resolve_to_enum_variants() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub enum Token { Default, Plus }
+
+pub struct A;
+impl Default for A { fn default() -> Self { A } }
+
+pub struct B;
+impl Default for B { fn default() -> Self { B } }
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_rank",
+        json!({"edge_kind": "implements", "direction": "incoming"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    let ranking = output["ranking"].as_array().unwrap();
+    for entry in ranking {
+        let kind = entry["kind"].as_str().unwrap_or("");
+        let name = entry["name"].as_str().unwrap_or("");
+        assert!(
+            kind != "enum_variant" && kind != "field",
+            "implements edges must not target {kind} (got name={name})"
+        );
+    }
+}
+
 /// Regression for bug #10: `tokensave_circular` must report one entry per
 /// strongly-connected component, not every walk through the cycle. The
 /// sonium codebase had 73 "cycles" that were all different DFS paths

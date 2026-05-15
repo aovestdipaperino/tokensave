@@ -2052,7 +2052,8 @@ impl TokenSave {
             return Ok(None);
         }
         let zero_based = line_1based - 1;
-        let mut nodes = self.db.get_nodes_by_file(file).await?;
+        let normalized = normalize_lookup_path(self.project_root(), file);
+        let mut nodes = self.db.get_nodes_by_file(&normalized).await?;
         nodes.retain(|n| n.start_line <= zero_based && n.end_line >= zero_based);
         // Prefer the smallest containing span — that's the most specific
         // owner of the source location.
@@ -2644,24 +2645,22 @@ fn parse_derives_in_attr_block(content: &str, start_line: u32, end_line: u32) ->
     let mut seen = std::collections::HashSet::new();
     let lines: Vec<&str> = content.lines().collect();
     let start = start_line as usize;
-    // Inclusive upper bound; if the attr block runs into `start_line` the
-    // derive may be on that exact line for one-line items.
     let end = (end_line as usize).min(lines.len().saturating_sub(1));
     if start >= lines.len() {
         return out;
     }
-    for line in &lines[start..=end] {
-        let trimmed = line.trim_start();
-        // Match both `#[derive(...)]` and `#[derive(...) ]` shapes; ignore
-        // anything that isn't a derive attribute (other attributes like
-        // `#[serde(...)]` and doc comments).
-        let Some(rest) = trimmed.strip_prefix("#[derive(") else {
-            continue;
+    // Join the attribute block into a single string so multi-line
+    // `#[derive(\n  Debug,\n  Clone,\n)]` (rustfmt's split form for long
+    // derive lists) is handled uniformly with the single-line variant.
+    let block = lines[start..=end].join("\n");
+    let mut search_from = 0usize;
+    while let Some(start_idx) = block[search_from..].find("#[derive(") {
+        let abs_start = search_from + start_idx + "#[derive(".len();
+        let Some(close_offset) = block[abs_start..].find(')') else {
+            break;
         };
-        let Some(end_idx) = rest.find(')') else {
-            continue;
-        };
-        for name in rest[..end_idx].split(',') {
+        let inner = &block[abs_start..abs_start + close_offset];
+        for name in inner.split(',') {
             let name = name.trim();
             if name.is_empty() {
                 continue;
@@ -2674,8 +2673,43 @@ fn parse_derives_in_attr_block(content: &str, start_line: u32, end_line: u32) ->
                 out.push(short);
             }
         }
+        search_from = abs_start + close_offset + 1;
     }
     out
+}
+
+/// Normalises an external file path (typically from a `cargo check` /
+/// `cargo clippy` diagnostic span) into the project-relative,
+/// forward-slash form the index stores. Handles three real-world shapes:
+///
+/// - Absolute paths (cargo emits them when `--manifest-path` points at a
+///   project root that differs from `cwd`): strip the `project_root`
+///   prefix so `/abs/path/to/project/src/lib.rs` becomes `src/lib.rs`.
+/// - Backslash paths (Windows cargo): convert `\` → `/`.
+/// - Already-relative forward-slash paths: pass through unchanged.
+///
+/// Falls back to returning the input verbatim if no transformation
+/// applies — `get_nodes_by_file` will then handle "no such file" the
+/// same way it always does.
+fn normalize_lookup_path(project_root: &std::path::Path, raw: &str) -> String {
+    let forward = raw.replace('\\', "/");
+    let path = std::path::Path::new(&forward);
+    if path.is_absolute() {
+        // Try canonicalising both sides; canonicalisation handles
+        // symlinks, `..` segments, and trailing slashes uniformly. If
+        // either fails (file doesn't exist on disk, project root
+        // moved), fall back to a raw prefix strip.
+        if let (Ok(abs), Ok(root)) = (path.canonicalize(), project_root.canonicalize()) {
+            if let Ok(rel) = abs.strip_prefix(&root) {
+                return rel.to_string_lossy().replace('\\', "/");
+            }
+        }
+        let root_str = project_root.to_string_lossy();
+        if let Some(rel) = forward.strip_prefix(root_str.as_ref()) {
+            return rel.trim_start_matches('/').to_string();
+        }
+    }
+    forward
 }
 
 /// True when the user-supplied query matches either the node's short `name`
@@ -2756,5 +2790,39 @@ pub struct S;
         let src = "#[derive(Debug, Debug, Clone)]\npub struct S;\n";
         let derives = parse_derives_in_attr_block(src, 0, 1);
         assert_eq!(derives, vec!["Debug", "Clone"]);
+    }
+
+    /// Regression: rustfmt splits long derive lists across lines:
+    ///   `#[derive(\n    Debug,\n    Clone,\n    PartialEq,\n)]`
+    /// The previous line-bounded parser dropped all of these because it
+    /// only matched `#[derive(...)]` when the closing `)` was on the
+    /// same line. Production codebases with realistic-sized derive
+    /// lists were getting empty `derives` output.
+    #[test]
+    fn parses_multiline_derive_attribute() {
+        let src = "\
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+)]
+pub struct Wide;
+";
+        let derives = parse_derives_in_attr_block(src, 0, 5);
+        assert_eq!(derives, vec!["Debug", "Clone", "PartialEq"]);
+    }
+
+    #[test]
+    fn parses_multiline_derive_mixed_with_single_line() {
+        let src = "\
+#[derive(Debug)]
+#[derive(
+    Clone,
+    Hash,
+)]
+pub struct M;
+";
+        let derives = parse_derives_in_attr_block(src, 0, 5);
+        assert_eq!(derives, vec!["Debug", "Clone", "Hash"]);
     }
 }

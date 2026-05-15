@@ -170,14 +170,57 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
         return Ok(empty_result("no changed files detected"));
     }
 
-    // 2) Find tests that cover those paths via the graph: for every source
-    // node in a changed file, walk callers and keep the ones that look like
-    // tests.
+    // 2) Find tests that cover the changed paths.
+    //
+    //    Two paths feed into the test set:
+    //    a) Indirect coverage — for every callable in a changed file, walk
+    //       callers and keep test-shaped ones (test file or `#[test]`
+    //       annotated). This is the common case when source changes are
+    //       what's being tested.
+    //    b) Direct change — when a changed path itself is a test file (or
+    //       holds `#[test]` annotations), dispatch its test functions
+    //       directly. `#[test]` fns are leaves with no callers, so the
+    //       indirect-coverage walk above always misses them and the tool
+    //       used to silently skip PRs that only edit `tests/foo.rs`.
     let mut test_targets: HashMap<String, Vec<String>> = HashMap::new();
     let mut covered_sources: HashSet<String> = HashSet::new();
     for path in &changed_paths {
         let nodes = cg.get_nodes_by_file(path).await.unwrap_or_default();
-        for node in nodes {
+
+        // (b) Direct dispatch from changed test files.
+        let path_is_test_file = is_test_file(path);
+        if path_is_test_file || !nodes.is_empty() {
+            let candidate_ids: Vec<String> = nodes
+                .iter()
+                .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+                .map(|n| n.id.clone())
+                .collect();
+            let test_annotated_in_file = cg
+                .get_test_annotated_node_ids(&candidate_ids)
+                .await
+                .unwrap_or_default();
+            for node in &nodes {
+                if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                    continue;
+                }
+                let looks_like_test =
+                    path_is_test_file || test_annotated_in_file.contains(&node.id);
+                if !looks_like_test {
+                    continue;
+                }
+                // The test "covers itself" — record the node id as the
+                // source so the per-test `covers_source_ids` field
+                // remains useful.
+                test_targets
+                    .entry(node.name.clone())
+                    .or_default()
+                    .push(node.id.clone());
+                covered_sources.insert(node.id.clone());
+            }
+        }
+
+        // (a) Indirect coverage — walk callers of every callable in the file.
+        for node in &nodes {
             if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
                 continue;
             }

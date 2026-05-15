@@ -390,7 +390,10 @@ impl<'a> ReferenceResolver<'a> {
     fn try_qualified_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Direct lookup first
         if let Some(candidates) = self.qualified_name_cache.get(&uref.reference_name) {
-            if let Some(node) = candidates.first() {
+            if let Some(node) = candidates
+                .iter()
+                .find(|n| kind_compatible(uref.reference_kind, &n.kind))
+            {
                 return Some(ResolvedRef {
                     original: uref.clone(),
                     target_node_id: node.id.clone(),
@@ -405,7 +408,10 @@ impl<'a> ReferenceResolver<'a> {
         if let Some(full_names) = self.suffix_cache.get(&uref.reference_name) {
             for full_name in full_names {
                 if let Some(candidates) = self.qualified_name_cache.get(full_name) {
-                    if let Some(node) = candidates.first() {
+                    if let Some(node) = candidates
+                        .iter()
+                        .find(|n| kind_compatible(uref.reference_kind, &n.kind))
+                    {
                         return Some(ResolvedRef {
                             original: uref.clone(),
                             target_node_id: node.id.clone(),
@@ -424,11 +430,16 @@ impl<'a> ReferenceResolver<'a> {
     fn try_exact_name_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Skip cross-file resolution for blocklisted names (too ambiguous).
         if CROSS_FILE_BLOCKLIST.contains(&uref.reference_name.as_str()) {
-            // Still allow same-file resolution.
+            // Still allow same-file resolution, but apply the same
+            // kind-compatibility filter as the non-blocklist path —
+            // otherwise a `Calls` ref to `new()` happily binds to a
+            // same-file `struct new` because that's the only same-file
+            // node with the name.
             let candidates = self.name_cache.get(&uref.reference_name)?;
             let same_file: Vec<_> = candidates
                 .iter()
                 .filter(|n| n.file_path == uref.file_path)
+                .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
                 .collect();
             if same_file.len() == 1 {
                 return Some(ResolvedRef {
@@ -441,7 +452,27 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
-        let candidates = self.name_cache.get(&uref.reference_name)?;
+        let raw_candidates = self.name_cache.get(&uref.reference_name)?;
+        // Filter by node-kind compatibility with the reference kind. An
+        // `Implements`/`Extends`/`DerivesMacro` ref like `impl Default for X`
+        // must NOT bind to an unrelated node kind (e.g. a local
+        // `enum_variant Default`) just because the names match — that
+        // poisons `tokensave_rank` and every downstream graph query.
+        let kind_filtered: Vec<&Node> = raw_candidates
+            .iter()
+            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .collect();
+        if kind_filtered.is_empty() {
+            return None;
+        }
+        let candidates: &[Node] = if kind_filtered.len() == raw_candidates.len() {
+            raw_candidates
+        } else {
+            // Cache the filtered subset in a local Vec so the downstream
+            // helpers see the same shape. Allocating here only on the
+            // shrunk path keeps the happy path zero-copy.
+            return resolve_from_filtered(uref, &kind_filtered);
+        };
 
         if candidates.len() == 1 {
             let ref_lang = lang_from_path(&uref.file_path);
@@ -480,9 +511,12 @@ impl<'a> ReferenceResolver<'a> {
     ) -> Option<ResolvedRef> {
         if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
             let candidates = self.name_cache.get(simple_name)?;
+            // Same fix as `try_exact_name_match`: filter by kind before
+            // returning a same-file blocklisted match.
             let same_file: Vec<_> = candidates
                 .iter()
                 .filter(|n| n.file_path == uref.file_path)
+                .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
                 .collect();
             if same_file.len() == 1 {
                 return Some(ResolvedRef {
@@ -495,7 +529,19 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
-        let candidates = self.name_cache.get(simple_name)?;
+        let raw_candidates = self.name_cache.get(simple_name)?;
+        let kind_filtered: Vec<&Node> = raw_candidates
+            .iter()
+            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .collect();
+        if kind_filtered.is_empty() {
+            return None;
+        }
+        let candidates: &[Node] = if kind_filtered.len() == raw_candidates.len() {
+            raw_candidates
+        } else {
+            return resolve_from_filtered_named(uref, &kind_filtered, "simple-name-match");
+        };
 
         if candidates.len() == 1 {
             let ref_lang = lang_from_path(&uref.file_path);
@@ -609,4 +655,93 @@ impl<'a> ReferenceResolver<'a> {
 
         best_node.cloned()
     }
+}
+
+/// True when an unresolved-ref's edge kind is structurally compatible
+/// with a candidate target node's kind.
+///
+/// Without this check, the resolver fuzzy-binds `impl Default for X`
+/// (an `Implements` ref) to whatever local node happens to share the
+/// name `Default` — e.g. a `Token::Default` enum variant in a parser
+/// crate. That poisons `tokensave_rank --edge-kind implements`,
+/// `tokensave_impls`, and the type-hierarchy tools.
+///
+/// The compatibility matrix is deliberately conservative: when the
+/// edge kind constrains the target shape (`Implements`/`Extends`/
+/// `DerivesMacro` must target a trait or interface; `Calls` must
+/// target a callable), we enforce it. Everything else stays permissive
+/// (e.g. `Uses` accepts any kind because imports cover the full type
+/// system).
+fn kind_compatible(ref_kind: EdgeKind, target_kind: &NodeKind) -> bool {
+    match ref_kind {
+        EdgeKind::Implements | EdgeKind::Extends | EdgeKind::DerivesMacro => matches!(
+            target_kind,
+            NodeKind::Trait
+                | NodeKind::Interface
+                | NodeKind::InterfaceType
+                | NodeKind::Class
+                | NodeKind::InnerClass
+                | NodeKind::AbstractMethod
+                | NodeKind::SealedClass
+                | NodeKind::Annotation
+                | NodeKind::TypeAlias
+        ),
+        EdgeKind::Calls => matches!(
+            target_kind,
+            NodeKind::Function
+                | NodeKind::Method
+                | NodeKind::StructMethod
+                | NodeKind::Constructor
+                | NodeKind::AbstractMethod
+                | NodeKind::ArrowFunction
+                | NodeKind::Procedure
+                | NodeKind::Macro
+        ),
+        EdgeKind::Annotates => matches!(
+            target_kind,
+            NodeKind::Annotation | NodeKind::Decorator | NodeKind::AnnotationUsage
+        ),
+        // Uses / TypeOf / Returns / Contains / Receives — permissive.
+        _ => true,
+    }
+}
+
+/// Resolution helper used after the kind filter has reduced the
+/// candidate list to a strict subset of `name_cache`. Mirrors the
+/// single-candidate / multi-candidate branches of
+/// `try_exact_name_match` but operates on the borrowed slice.
+fn resolve_from_filtered(uref: &UnresolvedRef, kind_filtered: &[&Node]) -> Option<ResolvedRef> {
+    resolve_from_filtered_named(uref, kind_filtered, "exact-match")
+}
+
+fn resolve_from_filtered_named(
+    uref: &UnresolvedRef,
+    kind_filtered: &[&Node],
+    resolved_by: &str,
+) -> Option<ResolvedRef> {
+    if kind_filtered.len() == 1 {
+        return Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id: kind_filtered[0].id.clone(),
+            confidence: 0.85,
+            resolved_by: resolved_by.to_string(),
+        });
+    }
+    // Multiple kind-compatible candidates: pick the first one in the
+    // same file as the reference if possible, otherwise the first
+    // overall. Real scoring (`find_best_match`) wants `&[Node]` and
+    // these are `&[&Node]`; rather than re-allocate to satisfy it we
+    // accept this coarser heuristic, which still beats the previous
+    // behaviour of picking whatever node happened to match by name.
+    let pick = kind_filtered
+        .iter()
+        .find(|n| n.file_path == uref.file_path)
+        .copied()
+        .or_else(|| kind_filtered.first().copied())?;
+    Some(ResolvedRef {
+        original: uref.clone(),
+        target_node_id: pick.id.clone(),
+        confidence: 0.65,
+        resolved_by: resolved_by.to_string(),
+    })
 }

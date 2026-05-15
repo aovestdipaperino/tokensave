@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.14.0] - 2026-05-15
+
+### Fixed
+- **`tokensave_run_affected_tests` dispatches directly-changed test files.** Previously the handler only walked callers of every node in `changed_paths` — `#[test]` functions are leaves with no callers, so a PR that only touched `tests/foo.rs` returned "no tests cover the changed paths" and skipped running anything. The handler now also dispatches test functions whose file is itself in `changed_paths` (either via `is_test_file` path heuristic or `#[test]` annotation), with the test recorded as covering itself in `covers_source_ids`.
+- **`parse_derives_in_attr_block` handles rustfmt's multi-line derive blocks.** The previous line-bounded scanner only matched `#[derive(...)]` when the closing `)` was on the same line, so rustfmt's split form (`#[derive(\n    Debug,\n    Clone,\n)]`) dropped every derive. The parser now joins the attribute-block lines and scans for `#[derive(` ... `)` across the whole region. Two new unit tests (`parses_multiline_derive_attribute`, `parses_multiline_derive_mixed_with_single_line`) cover the split form.
+- **`tokensave_diagnose` normalises absolute and backslash paths.** Cargo emits absolute spans when `--manifest-path` points outside cwd, and Windows cargo emits backslash-separated paths; neither matches the indexed forward-slash, project-relative form. `node_at_location` now calls a new `normalize_lookup_path` helper that (1) replaces `\` with `/`, (2) strips the canonicalised project-root prefix for absolutes, and (3) falls back to a raw prefix strip when canonicalisation fails. A diagnostic spanning either form now maps to the correct node.
+- **Resolver kind-compatibility filter now applies to the same-file blocklist branches (bug #11 follow-up).** PR8's filter was wired into the main `try_exact_name_match` / `try_qualified_match` paths but not the two `CROSS_FILE_BLOCKLIST` branches in `try_exact_name_match` and `try_exact_name_match_simple`. Common blocklisted names (`new`, `default`, `clone`, …) could still bind a `Calls` reference to a same-file non-callable — a struct or const sharing the name. Both branches now filter candidates through `kind_compatible` before declaring a same-file match. Regression test `resolver_blocklist_branch_respects_kind_filter` reproduces the case (`struct new` + `caller() { let _ = new(); }`) and asserts callees only include callable kinds.
+
+## [4.13.0] - 2026-05-15
+
+### Fixed
+- **Resolver kind-compatibility filter (bug #11)** — `tokensave_rank --edge-kind implements` (and every downstream tool: `tokensave_impls`, `tokensave_type_hierarchy`, `tokensave_callees`'s trait dispatch, …) was poisoned by the resolver fuzzy-binding `impl Default for X` to whatever local node happened to share the name `Default`. The sonium codebase had a parser `Token` enum with a `Default` variant; 150 manual `impl Default for X` blocks all bound to that one `enum_variant`, swamping the rank tool with junk.
+- New `kind_compatible(ref_kind, target_kind)` helper in `src/resolution/resolver.rs` enforces a structural matrix:
+  - `Implements` / `Extends` / `DerivesMacro` → must target trait/interface/class/abstract-method/sealed-class/annotation/type-alias kinds
+  - `Calls` → must target a callable (function/method/struct-method/constructor/abstract-method/arrow-function/procedure/macro)
+  - `Annotates` → must target annotation/decorator kinds
+  - `Uses` / `TypeOf` / `Returns` / `Contains` / `Receives` → permissive (any kind)
+- Both `try_qualified_match` and `try_exact_name_match` now apply the filter; when filtering shrinks the candidate list, a `resolve_from_filtered` helper picks the same-file candidate first then falls back to the first overall, with confidence reduced to reflect the partial match. This prevents the previous "any-name-wins" behaviour without dropping legitimate resolutions.
+- Regression test `implements_refs_dont_resolve_to_enum_variants` constructs the exact sonium-style scenario (`enum Token { Default, Plus }` plus two manual `impl Default for X` blocks) and asserts that `tokensave_rank --edge-kind implements` does NOT list an `enum_variant` or `field` target. Existing DBs need `tokensave sync --force` to re-resolve refs under the new constraints.
+
 ## [4.12.0] - 2026-05-15
 
 ### Added
