@@ -154,7 +154,8 @@ impl GlobalDb {
         Some(total as u64)
     }
 
-    /// Insert a new ledger row. Best-effort; errors are logged via `tracing` but never propagated.
+    /// Insert a new ledger row. Best-effort; errors are reported to stderr via eprintln
+    /// but never propagated.
     pub async fn record_savings(
         &self,
         project_path: &str,

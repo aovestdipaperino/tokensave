@@ -113,7 +113,7 @@ pub async fn run_bench(
             (baseline.saturating_sub(context_tokens) as f64 / baseline as f64) * 100.0
         };
 
-        let nodes_returned = ctx.entry_points.len() + ctx.subgraph.nodes.len();
+        let nodes_returned = ctx.subgraph.nodes.len();
 
         results.push(QueryResult {
             task: q.task.clone(),
