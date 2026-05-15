@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 7;
+const LATEST_VERSION: u32 = 8;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -166,7 +166,52 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
-        CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));",
+        CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+
+        CREATE TABLE IF NOT EXISTS memory_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            reason TEXT,
+            created_at INTEGER NOT NULL,
+            files TEXT NOT NULL DEFAULT '[]',
+            tags TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_code_areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            description TEXT,
+            last_touched_at INTEGER NOT NULL,
+            touch_count INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_code_areas_path ON memory_code_areas(path);
+        CREATE INDEX IF NOT EXISTS idx_memory_decisions_created_at ON memory_decisions(created_at);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_decisions_fts USING fts5(
+            text, reason,
+            content='memory_decisions', content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_insert
+            AFTER INSERT ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(rowid, text, reason)
+                VALUES (NEW.id, NEW.text, NEW.reason);
+            END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_delete
+            AFTER DELETE ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, text, reason)
+                VALUES ('delete', OLD.id, OLD.text, OLD.reason);
+            END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_update
+            AFTER UPDATE ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, text, reason)
+                VALUES ('delete', OLD.id, OLD.text, OLD.reason);
+                INSERT INTO memory_decisions_fts(rowid, text, reason)
+                VALUES (NEW.id, NEW.text, NEW.reason);
+            END;",
     )
     .await
     .map_err(|e| TokenSaveError::Database {
@@ -252,6 +297,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         5 => migrate_v5(conn).await,
         6 => migrate_v6(conn).await,
         7 => migrate_v7(conn).await,
+        8 => migrate_v8(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -555,6 +601,73 @@ async fn migrate_v7(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v7: failed to backfill attrs_start_line: {e}"),
         operation: "migrate_v7".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V8: cross-session memory tables (decisions, code areas)
+// ---------------------------------------------------------------------------
+
+/// Adds tables for persistent agent memory: `memory_decisions` records
+/// architecture / design choices with optional reason and tags;
+/// `memory_code_areas` tracks paths the agent has worked in. An FTS5 mirror
+/// over `memory_decisions.text` and `memory_decisions.reason` enables
+/// fuzzy recall via `tokensave_session_recall`.
+async fn migrate_v8(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            reason TEXT,
+            created_at INTEGER NOT NULL,
+            files TEXT NOT NULL DEFAULT '[]',
+            tags TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_code_areas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            description TEXT,
+            last_touched_at INTEGER NOT NULL,
+            touch_count INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_code_areas_path
+            ON memory_code_areas(path);
+        CREATE INDEX IF NOT EXISTS idx_memory_decisions_created_at
+            ON memory_decisions(created_at);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_decisions_fts USING fts5(
+            text, reason,
+            content='memory_decisions', content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_insert
+            AFTER INSERT ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(rowid, text, reason)
+                VALUES (NEW.id, NEW.text, NEW.reason);
+            END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_delete
+            AFTER DELETE ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, text, reason)
+                VALUES ('delete', OLD.id, OLD.text, OLD.reason);
+            END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_decisions_fts_update
+            AFTER UPDATE ON memory_decisions BEGIN
+                INSERT INTO memory_decisions_fts(memory_decisions_fts, rowid, text, reason)
+                VALUES ('delete', OLD.id, OLD.text, OLD.reason);
+                INSERT INTO memory_decisions_fts(rowid, text, reason)
+                VALUES (NEW.id, NEW.text, NEW.reason);
+            END;",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v8: failed to create memory tables: {e}"),
+        operation: "migrate_v8".to_string(),
     })?;
 
     Ok(())

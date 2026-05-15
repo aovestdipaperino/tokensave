@@ -247,7 +247,7 @@ async fn test_create_schema_fresh_db() {
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -269,7 +269,7 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 }
 
 /// migrate returns false when already at the latest version.
@@ -287,7 +287,7 @@ async fn test_migrate_already_latest_returns_false() {
         !migrated,
         "migrate should return false when already at latest"
     );
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 }
 
 /// migrate from v0 (completely empty database) applies all migrations to latest.
@@ -306,7 +306,7 @@ async fn test_migrate_from_v0() {
         migrated,
         "migrate should return true when migrations were applied"
     );
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -347,7 +347,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -383,7 +383,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -413,7 +413,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -441,7 +441,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 7);
+    assert_eq!(get_user_version(&conn).await, 8);
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -583,7 +583,7 @@ async fn test_database_initialize_creates_latest_version() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -650,7 +650,7 @@ async fn test_database_open_migrates_v1_to_latest() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 /// After create_schema, all v5 columns on nodes exist.
@@ -764,4 +764,83 @@ async fn test_fts_triggers_exist_after_migration() {
             "trigger '{trigger}' should exist after migration"
         );
     }
+}
+
+#[tokio::test]
+async fn test_v8_creates_memory_tables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
+    let conn = db.connect().unwrap();
+    create_schema(&conn).await.unwrap();
+
+    // memory_decisions table exists with expected columns
+    let mut rows = conn
+        .query("SELECT name FROM pragma_table_info('memory_decisions') ORDER BY cid", ())
+        .await
+        .unwrap();
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        cols.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(cols, vec!["id", "text", "reason", "created_at", "files", "tags"]);
+
+    // memory_code_areas table exists
+    let mut rows = conn
+        .query("SELECT name FROM pragma_table_info('memory_code_areas') ORDER BY cid", ())
+        .await
+        .unwrap();
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        cols.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(cols, vec!["id", "path", "description", "last_touched_at", "touch_count"]);
+
+    // FTS table exists
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_decisions_fts'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some(), "memory_decisions_fts missing");
+}
+
+#[tokio::test]
+async fn test_v7_to_v8_upgrade_path() {
+    use tokensave::db::migrations::migrate;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
+    let conn = db.connect().unwrap();
+
+    create_schema(&conn).await.unwrap();
+    conn.execute("PRAGMA user_version = 7", ()).await.unwrap();
+    // Drop the v8 tables to simulate a true v7 starting state
+    conn.execute("DROP TABLE IF EXISTS memory_decisions_fts", ()).await.unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_decisions", ()).await.unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_code_areas", ()).await.unwrap();
+
+    let did_migrate = migrate(&conn).await.unwrap();
+    assert!(did_migrate, "expected migrate() to return true");
+
+    let mut rows = conn.query("PRAGMA user_version", ()).await.unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let v: i64 = row.get(0).unwrap();
+    assert_eq!(v, 8);
+
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN \
+             ('memory_decisions','memory_code_areas','memory_decisions_fts') ORDER BY name",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut names = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        names.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(names, vec!["memory_code_areas", "memory_decisions", "memory_decisions_fts"]);
 }
