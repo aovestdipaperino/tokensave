@@ -4,33 +4,38 @@
 # runs the query through `cg.build_context(...)`, measures the bytes returned,
 # and compares to a baseline that reads the full content of every file
 # referenced by the resulting context. The ratio is the retrieval savings.
+#
+# These queries are intentionally generic — they target patterns present in
+# most application codebases (CLIs, daemons, services) rather than this repo
+# specifically. For tighter recall numbers on a specific project, write your
+# own query file and pass it via `tokensave bench --queries <file>`.
 
 [[query]]
-task = "Where is the MCP tool dispatcher defined?"
+task = "How is configuration loaded at startup?"
 
 [[query]]
-task = "How does incremental sync detect modified files?"
+task = "Where are command-line arguments parsed and dispatched?"
 
 [[query]]
-task = "Where are tree-sitter grammars wired into the extractor worker?"
+task = "How is the main entry point organized?"
 
 [[query]]
-task = "How are circular dependencies between files detected?"
+task = "How are errors defined, wrapped, and propagated?"
 
 [[query]]
-task = "Where is the savings ledger written after each MCP tool call?"
+task = "Where is logging or diagnostic output emitted?"
 
 [[query]]
-task = "How does the file-walker respect .gitignore rules?"
+task = "How are tests organized and what test harness is used?"
 
 [[query]]
-task = "Where is the migration system that bumps PRAGMA user_version?"
+task = "How is data persisted to disk or to a database?"
 
 [[query]]
-task = "How does the daemon's debounce window batch file-change events?"
+task = "How are async tasks or background work spawned?"
 
 [[query]]
-task = "Where is the agent-install command for Claude Code wired up?"
+task = "How does the build wire up dependencies and initialize state?"
 
 [[query]]
-task = "How is the worldwide token-counter upload throttled?"
+task = "How are public API surfaces exposed (HTTP endpoints, library exports, or CLI commands)?"
