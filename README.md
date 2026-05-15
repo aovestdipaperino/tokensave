@@ -256,7 +256,24 @@ tokensave bench --queries my-queries.toml --json
 tokensave bench --max-nodes 5
 ```
 
-**Measured against this repo:** 98% mean retrieval savings (259K → 4.9K tokens across 10 queries). Run it on your own codebase to see your numbers.
+**Measured against this repo (`tokensave` itself):**
+
+| # | Query | Baseline | Context | Savings |
+|---|---|---:|---:|---:|
+| 1 | Where is the MCP tool dispatcher defined? | 32,010 | 418 | 99% |
+| 2 | How does incremental sync detect modified files? | 27,007 | 222 | 99% |
+| 3 | Where are tree-sitter grammars wired into the extractor worker? | 7,249 | 248 | 97% |
+| 4 | How are circular dependencies between files detected? | 62,543 | 706 | 99% |
+| 5 | Where is the savings ledger written after each MCP tool call? | 57,893 | 857 | 99% |
+| 6 | How does the file-walker respect .gitignore rules? | 18,525 | 498 | 97% |
+| 7 | Where is the migration system that bumps PRAGMA user_version? | 17,529 | 1,224 | 93% |
+| 8 | How does the daemon's debounce window batch file-change events? | 11,814 | 275 | 98% |
+| 9 | Where is the agent-install command for Claude Code wired up? | 12,169 | 241 | 98% |
+| 10 | How is the worldwide token-counter upload throttled? | 13,246 | 246 | 98% |
+
+**Aggregate:** 98% mean retrieval savings (259,985 → 4,935 tokens across 10 queries).
+
+Run it on your own codebase with `tokensave bench` to see your numbers.
 
 ---
 
