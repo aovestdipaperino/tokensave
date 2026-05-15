@@ -217,6 +217,49 @@ See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full gu
 
 ---
 
+## Cross-Session Memory
+
+Three MCP tools persist decisions and code-area context across sessions, stored in the per-project `.tokensave/tokensave.db`.
+
+| Tool | Purpose |
+|------|---------|
+| `tokensave_record_decision` | Save a design/architecture decision with optional reason, files, and tags |
+| `tokensave_record_code_area` | Mark a path the agent has worked in (touch counter + last_touched_at) |
+| `tokensave_session_recall` | FTS5 query over saved decisions; pair with the two write tools |
+
+Use these so the agent doesn't have to re-explain architecture choices session-to-session.
+
+---
+
+## Savings Ledger
+
+Every MCP call writes an append-only row to `~/.tokensave/global.db` (`savings_ledger` table). Inspect with `tokensave gain`:
+
+```bash
+tokensave gain                    # current project, last 30 days
+tokensave gain --all              # all projects
+tokensave gain --history --range 7d
+tokensave gain --json
+```
+
+Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
+
+---
+
+## Reproducible Benchmark
+
+`tokensave bench` runs a fixed query set through `tokensave_context` and reports retrieval savings vs a full-file baseline (mirrors the CCE methodology):
+
+```bash
+tokensave bench                                    # ships with 10 default queries
+tokensave bench --queries my-queries.toml --json
+tokensave bench --max-nodes 5
+```
+
+**Measured against this repo:** 98% mean retrieval savings (259K → 4.9K tokens across 10 queries). Run it on your own codebase to see your numbers.
+
+---
+
 ## 48 MCP Tools
 
 The discovery and analysis tools are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The four edit primitives (the only writers) are scoped to single files and re-index in place. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
