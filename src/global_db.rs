@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
 
 /// Total savings + call count for a project (or all projects when `project` is None).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SavingsTotal {
     pub saved_tokens: u64,
     pub calls: u64,
@@ -172,7 +172,7 @@ impl GlobalDb {
             )
             .await;
         if let Err(e) = result {
-            tracing::debug!("savings_ledger insert failed: {e}");
+            eprintln!("[tokensave] savings_ledger insert failed: {e}");
         }
     }
 
