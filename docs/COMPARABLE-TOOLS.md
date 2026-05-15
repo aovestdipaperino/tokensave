@@ -430,7 +430,7 @@ code-review-graph publishes impact accuracy metrics (average F1 0.54, precision 
 | Porting tools | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `diff_context`, `changelog`, `test_map` | `detect_changes_tool` |
 | Background daemon | launchd/systemd/Windows SCM, upgrade-aware | Foreground `watch` only |
-| Agent support | 9 agents (different set: adds Gemini, Copilot, Cline, Roo Code; lacks Windsurf, Continue, Antigravity) | 8 platforms (adds Windsurf, Continue, Antigravity; lacks Gemini, Copilot, Cline, Roo Code) |
+| Agent support | 13 agents (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kimi, Vibe; lacks Windsurf, Continue) | 8 platforms (adds Windsurf, Continue; lacks Gemini, Copilot, Cline, Roo Code, Kilo, Kimi, Vibe) |
 | Annotation extraction | 13 languages | -- |
 | Token tracking | Per-call metrics, session counter, live TUI monitor, worldwide counter | -- |
 | MCP resources | 4 (status, files, overview, branches) | -- |

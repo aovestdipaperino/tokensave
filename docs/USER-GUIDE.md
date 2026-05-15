@@ -181,7 +181,7 @@ This is the default. It registers the MCP server in `~/.claude/settings.json`, g
 
 ### Other agents
 
-Tokensave supports twelve agents. Pass `--agent` to install for a specific one:
+Tokensave supports thirteen agents. Pass `--agent` to install for a specific one:
 
 ```bash
 tokensave install --agent claude      # Claude Code (default)
@@ -195,6 +195,7 @@ tokensave install --agent cline       # Cline
 tokensave install --agent roo-code    # Roo Code
 tokensave install --agent antigravity # Antigravity (Windsurf)
 tokensave install --agent kilo        # Kilo CLI
+tokensave install --agent kimi        # Moonshot Kimi CLI
 tokensave install --agent vibe        # Mistral Vibe
 ```
 

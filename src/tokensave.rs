@@ -1997,6 +1997,60 @@ impl TokenSave {
         self.db.get_all_files().await
     }
 
+    /// Returns the `#[derive(...)]` names attached to the given node.
+    ///
+    /// The graph's `DerivesMacro` edges are unreliable here: the resolver
+    /// fuzzy-binds std-trait names like `Debug` to nonsense nodes (a `Debug`
+    /// enum variant in an unrelated test fixture) and the resulting unique
+    /// constraint on `(source, target, kind, line)` collapses multiple
+    /// distinct derives on the same type onto a single edge — so a struct
+    /// that derives `Debug, Clone, PartialEq, Eq, Hash` may surface only one
+    /// of them. Instead we re-read the lines between `attrs_start_line` and
+    /// `start_line` of the node, which the extractor already promises to
+    /// cover the leading attribute block, and parse `#[derive(...)]`
+    /// attributes directly. Bounded file I/O — one read per call.
+    pub async fn get_derives_for_node(&self, node_id: &str) -> Result<Vec<String>> {
+        let Some(node) = self.db.get_node_by_id(node_id).await? else {
+            return Ok(Vec::new());
+        };
+        let file_path = self.project_root().join(&node.file_path);
+        let Ok(content) = std::fs::read_to_string(&file_path) else {
+            return Ok(Vec::new());
+        };
+        Ok(parse_derives_in_attr_block(
+            &content,
+            node.attrs_start_line,
+            node.start_line,
+        ))
+    }
+
+    /// Finds the most specific (smallest-span) node whose source range
+    /// contains the given `(file, line)` location.
+    ///
+    /// Returns `None` when no indexed node covers the location — typically
+    /// because the file isn't indexed, or the line is in a region the
+    /// extractor didn't capture (e.g. inside a `use` block or top-of-file
+    /// comment). Lines are 1-based to match `rustc` / `clippy` output;
+    /// `Node.start_line` / `end_line` are 0-based internally so we subtract
+    /// before comparing.
+    ///
+    /// Implementation loads every node in the file (cached at the index
+    /// layer) and picks the smallest containing span. At the typical ~50
+    /// nodes per file this is faster than a custom range-query and stays
+    /// honest about overlap (impl blocks contain methods, etc.).
+    pub async fn node_at_location(&self, file: &str, line_1based: u32) -> Result<Option<Node>> {
+        if line_1based == 0 {
+            return Ok(None);
+        }
+        let zero_based = line_1based - 1;
+        let mut nodes = self.db.get_nodes_by_file(file).await?;
+        nodes.retain(|n| n.start_line <= zero_based && n.end_line >= zero_based);
+        // Prefer the smallest containing span — that's the most specific
+        // owner of the source location.
+        nodes.sort_by_key(|n| (n.end_line - n.start_line, n.start_line));
+        Ok(nodes.into_iter().next())
+    }
+
     /// Returns the indexed size in bytes for a file path, or `0` if unknown.
     /// Used to estimate the token cost of expanding a file in responses.
     pub async fn get_file_size_bytes(&self, path: &str) -> u64 {
@@ -2570,6 +2624,51 @@ fn kind_rank_bonus(kind: &NodeKind) -> f64 {
     }
 }
 
+/// Parses every `#[derive(A, B, C)]` attribute appearing in `content`
+/// between (0-based, inclusive) `start_line` and `end_line`. Multiple
+/// derive attributes stack — `#[derive(Debug)]` and `#[derive(Clone)]` on
+/// the same item both contribute. The returned list is de-duplicated and
+/// preserves source order (Debug before Clone if that's how they're
+/// written).
+fn parse_derives_in_attr_block(content: &str, start_line: u32, end_line: u32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let start = start_line as usize;
+    // Inclusive upper bound; if the attr block runs into `start_line` the
+    // derive may be on that exact line for one-line items.
+    let end = (end_line as usize).min(lines.len().saturating_sub(1));
+    if start >= lines.len() {
+        return out;
+    }
+    for line in &lines[start..=end] {
+        let trimmed = line.trim_start();
+        // Match both `#[derive(...)]` and `#[derive(...) ]` shapes; ignore
+        // anything that isn't a derive attribute (other attributes like
+        // `#[serde(...)]` and doc comments).
+        let Some(rest) = trimmed.strip_prefix("#[derive(") else {
+            continue;
+        };
+        let Some(end_idx) = rest.find(')') else {
+            continue;
+        };
+        for name in rest[..end_idx].split(',') {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            // Strip the path prefix on fully-qualified derives so callers
+            // see `Serialize` not `serde::Serialize`. Matches the convention
+            // the static derive table uses.
+            let short = name.rsplit("::").next().unwrap_or(name).to_string();
+            if seen.insert(short.clone()) {
+                out.push(short);
+            }
+        }
+    }
+    out
+}
+
 /// True when the user-supplied query matches either the node's short `name`
 /// or its `qualified_name`. Matching is exact on the short name and substring
 /// on the qualified name, so callers can pass either form for the impl/trait
@@ -2596,4 +2695,57 @@ pub fn is_test_file(path: &str) -> bool {
     ];
     let lower = path.to_ascii_lowercase();
     test_segments.iter().any(|s| lower.contains(s))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod derive_parse_tests {
+    use super::parse_derives_in_attr_block;
+
+    #[test]
+    fn parses_single_derive_block() {
+        let src = "\
+#[derive(Debug, Clone, PartialEq)]
+pub struct Foo;
+";
+        let derives = parse_derives_in_attr_block(src, 0, 1);
+        assert_eq!(derives, vec!["Debug", "Clone", "PartialEq"]);
+    }
+
+    #[test]
+    fn stacks_multiple_derive_attributes() {
+        let src = "\
+#[derive(Debug)]
+#[derive(Clone, Hash)]
+pub enum K {}
+";
+        let derives = parse_derives_in_attr_block(src, 0, 2);
+        assert_eq!(derives, vec!["Debug", "Clone", "Hash"]);
+    }
+
+    #[test]
+    fn strips_path_prefix_on_qualified_derive() {
+        let src = "#[derive(serde::Serialize, Debug)]\npub struct S;\n";
+        let derives = parse_derives_in_attr_block(src, 0, 1);
+        assert_eq!(derives, vec!["Serialize", "Debug"]);
+    }
+
+    #[test]
+    fn ignores_non_derive_attributes() {
+        let src = "\
+#[cfg(feature = \"foo\")]
+#[serde(rename = \"x\")]
+#[derive(Debug)]
+pub struct S;
+";
+        let derives = parse_derives_in_attr_block(src, 0, 3);
+        assert_eq!(derives, vec!["Debug"]);
+    }
+
+    #[test]
+    fn deduplicates_repeated_derives() {
+        let src = "#[derive(Debug, Debug, Clone)]\npub struct S;\n";
+        let derives = parse_derives_in_attr_block(src, 0, 1);
+        assert_eq!(derives, vec!["Debug", "Clone"]);
+    }
 }

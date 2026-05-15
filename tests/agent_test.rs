@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 12);
+    assert_eq!(all.len(), 13);
 }
 
 #[test]
@@ -27,8 +27,9 @@ fn test_available_integrations() {
     assert!(ids.contains(&"roo-code"));
     assert!(ids.contains(&"antigravity"));
     assert!(ids.contains(&"kilo"));
+    assert!(ids.contains(&"kimi"));
     assert!(ids.contains(&"vibe"));
-    assert_eq!(ids.len(), 12);
+    assert_eq!(ids.len(), 13);
 }
 
 #[test]
@@ -45,6 +46,7 @@ fn test_get_integration_valid() {
         "roo-code",
         "antigravity",
         "kilo",
+        "kimi",
         "vibe",
     ] {
         let agent = get_integration(id).unwrap();
@@ -86,6 +88,7 @@ fn test_agent_names_are_human_readable() {
         ("roo-code", "Roo Code"),
         ("antigravity", "Antigravity"),
         ("kilo", "Kilo CLI"),
+        ("kimi", "Kimi CLI"),
         ("vibe", "Mistral Vibe"),
     ];
     for (id, expected_name) in expected_names {
@@ -228,6 +231,74 @@ fn test_codex_install_creates_config() {
     assert!(agents_md.exists(), "AGENTS.md should exist after install");
     let md_content = std::fs::read_to_string(&agents_md).unwrap();
     assert!(md_content.contains("tokensave"));
+}
+
+#[test]
+fn test_kimi_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    KimiIntegration.install(&ctx).unwrap();
+
+    let mcp_path = home.join(".kimi/mcp.json");
+    assert!(mcp_path.exists(), "mcp.json should exist after install");
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert!(
+        content["mcpServers"]["tokensave"].is_object(),
+        "mcpServers.tokensave should be an object"
+    );
+    let args = content["mcpServers"]["tokensave"]["args"]
+        .as_array()
+        .unwrap();
+    assert!(args.iter().any(|v| v.as_str() == Some("serve")));
+
+    let agents_md = home.join(".kimi/AGENTS.md");
+    assert!(agents_md.exists(), "AGENTS.md should exist after install");
+    let md_content = std::fs::read_to_string(&agents_md).unwrap();
+    assert!(md_content.contains("tokensave"));
+}
+
+#[test]
+fn test_kimi_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    KimiIntegration.install(&ctx).unwrap();
+    let mcp_path = home.join(".kimi/mcp.json");
+    assert!(mcp_path.exists());
+
+    KimiIntegration.uninstall(&ctx).unwrap();
+
+    assert!(
+        !mcp_path.exists(),
+        "mcp.json with only tokensave should be removed on uninstall"
+    );
+
+    let agents_md = home.join(".kimi/AGENTS.md");
+    if agents_md.exists() {
+        let content = std::fs::read_to_string(&agents_md).unwrap();
+        assert!(
+            !content.contains("## Prefer tokensave MCP tools"),
+            "AGENTS.md should not have tokensave rules after uninstall"
+        );
+    }
+}
+
+#[test]
+fn test_kimi_is_detected_and_has_tokensave() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    assert!(!KimiIntegration.is_detected(home));
+    assert!(!KimiIntegration.has_tokensave(home));
+
+    let ctx = make_install_ctx(home);
+    KimiIntegration.install(&ctx).unwrap();
+
+    assert!(KimiIntegration.is_detected(home));
+    assert!(KimiIntegration.has_tokensave(home));
 }
 
 #[test]
@@ -816,6 +887,7 @@ fn test_every_tested_agent_advertises_primary_config_path() {
         (&KiloIntegration, "kilo"),
         (&AntigravityIntegration, "antigravity"),
         (&CodexIntegration, "codex"),
+        (&KimiIntegration, "kimi"),
     ];
     for (agent, id) in agents {
         let path = agent

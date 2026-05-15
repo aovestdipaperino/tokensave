@@ -14,6 +14,7 @@ pub mod copilot;
 pub mod cursor;
 pub mod gemini;
 pub mod kilo;
+pub mod kimi;
 pub mod opencode;
 pub mod roo_code;
 pub mod vibe;
@@ -33,6 +34,7 @@ pub use copilot::CopilotIntegration;
 pub use cursor::CursorIntegration;
 pub use gemini::GeminiIntegration;
 pub use kilo::KiloIntegration;
+pub use kimi::KimiIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
@@ -115,6 +117,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
         "antigravity" => Ok(Box::new(AntigravityIntegration)),
         "kilo" => Ok(Box::new(KiloIntegration)),
+        "kimi" => Ok(Box::new(KimiIntegration)),
         "vibe" => Ok(Box::new(VibeIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
@@ -139,6 +142,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(RooCodeIntegration),
         Box::new(AntigravityIntegration),
         Box::new(KiloIntegration),
+        Box::new(KimiIntegration),
         Box::new(VibeIntegration),
     ]
 }
@@ -157,6 +161,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "roo-code",
         "antigravity",
         "kilo",
+        "kimi",
         "vibe",
     ]
 }

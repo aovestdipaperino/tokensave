@@ -411,6 +411,36 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
         Some(n) => {
             let touched_files = vec![n.file_path.clone()];
             let file_size_bytes = cg.get_file_size_bytes(&n.file_path).await;
+            // For type-kind nodes, also surface the `#[derive(...)]` macros
+            // attached. Costs one extra edge query per node lookup; skipped
+            // for non-type kinds where derives never apply.
+            let derives: Vec<Value> = if matches!(
+                n.kind,
+                NodeKind::Struct
+                    | NodeKind::Enum
+                    | NodeKind::Union
+                    | NodeKind::CaseClass
+                    | NodeKind::DataClass
+                    | NodeKind::Record
+                    | NodeKind::PascalRecord
+            ) {
+                cg.get_derives_for_node(&n.id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|name| {
+                        let look = crate::derive_table::enrich(&name);
+                        json!({
+                            "derive": look.derive_name,
+                            "trait": look.known.as_ref().map(|k| k.trait_path),
+                            "methods": look.known.as_ref().map(|k| k.methods.to_vec()),
+                            "well_known": look.known.is_some(),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let output = json!({
                 "id": n.id,
                 "name": n.name,
@@ -432,6 +462,7 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
                 "assertions": n.assertions,
                 "cyclomatic_complexity": n.branches + 1,
                 "cost_to_expand": cost_to_expand(&n, file_size_bytes),
+                "derives": derives,
             });
             let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
             Ok(ToolResult {
@@ -825,6 +856,70 @@ pub(super) async fn handle_impls(cg: &TokenSave, args: Value) -> Result<ToolResu
     Ok(ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_derives` — lists `#[derive(...)]` macros on a type
+/// and the trait + method names each one synthesizes (per the static
+/// `derive_table`). Accepts either `node_id` or `qualified_name`.
+pub(super) async fn handle_derives(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args.get("qualified_name").and_then(|v| v.as_str());
+    let node_id = args
+        .get("node_id")
+        .or_else(|| args.get("id"))
+        .and_then(|v| v.as_str());
+    if qname.is_none() && node_id.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "missing required parameter: qualified_name or node_id".to_string(),
+        });
+    }
+
+    let nodes = if let Some(id) = node_id {
+        match cg.get_node(id).await? {
+            Some(n) => vec![n],
+            None => vec![],
+        }
+    } else if let Some(q) = qname {
+        cg.get_nodes_by_qualified_name(q).await?
+    } else {
+        vec![]
+    };
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let mut items: Vec<Value> = Vec::with_capacity(nodes.len());
+    for n in &nodes {
+        let derive_names = cg.get_derives_for_node(&n.id).await?;
+        let derives: Vec<Value> = derive_names
+            .iter()
+            .map(|name| {
+                let look = crate::derive_table::enrich(name);
+                json!({
+                    "derive": look.derive_name,
+                    "trait": look.known.as_ref().map(|k| k.trait_path),
+                    "methods": look.known.as_ref().map(|k| k.methods.to_vec()),
+                    "source": look.known.as_ref().map(|k| k.source),
+                    "well_known": look.known.is_some(),
+                })
+            })
+            .collect();
+        items.push(json!({
+            "node_id": n.id,
+            "name": n.name,
+            "kind": n.kind.as_str(),
+            "qualified_name": n.qualified_name,
+            "file": n.file_path,
+            "start_line": n.start_line,
+            "derives": derives,
+        }));
+    }
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
         }),
         touched_files,
     })

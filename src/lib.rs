@@ -25,6 +25,8 @@ pub mod config;
 pub mod context;
 pub mod daemon;
 pub mod db;
+pub mod derive_table;
+pub mod diagnose;
 pub mod display;
 pub mod doctor;
 pub mod errors;
