@@ -508,24 +508,6 @@ fn format_yyyy_mm_dd(z: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod gain_format_tests {
-    use super::format_yyyy_mm_dd;
-
-    #[test]
-    fn epoch_is_1970_01_01() {
-        assert_eq!(format_yyyy_mm_dd(0), "1970-01-01");
-    }
-
-    #[test]
-    fn known_date_2026_05_15() {
-        // 2026-05-15 = 20_588 days since 1970-01-01.
-        // (Verified by Howard Hinnant civil-from-days algorithm.)
-        assert_eq!(format_yyyy_mm_dd(20_588), "2026-05-15");
-    }
-}
-
 /// Print node kinds in column-major order.
 fn print_kind_rows(
     sorted_kinds: &[(&String, &u64)],
@@ -545,5 +527,23 @@ fn print_kind_rows(
             }
             print!("{}", if c < num_cols - 1 { "│" } else { "│\n" });
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod gain_format_tests {
+    use super::format_yyyy_mm_dd;
+
+    #[test]
+    fn epoch_is_1970_01_01() {
+        assert_eq!(format_yyyy_mm_dd(0), "1970-01-01");
+    }
+
+    #[test]
+    fn known_date_2026_05_15() {
+        // 2026-05-15 = 20_588 days since 1970-01-01.
+        // (Verified by Howard Hinnant civil-from-days algorithm.)
+        assert_eq!(format_yyyy_mm_dd(20_588), "2026-05-15");
     }
 }

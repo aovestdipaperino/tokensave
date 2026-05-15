@@ -603,31 +603,6 @@ pub async fn handle_gain(
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod gain_tests {
-    use super::estimate_dollars_saved;
-
-    #[test]
-    fn dollars_uses_sonnet_input_price_by_default() {
-        // 1_000_000 tokens × $3 / MTok = $3.00 (Sonnet input price)
-        let usd = estimate_dollars_saved(1_000_000);
-        assert!((usd - 3.0).abs() < 0.01, "expected ~$3.00, got ${usd}");
-    }
-
-    #[test]
-    fn dollars_handles_small_counts() {
-        // 1_000 tokens × $3 / MTok = $0.003
-        let usd = estimate_dollars_saved(1_000);
-        assert!((usd - 0.003).abs() < 0.001);
-    }
-
-    #[test]
-    fn dollars_zero_for_zero_tokens() {
-        assert_eq!(estimate_dollars_saved(0), 0.0);
-    }
-}
-
 /// Print the `--doctor` report after an incremental sync.
 pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     let has_changes = !result.added_paths.is_empty()
@@ -655,5 +630,30 @@ pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
         for p in &result.removed_paths {
             eprintln!("  - {p}");
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod gain_tests {
+    use super::estimate_dollars_saved;
+
+    #[test]
+    fn dollars_uses_sonnet_input_price_by_default() {
+        // 1_000_000 tokens × $3 / MTok = $3.00 (Sonnet input price)
+        let usd = estimate_dollars_saved(1_000_000);
+        assert!((usd - 3.0).abs() < 0.01, "expected ~$3.00, got ${usd}");
+    }
+
+    #[test]
+    fn dollars_handles_small_counts() {
+        // 1_000 tokens × $3 / MTok = $0.003
+        let usd = estimate_dollars_saved(1_000);
+        assert!((usd - 0.003).abs() < 0.001);
+    }
+
+    #[test]
+    fn dollars_zero_for_zero_tokens() {
+        assert_eq!(estimate_dollars_saved(0), 0.0);
     }
 }
