@@ -1435,7 +1435,7 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
 
 /// Handles `tokensave_config` — structured TOML / JSON queries by dotted
 /// key path.
-pub(super) async fn handle_config(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+pub(super) fn handle_config(cg: &TokenSave, args: &Value) -> Result<ToolResult> {
     let key = args
         .get("key")
         .and_then(|v| v.as_str())
@@ -1551,10 +1551,15 @@ enum ConfigFormat {
 }
 
 fn config_format(path: &str) -> Option<ConfigFormat> {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".toml") {
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+    {
         Some(ConfigFormat::Toml)
-    } else if lower.ends_with(".json") {
+    } else if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
         Some(ConfigFormat::Json)
     } else {
         None
@@ -1581,8 +1586,7 @@ fn toml_to_json(v: &toml::Value) -> Value {
         toml::Value::String(s) => Value::String(s.clone()),
         toml::Value::Integer(i) => Value::Number((*i).into()),
         toml::Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
+            .map_or(Value::Null, Value::Number),
         toml::Value::Boolean(b) => Value::Bool(*b),
         toml::Value::Datetime(d) => Value::String(d.to_string()),
         toml::Value::Array(items) => Value::Array(items.iter().map(toml_to_json).collect()),

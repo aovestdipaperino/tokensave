@@ -1339,7 +1339,7 @@ fn contains_unsafe_block_start(line: &str) -> bool {
             abs == 0 || !matches!(bytes[abs - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
         let after = abs + "unsafe".len();
         let next = bytes.get(after).copied();
-        let next_ok = matches!(next, Some(b' ') | Some(b'\t') | Some(b'{'));
+        let next_ok = matches!(next, Some(b' ' | b'\t' | b'{'));
         if prev_ok && next_ok {
             let rest = line[after..].trim_start();
             if rest.starts_with('{')
@@ -1526,12 +1526,11 @@ pub(super) async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<To
             "warning" => warning_count += 1,
             _ => {}
         }
-        let nodes = match nodes_by_file.get(&diag.file) {
-            Some(n) => n,
-            None => {
-                let fetched = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
-                nodes_by_file.entry(diag.file.clone()).or_insert(fetched)
-            }
+        let nodes = if let Some(n) = nodes_by_file.get(&diag.file) {
+            n
+        } else {
+            let fetched = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
+            nodes_by_file.entry(diag.file.clone()).or_insert(fetched)
         };
         let enclosing = nodes
             .iter()
@@ -2182,21 +2181,20 @@ fn has_mut_borrow_prefix(source: &str, idx: usize) -> bool {
     if probe < 4 {
         return false;
     }
-    let window = &source[probe.saturating_sub(4)..probe + 1];
+    let window = &source[probe.saturating_sub(4)..=probe];
     window.ends_with("&mut")
 }
 
 fn line_at(source: &str, byte: usize) -> Option<&str> {
-    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = source[..byte].rfind('\n').map_or(0, |i| i + 1);
     let line_end = source[byte..]
         .find('\n')
-        .map(|i| byte + i)
-        .unwrap_or(source.len());
+        .map_or(source.len(), |i| byte + i);
     source.get(line_start..line_end)
 }
 
 fn line_is_comment(source: &str, byte: usize) -> bool {
-    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_start = source[..byte].rfind('\n').map_or(0, |i| i + 1);
     let line = &source[line_start..];
     let trimmed = line.trim_start();
     trimmed.starts_with("//")

@@ -178,7 +178,7 @@ pub async fn handle_tool_call(
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
         "tokensave_outline" => info::handle_outline(cg, args).await,
-        "tokensave_config" => info::handle_config(cg, args).await,
+        "tokensave_config" => info::handle_config(cg, &args),
         "tokensave_signature_search" => info::handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_implementations" => graph::handle_implementations(cg, args, scope_prefix).await,
         "tokensave_unsafe_patterns" => {

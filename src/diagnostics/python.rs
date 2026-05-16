@@ -54,9 +54,8 @@ impl Driver for PyrightDriver {
             // call. The detect() probe gates on pyproject.toml / pyrightconfig
             // which can be present on projects that don't actually want
             // pyright to run; punishing them with a hard error is wrong.
-            let output = match cmd.output().await {
-                Ok(o) => o,
-                Err(_) => return Ok(Vec::new()),
+            let Ok(output) = cmd.output().await else {
+                return Ok(Vec::new());
             };
 
             let stdout = String::from_utf8_lossy(&output.stdout);

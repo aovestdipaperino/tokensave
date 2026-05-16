@@ -121,7 +121,7 @@ fn target_dir_for(project_root: &Path) -> PathBuf {
 
 /// Convert cargo's reported `file_name` (project-relative or absolute) into
 /// the project-relative form the rest of tokensave uses. Cargo emits paths
-/// relative to the manifest dir; we strip a leading project_root prefix
+/// relative to the manifest dir; we strip a leading `project_root` prefix
 /// when present in case the path is absolute.
 fn canonicalise_file(file_name: &str, project_root: &Path) -> String {
     let abs = if Path::new(file_name).is_absolute() {
