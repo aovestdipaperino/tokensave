@@ -1280,16 +1280,25 @@ impl Database {
             None => String::new(),
         };
 
+        // Track visited node IDs in `path` to avoid blowing up on cycles in the
+        // `extends` graph. Without this guard, a cycle (or trait bound that
+        // points back to itself through generics, common in Rust workspaces
+        // like polkadot-sdk) makes the CTE explore the cycle up to the depth
+        // bound, multiplied by every entry point — `get_inheritance_depth` then
+        // takes >60s on polkadot vs 0.3s with cycle detection.
         let sql = format!(
-            "WITH RECURSIVE hierarchy(leaf_id, current_id, depth) AS (
-                 SELECT e.source, e.target, 1
+            "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
+                 SELECT e.source, e.target, 1,
+                        ',' || e.source || ',' || e.target || ','
                  FROM edges e
                  WHERE e.kind = 'extends'
                  UNION ALL
-                 SELECT h.leaf_id, e.target, h.depth + 1
+                 SELECT h.leaf_id, e.target, h.depth + 1,
+                        h.path || e.target || ','
                  FROM hierarchy h
                  JOIN edges e ON e.source = h.current_id AND e.kind = 'extends'
                  WHERE h.depth < 50
+                   AND instr(h.path, ',' || e.target || ',') = 0
              )
              SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,

@@ -1906,8 +1906,7 @@ async fn branch_diff_returns_empty_when_base_equals_head() {
     let (cg, _dir) = setup_project().await;
 
     // branch_diff requires branch tracking metadata to be present.
-    let tokensave_dir =
-        tokensave::config::get_tokensave_dir(cg.project_root());
+    let tokensave_dir = tokensave::config::get_tokensave_dir(cg.project_root());
     let meta = tokensave::branch_meta::BranchMeta::new("master");
     tokensave::branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
 

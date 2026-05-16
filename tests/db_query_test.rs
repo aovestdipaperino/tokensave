@@ -807,6 +807,78 @@ async fn test_get_inheritance_depth() {
     assert_eq!(depths[1].1, 1);
 }
 
+/// Regression: `get_inheritance_depth` previously had no cycle detection.
+/// Rust trait bounds + generics can create supertrait cycles (or huge
+/// near-cycles) — on the polkadot-sdk codebase (959 `extends` edges) the
+/// recursive CTE would explode and never finish within 60 s. Test that
+/// a 2-node cycle does not hang and reports finite depths.
+#[tokio::test]
+async fn test_get_inheritance_depth_terminates_on_cycle() {
+    let (db, _dir) = setup_db().await;
+
+    // A and B extend each other (cycle).
+    let mut a = sample_node("ih-cy-a", "A", "src/lib.rs");
+    a.kind = NodeKind::Trait;
+    let mut b = sample_node("ih-cy-b", "B", "src/lib.rs");
+    b.kind = NodeKind::Trait;
+    // C extends A — should still be reported with finite depth despite A↔B cycle.
+    let mut c = sample_node("ih-cy-c", "C", "src/lib.rs");
+    c.kind = NodeKind::Trait;
+
+    db.insert_nodes(&[a, b, c])
+        .await
+        .expect("insert_nodes failed");
+
+    let edges = vec![
+        Edge {
+            source: "ih-cy-a".into(),
+            target: "ih-cy-b".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+        },
+        Edge {
+            source: "ih-cy-b".into(),
+            target: "ih-cy-a".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+        },
+        Edge {
+            source: "ih-cy-c".into(),
+            target: "ih-cy-a".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+        },
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let start = std::time::Instant::now();
+    let depths = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        db.get_inheritance_depth(None, 10),
+    )
+    .await
+    .expect("get_inheritance_depth must not hang on a cycle")
+    .expect("get_inheritance_depth returned an error");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "cycle case should be fast; took {:?}",
+        elapsed
+    );
+
+    // All three nodes participate in the extends graph; each must appear
+    // exactly once with a finite, bounded depth.
+    assert_eq!(depths.len(), 3, "expected A, B, C each once");
+    for (node, depth) in &depths {
+        assert!(
+            *depth < 50,
+            "depth must be bounded for node {}: got {}",
+            node.id,
+            depth
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // get_node_distribution
 // -------------------------------------------------------------------------
@@ -1107,7 +1179,10 @@ async fn test_get_undocumented_public_symbols_includes_fields_and_variants() {
     assert!(ids.contains(&"udpa-3"), "const should be reported");
     assert!(ids.contains(&"udpa-4"), "static should be reported");
     assert!(ids.contains(&"udpa-5"), "type_alias should be reported");
-    assert!(!ids.contains(&"udpa-6"), "documented field must be filtered");
+    assert!(
+        !ids.contains(&"udpa-6"),
+        "documented field must be filtered"
+    );
 }
 
 // -------------------------------------------------------------------------
