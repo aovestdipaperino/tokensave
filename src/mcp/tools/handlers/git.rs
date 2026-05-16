@@ -144,6 +144,8 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
     let has_tests =
         |path: &str| crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path);
 
+    // First pass: gather all modified symbols.
+    let mut modified_ids: Vec<String> = Vec::new();
     for file in &files {
         let nodes = cg.get_nodes_by_file(file).await?;
         for node in &nodes {
@@ -162,30 +164,33 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
                 "file": node.file_path,
                 "line": node.start_line,
             }));
+            modified_ids.push(node.id.clone());
+        }
+    }
 
-            // Get impact radius for each modified symbol. The same downstream
-            // node can be reached from several modified symbols (diamond
-            // dependencies) and from itself — dedupe by node id so callers
-            // don't see the same `id` listed N times consecutively.
-            let impact = cg.get_impact_radius(&node.id, depth).await?;
-            for impacted in &impact.nodes {
-                if impacted.id == node.id {
-                    continue;
-                }
-                if !impacted_seen.insert(impacted.id.clone()) {
-                    continue;
-                }
-                impacted_symbols.push(json!({
-                    "id": impacted.id,
-                    "name": impacted.name,
-                    "kind": impacted.kind.as_str(),
-                    "file": impacted.file_path,
-                    "line": impacted.start_line,
-                }));
-                if has_tests(&impacted.file_path) {
-                    affected_tests.insert(impacted.file_path.clone());
-                }
-            }
+    // Single multi-source BFS over the union of impact radii. Sharing a
+    // `visited` set means each downstream node is walked at most once, even
+    // when many modified symbols reach it through diamond dependencies — the
+    // old per-symbol loop re-traversed the same subtree N times.
+    let impacted = cg.get_impact_radius_multi(&modified_ids, depth).await?;
+    for impacted_node in &impacted {
+        // Drop seeds: callers want impacted symbols distinct from the
+        // modified ones, mirroring the old per-node `if impacted.id == node.id`.
+        if modified_seen.contains(&impacted_node.id) {
+            continue;
+        }
+        if !impacted_seen.insert(impacted_node.id.clone()) {
+            continue;
+        }
+        impacted_symbols.push(json!({
+            "id": impacted_node.id,
+            "name": impacted_node.name,
+            "kind": impacted_node.kind.as_str(),
+            "file": impacted_node.file_path,
+            "line": impacted_node.start_line,
+        }));
+        if has_tests(&impacted_node.file_path) {
+            affected_tests.insert(impacted_node.file_path.clone());
         }
     }
 

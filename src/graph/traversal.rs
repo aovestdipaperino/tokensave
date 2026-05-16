@@ -389,6 +389,55 @@ impl<'a> GraphTraverser<'a> {
         self.traverse_bfs(node_id, &opts).await
     }
 
+    /// Same as `get_impact_radius` but seeded from many nodes with a shared
+    /// `visited` set. Avoids the quadratic re-traversal that happens when
+    /// callers loop `get_impact_radius` per modified symbol — diamond
+    /// dependencies (one downstream node reachable from many sources) get
+    /// walked once instead of N times.
+    ///
+    /// Returns every reachable node, including the seeds themselves.
+    pub async fn get_impact_radius_multi(
+        &self,
+        seed_ids: &[String],
+        max_depth: usize,
+    ) -> Result<Vec<Node>> {
+        debug_assert!(
+            max_depth > 0,
+            "get_impact_radius_multi max_depth must be positive"
+        );
+        if seed_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut visited: HashSet<String> = seed_ids.iter().cloned().collect();
+        let seed_nodes = self.db.get_nodes_by_ids(seed_ids).await?;
+        let mut result_nodes: Vec<Node> = seed_nodes;
+        let mut queue: VecDeque<(String, usize)> =
+            seed_ids.iter().map(|id| (id.clone(), 0usize)).collect();
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let edges = self.db.get_incoming_edges(&current_id, &[]).await?;
+            let neighbor_ids: Vec<String> = edges
+                .into_iter()
+                .map(|e| e.source)
+                .filter(|id| visited.insert(id.clone()))
+                .collect();
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            for node in neighbor_nodes {
+                queue.push_back((node.id.clone(), depth + 1));
+                result_nodes.push(node);
+            }
+        }
+
+        Ok(result_nodes)
+    }
+
     /// Builds a bidirectional call graph around a node.
     ///
     /// Combines BFS over outgoing `Calls` edges (callees) and BFS over

@@ -814,14 +814,14 @@ pub(super) async fn handle_recursion(
 
     let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
     let mut node_cache: HashMap<String, Option<crate::types::Node>> = HashMap::new();
-    let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut lines_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
 
     for (src, tgt, line) in &call_edges {
         if src == tgt {
             let Some(node) = cached_node(cg, &mut node_cache, src).await? else {
                 continue;
             };
-            if !is_direct_self_call(cg, &mut source_cache, &node, *line) {
+            if !is_direct_self_call(cg, &mut lines_cache, &node, *line) {
                 continue;
             }
         }
@@ -829,12 +829,25 @@ pub(super) async fn handle_recursion(
         adj.entry(tgt.clone()).or_default();
     }
 
-    let mut cycles: Vec<Vec<String>> = crate::graph::scc::tarjan_scc(&adj)
+    // Collect only the cyclic SCCs, then sort smallest-first so we keep
+    // shorter / more interesting cycles when the cap kicks in. We still need
+    // every cyclic SCC enumerated before sorting (truncating early would bias
+    // toward Tarjan emission order), but we cap the per-SCC path search.
+    let mut cyclic_sccs: Vec<Vec<String>> = crate::graph::scc::tarjan_scc(&adj)
         .into_iter()
         .filter(|scc| crate::graph::scc::is_cyclic_scc(scc, &adj))
-        .filter_map(|mut scc| cycle_path_for_scc(&mut scc, &adj))
         .collect();
+    cyclic_sccs.sort_by_key(Vec::len);
 
+    let mut cycles: Vec<Vec<String>> = Vec::new();
+    for mut scc in cyclic_sccs {
+        if cycles.len() >= limit {
+            break;
+        }
+        if let Some(path) = cycle_path_for_scc(&mut scc, &adj) {
+            cycles.push(path);
+        }
+    }
     cycles.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
     cycles.truncate(limit);
 
@@ -892,30 +905,30 @@ async fn cached_node(
     Ok(node)
 }
 
-fn cached_source(
+fn cached_lines<'a>(
     cg: &TokenSave,
-    cache: &mut HashMap<String, Option<String>>,
+    cache: &'a mut HashMap<String, Option<Vec<String>>>,
     file_path: &str,
-) -> Option<String> {
-    if let Some(source) = cache.get(file_path) {
-        return source.clone();
+) -> Option<&'a Vec<String>> {
+    if !cache.contains_key(file_path) {
+        let abs = cg.project_root().join(file_path);
+        let lines = std::fs::read_to_string(abs)
+            .ok()
+            .map(|content| content.lines().map(str::to_string).collect());
+        cache.insert(file_path.to_string(), lines);
     }
-    let abs = cg.project_root().join(file_path);
-    let source = std::fs::read_to_string(abs).ok();
-    cache.insert(file_path.to_string(), source.clone());
-    source
+    cache.get(file_path).and_then(Option::as_ref)
 }
 
 fn is_direct_self_call(
     cg: &TokenSave,
-    source_cache: &mut HashMap<String, Option<String>>,
+    lines_cache: &mut HashMap<String, Option<Vec<String>>>,
     node: &crate::types::Node,
     edge_line: Option<u32>,
 ) -> bool {
-    let Some(source) = cached_source(cg, source_cache, &node.file_path) else {
+    let Some(lines) = cached_lines(cg, lines_cache, &node.file_path) else {
         return false;
     };
-    let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
         return false;
     }
@@ -989,16 +1002,33 @@ fn has_qualified_call(line: &str, node: &crate::types::Node) -> bool {
 }
 
 fn has_bare_call(line: &str, name: &str) -> bool {
+    // Fast path: a bare call always needs an opening paren on the same line.
+    // For common short names like `new`/`get`/`len` this short-circuits the
+    // expensive `match_indices + is_ident_byte` scan on lines that obviously
+    // can't contain a call (assignments, comments, docstrings, …).
+    if name.is_empty() || !line.contains('(') {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    let name_len = name.len();
     line.match_indices(name).any(|(idx, _)| {
-        let before_ok = idx == 0 || !is_ident_byte(line.as_bytes()[idx - 1]);
-        if before_ok {
-            let prefix = line[..idx].trim_end();
-            if prefix.ends_with('.') || prefix.ends_with(':') {
-                return false;
-            }
+        // Reject substring matches inside a larger identifier on either side:
+        // `name=new` should not match `newer`, `renew`, etc. Cheap byte
+        // checks before the more expensive prefix-trim probe.
+        let before_ok = idx == 0 || !is_ident_byte(bytes[idx - 1]);
+        if !before_ok {
+            return false;
         }
-        let after_idx = idx + name.len();
-        before_ok && call_suffix_starts(&line[after_idx..])
+        let after_idx = idx + name_len;
+        let after_ok = after_idx == bytes.len() || !is_ident_byte(bytes[after_idx]);
+        if !after_ok {
+            return false;
+        }
+        let prefix = line[..idx].trim_end();
+        if prefix.ends_with('.') || prefix.ends_with(':') {
+            return false;
+        }
+        call_suffix_starts(&line[after_idx..])
     })
 }
 
@@ -1024,42 +1054,46 @@ fn cycle_path_for_scc(
     }
 
     for start in scc.iter() {
-        let mut path = vec![start.clone()];
-        let mut seen: HashSet<String> = HashSet::from([start.clone()]);
-        if dfs_cycle_path(start, start, &scc_set, adj, &mut path, &mut seen) {
-            return Some(path);
+        // `path` and `seen` operate on borrowed ids from `scc_set`: the SCC
+        // outlives this call, so we never need to allocate `String`s during
+        // the DFS itself. The final result has to be `Vec<String>` because
+        // it leaves the function, so we materialise once at the end.
+        let start_ref: &str = start.as_str();
+        let mut path: Vec<&str> = vec![start_ref];
+        let mut seen: HashSet<&str> = HashSet::from([start_ref]);
+        if dfs_cycle_path(start_ref, start_ref, &scc_set, adj, &mut path, &mut seen) {
+            return Some(path.into_iter().map(str::to_string).collect());
         }
     }
     None
 }
 
-fn dfs_cycle_path(
-    current: &str,
-    start: &str,
-    scc_set: &HashSet<&str>,
-    adj: &HashMap<String, HashSet<String>>,
-    path: &mut Vec<String>,
-    seen: &mut HashSet<String>,
+fn dfs_cycle_path<'a>(
+    current: &'a str,
+    start: &'a str,
+    scc_set: &HashSet<&'a str>,
+    adj: &'a HashMap<String, HashSet<String>>,
+    path: &mut Vec<&'a str>,
+    seen: &mut HashSet<&'a str>,
 ) -> bool {
     let Some(neighbors) = adj.get(current) else {
         return false;
     };
-    let mut neighbors: Vec<&str> = neighbors
+    let mut neighbors: Vec<&'a str> = neighbors
         .iter()
-        .map(std::string::String::as_str)
-        .filter(|n| scc_set.contains(n))
+        .filter_map(|n| scc_set.get(n.as_str()).copied())
         .collect();
     neighbors.sort_unstable();
 
     for neighbor in neighbors {
         if neighbor == start && path.len() > 1 {
-            path.push(start.to_string());
+            path.push(start);
             return true;
         }
-        if !seen.insert(neighbor.to_string()) {
+        if !seen.insert(neighbor) {
             continue;
         }
-        path.push(neighbor.to_string());
+        path.push(neighbor);
         if dfs_cycle_path(neighbor, start, scc_set, adj, path, seen) {
             return true;
         }

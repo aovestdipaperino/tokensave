@@ -145,8 +145,23 @@ impl<'a> GraphQueryManager<'a> {
         // dead-code detection — which is why the sonium run reported zero
         // dead functions across 5,715. The narrower allowlist below restores
         // the intended semantics: "no real caller / referencer = dead".
+        // Resolve the set of test-marker annotation ids in a CTE so the
+        // leading-wildcard `LIKE` scan only runs once. Without this, each
+        // candidate row re-evaluated `a.name LIKE '%::test'` (and friends),
+        // which cannot use any index — quadratic on large repos where
+        // `annotation_usage` rows are abundant.
         let sql = format!(
-            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+            "WITH test_marker_ids AS (
+                 SELECT id FROM nodes
+                 WHERE kind = 'annotation_usage'
+                 AND (
+                     name = 'test'
+                     OR name LIKE '%::test'
+                     OR name = 'wasm_bindgen_test'
+                     OR name LIKE '%::wasm_bindgen_test'
+                 )
+             )
+             SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                     start_column, end_column, docstring, signature, visibility,
                     is_async, branches, loops, returns, max_nesting, unsafe_blocks,
                     unchecked_calls, assertions, updated_at, attrs_start_line
@@ -162,16 +177,9 @@ impl<'a> GraphQueryManager<'a> {
              )
              AND NOT EXISTS (
                  SELECT 1 FROM edges e2
-                 JOIN nodes a ON a.id = e2.source
                  WHERE e2.target = nodes.id
                  AND e2.kind = 'annotates'
-                 AND a.kind = 'annotation_usage'
-                 AND (
-                     a.name = 'test'
-                     OR a.name LIKE '%::test'
-                     OR a.name = 'wasm_bindgen_test'
-                     OR a.name LIKE '%::wasm_bindgen_test'
-                 )
+                 AND e2.source IN (SELECT id FROM test_marker_ids)
              )"
         );
 

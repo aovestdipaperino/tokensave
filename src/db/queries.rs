@@ -8,6 +8,26 @@ use crate::errors::{Result, TokenSaveError};
 use crate::types::*;
 
 // ---------------------------------------------------------------------------
+// Helper: build SQL placeholder string `?, ?, ?, …` in one allocation.
+// ---------------------------------------------------------------------------
+
+/// Returns a SQL placeholder string of `n` anonymous `?` markers separated by
+/// `, `. Used to construct `IN ($qmarks)` clauses without allocating one
+/// `String` per id (`format!("?{i}")` previously did that).
+fn build_qmark_placeholders(n: usize) -> String {
+    debug_assert!(n > 0, "build_qmark_placeholders called with n == 0");
+    // Each "?, " occupies 3 bytes; the last one drops the trailing ", ".
+    let mut s = String::with_capacity(n * 3);
+    for i in 0..n {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push('?');
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------
 // Helper: map a libsql row to domain types (by column index)
 // ---------------------------------------------------------------------------
 
@@ -435,13 +455,18 @@ impl Database {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        // Build `?, ?, ?, …` in one allocation instead of `Vec<String>` of
+        // `?1`/`?2`/`?N`. libsql binds anonymous `?` parameters in order, so
+        // dropping the numbered form changes nothing for the driver. Large
+        // BFS frontiers (`traverse_bfs` calls this once per level) hit this
+        // path often enough that the per-id `format!` allocations showed up
+        // on profiles.
+        let placeholders = build_qmark_placeholders(ids.len());
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
-             FROM nodes WHERE id IN ({})",
-            placeholders.join(", ")
+             FROM nodes WHERE id IN ({placeholders})",
         );
         let param_values: Vec<libsql::Value> = ids
             .iter()
@@ -1286,6 +1311,14 @@ impl Database {
         // like polkadot-sdk) makes the CTE explore the cycle up to the depth
         // bound, multiplied by every entry point — `get_inheritance_depth` then
         // takes >60s on polkadot vs 0.3s with cycle detection.
+        //
+        // Note the predicate order in the recursive step: `h.depth < 50` is a
+        // cheap integer compare and is evaluated before the path `instr`
+        // string-scan, so cycles still under the depth bound short-circuit
+        // without paying for the substring search. Reducing the hierarchy to
+        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
+        // means the `LIKE` path filter only runs against distinct leaves,
+        // not against the (potentially huge) full hierarchy table.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
@@ -1299,16 +1332,20 @@ impl Database {
                  JOIN edges e ON e.source = h.current_id AND e.kind = 'extends'
                  WHERE h.depth < 50
                    AND instr(h.path, ',' || e.target || ',') = 0
+             ),
+             leaf_depths AS (
+                 SELECT leaf_id, MAX(depth) AS max_depth
+                 FROM hierarchy
+                 GROUP BY leaf_id
              )
              SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line,
-                    MAX(h.depth) AS max_depth
-             FROM hierarchy h
-             JOIN nodes n ON h.leaf_id = n.id
+                    ld.max_depth
+             FROM leaf_depths ld
+             JOIN nodes n ON ld.leaf_id = n.id
              {path_filter}
-             GROUP BY h.leaf_id
-             ORDER BY max_depth DESC
+             ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
 
@@ -2127,10 +2164,9 @@ impl Database {
         if node_ids.is_empty() {
             return Ok(counts);
         }
-        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+        let placeholders = build_qmark_placeholders(node_ids.len());
         let sql = format!(
-            "SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({}) AND kind = 'calls' GROUP BY target",
-            placeholders.join(", ")
+            "SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND kind = 'calls' GROUP BY target",
         );
         let param_values: Vec<libsql::Value> = node_ids
             .iter()
@@ -2166,7 +2202,7 @@ impl Database {
         if names.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = (1..=names.len()).map(|i| format!("?{i}")).collect();
+        let placeholders = build_qmark_placeholders(names.len());
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
@@ -2174,10 +2210,8 @@ impl Database {
                     branches, loops, returns, max_nesting,
                     unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
-             WHERE LOWER(name) IN ({})
-             LIMIT ?{}",
-            placeholders.join(", "),
-            names.len() + 1
+             WHERE LOWER(name) IN ({placeholders})
+             LIMIT ?",
         );
         let mut param_values: Vec<libsql::Value> = names
             .iter()

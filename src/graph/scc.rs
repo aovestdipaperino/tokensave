@@ -70,31 +70,20 @@ where
         on_stack.insert(root.clone());
         work.push((root.clone(), root_neighbors, 0));
 
-        while let Some((node, neighbors, idx)) = work.last_mut().cloned() {
-            if idx < neighbors.len() {
-                let next = neighbors[idx].clone();
-                work.last_mut().unwrap_or_else(|| unreachable!()).2 += 1;
-                if let Some(&next_index_val) = index_of.get(&next) {
-                    if on_stack.contains(&next) {
-                        let node_ll = *lowlink.get(&node).unwrap_or(&0);
-                        lowlink.insert(node.clone(), node_ll.min(next_index_val));
-                    }
-                } else {
-                    // Push child frame; descend.
-                    let child_neighbors: Vec<N> = adj
-                        .get(&next)
-                        .map(|s| s.iter().cloned().collect())
-                        .unwrap_or_default();
-                    index_of.insert(next.clone(), next_index);
-                    lowlink.insert(next.clone(), next_index);
-                    next_index += 1;
-                    stack.push(next.clone());
-                    on_stack.insert(next.clone());
-                    work.push((next, child_neighbors, 0));
-                }
-            } else {
+        // Peek the top frame each iteration instead of cloning the whole
+        // tuple — earlier revisions used `work.last_mut().cloned()` which
+        // deep-copied the entire neighbor `Vec<N>` once per edge visited.
+        // The `while let` rewrite suggested by clippy doesn't apply: the
+        // body needs to `work.push(...)` while `frame` is still borrowed,
+        // which only works because NLL drops the `frame` reborrow early —
+        // a `while let` binding would keep it alive for the whole body.
+        #[allow(clippy::while_let_loop)]
+        loop {
+            let Some(frame) = work.last_mut() else { break };
+            let idx = frame.2;
+            if idx >= frame.1.len() {
                 // Finished this node — pop frame, update parent's lowlink,
-                // and emit SCC if this is a root.
+                // and emit an SCC if this node is a Tarjan root.
                 let popped = work
                     .pop()
                     .unwrap_or_else(|| unreachable!("work stack non-empty"));
@@ -117,6 +106,31 @@ where
                     let parent_ll = *lowlink.get(&parent_frame.0).unwrap_or(&0);
                     lowlink.insert(parent_frame.0.clone(), parent_ll.min(node_ll));
                 }
+                continue;
+            }
+
+            // Clone only the two values we actually need before mutating
+            // `work` (push invalidates `frame`).
+            let next = frame.1[idx].clone();
+            let node = frame.0.clone();
+            frame.2 += 1;
+
+            if let Some(&next_index_val) = index_of.get(&next) {
+                if on_stack.contains(&next) {
+                    let node_ll = *lowlink.get(&node).unwrap_or(&0);
+                    lowlink.insert(node, node_ll.min(next_index_val));
+                }
+            } else {
+                let child_neighbors: Vec<N> = adj
+                    .get(&next)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                index_of.insert(next.clone(), next_index);
+                lowlink.insert(next.clone(), next_index);
+                next_index += 1;
+                stack.push(next.clone());
+                on_stack.insert(next.clone());
+                work.push((next, child_neighbors, 0));
             }
         }
     }

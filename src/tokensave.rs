@@ -1909,6 +1909,18 @@ impl TokenSave {
         traverser.get_impact_radius(node_id, max_depth).await
     }
 
+    /// Same as `get_impact_radius` but multi-source: takes many seed node
+    /// IDs and walks the union of their impact radii with a single shared
+    /// `visited` set, so each downstream node is traversed at most once.
+    pub async fn get_impact_radius_multi(
+        &self,
+        seed_ids: &[String],
+        max_depth: usize,
+    ) -> Result<Vec<Node>> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser.get_impact_radius_multi(seed_ids, max_depth).await
+    }
+
     /// Builds a bidirectional call graph around a node.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
         let traverser = GraphTraverser::new(&self.db);

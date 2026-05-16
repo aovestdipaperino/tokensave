@@ -43,9 +43,12 @@ impl<'a> ContextBuilder<'a> {
 
         // Step 4: extract code blocks from source files
         let code_blocks = if options.include_code {
-            let blocks = self.extract_code_blocks(&entry_points, options)?;
+            // Share one file-content cache across extract + merge so each
+            // source file is read at most once for this request.
+            let mut file_cache: HashMap<String, Option<String>> = HashMap::new();
+            let blocks = self.extract_code_blocks(&entry_points, options, &mut file_cache);
             if options.merge_adjacent {
-                self.merge_adjacent_blocks(blocks)
+                self.merge_adjacent_blocks(blocks, &mut file_cache)
             } else {
                 blocks
             }
@@ -89,43 +92,67 @@ impl<'a> ContextBuilder<'a> {
     /// Reads the source file and extracts the code for a node.
     ///
     /// Returns `None` if the file cannot be read or the line range is invalid.
+    /// The `Result` wrapper is preserved for API stability with the previous
+    /// signature; this method does not currently emit `Err`.
     pub fn get_code(&self, node: &Node) -> Result<Option<String>> {
+        let mut cache: HashMap<String, Option<String>> = HashMap::new();
+        Ok(self.get_code_cached(node, &mut cache))
+    }
+
+    /// Same as `get_code` but reads each file at most once per `cache`.
+    ///
+    /// Used by `extract_code_blocks` and `merge_adjacent_blocks` so a single
+    /// `build_context` call doesn't re-read the same source file dozens of
+    /// times — the old per-node `fs::read_to_string` was the dominant cost
+    /// when many entry points lived in the same file.
+    fn get_code_cached(
+        &self,
+        node: &Node,
+        cache: &mut HashMap<String, Option<String>>,
+    ) -> Option<String> {
         debug_assert!(
             !node.file_path.is_empty(),
             "get_code called with empty file_path"
         );
         debug_assert!(!node.id.is_empty(), "get_code called with empty node id");
-        let file_path = self.project_root.join(&node.file_path);
-        // Prevent path traversal: ensure the resolved path stays within the project root.
-        if let (Ok(canonical), Ok(root)) =
-            (file_path.canonicalize(), self.project_root.canonicalize())
-        {
-            if !canonical.starts_with(&root) {
-                return Ok(None);
-            }
+        if node.start_line == 0 || node.end_line == 0 {
+            return None;
         }
-        let Ok(content) = fs::read_to_string(&file_path) else {
-            return Ok(None);
+
+        let content = if let Some(slot) = cache.get(&node.file_path) {
+            slot.clone()
+        } else {
+            let file_path = self.project_root.join(&node.file_path);
+            // Prevent path traversal: ensure the resolved path stays within
+            // the project root. If either side fails to canonicalize (e.g.
+            // file missing on disk) fall through to the read attempt so the
+            // pre-existing missing-file path still returns `None` naturally.
+            let allowed = match (file_path.canonicalize(), self.project_root.canonicalize()) {
+                (Ok(canonical), Ok(root)) => canonical.starts_with(&root),
+                _ => true,
+            };
+            let loaded = if allowed {
+                fs::read_to_string(&file_path).ok()
+            } else {
+                None
+            };
+            cache.insert(node.file_path.clone(), loaded.clone());
+            loaded
         };
+        let content = content?;
 
         let lines: Vec<&str> = content.lines().collect();
-        if node.start_line == 0 || node.end_line == 0 {
-            return Ok(None);
-        }
-
         let start = (node.start_line as usize).saturating_sub(1);
         let end = node.end_line as usize;
-
         if start >= lines.len() {
-            return Ok(None);
+            return None;
         }
-
         let end = end.min(lines.len());
         let snippet: String = lines[start..end].join("\n");
         if snippet.is_empty() {
-            Ok(None)
+            None
         } else {
-            Ok(Some(snippet))
+            Some(snippet)
         }
     }
 
@@ -161,53 +188,38 @@ impl<'a> ContextBuilder<'a> {
         let mut candidates: Vec<SearchResult> = Vec::new();
         let cap = options.max_nodes * 2;
 
-        // --- FTS search: full query ---
-        let search_results = self.db.search_nodes(query, options.search_limit).await?;
-        for sr in search_results {
-            if Self::score_passes(sr.score, options.min_score)
-                && seen_ids.insert(sr.node.id.clone())
-            {
-                candidates.push(sr);
+        // Build a deduplicated, ordered list of FTS terms. Earlier revisions
+        // searched the full query, every extracted symbol, every stem, and
+        // every extra keyword separately — but these sets overlap heavily
+        // (e.g. `symbol` "foo" and `keyword` "foo" produce identical FTS
+        // results). libsql serializes queries on a single connection, so each
+        // duplicate term costs a full roundtrip. Order matters for the
+        // `cap`-based early exit, so we keep the original priority:
+        //   full query → symbols → stems → extra keywords.
+        let mut fts_terms: Vec<String> = Vec::new();
+        let mut fts_seen: HashSet<String> = HashSet::new();
+        let push_term = |t: String, terms: &mut Vec<String>, seen: &mut HashSet<String>| {
+            if !t.is_empty() && seen.insert(t.clone()) {
+                terms.push(t);
             }
+        };
+        push_term(query.to_string(), &mut fts_terms, &mut fts_seen);
+        for s in symbols {
+            push_term(s.clone(), &mut fts_terms, &mut fts_seen);
         }
-
-        // --- FTS search: each extracted symbol ---
-        for symbol in symbols {
-            if candidates.len() >= cap {
-                break;
-            }
-            let results = self.db.search_nodes(symbol, options.search_limit).await?;
-            for sr in results {
-                if Self::score_passes(sr.score, options.min_score)
-                    && seen_ids.insert(sr.node.id.clone())
-                {
-                    candidates.push(sr);
-                }
-            }
-        }
-
-        // --- FTS search: stem variants ---
         let stems = generate_stem_variants(symbols);
-        for stem in &stems {
-            if candidates.len() >= cap {
-                break;
-            }
-            let results = self.db.search_nodes(stem, options.search_limit).await?;
-            for sr in results {
-                if Self::score_passes(sr.score, options.min_score)
-                    && seen_ids.insert(sr.node.id.clone())
-                {
-                    candidates.push(sr);
-                }
-            }
+        for s in &stems {
+            push_term(s.clone(), &mut fts_terms, &mut fts_seen);
+        }
+        for k in &options.extra_keywords {
+            push_term(k.clone(), &mut fts_terms, &mut fts_seen);
         }
 
-        // --- FTS search: agent-provided extra keywords (synonym expansion) ---
-        for keyword in &options.extra_keywords {
+        for term in &fts_terms {
             if candidates.len() >= cap {
                 break;
             }
-            let results = self.db.search_nodes(keyword, options.search_limit).await?;
+            let results = self.db.search_nodes(term, options.search_limit).await?;
             for sr in results {
                 if Self::score_passes(sr.score, options.min_score)
                     && seen_ids.insert(sr.node.id.clone())
@@ -366,7 +378,8 @@ impl<'a> ContextBuilder<'a> {
         &self,
         entry_points: &[Node],
         options: &BuildContextOptions,
-    ) -> Result<Vec<CodeBlock>> {
+        file_cache: &mut HashMap<String, Option<String>>,
+    ) -> Vec<CodeBlock> {
         debug_assert!(
             options.max_code_blocks > 0,
             "max_code_blocks must be positive"
@@ -382,7 +395,7 @@ impl<'a> ContextBuilder<'a> {
                 break;
             }
 
-            if let Some(code) = self.get_code(node)? {
+            if let Some(code) = self.get_code_cached(node, file_cache) {
                 let truncated = if code.len() > options.max_code_block_size {
                     let mut end = options.max_code_block_size;
                     // Ensure we land on a valid UTF-8 boundary
@@ -408,12 +421,16 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
-        Ok(blocks)
+        blocks
     }
 
     /// Merges code blocks from the same file that are adjacent or overlapping.
     /// Two blocks are "adjacent" if the gap between them is <= 5 lines.
-    fn merge_adjacent_blocks(&self, blocks: Vec<CodeBlock>) -> Vec<CodeBlock> {
+    fn merge_adjacent_blocks(
+        &self,
+        blocks: Vec<CodeBlock>,
+        file_cache: &mut HashMap<String, Option<String>>,
+    ) -> Vec<CodeBlock> {
         if blocks.len() <= 1 {
             return blocks;
         }
@@ -461,7 +478,7 @@ impl<'a> ContextBuilder<'a> {
                         assertions: 0,
                         updated_at: 0,
                     };
-                    if let Ok(Some(code)) = self.get_code(&merged_node) {
+                    if let Some(code) = self.get_code_cached(&merged_node, file_cache) {
                         current.content = code;
                         current.end_line = new_end;
                     } else {
