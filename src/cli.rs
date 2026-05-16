@@ -233,7 +233,7 @@ pub enum Commands {
         /// Path to a TOML query file (defaults to the shipped default set).
         #[arg(long)]
         queries: Option<String>,
-        /// Output as JSON instead of a markdown table.
+        /// Output as JSON instead of the colored console table.
         #[arg(long)]
         json: bool,
         /// Project path (default: current directory).

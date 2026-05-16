@@ -1189,7 +1189,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if json {
                 println!("{}", tokensave::bench::format_report_json(&report));
             } else {
-                println!("{}", tokensave::bench::format_report_markdown(&report));
+                print!("{}", tokensave::bench::format_report_console(&report));
             }
         }
         Commands::Gain {
