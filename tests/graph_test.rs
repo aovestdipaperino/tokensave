@@ -408,6 +408,127 @@ async fn test_find_dead_code_excludes_pub() {
     );
 }
 
+/// Regression: `#[test]` functions whose name does not start with `test`
+/// (e.g. `from_measurement_slope_excludes_lfe`) must be excluded from the
+/// dead-code list. The previous filter was name-prefix only, so most tests
+/// in real Rust codebases were misreported. Detection must walk the
+/// `Annotates` edges to find a `#[test]` (or `#[tokio::test]` …) attribute.
+#[tokio::test]
+async fn test_find_dead_code_excludes_test_annotated() {
+    let (db, _dir) = setup_db().await;
+
+    // A private function annotated with #[test] but with a non-`test*` name.
+    let test_fn = make_node(
+        "n-test-fn",
+        "from_measurement_slope_excludes_lfe",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+
+    // Another private function annotated via #[tokio::test].
+    let tokio_fn = make_node(
+        "n-tokio-fn",
+        "cardioid_rejects_missing_phase",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+
+    // A function annotated with #[wasm_bindgen_test].
+    let wbg_fn = make_node(
+        "n-wbg-fn",
+        "no_nan_or_inf_in_results",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+
+    // Genuine dead helper — should remain in the report.
+    let dead_helper = make_node(
+        "n-dead-helper",
+        "approx_eq",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+
+    db.insert_nodes(&[test_fn, tokio_fn, wbg_fn, dead_helper])
+        .await
+        .expect("insert nodes failed");
+
+    // The annotation nodes themselves.
+    let mut test_annot = make_node("n-annot-test", "test", "src/lib.rs", Visibility::Private);
+    test_annot.kind = NodeKind::AnnotationUsage;
+    test_annot.signature = Some("#[test]".to_string());
+
+    let mut tokio_annot = make_node(
+        "n-annot-tokio",
+        "tokio::test",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+    tokio_annot.kind = NodeKind::AnnotationUsage;
+    tokio_annot.signature = Some("#[tokio::test]".to_string());
+
+    let mut wbg_annot = make_node(
+        "n-annot-wbg",
+        "wasm_bindgen_test",
+        "src/lib.rs",
+        Visibility::Private,
+    );
+    wbg_annot.kind = NodeKind::AnnotationUsage;
+    wbg_annot.signature = Some("#[wasm_bindgen_test]".to_string());
+
+    db.insert_nodes(&[test_annot, tokio_annot, wbg_annot])
+        .await
+        .expect("insert annotation nodes failed");
+
+    let annot_edges = vec![
+        Edge {
+            source: "n-annot-test".to_string(),
+            target: "n-test-fn".to_string(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        Edge {
+            source: "n-annot-tokio".to_string(),
+            target: "n-tokio-fn".to_string(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        Edge {
+            source: "n-annot-wbg".to_string(),
+            target: "n-wbg-fn".to_string(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+    ];
+    db.insert_edges(&annot_edges)
+        .await
+        .expect("insert annotates edges failed");
+
+    let qm = GraphQueryManager::new(&db);
+    let dead = qm
+        .find_dead_code(&[NodeKind::Function], false)
+        .await
+        .expect("find_dead_code failed");
+
+    let dead_names: Vec<&str> = dead.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        !dead_names.contains(&"from_measurement_slope_excludes_lfe"),
+        "#[test]-annotated function must not be reported as dead, got: {dead_names:?}"
+    );
+    assert!(
+        !dead_names.contains(&"cardioid_rejects_missing_phase"),
+        "#[tokio::test]-annotated function must not be reported as dead, got: {dead_names:?}"
+    );
+    assert!(
+        !dead_names.contains(&"no_nan_or_inf_in_results"),
+        "#[wasm_bindgen_test]-annotated function must not be reported as dead, got: {dead_names:?}"
+    );
+    assert!(
+        dead_names.contains(&"approx_eq"),
+        "non-test dead helper must still be reported, got: {dead_names:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_find_dead_code_with_kind_filter() {
     let (db, _dir) = setup_db().await;

@@ -104,6 +104,11 @@ impl<'a> GraphQueryManager<'a> {
     /// Excludes:
     /// - Nodes named `"main"` (program entry points).
     /// - Nodes whose name starts with `"test"` (likely test functions).
+    /// - Nodes annotated with a test-marker attribute — `#[test]`,
+    ///   `#[tokio::test]`, `#[async_std::test]`, `#[wasm_bindgen_test]`, etc.
+    ///   The libtest harness is the implicit caller of these and never shows
+    ///   up as a graph edge, so without this filter most Rust tests with
+    ///   non-`test*` names get misreported as dead.
     /// - By default, `pub` items (they may be part of a public API). Pass
     ///   `include_public=true` to drop this exclusion — useful when
     ///   auditing a workspace where most items are `pub` but only a subset
@@ -154,6 +159,19 @@ impl<'a> GraphQueryManager<'a> {
                  SELECT 1 FROM edges
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM edges e2
+                 JOIN nodes a ON a.id = e2.source
+                 WHERE e2.target = nodes.id
+                 AND e2.kind = 'annotates'
+                 AND a.kind = 'annotation_usage'
+                 AND (
+                     a.name = 'test'
+                     OR a.name LIKE '%::test'
+                     OR a.name = 'wasm_bindgen_test'
+                     OR a.name LIKE '%::wasm_bindgen_test'
+                 )
              )"
         );
 

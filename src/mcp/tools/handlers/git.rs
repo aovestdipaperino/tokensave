@@ -964,8 +964,23 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
         })?;
 
     if base_name == head_name {
-        return Err(TokenSaveError::Config {
-            message: format!("base and head are the same branch: '{base_name}'"),
+        // pr_context returns empty arrays for the same-ref case; do the same here
+        // so callers get a consistent shape and can simply check the summary.
+        let result = json!({
+            "base": base_name,
+            "head": head_name,
+            "note": format!("base and head are the same branch: '{base_name}'"),
+            "summary": { "added": 0, "removed": 0, "changed": 0 },
+            "added": [],
+            "removed": [],
+            "changed": [],
+        });
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": truncate_response(&output) }]
+            }),
+            touched_files: vec![],
         });
     }
 

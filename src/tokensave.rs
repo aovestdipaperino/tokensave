@@ -1754,12 +1754,31 @@ impl TokenSave {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr_trim = stderr.trim();
+            let stdout_trim = stdout.trim();
+            let exit = output
+                .status
+                .code()
+                .map_or_else(|| "killed by signal".to_string(), |c| c.to_string());
+            let message = if !stderr_trim.is_empty() {
+                format!("ast-grep failed (exit {exit}): {stderr_trim}")
+            } else if !stdout_trim.is_empty() {
+                format!("ast-grep failed (exit {exit}). stdout: {stdout_trim}")
+            } else {
+                format!(
+                    "ast-grep failed (exit {exit}) with no output. Likely causes: \
+                     pattern matched 0 nodes, language not inferred from file extension \
+                     (e.g. .txt has no parser), or invalid pattern syntax. \
+                     File: {rel_path}, pattern: {pattern:?}"
+                )
+            };
             return Ok(AstGrepResult {
                 success: false,
                 file_path: rel_path.clone(),
                 pattern: pattern.to_string(),
                 rewrite: rewrite.to_string(),
-                message: format!("ast-grep failed: {stderr}"),
+                message,
             });
         }
 

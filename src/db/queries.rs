@@ -1580,42 +1580,53 @@ impl Database {
 
     /// Returns public symbols that are missing docstrings.
     ///
-    /// Filters to meaningful node kinds (function, method, class, interface,
-    /// trait, struct, enum) and checks for NULL or empty docstring.
+    /// Filters to kinds that conventionally carry per-declaration docs
+    /// (functions, methods, types, fields, variants, constants, modules, …).
+    /// Excludes `namespace` and `package` because they are aggregators that
+    /// almost never carry their own doc — reporting them would drown
+    /// actionable items in noise. Checks for `NULL` or empty docstring.
     pub async fn get_undocumented_public_symbols(
         &self,
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Node>> {
+        const DOC_COVERAGE_KINDS: &str = "'function', 'method', 'class', 'interface', 'trait', \
+            'struct', 'enum', 'module', 'field', 'enum_variant', 'const', 'static', 'type_alias', \
+            'property', 'csharp_property', 'record', 'data_class', 'sealed_class', 'object', \
+            'case_class', 'kotlin_object', 'inner_class', 'abstract_method', 'constructor', \
+            'struct_method', 'val', 'var', 'mixin', 'extension', 'union', 'typedef'";
+
         let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
             Some(prefix) => (
-                "SELECT id, kind, name, qualified_name, file_path,
-                        start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
-                 FROM nodes
-                 WHERE visibility = 'public'
-                   AND (docstring IS NULL OR docstring = '')
-                   AND kind IN ('function', 'method', 'class', 'interface', 'trait', 'struct', 'enum', 'module')
-                   AND file_path LIKE ?1
-                 ORDER BY file_path, start_line
-                 LIMIT ?2"
-                    .to_string(),
+                format!(
+                    "SELECT id, kind, name, qualified_name, file_path,
+                            start_line, end_line, start_column, end_column,
+                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
+                     FROM nodes
+                     WHERE visibility = 'public'
+                       AND (docstring IS NULL OR docstring = '')
+                       AND kind IN ({DOC_COVERAGE_KINDS})
+                       AND file_path LIKE ?1
+                     ORDER BY file_path, start_line
+                     LIMIT ?2"
+                ),
                 vec![
                     libsql::Value::Text(format!("{prefix}%")),
                     libsql::Value::Integer(limit as i64),
                 ],
             ),
             None => (
-                "SELECT id, kind, name, qualified_name, file_path,
-                        start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
-                 FROM nodes
-                 WHERE visibility = 'public'
-                   AND (docstring IS NULL OR docstring = '')
-                   AND kind IN ('function', 'method', 'class', 'interface', 'trait', 'struct', 'enum', 'module')
-                 ORDER BY file_path, start_line
-                 LIMIT ?1"
-                    .to_string(),
+                format!(
+                    "SELECT id, kind, name, qualified_name, file_path,
+                            start_line, end_line, start_column, end_column,
+                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line
+                     FROM nodes
+                     WHERE visibility = 'public'
+                       AND (docstring IS NULL OR docstring = '')
+                       AND kind IN ({DOC_COVERAGE_KINDS})
+                     ORDER BY file_path, start_line
+                     LIMIT ?1"
+                ),
                 vec![libsql::Value::Integer(limit as i64)],
             ),
         };

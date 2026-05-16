@@ -1053,6 +1053,63 @@ async fn test_get_undocumented_public_symbols_with_prefix() {
     assert_eq!(undoc[0].file_path, "src/a/foo.rs");
 }
 
+/// Regression: doc_coverage previously excluded `field`, `enum_variant`,
+/// `const`, `static`, and `type_alias`, so a Rust file full of `pub`
+/// undocumented struct fields reported total_undocumented: 0. Those kinds
+/// must be reported when public and undocumented.
+#[tokio::test]
+async fn test_get_undocumented_public_symbols_includes_fields_and_variants() {
+    let (db, _dir) = setup_db().await;
+
+    let mut field = sample_node("udpa-1", "freq", "src/lib.rs");
+    field.kind = NodeKind::Field;
+    field.visibility = Visibility::Pub;
+    field.docstring = None;
+
+    let mut variant = sample_node("udpa-2", "Lowpass", "src/lib.rs");
+    variant.kind = NodeKind::EnumVariant;
+    variant.visibility = Visibility::Pub;
+    variant.docstring = None;
+
+    let mut const_node = sample_node("udpa-3", "DEFAULT_Q", "src/lib.rs");
+    const_node.kind = NodeKind::Const;
+    const_node.visibility = Visibility::Pub;
+    const_node.docstring = None;
+
+    let mut static_node = sample_node("udpa-4", "GLOBAL", "src/lib.rs");
+    static_node.kind = NodeKind::Static;
+    static_node.visibility = Visibility::Pub;
+    static_node.docstring = None;
+
+    let mut alias = sample_node("udpa-5", "Peq", "src/lib.rs");
+    alias.kind = NodeKind::TypeAlias;
+    alias.visibility = Visibility::Pub;
+    alias.docstring = None;
+
+    // Documented field — should not appear.
+    let mut documented = sample_node("udpa-6", "documented_field", "src/lib.rs");
+    documented.kind = NodeKind::Field;
+    documented.visibility = Visibility::Pub;
+    documented.docstring = Some("good docs".to_string());
+
+    db.insert_nodes(&[field, variant, const_node, static_node, alias, documented])
+        .await
+        .expect("insert_nodes failed");
+
+    let undoc = db
+        .get_undocumented_public_symbols(None, 100)
+        .await
+        .expect("get_undocumented_public_symbols failed");
+
+    let ids: Vec<&str> = undoc.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&"udpa-1"), "field should be reported");
+    assert!(ids.contains(&"udpa-2"), "enum_variant should be reported");
+    assert!(ids.contains(&"udpa-3"), "const should be reported");
+    assert!(ids.contains(&"udpa-4"), "static should be reported");
+    assert!(ids.contains(&"udpa-5"), "type_alias should be reported");
+    assert!(!ids.contains(&"udpa-6"), "documented field must be filtered");
+}
+
 // -------------------------------------------------------------------------
 // get_god_classes
 // -------------------------------------------------------------------------

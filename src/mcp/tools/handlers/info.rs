@@ -185,6 +185,51 @@ fn kind_compat_group(kind: &str) -> u8 {
     }
 }
 
+/// Composite match key used by `handle_port_status`.
+///
+/// Combines the lowercased name, an optional parent qualifier (for methods,
+/// fields, and variants), and a kind compatibility group, so siblings whose
+/// names happen to collide (`Biquad::new` vs `Adaa::new`) do not cross-match.
+type PortKey = (String, Option<String>, u8);
+
+/// Returns true for kinds that conceptually have a parent type/owner whose
+/// identity matters for matching (methods, fields, variants, etc.). Top-level
+/// items (struct, function, …) return false — their parent in `qualified_name`
+/// is just the file path and is not useful for cross-port matching.
+fn port_kind_has_parent(kind: &str) -> bool {
+    matches!(
+        kind,
+        "method"
+            | "field"
+            | "enum_variant"
+            | "struct_method"
+            | "abstract_method"
+            | "constructor"
+            | "csharp_property"
+            | "property"
+            | "val"
+            | "var"
+    )
+}
+
+/// Extracts the parent qualifier from a node's `qualified_name`, stripping
+/// generic parameters so `Biquad<T>::new` and `Biquad::new` share the same
+/// parent. Returns `None` for kinds where the parent qualifier is not the
+/// containing type (e.g. top-level structs whose parent is the file path).
+fn port_parent_qualifier(node: &crate::types::Node) -> Option<String> {
+    if !port_kind_has_parent(node.kind.as_str()) {
+        return None;
+    }
+    let parts: Vec<&str> = node.qualified_name.split("::").collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let parent = parts[parts.len() - 2];
+    // Strip generic parameters: `Biquad<T>` -> `Biquad`.
+    let parent_no_generics = parent.split('<').next().unwrap_or(parent);
+    Some(parent_no_generics.trim().to_string())
+}
+
 /// Handles `tokensave_port_status` tool calls.
 pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     debug_assert!(
@@ -237,11 +282,14 @@ pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<To
     let source_nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
     let target_nodes = cg.get_nodes_by_dir(target_dir, &kinds).await?;
 
-    // Build target lookup: (lowercase_name, compat_group) -> Vec<&Node>
-    let mut target_map: HashMap<(String, u8), Vec<&crate::types::Node>> = HashMap::new();
+    // Match key includes the parent qualifier (e.g. enclosing struct/class) for
+    // kinds that have one, so `Biquad::new` does NOT collide with `Adaa::new`.
+    // Top-level kinds (struct, function, …) keep using name-only matching.
+    let mut target_map: HashMap<PortKey, Vec<&crate::types::Node>> = HashMap::new();
     for node in &target_nodes {
-        let key = (
+        let key: PortKey = (
             node.name.to_lowercase(),
+            port_parent_qualifier(node).map(|s| s.to_lowercase()),
             kind_compat_group(node.kind.as_str()),
         );
         target_map.entry(key).or_default().push(node);
@@ -252,8 +300,9 @@ pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<To
     let mut unmatched_by_file: HashMap<String, Vec<Value>> = HashMap::new();
 
     for src_node in &source_nodes {
-        let key = (
+        let key: PortKey = (
             src_node.name.to_lowercase(),
+            port_parent_qualifier(src_node).map(|s| s.to_lowercase()),
             kind_compat_group(src_node.kind.as_str()),
         );
         if let Some(targets) = target_map.get(&key) {

@@ -821,6 +821,116 @@ async fn test_port_status() {
     );
 }
 
+/// Regression: port_status used to match symbols purely on (name,
+/// kind_compat_group), so common method names like `new`, `process`, `fmt`,
+/// or `reset` produced wild cross-type "matches" — e.g. `Biquad::new` would
+/// pair with an unrelated `Adaa::new` simply because both methods are named
+/// "new". The match key must also include the parent type so siblings of
+/// distinct owners stay unmatched.
+#[tokio::test]
+async fn port_status_does_not_match_methods_of_different_parents() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src_a")).unwrap();
+    fs::create_dir_all(project.join("src_b")).unwrap();
+
+    fs::write(
+        project.join("src_a/biquad.rs"),
+        "pub struct Biquad;\n\
+         impl Biquad {\n    pub fn new() -> Self { Self }\n    pub fn process(&self) {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src_b/adaa.rs"),
+        "pub struct Adaa;\n\
+         impl Adaa {\n    pub fn new() -> Self { Self }\n    pub fn process(&self) {}\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_port_status",
+        json!({
+            "source_dir": "src_a",
+            "target_dir": "src_b",
+            "kinds": ["method"],
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).expect("response must be JSON");
+    let matched: Vec<&Value> = output["matched_symbols"]
+        .as_array()
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+
+    // None of the source methods should match because the parent types differ.
+    assert!(
+        matched.is_empty(),
+        "Biquad::* and Adaa::* must not cross-match — got matches: {matched:?}"
+    );
+    assert_eq!(
+        output["matched"].as_u64(),
+        Some(0),
+        "matched count must be 0; output={output}"
+    );
+}
+
+/// Sanity: when the same parent type name exists in both dirs, methods do
+/// match — confirming the parent-aware key isn't too strict.
+#[tokio::test]
+async fn port_status_matches_methods_with_same_parent_type() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src_a")).unwrap();
+    fs::create_dir_all(project.join("src_b")).unwrap();
+
+    fs::write(
+        project.join("src_a/biquad.rs"),
+        "pub struct Biquad;\n\
+         impl Biquad { pub fn process(&self) {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src_b/biquad_port.rs"),
+        "pub struct Biquad;\n\
+         impl Biquad { pub fn process(&self) {} }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_port_status",
+        json!({
+            "source_dir": "src_a",
+            "target_dir": "src_b",
+            "kinds": ["method"],
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).expect("response must be JSON");
+    assert_eq!(
+        output["matched"].as_u64(),
+        Some(1),
+        "Biquad::process should match Biquad::process; output={output}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 34. tokensave_port_order
 // ---------------------------------------------------------------------------
@@ -1784,6 +1894,84 @@ async fn ast_grep_rewrite_uses_current_cli_update_flag() {
             .unwrap_or_default()
             .contains("unexpected argument '-d'"),
         "rewrite must not use the removed -d flag: {output}"
+    );
+}
+
+/// Regression: `branch_diff` previously errored with `MCP error -32603: base
+/// and head are the same branch` when base == head. `pr_context` handles the
+/// same case gracefully (empty arrays); branch_diff must match that shape so
+/// callers can rely on consistent behaviour.
+#[tokio::test]
+async fn branch_diff_returns_empty_when_base_equals_head() {
+    let (cg, _dir) = setup_project().await;
+
+    // branch_diff requires branch tracking metadata to be present.
+    let tokensave_dir =
+        tokensave::config::get_tokensave_dir(cg.project_root());
+    let meta = tokensave::branch_meta::BranchMeta::new("master");
+    tokensave::branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_branch_diff",
+        json!({"base": "master", "head": "master"}),
+        None,
+        None,
+    )
+    .await
+    .expect("branch_diff must not error when base == head");
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).expect("response must be valid JSON");
+    assert_eq!(output["summary"]["added"].as_u64(), Some(0));
+    assert_eq!(output["summary"]["removed"].as_u64(), Some(0));
+    assert_eq!(output["summary"]["changed"].as_u64(), Some(0));
+    assert_eq!(output["added"].as_array().map(Vec::len), Some(0));
+    assert_eq!(output["removed"].as_array().map(Vec::len), Some(0));
+    assert_eq!(output["changed"].as_array().map(Vec::len), Some(0));
+}
+
+/// Regression: when ast-grep exits non-zero with empty stderr (no language
+/// inferred from the file extension, or pattern matches nothing), the tool
+/// used to surface `"ast-grep failed: "` — a useless empty trailer. The
+/// message must instead explain the likely cause so the caller can act on it.
+#[tokio::test]
+async fn ast_grep_rewrite_surfaces_useful_error_on_empty_stderr() {
+    if !tokensave::mcp::tools::ast_grep_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn foo() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_ast_grep_rewrite",
+        json!({
+            "path": "src/lib.rs",
+            "pattern": "__NONEXISTENT_PATTERN__",
+            "rewrite": "whatever"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(output["success"].as_bool(), Some(false), "{output}");
+    let message = output["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.trim_end_matches(':').trim().eq("ast-grep failed"),
+        "message must not end as an empty 'ast-grep failed:' — got: {message:?}"
+    );
+    assert!(
+        message.contains("exit") || message.contains("0 nodes") || message.contains("no language"),
+        "message must explain the likely cause (exit code / no language / 0 matches), got: {message:?}"
     );
 }
 
