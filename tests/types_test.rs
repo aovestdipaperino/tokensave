@@ -24,6 +24,7 @@ fn make_node(id: &str, name: &str) -> Node {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     }
 }
 
@@ -159,6 +160,7 @@ fn node_serde_roundtrip() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 1700000000,
+        parent_id: None,
     };
 
     let json = serde_json::to_string(&node).expect("failed to serialize Node");

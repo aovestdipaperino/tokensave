@@ -477,6 +477,7 @@ impl<'a> ContextBuilder<'a> {
                         unchecked_calls: 0,
                         assertions: 0,
                         updated_at: 0,
+                        parent_id: None,
                     };
                     if let Some(code) = self.get_code_cached(&merged_node, file_cache) {
                         current.content = code;
@@ -1035,6 +1036,7 @@ mod tests {
                 unchecked_calls: 0,
                 assertions: 0,
                 updated_at: 0,
+                parent_id: None,
             },
             score,
         }

@@ -2271,20 +2271,17 @@ impl TokenSave {
             return Ok(Vec::new());
         }
 
-        // Find the trait that contains this method (incoming Contains edge
-        // whose source is a Trait node).
-        let incoming = self
-            .db
-            .get_incoming_edges(&method.id, &[EdgeKind::Contains])
-            .await?;
-        let parent_ids: Vec<String> = incoming.into_iter().map(|e| e.source).collect();
-        if parent_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let parents = self.db.get_nodes_by_ids(&parent_ids).await?;
-        let Some(trait_node) = parents.into_iter().find(|n| n.kind == NodeKind::Trait) else {
+        // Find the trait that contains this method. parent_id points at
+        // the enclosing scope after v9; verify it's actually a Trait.
+        let Some(parent_id) = method.parent_id.as_deref() else {
             return Ok(Vec::new());
         };
+        let Some(trait_node) = self.db.get_node_by_id(parent_id).await? else {
+            return Ok(Vec::new());
+        };
+        if trait_node.kind != NodeKind::Trait {
+            return Ok(Vec::new());
+        }
 
         // Find every impl block of that trait.
         let impl_edges = self
@@ -2301,15 +2298,7 @@ impl TokenSave {
         // so we filter by both kind and name.
         let mut targets = Vec::new();
         for impl_id in impl_ids {
-            let contained = self
-                .db
-                .get_outgoing_edges(&impl_id, &[EdgeKind::Contains])
-                .await?;
-            let target_ids: Vec<String> = contained.into_iter().map(|e| e.target).collect();
-            if target_ids.is_empty() {
-                continue;
-            }
-            let candidates = self.db.get_nodes_by_ids(&target_ids).await?;
+            let candidates = self.db.get_children_of(&impl_id).await?;
             for n in candidates {
                 if matches!(n.kind, NodeKind::Method | NodeKind::Function) && n.name == method.name
                 {

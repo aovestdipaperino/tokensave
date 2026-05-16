@@ -82,7 +82,8 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             unchecked_calls INTEGER NOT NULL DEFAULT 0,
             assertions INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL,
-            attrs_start_line INTEGER NOT NULL DEFAULT 0
+            attrs_start_line INTEGER NOT NULL DEFAULT 0,
+            parent_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS edges (
@@ -167,6 +168,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
+        CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id);
 
         CREATE TABLE IF NOT EXISTS memory_decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -692,13 +694,17 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Migration V9: read cache table for tokensave_read
+// Migration V9: read cache + parent_id denormalization
 // ---------------------------------------------------------------------------
 
-/// Creates the `read_cache` table used by `tokensave_read` to serve unchanged
-/// files as a tiny stub across sessions. Rows are keyed by
-/// `(project_id, session_id, file_path, mode, args_hash)` and the `mtime_ns`
-/// column drives freshness checks.
+/// Two changes:
+///
+/// 1. Creates the `read_cache` table used by `tokensave_read` to serve
+///    unchanged files as a tiny stub across sessions.
+/// 2. Denormalizes `Contains` edges onto a new `nodes.parent_id` column.
+///    The column is backfilled from existing `Contains` rows, then those
+///    rows are deleted. After v9, the truth for "who contains node X" is
+///    `nodes.parent_id`, not the edges table — readers should prefer it.
 async fn migrate_v9(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS read_cache (
@@ -721,6 +727,101 @@ async fn migrate_v9(conn: &Connection) -> Result<()> {
     .await
     .map_err(|e| TokenSaveError::Database {
         message: format!("v9: failed to create read_cache table: {e}"),
+        operation: "migrate_v9".to_string(),
+    })?;
+
+    // ALTER TABLE has no IF NOT EXISTS for columns in SQLite. Probe
+    // PRAGMA table_info first — fresh installs already include parent_id
+    // from create_schema, and the test harness exercises that path by
+    // resetting user_version to a pre-v9 value.
+    let has_parent_id = {
+        let mut rows = conn
+            .query("PRAGMA table_info(nodes)", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v9: failed to probe nodes columns: {e}"),
+                operation: "migrate_v9".to_string(),
+            })?;
+        let mut found = false;
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("v9: failed to read table_info row: {e}"),
+            operation: "migrate_v9".to_string(),
+        })? {
+            if let Ok(name) = row.get::<String>(1) {
+                if name == "parent_id" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        found
+    };
+
+    if !has_parent_id {
+        conn.execute("ALTER TABLE nodes ADD COLUMN parent_id TEXT", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v9: failed to add parent_id column: {e}"),
+                operation: "migrate_v9".to_string(),
+            })?;
+    }
+
+    // Backfill parent_id from existing Contains edges, then drop those
+    // rows. Gate on the edges table actually existing — tests seed
+    // partial schemas and a real install always has it (migrate_v1).
+    let has_edges_table = {
+        let mut rows = conn
+            .query(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v9: failed to probe sqlite_master: {e}"),
+                operation: "migrate_v9".to_string(),
+            })?;
+        rows.next()
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v9: failed to read sqlite_master row: {e}"),
+                operation: "migrate_v9".to_string(),
+            })?
+            .is_some()
+    };
+
+    if has_edges_table {
+        // When a node has multiple incoming Contains rows (legacy data
+        // anomaly), the first matching row wins — subsequent rows are
+        // noise the new schema does not preserve.
+        conn.execute(
+            "UPDATE nodes SET parent_id = (
+                SELECT source FROM edges
+                WHERE edges.target = nodes.id AND edges.kind = 'contains'
+                LIMIT 1
+            )",
+            (),
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v9: failed to backfill parent_id from contains edges: {e}"),
+            operation: "migrate_v9".to_string(),
+        })?;
+
+        conn.execute("DELETE FROM edges WHERE kind = 'contains'", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v9: failed to drop contains edges: {e}"),
+                operation: "migrate_v9".to_string(),
+            })?;
+    }
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v9: failed to create idx_nodes_parent_id: {e}"),
         operation: "migrate_v9".to_string(),
     })?;
 

@@ -351,6 +351,11 @@ pub struct Node {
     /// Number of assertion calls (e.g. `assert!`, `assertEquals`, `expect`).
     pub assertions: u32,
     pub updated_at: u64,
+    /// `id` of the enclosing scope (module, impl, class, …). `None` for
+    /// top-level nodes whose parent is the file itself. Populated from
+    /// `Contains` edges at insert time; once written, callers should prefer
+    /// `parent_id` over walking edges.
+    pub parent_id: Option<String>,
 }
 
 /// An edge in the code graph representing a relationship between nodes.

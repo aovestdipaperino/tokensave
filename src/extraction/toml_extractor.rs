@@ -75,6 +75,7 @@ impl TomlExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(file_node);
 
@@ -154,6 +155,7 @@ impl TomlExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(module);
         state.edges.push(Edge {
@@ -242,6 +244,7 @@ impl TomlExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(pair);
         state.edges.push(Edge {

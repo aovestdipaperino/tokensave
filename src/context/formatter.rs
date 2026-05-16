@@ -181,6 +181,7 @@ mod tests {
                 unchecked_calls: 0,
                 assertions: 0,
                 updated_at: 0,
+                parent_id: None,
             }],
             code_blocks: vec![],
             related_files: vec!["src/lib.rs".to_string()],
@@ -223,6 +224,7 @@ mod tests {
                 unchecked_calls: 0,
                 assertions: 0,
                 updated_at: 0,
+                parent_id: None,
             }],
             code_blocks: vec![CodeBlock {
                 content: "fn my_fn() {\n    println!(\"hello\");\n}".to_string(),

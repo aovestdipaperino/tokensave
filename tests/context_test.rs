@@ -38,6 +38,7 @@ async fn test_reranking_demotes_fixture_nodes() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&fixture_node).await.unwrap();
 
@@ -65,6 +66,7 @@ async fn test_reranking_demotes_fixture_nodes() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&source_node).await.unwrap();
 
@@ -184,6 +186,7 @@ async fn test_build_context_with_db() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node).await.unwrap();
 
@@ -240,6 +243,7 @@ async fn test_get_code_reads_source_file() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let builder = ContextBuilder::new(&db, project);
@@ -286,6 +290,7 @@ async fn test_get_code_returns_none_for_missing_file() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let builder = ContextBuilder::new(&db, project);
@@ -328,6 +333,7 @@ async fn test_find_relevant_context() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node).await.unwrap();
 
@@ -376,6 +382,7 @@ async fn test_exclude_node_ids_deduplication() {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: 0,
+            parent_id: None,
         })
         .await
         .unwrap();
@@ -444,6 +451,7 @@ async fn test_merge_adjacent_code_blocks() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     })
     .await
     .unwrap();
@@ -471,6 +479,7 @@ async fn test_merge_adjacent_code_blocks() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     })
     .await
     .unwrap();

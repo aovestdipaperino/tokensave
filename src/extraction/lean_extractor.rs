@@ -84,6 +84,7 @@ impl LeanExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(file_node);
         state
@@ -308,6 +309,7 @@ impl LeanExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(new_node);
 

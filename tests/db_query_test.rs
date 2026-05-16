@@ -38,6 +38,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 1000,
+        parent_id: None,
     }
 }
 
@@ -175,8 +176,16 @@ async fn test_insert_edges_batch() {
     ];
     db.insert_edges(&edges).await.expect("insert_edges failed");
 
+    // Contains is denormalized into nodes.parent_id since v9, so only the
+    // two non-Contains edges actually land in the edges table.
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all.len(), 3);
+    assert_eq!(all.len(), 2);
+    let be_3 = db
+        .get_node_by_id("be-3")
+        .await
+        .expect("get_node_by_id failed")
+        .expect("be-3 should exist");
+    assert_eq!(be_3.parent_id.as_deref(), Some("be-2"));
 }
 
 #[tokio::test]
@@ -1721,15 +1730,23 @@ async fn test_insert_all_comprehensive() {
     assert!(node_ids.contains(&"ia-1"));
     assert!(node_ids.contains(&"ia-4"));
 
-    // Verify edges
+    // Verify edges. The Contains edge ia-3 → ia-4 is denormalized into
+    // ia-4's parent_id since v9, so the edges table holds only the two
+    // remaining kinds.
     let all_edges = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all_edges.len(), 3);
+    assert_eq!(all_edges.len(), 2);
     let edge_pairs: Vec<(&str, &str)> = all_edges
         .iter()
         .map(|e| (e.source.as_str(), e.target.as_str()))
         .collect();
     assert!(edge_pairs.contains(&("ia-1", "ia-2")));
-    assert!(edge_pairs.contains(&("ia-3", "ia-4")));
+    assert!(edge_pairs.contains(&("ia-2", "ia-3")));
+    let ia_4 = db
+        .get_node_by_id("ia-4")
+        .await
+        .expect("get_node_by_id failed")
+        .expect("ia-4 should exist");
+    assert_eq!(ia_4.parent_id.as_deref(), Some("ia-3"));
 
     // Verify files
     let all_files = db.get_all_files().await.expect("get_all_files failed");
@@ -2081,6 +2098,7 @@ async fn test_fts_name_match_outranks_docstring_match() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node_a).await.unwrap();
 
@@ -2110,6 +2128,7 @@ async fn test_fts_name_match_outranks_docstring_match() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node_b).await.unwrap();
 
@@ -2152,6 +2171,7 @@ async fn test_batch_incoming_call_counts() {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: 0,
+            parent_id: None,
         })
         .await
         .unwrap();

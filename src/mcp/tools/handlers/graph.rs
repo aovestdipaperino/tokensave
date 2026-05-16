@@ -1092,15 +1092,9 @@ async fn collect_method_bodies(
     impl_node: &crate::types::Node,
     project_root: &std::path::Path,
 ) -> Result<Vec<Value>> {
-    let outgoing = cg
-        .db()
-        .get_outgoing_edges(&impl_node.id, &[EdgeKind::Contains])
-        .await?;
+    let children = cg.db().get_children_of(&impl_node.id).await?;
     let mut out: Vec<Value> = Vec::new();
-    for edge in outgoing {
-        let Some(child) = cg.db().get_node_by_id(&edge.target).await? else {
-            continue;
-        };
+    for child in children {
         if !matches!(child.kind, NodeKind::Method | NodeKind::Function) {
             continue;
         }

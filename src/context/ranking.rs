@@ -134,6 +134,7 @@ mod tests {
                 unchecked_calls: 0,
                 assertions: 0,
                 updated_at: 0,
+                parent_id: None,
             },
             score,
         }

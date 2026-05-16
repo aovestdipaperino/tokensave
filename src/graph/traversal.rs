@@ -106,23 +106,21 @@ impl<'a> GraphTraverser<'a> {
                     if opts.direction == TraversalDirection::Incoming
                         && is_container_kind(&neighbor_node.kind)
                     {
-                        let children = self
-                            .get_edges_for_direction(
-                                &neighbor_id,
-                                &[EdgeKind::Contains],
-                                &TraversalDirection::Outgoing,
-                            )
-                            .await?;
-                        for child_edge in children {
-                            let child_id = Self::neighbor_id(
-                                &child_edge,
-                                &neighbor_id,
-                                &TraversalDirection::Outgoing,
-                            );
-                            if !visited.contains(&child_id) {
-                                visited.insert(child_id.clone());
-                                result_edges.push(child_edge);
-                                queue.push_back((child_id, depth + 1));
+                        // Children are now queried via parent_id, not via
+                        // outgoing Contains edges (denormalized in v9).
+                        // Synthesize Contains-shaped Edge values so callers
+                        // that inspect `result_edges` see the same shape.
+                        let children = self.db.get_children_of(&neighbor_id).await?;
+                        for child in children {
+                            if !visited.contains(&child.id) {
+                                visited.insert(child.id.clone());
+                                result_edges.push(crate::types::Edge {
+                                    source: neighbor_id.clone(),
+                                    target: child.id.clone(),
+                                    kind: EdgeKind::Contains,
+                                    line: None,
+                                });
+                                queue.push_back((child.id, depth + 1));
                             }
                         }
                     }

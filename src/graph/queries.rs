@@ -65,6 +65,7 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
         unchecked_calls: row.get::<u32>(18)?,
         assertions: row.get::<u32>(19)?,
         updated_at: row.get::<u64>(20)?,
+        parent_id: None,
     })
 }
 
@@ -221,10 +222,8 @@ impl<'a> GraphQueryManager<'a> {
             .iter()
             .filter(|e| e.kind == EdgeKind::Calls)
             .count();
-        let child_count = outgoing
-            .iter()
-            .filter(|e| e.kind == EdgeKind::Contains)
-            .count();
+        // Children come from parent_id after v9, not from Contains edges.
+        let child_count = self.db.get_children_of(node_id).await?.len();
 
         // Compute depth by walking up the containment hierarchy.
         let depth = self.compute_depth(node_id).await?;
@@ -486,15 +485,13 @@ impl<'a> GraphQueryManager<'a> {
             }
             visited.insert(current_id.clone());
 
-            let incoming = self
-                .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Contains])
-                .await?;
-
-            // Take the first parent in the containment hierarchy.
-            match incoming.first() {
-                Some(edge) => {
-                    current_id.clone_from(&edge.source);
+            // parent_id is the v9 truth for containment.
+            let Some(node) = self.db.get_node_by_id(&current_id).await? else {
+                break;
+            };
+            match node.parent_id {
+                Some(parent) => {
+                    current_id = parent;
                     depth += 1;
                 }
                 None => break,

@@ -239,12 +239,7 @@ pub(super) async fn handle_gini(
             per_file.into_iter().collect()
         }
         ("members", _) => {
-            // Count contains-edges from Class/Struct nodes
-            let all_edges_for_members = if all_edges.is_empty() {
-                cg.get_all_edges().await?
-            } else {
-                all_edges
-            };
+            // Count members of each Class/Struct via parent_id (v9+).
             let class_nodes: HashSet<String> = nodes
                 .iter()
                 .filter(|n| matches!(n.kind, NodeKind::Class | NodeKind::Struct))
@@ -255,10 +250,12 @@ pub(super) async fn handle_gini(
                 .filter(|n| matches!(n.kind, NodeKind::Class | NodeKind::Struct))
                 .map(|n| (n.id.clone(), (n.name.clone(), 0.0)))
                 .collect();
-            for e in &all_edges_for_members {
-                if e.kind == EdgeKind::Contains && class_nodes.contains(&e.source) {
-                    if let Some(entry) = per_class.get_mut(&e.source) {
-                        entry.1 += 1.0;
+            for n in &nodes {
+                if let Some(parent) = n.parent_id.as_deref() {
+                    if class_nodes.contains(parent) {
+                        if let Some(entry) = per_class.get_mut(parent) {
+                            entry.1 += 1.0;
+                        }
                     }
                 }
             }

@@ -38,6 +38,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 1000,
+        parent_id: None,
     }
 }
 

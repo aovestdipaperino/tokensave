@@ -1578,8 +1578,6 @@ pub(super) async fn handle_constructors(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    use crate::types::EdgeKind;
-
     let struct_name =
         args.get("struct")
             .and_then(|v| v.as_str())
@@ -1616,18 +1614,13 @@ pub(super) async fn handle_constructors(
 
     let mut expected_fields: HashSet<String> = HashSet::new();
     for sn in &struct_nodes {
-        let outgoing = cg
-            .db()
-            .get_outgoing_edges(&sn.id, &[EdgeKind::Contains])
-            .await?;
-        for edge in outgoing {
-            if let Some(child) = cg.db().get_node_by_id(&edge.target).await? {
-                if matches!(
-                    child.kind,
-                    NodeKind::Field | NodeKind::ValField | NodeKind::VarField
-                ) {
-                    expected_fields.insert(child.name);
-                }
+        let children = cg.db().get_children_of(&sn.id).await?;
+        for child in children {
+            if matches!(
+                child.kind,
+                NodeKind::Field | NodeKind::ValField | NodeKind::VarField
+            ) {
+                expected_fields.insert(child.name);
             }
         }
     }

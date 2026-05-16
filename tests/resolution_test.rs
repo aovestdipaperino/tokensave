@@ -34,6 +34,7 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let caller = Node {
@@ -59,6 +60,7 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     db.insert_node(&callee)
@@ -259,6 +261,7 @@ async fn test_multiple_candidates_best_match_scoring() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let other_file_node = Node {
@@ -284,6 +287,7 @@ async fn test_multiple_candidates_best_match_scoring() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let caller = Node {
@@ -309,6 +313,7 @@ async fn test_multiple_candidates_best_match_scoring() {
         unchecked_calls: 0,
         assertions: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     db.insert_node(&same_file_node)

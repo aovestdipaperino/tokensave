@@ -113,6 +113,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
@@ -220,6 +221,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -279,6 +281,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -347,6 +350,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -413,6 +417,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -478,6 +483,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -548,6 +554,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -598,6 +605,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -665,6 +673,7 @@ impl JavaExtractor {
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -727,6 +736,7 @@ impl JavaExtractor {
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -802,6 +812,7 @@ impl JavaExtractor {
                         unchecked_calls: 0,
                         assertions: 0,
                         updated_at: state.timestamp,
+                        parent_id: None,
                     };
                     state.nodes.push(graph_node);
 
@@ -855,6 +866,7 @@ impl JavaExtractor {
             unchecked_calls: 0,
             assertions: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1156,6 +1168,7 @@ impl JavaExtractor {
                         unchecked_calls: 0,
                         assertions: 0,
                         updated_at: state.timestamp,
+                        parent_id: None,
                     };
                     state.nodes.push(graph_node);
 
@@ -1242,6 +1255,7 @@ impl JavaExtractor {
                         unchecked_calls: 0,
                         assertions: 0,
                         updated_at: state.timestamp,
+                        parent_id: None,
                     };
                     state.nodes.push(graph_node);
 
