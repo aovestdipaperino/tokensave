@@ -7,34 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.0] - 2026-05-16
-
-The largest functional jump since 4.0: nine new MCP tools, a cross-session response cache, and a schema-level rework of containment.
-
-### Added
-
-- **`tokensave_read`** — mode-aware file read (`full`, `lines`, `map`, `signatures`) with cross-session cache. `map` and `signatures` are graph-only — no source bytes are touched. A re-call on an unchanged file returns a ~30-token `{"unchanged": true, …}` stub. The cache key folds `last_sync_at` for graph-backed modes so a force-reindex correctly invalidates derived rows.
-- **`tokensave_outline`** — flat list of every top-level symbol in a file, with optional kind filter. The cheapest way to orient before zooming into a large file.
-- **`tokensave_implementations`** — find every type implementing a given trait, or every body of a given method name. Returns method bodies with signatures.
-- **`tokensave_unsafe_patterns`** — surface `.unwrap()` / `.expect()` / `panic!` / `todo!` / `unimplemented!` / `unsafe { }` sites with an `in_test` flag. Word-boundary matching avoids `.unwrap_or` false positives; an `exclude_tests` option skips test-shaped paths.
-- **`tokensave_diagnostics`** — runs the project's compile / type checker (cargo / tsc / pyright) and returns structured errors mapped to graph nodes. Replaces the recurring "shell out → parse text → read file" loop with one structured response. Cargo target dir is forced to `.tokensave/target/` so it can't race with the user's interactive cargo runs.
-- **`tokensave_config`** — query TOML / JSON config files by dotted key path. Single file (`path`) or glob (`glob`); returns parsed value plus a heuristic line number. DB-free — works on uninitialized projects.
-- **`tokensave_signature_search`** — find functions / methods by signature shape: return type, parameter substring, async flag, path filter. All filters AND-compose.
-- **`tokensave_constructors`** — locate every literal-instantiation site of a struct (`Foo { … }`) and report which fields each site sets — plus `missing_fields` relative to the struct's current definition. The classic "I added a required field, what breaks?" question. String- / char-literal awareness and `match` / `if let` / `while let` pattern filtering keep the result list clean.
-- **`tokensave_field_sites`** — partition every `.<field>` reference into reads and writes. Writes include `=`, compound assignments, and `&mut x.field` borrows; `==` and `=>` correctly count as reads.
-- **`tokensave bench` colored console output** — default `tokensave bench` is now a fixed-width colored table instead of a markdown dump. Compact `k` / `M` numeric units; savings percentages colored by tier (green ≥80 %, yellow ≥50 %, red <50 %); aggregate footer in the same tier color. `--json` is unchanged.
-
-### Changed
-
-- **Schema v9: cross-session response cache.** New `read_cache` table keyed by `(project_id, session_id, file_path, mode, args_hash)` with `mtime_ns` for freshness. Backs `tokensave_read`.
-- **Schema v9: `Contains` edges denormalized into `nodes.parent_id`.** The same migration folds containment off the edges table and onto a new column. Cleaner queries — `get_children_of(parent_id)` is one indexed lookup — and the read-only SQL layer no longer has to filter by edge kind for every "find members of this container" question. Extractors keep emitting `Contains` edges as before; the storage layer hoists them into `parent_id` at insert time and skips persisting the row.
-
-### Migration notes
-
-- **v9 is forward-only.** First sync after upgrade auto-applies the migration, populates `parent_id` from existing `Contains` rows, and deletes those rows.
-- **Recovery path: `tokensave sync -f`.** If a downstream consumer still queries `Contains` edges directly (none of the in-repo tools do), force-sync rebuilds the graph from source under the new schema.
-- External SQLite consumers reading the `edges` table should switch from `kind='contains'` filters to `nodes.parent_id` joins.
-
 ## [4.14.11] - 2026-05-16
 
 ### Performance
