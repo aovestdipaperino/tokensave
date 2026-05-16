@@ -2187,9 +2187,7 @@ fn has_mut_borrow_prefix(source: &str, idx: usize) -> bool {
 
 fn line_at(source: &str, byte: usize) -> Option<&str> {
     let line_start = source[..byte].rfind('\n').map_or(0, |i| i + 1);
-    let line_end = source[byte..]
-        .find('\n')
-        .map_or(source.len(), |i| byte + i);
+    let line_end = source[byte..].find('\n').map_or(source.len(), |i| byte + i);
     source.get(line_start..line_end)
 }
 
