@@ -13,3 +13,7 @@ docs/superpowers
 .sentrux/
 cache/
 generated-illustrations/
+*.log
+*~
+*#
+
