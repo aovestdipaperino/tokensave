@@ -146,17 +146,63 @@ impl<'a> GraphQueryManager<'a> {
         // dead-code detection — which is why the sonium run reported zero
         // dead functions across 5,715. The narrower allowlist below restores
         // the intended semantics: "no real caller / referencer = dead".
-        // Do NOT lift the test-marker filter into a `WITH test_marker_ids AS
-        // (...)` CTE: SQLite does not always materialize a single-reference
-        // CTE, so `e2.source IN (SELECT id FROM test_marker_ids)` inside a
-        // correlated NOT EXISTS can degenerate into a per-row scan of
-        // annotation_usage. On scirs (76K annotation_usage rows, 153K
-        // annotates edges) the CTE form timed out at >60s; the join form
-        // below runs in 0.1s. Mechanism: idx_edges_target_kind narrows to
-        // the (typically 0-3) annotates edges per candidate, joins to nodes
-        // via PK, and the leading-wildcard LIKE only runs on those few
-        // per-candidate annotations — not on the whole annotation_usage
-        // table. See changelog 4.14.8 -> 4.14.9 revert.
+        // Test-marker exclusion uses a THREE-step "resolve + pre-join + probe":
+        //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
+        //      scan exactly once over `kind = 'annotation_usage'`.
+        //   2) Those ids land in `temp.test_markers` (PK on `id`).
+        //   3) `temp.test_annotated_targets` is built from
+        //      `edges WHERE kind='annotates' AND source IN temp.test_markers`
+        //      — i.e., "which node ids are annotated by ANY test marker."
+        //      ~15 K rows on chromium.
+        //   4) The dead-code SELECT then uses
+        //      `nodes.id NOT IN (SELECT target FROM temp.test_annotated_targets)`
+        //      — a single PK probe per candidate against a small table.
+        //
+        // History — DO NOT regress this:
+        // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
+        //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
+        //   chain per matching edge. Fast on scirs (0.1 s, 76 K
+        //   annotation_usage) but timed out on chromium at the 25 s probe
+        //   ceiling, cascade-poisoning every subsequent MCP tool call.
+        // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
+        //   worse: SQLite inlined the single-reference CTE, turning every
+        //   dead-candidate row into a full annotation_usage scan. Regressed
+        //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
+        // - 4.14.12's first attempt (single temp table + correlated
+        //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
+        //   also failed on chromium: SQLite picked `idx_edges_unique
+        //   (source, target, kind)` for the subquery and iterated every
+        //   marker as the outer driver for every candidate
+        //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
+        // - The current pre-join form (two temp tables, indexed `NOT IN`)
+        //   measures 0.75 s on chromium and 0.6 s on scirs. The
+        //   wildcard scan still runs exactly once per call; the per-row
+        //   probe is now against a ~15K-row indexed lookup table, not a
+        //   correlated subquery the optimiser can re-shape.
+        let result = self
+            .find_dead_code_inner(visibility_filter, &kind_filter)
+            .await;
+
+        // Always drop both temp tables, even on the error path, so a
+        // failed query does not leak rows to the next caller on the same
+        // connection. Best-effort: a drop failure shouldn't mask the
+        // original error.
+        let _ = self.db.drop_test_annotated_targets_temp_table().await;
+        let _ = self.db.drop_test_marker_temp_table().await;
+        result
+    }
+
+    /// Body of `find_dead_code`. Split out so the caller can wrap us in a
+    /// guaranteed `drop_*_temp_table()` even on the error path.
+    async fn find_dead_code_inner(
+        &self,
+        visibility_filter: &str,
+        kind_filter: &str,
+    ) -> Result<Vec<Node>> {
+        let marker_ids = self.db.collect_test_marker_ids().await?;
+        self.db.populate_test_marker_temp_table(&marker_ids).await?;
+        self.db.populate_test_annotated_targets_temp_table().await?;
+
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                     start_column, end_column, docstring, signature, visibility,
@@ -172,19 +218,7 @@ impl<'a> GraphQueryManager<'a> {
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )
-             AND NOT EXISTS (
-                 SELECT 1 FROM edges e2
-                 JOIN nodes a ON a.id = e2.source
-                 WHERE e2.target = nodes.id
-                 AND e2.kind = 'annotates'
-                 AND a.kind = 'annotation_usage'
-                 AND (
-                     a.name = 'test'
-                     OR a.name LIKE '%::test'
-                     OR a.name = 'wasm_bindgen_test'
-                     OR a.name LIKE '%::wasm_bindgen_test'
-                 )
-             )"
+             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)"
         );
 
         let mut rows =
@@ -205,7 +239,6 @@ impl<'a> GraphQueryManager<'a> {
             let node = row_to_node_dead_code(&row)?;
             dead.push(node);
         }
-
         Ok(dead)
     }
 

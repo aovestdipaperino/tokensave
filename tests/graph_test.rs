@@ -1190,3 +1190,145 @@ async fn test_file_churn_nonexistent_dir() {
         "should return empty map for nonexistent dir"
     );
 }
+
+// ---------------------------------------------------------------------------
+// find_dead_code perf regression test
+// ---------------------------------------------------------------------------
+
+/// Synthetic-scale guard for the chromium-class slowdown that motivated the
+/// 4.14.8 CTE attempt and the 4.14.12 temp-table fix.
+///
+/// Builds:
+/// - 50_000 `annotation_usage` rows whose names *don't* match any test marker
+///   (`derive_Foo_0` etc.) — these exercise the leading-wildcard `LIKE` cost.
+/// - 1_000 `annotation_usage` rows whose names DO match (`test`, `tokio::test`,
+///   `wasm_bindgen_test`, `async_std::test`).
+/// - 5_000 private function nodes, half referenced via a `calls` edge (live),
+///   half unreferenced (dead). The first 1_000 of the unreferenced functions
+///   carry a test-marker `annotates` edge so they must be excluded.
+///
+/// Asserts:
+/// - returns exactly 1_500 dead nodes (2_500 unreferenced − 1_000 test-annotated).
+/// - completes in < 5 s. The reverted 4.14.8 CTE form blew past 60 s on
+///   scirs-scale (76 K annotation_usage); the chromium-scale dead_code call
+///   timed out at the 25 s probe ceiling under the pre-4.14.8 JOIN form. The
+///   temp-table form should comfortably stay under the budget.
+#[tokio::test]
+async fn dead_code_marker_resolve_is_single_pass() {
+    let (db, _dir) = setup_db().await;
+
+    let mut nodes: Vec<Node> = Vec::with_capacity(60_000);
+
+    // 50K noise annotation_usage nodes that should NOT match the marker
+    // patterns — these drive the LIKE scan cost.
+    for i in 0..50_000_u32 {
+        let mut n = make_node(
+            &format!("n-noise-{i}"),
+            &format!("derive_Foo_{i}"),
+            "src/noise.rs",
+            Visibility::Private,
+        );
+        n.kind = NodeKind::AnnotationUsage;
+        nodes.push(n);
+    }
+
+    // 1K real test-marker annotation_usage nodes, evenly across the 4 patterns.
+    // 250 of each pattern: bare `test`, `tokio::test`, `wasm_bindgen_test`,
+    // `async_std::test`.
+    let patterns: [&str; 4] = [
+        "test",
+        "tokio::test",
+        "wasm_bindgen_test",
+        "async_std::test",
+    ];
+    for i in 0..1_000_u32 {
+        let pat = patterns[(i as usize) % patterns.len()];
+        let mut n = make_node(
+            &format!("n-marker-{i}"),
+            pat,
+            "src/markers.rs",
+            Visibility::Private,
+        );
+        n.kind = NodeKind::AnnotationUsage;
+        nodes.push(n);
+    }
+
+    // 5K private function nodes. Naming: `fn_{i}` — `name NOT LIKE 'test%'`
+    // filter in the dead-code SQL excludes anything starting with `test`,
+    // so use a neutral prefix.
+    for i in 0..5_000_u32 {
+        nodes.push(make_node(
+            &format!("n-fn-{i}"),
+            &format!("worker_{i}"),
+            "src/fns.rs",
+            Visibility::Private,
+        ));
+    }
+
+    db.insert_nodes(&nodes)
+        .await
+        .expect("bulk insert nodes failed");
+
+    // Half the functions (i = 2500..4999) are live via a calls edge from
+    // `n-fn-0` (acting as a synthetic root). The first 1000 unreferenced
+    // functions (i = 0..999) carry a test-marker annotates edge — those
+    // must be excluded from dead-code as well. The remaining 1500
+    // (i = 1000..2499) are the genuine dead set.
+    let mut edges: Vec<Edge> = Vec::with_capacity(2_500 + 1_000);
+
+    // Live edges — `calls` from worker_0 to workers 2500..4999.
+    for i in 2_500..5_000_u32 {
+        edges.push(Edge {
+            source: "n-fn-0".to_string(),
+            target: format!("n-fn-{i}"),
+            kind: EdgeKind::Calls,
+            line: Some(1),
+        });
+    }
+
+    // Test-marker annotates — n-marker-{i} annotates n-fn-{i} for i in 0..999.
+    for i in 0..1_000_u32 {
+        edges.push(Edge {
+            source: format!("n-marker-{i}"),
+            target: format!("n-fn-{i}"),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        });
+    }
+
+    db.insert_edges(&edges)
+        .await
+        .expect("bulk insert edges failed");
+
+    let qm = GraphQueryManager::new(&db);
+
+    let t0 = std::time::Instant::now();
+    let dead = qm
+        .find_dead_code(&[NodeKind::Function], false)
+        .await
+        .expect("find_dead_code failed");
+    let elapsed = t0.elapsed();
+
+    // The 2500..4999 set is live (calls edges). The 0..999 set has test
+    // annotations. The 1000..2499 set is genuinely dead — plus n-fn-0 itself
+    // is unreferenced, but it carries no test marker so it should also be
+    // reported (1501 total). Allow ±1 in case of off-by-one between live
+    // and dead-by-self.
+    let dead_count = dead.len();
+    assert!(
+        (1_500..=1_502).contains(&dead_count),
+        "expected ~1500 dead functions, got {dead_count}"
+    );
+
+    // The fix budget. Pre-4.14.12 the chromium-class case timed out at 25s
+    // (probe ceiling). 5s gives generous headroom for slower CI machines
+    // while still failing loudly if the per-row LIKE scan ever sneaks back.
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "find_dead_code took {:?} on 50K annotation_usage / 5K function corpus \
+         — expected <5s. The leading-wildcard LIKE is probably running per row \
+         again; see src/graph/queries.rs::find_dead_code_inner and the changelog \
+         entries for 4.14.8 → 4.14.9 → 4.14.12.",
+        elapsed
+    );
+}
