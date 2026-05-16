@@ -94,12 +94,67 @@ struct GitHubRelease {
     tag_name: String,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAsset {
+    name: String,
+}
+
+/// Returns the platform slug matching the CI release matrix. Must stay in
+/// sync with the `matrix.name` field in `.github/workflows/release.yml`
+/// and `release-beta.yml`.
+pub(crate) fn current_platform() -> &'static str {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "aarch64-macos"
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        "x86_64-macos"
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        "x86_64-linux"
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        "aarch64-linux"
+    } else if cfg!(target_os = "windows") {
+        "x86_64-windows"
+    } else {
+        "unknown"
+    }
+}
+
+/// Archive naming convention per platform. Must stay in sync with the
+/// `tar czf` / `Compress-Archive` invocations in `.github/workflows/release.yml`
+/// and `release-beta.yml`:
+///
+/// - Stable: `tokensave-v{version}-{platform}.{ext}`
+/// - Beta:   `tokensave-beta-v{version}-{platform}.{ext}`
+pub(crate) fn asset_name(version: &str, is_beta: bool) -> String {
+    let prefix = if is_beta {
+        "tokensave-beta"
+    } else {
+        "tokensave"
+    };
+    let platform = current_platform();
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    format!("{prefix}-v{version}-{platform}.{ext}")
+}
+
+/// True when the release lists an asset matching the current platform.
+/// Filters out releases whose CI build hasn't finished uploading binaries
+/// for the current target — otherwise we'd announce a version the user
+/// cannot actually install.
+fn release_has_current_platform_asset(release: &GitHubRelease) -> bool {
+    let version = release.tag_name.trim_start_matches('v');
+    let expected = asset_name(version, release.prerelease);
+    release.assets.iter().any(|a| a.name == expected)
 }
 
 /// Fetches the latest release version from GitHub.
 /// For beta builds, fetches the latest prerelease; for stable builds,
 /// fetches the latest stable release. This ensures each channel only
-/// sees updates from its own channel.
+/// sees updates from its own channel. Releases whose CI hasn't yet
+/// uploaded the current-platform binary are skipped — see
+/// `release_has_current_platform_asset`.
 pub fn fetch_latest_version() -> Option<String> {
     if is_beta() {
         fetch_latest_beta_version()
@@ -119,6 +174,9 @@ pub fn fetch_latest_stable_version() -> Option<String> {
         .body_mut()
         .read_json()
         .ok()?;
+    if !release_has_current_platform_asset(&release) {
+        return None;
+    }
     Some(release.tag_name.trim_start_matches('v').to_string())
 }
 
@@ -133,10 +191,13 @@ pub fn fetch_latest_beta_version() -> Option<String> {
         .body_mut()
         .read_json()
         .ok()?;
-    // Find the first prerelease in the list (sorted newest first by GitHub)
+    // First prerelease that has the current platform's asset already
+    // uploaded. GitHub returns the list newest-first, so the first match
+    // is the latest installable beta. Releases whose CI is still in
+    // progress are skipped — they will be picked up on the next check.
     releases
         .into_iter()
-        .find(|r| r.prerelease)
+        .find(|r| r.prerelease && release_has_current_platform_asset(r))
         .map(|r| r.tag_name.trim_start_matches('v').to_string())
 }
 
@@ -234,4 +295,71 @@ pub fn detect_install_method() -> InstallMethod {
 /// and channels automatically.
 pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
     "tokensave upgrade"
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn release(tag: &str, prerelease: bool, asset_names: &[&str]) -> GitHubRelease {
+        GitHubRelease {
+            tag_name: tag.to_string(),
+            prerelease,
+            assets: asset_names
+                .iter()
+                .map(|n| GitHubAsset {
+                    name: (*n).to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn skips_release_with_no_assets() {
+        // A release that was just created — CI hasn't started uploading yet.
+        let r = release("v9.9.9", false, &[]);
+        assert!(!release_has_current_platform_asset(&r));
+    }
+
+    #[test]
+    fn skips_release_missing_current_platform_asset() {
+        // Other platforms uploaded but ours hasn't yet (e.g. the macOS leg
+        // of the matrix is still running). Detection should treat this as
+        // "no upgrade for me" so the user isn't told about a version they
+        // cannot install.
+        let r = release(
+            "v9.9.9",
+            false,
+            &[
+                "tokensave-v9.9.9-some-other-platform.tar.gz",
+                "tokensave-v9.9.9-yet-another-platform.tar.gz",
+            ],
+        );
+        assert!(!release_has_current_platform_asset(&r));
+    }
+
+    #[test]
+    fn accepts_release_with_matching_asset() {
+        let expected = asset_name("9.9.9", false);
+        let r = release("v9.9.9", false, &[&expected]);
+        assert!(release_has_current_platform_asset(&r));
+    }
+
+    #[test]
+    fn accepts_beta_release_with_matching_beta_asset() {
+        let expected = asset_name("9.9.9-beta.1", true);
+        let r = release("v9.9.9-beta.1", true, &[&expected]);
+        assert!(release_has_current_platform_asset(&r));
+    }
+
+    #[test]
+    fn rejects_stable_named_asset_on_beta_release() {
+        // If someone uploads a `tokensave-v...` asset to a prerelease, the
+        // filter should still reject — the naming convention says beta
+        // releases carry `tokensave-beta-v...` assets.
+        let stable_name = asset_name("9.9.9-beta.1", false);
+        let r = release("v9.9.9-beta.1", true, &[&stable_name]);
+        assert!(!release_has_current_platform_asset(&r));
+    }
 }

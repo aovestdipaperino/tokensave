@@ -14,36 +14,12 @@ use crate::errors::{Result, TokenSaveError};
 
 const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
 
-/// Archive naming convention per platform.
-/// Stable: `tokensave-v{version}-{platform}.{ext}`
-/// Beta:   `tokensave-beta-v{version}-{platform}.{ext}`
-fn asset_name(version: &str, is_beta: bool) -> String {
-    let prefix = if is_beta {
-        "tokensave-beta"
-    } else {
-        "tokensave"
-    };
-    let platform = current_platform();
-    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    format!("{prefix}-v{version}-{platform}.{ext}")
-}
-
-/// Returns the platform slug matching the CI release matrix.
-fn current_platform() -> &'static str {
-    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "aarch64-macos"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
-        "x86_64-macos"
-    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        "x86_64-linux"
-    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
-        "aarch64-linux"
-    } else if cfg!(target_os = "windows") {
-        "x86_64-windows"
-    } else {
-        "unknown"
-    }
-}
+// Asset-naming and platform helpers live in `crate::cloud` so the version-
+// detection path can use the same naming convention to filter out releases
+// whose CI hasn't finished uploading the current platform's binary yet.
+use crate::cloud::asset_name;
+#[cfg(test)]
+use crate::cloud::current_platform;
 
 /// The GitHub release tag for a given version.
 fn release_tag(version: &str) -> String {
