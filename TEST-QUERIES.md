@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 44 tokensave MCP tools. Run these in a Claude Code session after `tokensave init` and `tokensave install`.
+Manual test queries for verifying the tokensave MCP tools. Run these in a Claude Code session after `tokensave init` and `tokensave install`.
 
 ### Staleness warnings
 
@@ -680,6 +680,294 @@ Test without a baseline:
 tokensave_session_end()
 ```
 Expected: Returns `{status: "no_baseline", message: "No session baseline found. Call tokensave_session_start first."}`.
+
+---
+
+## tokensave_read
+
+> Read a file with mode-aware compression. Modes: `full`, `lines`, `map`, `signatures`. Cross-session cached.
+
+Test full content:
+```
+tokensave_read(file="src/sync.rs", mode="full")
+```
+Expected: Returns the entire file body, plus `mtime_ns`, `digest`, and `token_count`.
+
+Test line slice:
+```
+tokensave_read(file="src/sync.rs", mode="lines", lines="120-180")
+```
+Expected: Returns only the requested 1-based inclusive range.
+
+Test map (graph-only, no source bytes touched):
+```
+tokensave_read(file="src/sync.rs", mode="map")
+```
+Expected: Flat list of every top-level symbol with `kind`, `name`, `line`, `end_line`, `visibility`.
+
+Test signatures:
+```
+tokensave_read(file="src/sync.rs", mode="signatures")
+```
+Expected: Functions and types with their cached signature strings.
+
+Test cache hit (call the same query twice):
+```
+tokensave_read(file="src/sync.rs", mode="full")  # populates cache
+tokensave_read(file="src/sync.rs", mode="full")  # second call
+```
+Expected: The second call returns `{"unchanged": true, "digest": ..., "mtime_ns": ..., "token_count": ...}` — a small stub instead of the full body.
+
+---
+
+## tokensave_outline
+
+> Flat list of every top-level symbol in a file, with optional kind filter.
+
+Test default (all kinds):
+```
+tokensave_outline(file="src/mcp/tools/handlers/info.rs")
+```
+Expected: Returns `{file, symbol_count, symbols: [{kind, name, line, end_line, visibility}]}` sorted by line.
+
+Test kinds filter:
+```
+tokensave_outline(file="src/mcp/tools/handlers/info.rs", kinds=["function"])
+```
+Expected: Only function-kind entries. Filter is case-insensitive (`["FUNCTION"]` works the same).
+
+Unknown kind returns empty:
+```
+tokensave_outline(file="src/mcp/tools/handlers/info.rs", kinds=["banana"])
+```
+Expected: `symbol_count: 0`.
+
+---
+
+## tokensave_implementations
+
+> Find every type implementing a given trait, or every body of a given method name.
+
+Test trait form:
+```
+tokensave_implementations(trait="LanguageExtractor")
+```
+Expected: For each implementing type, returns the type name, file, line, the trait name, and an array of method bodies (signature + body for each method on the impl).
+
+Test method form:
+```
+tokensave_implementations(method="extensions")
+```
+Expected: Every Function/Method node named `extensions` with full body. Useful for cross-impl comparisons.
+
+Errors:
+```
+tokensave_implementations()                          # no args → error
+tokensave_implementations(trait="X", method="y")     # both args → error (mutually exclusive)
+```
+
+---
+
+## tokensave_unsafe_patterns
+
+> Surface unwrap, expect, panic!, todo!, unimplemented!, and unsafe { } sites.
+
+Test all kinds (default):
+```
+tokensave_unsafe_patterns()
+```
+Expected: Returns `{match_count, by_kind: {...}, matches: [{kind, file, line, snippet, enclosing, in_test}]}`. AST-style word-boundary matching — `.unwrap_or` does NOT match the `unwrap` kind.
+
+Test exclude tests:
+```
+tokensave_unsafe_patterns(exclude_tests=true)
+```
+Expected: Filters out files whose path looks like a test (`tests/`, `_test.rs`, `__tests__/`, etc.).
+
+Test specific kinds:
+```
+tokensave_unsafe_patterns(kinds=["panic", "unsafe_block"])
+```
+Expected: Only panic and unsafe-block matches.
+
+Path scope:
+```
+tokensave_unsafe_patterns(kinds=["unwrap"], path="src/mcp/")
+```
+Expected: Only matches under `src/mcp/`.
+
+---
+
+## tokensave_diagnostics
+
+> Run the project's compile/type checker and return structured errors mapped to graph nodes.
+
+Test workspace (default scope):
+```
+tokensave_diagnostics()
+```
+Expected: For Rust projects, runs `cargo check --message-format=json --target-dir .tokensave/target`. Returns `{scope, diagnostic_count, error_count, warning_count, diagnostics: [{file, line_start, line_end, level, code, message, driver, enclosing}]}`.
+
+For TypeScript projects (tsconfig.json present), runs `tsc --noEmit --pretty false`. For Python projects (pyproject.toml or pyrightconfig.json present), runs `pyright --outputjson`.
+
+Mixed-language projects run every detected driver and merge results.
+
+Test package scope (Rust only):
+```
+tokensave_diagnostics(scope="package", name="tokensave")
+```
+Expected: `cargo check -p tokensave` rather than the full workspace.
+
+Test file scope:
+```
+tokensave_diagnostics(scope="file", path="src/lib.rs")
+```
+Expected: Workspace check + post-filter to the requested file.
+
+Errors:
+```
+tokensave_diagnostics(scope="package")               # missing name → error
+tokensave_diagnostics(scope="file")                  # missing path → error
+tokensave_diagnostics(scope="lunch")                 # unknown scope → error
+```
+
+If a tool isn't installed (tsc, pyright), the driver returns no diagnostics rather than failing.
+
+---
+
+## tokensave_config
+
+> Query TOML or JSON config files by dotted key path.
+
+Test single file:
+```
+tokensave_config(path="Cargo.toml", key="package.version")
+```
+Expected: Returns `{match_count: 1, matches: [{file, key, value, line}]}`. The line number is heuristic — finds the row where the final key segment is defined.
+
+Test JSON:
+```
+tokensave_config(path="tsconfig.json", key="compilerOptions.target")
+```
+Expected: Same shape; the `value` field carries the parsed JSON value.
+
+Test glob across the workspace:
+```
+tokensave_config(glob="**/Cargo.toml", key="package.name")
+```
+Expected: One match per matching file.
+
+Test missing key:
+```
+tokensave_config(path="Cargo.toml", key="package.no_such_field")
+```
+Expected: `match_count: 0`, the entry has `found: false`.
+
+Errors:
+```
+tokensave_config(key="x")                            # missing path/glob → error
+tokensave_config(path="a", glob="b", key="x")        # both → error
+tokensave_config(path="a")                           # missing key → error
+```
+
+This tool is DB-free; it works on uninitialized projects.
+
+---
+
+## tokensave_signature_search
+
+> Search functions and methods by signature shape: return type, params, async.
+
+Test by return type:
+```
+tokensave_signature_search(returns="Result<")
+```
+Expected: Every function whose signature contains `Result<` after `->`. Returns `{match_count, matches: [{name, qualified_name, kind, file, line, is_async, signature}]}`.
+
+Test by params:
+```
+tokensave_signature_search(params=["&mut self"])
+```
+Expected: Every method whose parameter list contains `&mut self`. Multiple params are AND-composed.
+
+Test async only:
+```
+tokensave_signature_search(async=true)
+```
+Expected: Every async function/method. Set `async=false` to exclude them.
+
+Combined filters:
+```
+tokensave_signature_search(params=["&mut self"], async=true, returns="i32")
+```
+Expected: Only methods that match all three.
+
+Path scope:
+```
+tokensave_signature_search(returns="Result<", path="src/mcp/")
+```
+Expected: Only symbols defined under `src/mcp/`.
+
+Errors:
+```
+tokensave_signature_search()                         # no filters → error
+```
+
+---
+
+## tokensave_constructors
+
+> Find every literal-instantiation site of a struct, plus missing fields per site.
+
+Test:
+```
+tokensave_constructors(struct="GraphStats")
+```
+Expected: Returns `{struct, expected_fields, match_count, sites: [{file, line, fields, missing_fields}]}`. Each site lists the fields actually present in that literal; `missing_fields` lists fields the struct has but this literal doesn't.
+
+After adding a required field, this surfaces every site that needs updating before cargo even compiles.
+
+Test unknown struct:
+```
+tokensave_constructors(struct="DoesNotExist")
+```
+Expected: Returns "No struct, class, or case-class named ...".
+
+Pattern-matching sites (`match Foo { ... }`, `if let Foo { ... }`) are filtered out, as are definition sites (`struct Foo { ... }`, `impl Foo { ... }`, `-> Foo {`). String- and char-literal occurrences (`"Foo { x: 1 }"`) are also skipped.
+
+Errors:
+```
+tokensave_constructors()                             # missing struct → error
+```
+
+---
+
+## tokensave_field_sites
+
+> Partition every reference to a field into reads and writes.
+
+Test default:
+```
+tokensave_field_sites(field="last_sync_at")
+```
+Expected: Returns `{field, qualifier, qualifier_applied, write_count, read_count, write_sites: [...], read_sites: [...]}`. Writes include simple assignments (`x.field = ...`), compound assignments (`x.field += ...`), and `&mut x.field` borrows. Everything else is a read; `==` and `=>` do NOT count as writes.
+
+Test writes only:
+```
+tokensave_field_sites(field="last_sync_at", writes_only=true)
+```
+Expected: Returns only `write_sites`; `read_sites` is omitted entirely.
+
+Test qualified form:
+```
+tokensave_field_sites(field="GraphStats::last_sync_at")
+```
+Expected: The `qualifier` field carries `"GraphStats"` but `qualifier_applied` is `false` — the scan uses the bare field name because the tool has no type information to disambiguate `.foo` to a specific struct.
+
+Errors:
+```
+tokensave_field_sites()                              # missing field → error
+```
 
 ---
 

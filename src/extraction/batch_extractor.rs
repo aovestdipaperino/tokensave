@@ -184,11 +184,7 @@ impl BatchExtractor {
     ///
     /// In Batch, labels (:Name) serve as subroutine entry points.
     /// The body extends from the label to the next label or end of file.
-    fn visit_label(
-        state: &mut ExtractionState,
-        children: &[TsNode<'_>],
-        label_index: usize,
-    ) {
+    fn visit_label(state: &mut ExtractionState, children: &[TsNode<'_>], label_index: usize) {
         let Some(&label_node) = children.get(label_index) else {
             return;
         };
