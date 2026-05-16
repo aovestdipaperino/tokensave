@@ -953,7 +953,7 @@ fn build_type_tree<'a>(
 /// (0-based, inclusive) from `source`. Node line fields are stored as the
 /// raw tree-sitter row index, so the caller passes them through unchanged.
 /// Returns the empty string if the range is out of bounds.
-fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
+pub(super) fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let start = start_line as usize;
     let end = (end_line as usize).saturating_add(1).min(lines.len());
@@ -1226,4 +1226,518 @@ pub(super) async fn handle_todos(
         }),
         touched_files: touched,
     })
+}
+
+/// Handles `tokensave_read` — mode-aware file read with cross-session cache.
+pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_cache::{self, GLOBAL_SESSION};
+    use crate::context::read_modes::{
+        self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
+    };
+
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+
+    let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
+    let mode = ReadMode::parse(mode_str).ok_or_else(|| TokenSaveError::Config {
+        message: format!("unknown mode '{mode_str}'; expected one of full, lines, map, signatures"),
+    })?;
+
+    let line_range = if mode == ReadMode::Lines {
+        let raw =
+            args.get("lines")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "mode='lines' requires the 'lines' argument (e.g. '120-180')"
+                        .to_string(),
+                })?;
+        Some(LineRange::parse(raw).ok_or_else(|| TokenSaveError::Config {
+            message: format!("invalid 'lines' value '{raw}'; expected 'A' or 'A-B'"),
+        })?)
+    } else {
+        None
+    };
+
+    let project_root = cg.project_root().to_path_buf();
+    let project_id = project_root.to_string_lossy().to_string();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    let display_file = if abs_path.starts_with(&project_root) {
+        abs_path
+            .strip_prefix(&project_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(rel_path.clone())
+    } else {
+        rel_path.clone()
+    };
+
+    let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
+        message: format!("cannot read file metadata for '{file}': {e}"),
+    })?;
+
+    let last_sync_at = match mode {
+        ReadMode::Map | ReadMode::Signatures => {
+            cg.db().get_metadata("last_sync_at").await.unwrap_or(None)
+        }
+        _ => None,
+    };
+    let hash_input = json!({
+        "lines": args.get("lines").cloned(),
+        "last_sync_at": last_sync_at,
+    });
+    let args_hash = read_cache::args_hash(&hash_input);
+
+    let conn = cg.db().conn();
+
+    if let Some(cached) = read_cache::get(
+        conn,
+        &project_id,
+        GLOBAL_SESSION,
+        &display_file,
+        mode.as_str(),
+        &args_hash,
+        mtime_ns,
+    )
+    .await?
+    {
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": cached.mtime_ns,
+            "digest": cached.digest,
+            "token_count": cached.token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
+    }
+
+    let body_text = match mode {
+        ReadMode::Full => {
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_full(&source)
+        }
+        ReadMode::Lines => {
+            let range = line_range.ok_or_else(|| TokenSaveError::Config {
+                message: "internal error: lines mode reached without a parsed range".to_string(),
+            })?;
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_lines(&source, range)
+        }
+        ReadMode::Map => {
+            let v = render_map(cg.db(), &display_file, None).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+        ReadMode::Signatures => {
+            let v = render_signatures(cg.db(), &display_file).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+    };
+
+    let token_count = read_modes::estimate_tokens(&body_text);
+    let digest = read_cache::digest_bytes(body_text.as_bytes());
+
+    read_cache::put(
+        conn,
+        &project_id,
+        GLOBAL_SESSION,
+        &display_file,
+        mtime_ns,
+        mode.as_str(),
+        &args_hash,
+        &digest,
+        body_text.as_bytes(),
+        token_count,
+    )
+    .await?;
+
+    let payload = json!({
+        "file": display_file,
+        "mode": mode.as_str(),
+        "mtime_ns": mtime_ns,
+        "digest": digest,
+        "token_count": token_count,
+        "body": body_text,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
+/// Handles `tokensave_outline` — flat symbol map for a file with optional
+/// `kinds` filter.
+pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_modes::render_map;
+
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+
+    let kinds: Option<Vec<String>> = args.get("kinds").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    });
+
+    let project_root = cg.project_root();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    let display_file = if abs_path.starts_with(project_root) {
+        abs_path
+            .strip_prefix(project_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(rel_path.clone())
+    } else {
+        rel_path.clone()
+    };
+
+    let kinds_slice: Option<&[String]> = kinds.as_deref();
+    let value = render_map(cg.db(), &display_file, kinds_slice).await?;
+    let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
+/// Handles `tokensave_config` — structured TOML / JSON queries by dotted
+/// key path.
+pub(super) async fn handle_config(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: key".to_string(),
+        })?;
+    let path = args.get("path").and_then(|v| v.as_str());
+    let glob_pat = args.get("glob").and_then(|v| v.as_str());
+
+    if path.is_none() && glob_pat.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config requires either 'path' or 'glob'".to_string(),
+        });
+    }
+    if path.is_some() && glob_pat.is_some() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config: 'path' and 'glob' are mutually exclusive".to_string(),
+        });
+    }
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut files: Vec<String> = Vec::new();
+    if let Some(p) = path {
+        files.push(p.to_string());
+    } else if let Some(pat) = glob_pat {
+        let combined = project_root.join(pat);
+        let walker =
+            glob::glob(&combined.to_string_lossy()).map_err(|e| TokenSaveError::Config {
+                message: format!("invalid glob '{pat}': {e}"),
+            })?;
+        for entry in walker.flatten() {
+            if let Ok(rel) = entry.strip_prefix(&project_root) {
+                files.push(rel.to_string_lossy().to_string());
+            }
+        }
+        files.sort();
+    }
+
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for rel in &files {
+        let abs = project_root.join(rel);
+        let Ok(contents) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let parsed = match config_format(rel) {
+            Some(ConfigFormat::Toml) => match toml::from_str::<toml::Value>(&contents) {
+                Ok(v) => toml_to_json(&v),
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("toml parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            Some(ConfigFormat::Json) => match serde_json::from_str::<Value>(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("json parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            None => continue,
+        };
+
+        let value = lookup_dotted(&parsed, key);
+        let line = match &value {
+            Some(_) => find_key_line(&contents, key),
+            None => None,
+        };
+
+        if !touched.contains(rel) {
+            touched.push(rel.clone());
+        }
+
+        matches.push(match value {
+            Some(v) => json!({
+                "file": rel,
+                "key": key,
+                "value": v,
+                "line": line,
+            }),
+            None => json!({
+                "file": rel,
+                "key": key,
+                "value": Value::Null,
+                "found": false,
+            }),
+        });
+    }
+
+    let payload = json!({
+        "match_count": matches.iter().filter(|m| m.get("found") != Some(&Value::Bool(false))).count(),
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConfigFormat {
+    Toml,
+    Json,
+}
+
+fn config_format(path: &str) -> Option<ConfigFormat> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".toml") {
+        Some(ConfigFormat::Toml)
+    } else if lower.ends_with(".json") {
+        Some(ConfigFormat::Json)
+    } else {
+        None
+    }
+}
+
+fn lookup_dotted(value: &Value, key: &str) -> Option<Value> {
+    let mut cursor = value.clone();
+    for segment in key.split('.') {
+        cursor = match cursor {
+            Value::Object(map) => map.get(segment).cloned()?,
+            Value::Array(items) => {
+                let idx: usize = segment.parse().ok()?;
+                items.get(idx).cloned()?
+            }
+            _ => return None,
+        };
+    }
+    Some(cursor)
+}
+
+fn toml_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::Number((*i).into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(items) => Value::Array(items.iter().map(toml_to_json).collect()),
+        toml::Value::Table(t) => {
+            let mut map = serde_json::Map::with_capacity(t.len());
+            for (k, child) in t {
+                map.insert(k.clone(), toml_to_json(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
+
+fn find_key_line(contents: &str, key: &str) -> Option<u32> {
+    let last = key.rsplit('.').next()?;
+    let toml_form_eq = format!("{last} =");
+    let toml_form_quoted = format!("\"{last}\" =");
+    let json_form = format!("\"{last}\":");
+    for (idx, line) in contents.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(&toml_form_eq)
+            || trimmed.starts_with(&toml_form_quoted)
+            || trimmed.starts_with(&json_form)
+        {
+            return Some((idx as u32) + 1);
+        }
+    }
+    None
+}
+
+/// Handles `tokensave_signature_search` — substring search across the
+/// cached `signature` column on every Function/Method node.
+pub(super) async fn handle_signature_search(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let returns = args.get("returns").and_then(|v| v.as_str());
+    let params: Vec<String> = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let want_async = args.get("async").and_then(serde_json::Value::as_bool);
+    let path_filter = args.get("path").and_then(|v| v.as_str()).or(scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.clamp(1, 500) as usize);
+
+    if returns.is_none() && params.is_empty() && want_async.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_signature_search requires at least one of returns / params / async"
+                .to_string(),
+        });
+    }
+
+    let function_nodes = cg.db().get_nodes_by_kind(NodeKind::Function).await?;
+    let method_nodes = cg.db().get_nodes_by_kind(NodeKind::Method).await?;
+
+    let mut entries: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for node in function_nodes.iter().chain(method_nodes.iter()) {
+        if let Some(prefix) = path_filter {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !node.file_path.starts_with(&with_slash) && node.file_path != prefix {
+                continue;
+            }
+        }
+
+        if let Some(want) = want_async {
+            if node.is_async != want {
+                continue;
+            }
+        }
+
+        let Some(sig) = node.signature.as_deref() else {
+            continue;
+        };
+
+        if let Some(ret_pat) = returns {
+            if !returns_substring(sig).contains(ret_pat) {
+                continue;
+            }
+        }
+
+        if !params.is_empty() {
+            let param_region = params_substring(sig);
+            if !params.iter().all(|p| param_region.contains(p.as_str())) {
+                continue;
+            }
+        }
+
+        if !touched.contains(&node.file_path) {
+            touched.push(node.file_path.clone());
+        }
+        entries.push(json!({
+            "name": node.name,
+            "qualified_name": node.qualified_name,
+            "kind": node.kind.as_str(),
+            "file": node.file_path,
+            "line": node.start_line,
+            "is_async": node.is_async,
+            "signature": sig,
+        }));
+        if entries.len() >= limit {
+            break;
+        }
+    }
+
+    let payload = json!({
+        "match_count": entries.len(),
+        "matches": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+fn returns_substring(signature: &str) -> &str {
+    match signature.find("->") {
+        Some(pos) => signature[pos + 2..].trim_start(),
+        None => signature,
+    }
+}
+
+fn params_substring(signature: &str) -> &str {
+    let bytes = signature.as_bytes();
+    let Some(open) = signature.find('(') else {
+        return signature;
+    };
+    let mut depth = 0i32;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &signature[open + 1..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    signature
 }

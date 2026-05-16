@@ -1277,3 +1277,934 @@ pub(super) async fn handle_god_class(
         touched_files,
     })
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_unsafe_patterns
+// ---------------------------------------------------------------------------
+
+const UNSAFE_KINDS: &[&str] = &[
+    "unwrap",
+    "expect",
+    "panic",
+    "todo",
+    "unimplemented",
+    "unsafe_block",
+];
+
+fn line_matches_unsafe_kind(line: &str, kind: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with("///") {
+        return false;
+    }
+    match kind {
+        "unwrap" => contains_method_call(line, "unwrap", true),
+        "expect" => contains_method_call(line, "expect", false),
+        "panic" => line.contains("panic!("),
+        "todo" => line.contains("todo!("),
+        "unimplemented" => line.contains("unimplemented!(") || line.contains("unimplemented!()"),
+        "unsafe_block" => contains_unsafe_block_start(line),
+        _ => false,
+    }
+}
+
+fn contains_method_call(line: &str, method: &str, empty_parens: bool) -> bool {
+    let needle = format!(".{method}");
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = line[start..].find(&needle) {
+        let abs = start + pos;
+        let after = abs + needle.len();
+        let next = bytes.get(after).copied();
+        let is_word_boundary = !matches!(next, Some(c) if c.is_ascii_alphanumeric() || c == b'_');
+        if is_word_boundary && next == Some(b'(') {
+            if empty_parens {
+                if line[after + 1..].trim_start().starts_with(')') {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+        start = abs + needle.len();
+    }
+    false
+}
+
+fn contains_unsafe_block_start(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    while let Some(pos) = line[start..].find("unsafe") {
+        let abs = start + pos;
+        let prev_ok =
+            abs == 0 || !matches!(bytes[abs - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+        let after = abs + "unsafe".len();
+        let next = bytes.get(after).copied();
+        let next_ok = matches!(next, Some(b' ') | Some(b'\t') | Some(b'{'));
+        if prev_ok && next_ok {
+            let rest = line[after..].trim_start();
+            if rest.starts_with('{')
+                || rest.starts_with("fn ")
+                || rest.starts_with("impl ")
+                || rest.starts_with("trait ")
+            {
+                return true;
+            }
+        }
+        start = abs + "unsafe".len();
+    }
+    false
+}
+
+fn path_looks_like_test(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.ends_with("_test.rs")
+        || path.ends_with("_tests.rs")
+        || path.ends_with("_test.go")
+        || path.contains("/__tests__/")
+        || path.ends_with(".test.ts")
+        || path.ends_with(".test.tsx")
+        || path.ends_with(".test.js")
+        || path.ends_with("_test.py")
+        || path.ends_with("Test.java")
+}
+
+pub(super) async fn handle_unsafe_patterns(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| UNSAFE_KINDS.iter().map(|s| (*s).to_string()).collect());
+
+    let path = effective_path(&args, scope_prefix);
+    let exclude_tests = args
+        .get("exclude_tests")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.min(2000) as usize);
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut matches: Vec<Value> = Vec::new();
+    let mut by_kind: HashMap<String, u64> = HashMap::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = path {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let in_test = path_looks_like_test(&file.path);
+        if exclude_tests && in_test {
+            continue;
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = (idx as u32) + 1;
+            for kind in &kinds {
+                if line_matches_unsafe_kind(line, kind) {
+                    let enclosing = nodes
+                        .iter()
+                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                        .map(|n| n.qualified_name.clone());
+                    *by_kind.entry(kind.clone()).or_insert(0) += 1;
+                    matches.push(json!({
+                        "kind": kind,
+                        "file": file.path,
+                        "line": line_no,
+                        "snippet": line.trim(),
+                        "enclosing": enclosing,
+                        "in_test": in_test,
+                    }));
+                    if !touched.contains(&file.path) {
+                        touched.push(file.path.clone());
+                    }
+                    if matches.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let counts = serde_json::to_value(&by_kind).unwrap_or(json!({}));
+    let payload = json!({
+        "match_count": matches.len(),
+        "by_kind": counts,
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_diagnostics
+// ---------------------------------------------------------------------------
+
+pub(super) async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::diagnostics::{run_all, Scope};
+
+    let scope_str = args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("workspace");
+
+    let scope = match scope_str {
+        "workspace" => Scope::Workspace,
+        "package" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "scope='package' requires a 'name' argument".to_string(),
+                })?
+                .to_string();
+            Scope::Package { name }
+        }
+        "file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: "scope='file' requires a 'path' argument".to_string(),
+                })?
+                .to_string();
+            Scope::File { path }
+        }
+        other => {
+            return Err(TokenSaveError::Config {
+                message: format!("unknown scope '{other}'; expected workspace, package, or file"),
+            });
+        }
+    };
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut diagnostics = run_all(&project_root, &scope).await?;
+
+    if let Scope::File { path } = &scope {
+        diagnostics.retain(|d| d.file == *path);
+    }
+
+    let mut entries: Vec<Value> = Vec::with_capacity(diagnostics.len());
+    let mut touched: Vec<String> = Vec::new();
+    let mut error_count = 0u64;
+    let mut warning_count = 0u64;
+    let mut nodes_by_file: HashMap<String, Vec<crate::types::Node>> = HashMap::new();
+
+    for diag in &diagnostics {
+        match diag.level.as_str() {
+            "error" => error_count += 1,
+            "warning" => warning_count += 1,
+            _ => {}
+        }
+        let nodes = match nodes_by_file.get(&diag.file) {
+            Some(n) => n,
+            None => {
+                let fetched = cg.get_nodes_by_file(&diag.file).await.unwrap_or_default();
+                nodes_by_file.entry(diag.file.clone()).or_insert(fetched)
+            }
+        };
+        let enclosing = nodes
+            .iter()
+            .filter(|n| n.start_line <= diag.line_start && diag.line_start <= n.end_line)
+            .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+            .map(|n| n.qualified_name.clone());
+        if !touched.contains(&diag.file) {
+            touched.push(diag.file.clone());
+        }
+        entries.push(json!({
+            "file": diag.file,
+            "line_start": diag.line_start,
+            "line_end": diag.line_end,
+            "level": diag.level,
+            "code": diag.code,
+            "message": diag.message,
+            "driver": diag.driver,
+            "enclosing": enclosing,
+        }));
+    }
+
+    let payload = json!({
+        "scope": scope_str,
+        "diagnostic_count": entries.len(),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "diagnostics": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_constructors
+// ---------------------------------------------------------------------------
+
+pub(super) async fn handle_constructors(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    use crate::types::EdgeKind;
+
+    let struct_name =
+        args.get("struct")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "tokensave_constructors requires a 'struct' argument".to_string(),
+            })?;
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(100, |v| v.clamp(1, 1000) as usize);
+
+    let candidates = cg
+        .db()
+        .search_nodes_by_exact_name(&[struct_name.to_string()], 50)
+        .await?;
+    let struct_nodes: Vec<&crate::types::Node> = candidates
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Struct | NodeKind::Class | NodeKind::CaseClass
+            )
+        })
+        .collect();
+
+    if struct_nodes.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("No struct, class, or case-class named '{struct_name}' found.") }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let mut expected_fields: HashSet<String> = HashSet::new();
+    for sn in &struct_nodes {
+        let outgoing = cg
+            .db()
+            .get_outgoing_edges(&sn.id, &[EdgeKind::Contains])
+            .await?;
+        for edge in outgoing {
+            if let Some(child) = cg.db().get_node_by_id(&edge.target).await? {
+                if matches!(
+                    child.kind,
+                    NodeKind::Field | NodeKind::ValField | NodeKind::VarField
+                ) {
+                    expected_fields.insert(child.name);
+                }
+            }
+        }
+    }
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut sites: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = scope_prefix {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs) else {
+            continue;
+        };
+
+        for site in find_struct_literals(&source, struct_name) {
+            let field_list = parse_literal_fields(&source, site.brace_open_byte);
+            let missing: Vec<String> = if expected_fields.is_empty() {
+                Vec::new()
+            } else {
+                expected_fields
+                    .iter()
+                    .filter(|f| !field_list.contains(f))
+                    .cloned()
+                    .collect()
+            };
+            if !touched.contains(&file.path) {
+                touched.push(file.path.clone());
+            }
+            sites.push(json!({
+                "file": file.path,
+                "line": site.line,
+                "fields": field_list,
+                "missing_fields": missing,
+            }));
+            if sites.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+
+    let payload = json!({
+        "struct": struct_name,
+        "expected_fields": expected_fields.iter().cloned().collect::<Vec<_>>(),
+        "match_count": sites.len(),
+        "sites": sites,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiteralSite {
+    line: u32,
+    brace_open_byte: usize,
+}
+
+fn find_struct_literals(source: &str, struct_name: &str) -> Vec<LiteralSite> {
+    let bytes = source.as_bytes();
+    let mut pattern_stack: Vec<i32> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut string_delim: Option<u8> = None;
+    let mut prev_was_backslash = false;
+    let mut out: Vec<LiteralSite> = Vec::new();
+    let mut byte = 0usize;
+    let n = bytes.len();
+    while byte < n {
+        let b = bytes[byte];
+
+        if let Some(delim) = string_delim {
+            if !prev_was_backslash && b == delim {
+                string_delim = None;
+                prev_was_backslash = false;
+                byte += 1;
+                continue;
+            }
+            prev_was_backslash = !prev_was_backslash && b == b'\\';
+            byte += 1;
+            continue;
+        }
+        if b == b'"' {
+            string_delim = Some(b'"');
+            prev_was_backslash = false;
+            byte += 1;
+            continue;
+        }
+        if b == b'\'' {
+            let after = bytes.get(byte + 1).copied();
+            if matches!(after, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')) {
+                let mut probe = byte + 1;
+                while let Some(c) = bytes.get(probe) {
+                    if matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
+                        probe += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if bytes.get(probe).copied() != Some(b'\'') {
+                    byte += 1;
+                    continue;
+                }
+            }
+            string_delim = Some(b'\'');
+            prev_was_backslash = false;
+            byte += 1;
+            continue;
+        }
+
+        if matches_word(bytes, byte, b"match") {
+            pattern_stack.push(depth);
+            byte += "match".len();
+            continue;
+        }
+        if matches_word(bytes, byte, b"if") && lookahead_let(bytes, byte + 2) {
+            pattern_stack.push(depth);
+            byte += "if".len();
+            continue;
+        }
+        if matches_word(bytes, byte, b"while") && lookahead_let(bytes, byte + 5) {
+            pattern_stack.push(depth);
+            byte += "while".len();
+            continue;
+        }
+
+        if b == b'{' {
+            depth += 1;
+            byte += 1;
+            continue;
+        }
+        if b == b'}' {
+            depth -= 1;
+            if let Some(&entered_at) = pattern_stack.last() {
+                if depth == entered_at {
+                    pattern_stack.pop();
+                }
+            }
+            byte += 1;
+            continue;
+        }
+
+        if matches_word(bytes, byte, struct_name.as_bytes()) {
+            let start = byte;
+            let end = start + struct_name.len();
+
+            let mut probe = end;
+            while let Some(c) = bytes.get(probe) {
+                if c.is_ascii_whitespace() {
+                    probe += 1;
+                } else {
+                    break;
+                }
+            }
+            if bytes.get(probe).copied() != Some(b'{') {
+                byte = end;
+                continue;
+            }
+            if has_disqualifying_prefix(source, start) {
+                byte = end;
+                continue;
+            }
+            if !pattern_stack.is_empty() {
+                byte = end;
+                continue;
+            }
+            let line = source[..start].bytes().filter(|c| *c == b'\n').count() as u32 + 1;
+            out.push(LiteralSite {
+                line,
+                brace_open_byte: probe,
+            });
+            byte = probe + 1;
+            continue;
+        }
+
+        byte += 1;
+    }
+    out
+}
+
+fn lookahead_let(bytes: &[u8], at: usize) -> bool {
+    let mut probe = at;
+    while let Some(b) = bytes.get(probe) {
+        if b.is_ascii_whitespace() {
+            probe += 1;
+        } else {
+            break;
+        }
+    }
+    matches_word(bytes, probe, b"let")
+}
+
+fn matches_word(bytes: &[u8], at: usize, needle: &[u8]) -> bool {
+    if at + needle.len() > bytes.len() {
+        return false;
+    }
+    if &bytes[at..at + needle.len()] != needle {
+        return false;
+    }
+    let left_ok = at == 0
+        || !matches!(
+            bytes[at - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+        );
+    let right_ok = match bytes.get(at + needle.len()) {
+        None => true,
+        Some(b) => !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'),
+    };
+    left_ok && right_ok
+}
+
+fn has_disqualifying_prefix(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut probe = idx;
+    while probe > 0 && bytes[probe - 1].is_ascii_whitespace() {
+        probe -= 1;
+    }
+    if probe == 0 {
+        return false;
+    }
+    if probe >= 2 && &bytes[probe - 2..probe] == b"->" {
+        return true;
+    }
+    let id_end = probe;
+    let mut id_start = probe;
+    while id_start > 0
+        && matches!(
+            bytes[id_start - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'
+        )
+    {
+        id_start -= 1;
+    }
+    if id_start == id_end {
+        return false;
+    }
+    let token = &source[id_start..id_end];
+    matches!(
+        token,
+        "struct" | "enum" | "union" | "impl" | "trait" | "type"
+    )
+}
+
+fn parse_literal_fields(source: &str, open_byte: usize) -> Vec<String> {
+    let bytes = source.as_bytes();
+    if bytes.get(open_byte).copied() != Some(b'{') {
+        return Vec::new();
+    }
+    let mut depth = 0i32;
+    let mut close_byte = None;
+    for (i, b) in bytes.iter().enumerate().skip(open_byte) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_byte = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close_byte else {
+        return Vec::new();
+    };
+    let body = &source[open_byte + 1..close];
+
+    let mut fields: Vec<String> = Vec::new();
+    let mut depth_brace = 0i32;
+    let mut depth_paren = 0i32;
+    let mut current = String::new();
+    for c in body.chars() {
+        match c {
+            '{' | '[' => depth_brace += 1,
+            '}' | ']' => depth_brace -= 1,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            ',' if depth_brace == 0 && depth_paren == 0 => {
+                if let Some(name) = field_name_from_chunk(&current) {
+                    fields.push(name);
+                }
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    if let Some(name) = field_name_from_chunk(&current) {
+        fields.push(name);
+    }
+    fields
+}
+
+fn field_name_from_chunk(chunk: &str) -> Option<String> {
+    let trimmed = chunk.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("..") || trimmed.starts_with("//") {
+        return None;
+    }
+    let name_end = trimmed
+        .find(|c: char| c == ':' || c == ',' || c.is_whitespace())
+        .unwrap_or(trimmed.len());
+    let name = &trimmed[..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_field_sites
+// ---------------------------------------------------------------------------
+
+pub(super) async fn handle_field_sites(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let raw = args
+        .get("field")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "tokensave_field_sites requires a 'field' argument".to_string(),
+        })?;
+    let writes_only = args
+        .get("writes_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.clamp(1, 2000) as usize);
+
+    let (qualifier, field_name) = match raw.rsplit_once("::") {
+        Some((q, f)) => (Some(q.to_string()), f.to_string()),
+        None => (None, raw.to_string()),
+    };
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut writes: Vec<Value> = Vec::new();
+    let mut reads: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = scope_prefix {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs) else {
+            continue;
+        };
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for site in find_field_references(&source, &field_name) {
+            let line_text = line_at(&source, site.byte).unwrap_or("");
+            let enclosing = nodes
+                .iter()
+                .filter(|n| n.start_line <= site.line && site.line <= n.end_line)
+                .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                .map(|n| n.qualified_name.clone());
+            let entry = json!({
+                "file": file.path,
+                "line": site.line,
+                "enclosing": enclosing,
+                "snippet": line_text.trim(),
+            });
+            if !touched.contains(&file.path) {
+                touched.push(file.path.clone());
+            }
+            match site.kind {
+                FieldRefKind::Write => {
+                    writes.push(entry);
+                    if writes.len() >= limit && (writes_only || reads.len() >= limit) {
+                        break 'outer;
+                    }
+                }
+                FieldRefKind::Read => {
+                    if writes_only {
+                        continue;
+                    }
+                    reads.push(entry);
+                    if reads.len() >= limit && writes.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let qualifier_applied = false;
+    let payload = if writes_only {
+        json!({
+            "field": raw,
+            "qualifier": qualifier,
+            "qualifier_applied": qualifier_applied,
+            "write_count": writes.len(),
+            "write_sites": writes,
+        })
+    } else {
+        json!({
+            "field": raw,
+            "qualifier": qualifier,
+            "qualifier_applied": qualifier_applied,
+            "write_count": writes.len(),
+            "read_count": reads.len(),
+            "write_sites": writes,
+            "read_sites": reads,
+        })
+    };
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FieldRefKind {
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FieldSite {
+    byte: usize,
+    line: u32,
+    kind: FieldRefKind,
+}
+
+fn find_field_references(source: &str, field: &str) -> Vec<FieldSite> {
+    let bytes = source.as_bytes();
+    let needle = format!(".{field}");
+    let mut out: Vec<FieldSite> = Vec::new();
+    let mut byte = 0usize;
+    while let Some(rel) = source[byte..].find(&needle) {
+        let dot = byte + rel;
+        let name_start = dot + 1;
+        let name_end = name_start + field.len();
+        let right_ok = match bytes.get(name_end) {
+            None => true,
+            Some(b) => !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_'),
+        };
+        if !right_ok {
+            byte = name_end;
+            continue;
+        }
+        if line_is_comment(source, dot) {
+            byte = name_end;
+            continue;
+        }
+
+        let line = source[..dot].bytes().filter(|c| *c == b'\n').count() as u32 + 1;
+        let kind = classify_field_reference(source, name_end);
+        out.push(FieldSite {
+            byte: name_end,
+            line,
+            kind,
+        });
+        byte = name_end;
+    }
+    out
+}
+
+fn classify_field_reference(source: &str, after_name: usize) -> FieldRefKind {
+    let bytes = source.as_bytes();
+    let mut probe = after_name;
+    while let Some(b) = bytes.get(probe) {
+        if *b == b' ' || *b == b'\t' {
+            probe += 1;
+        } else {
+            break;
+        }
+    }
+
+    if let Some(b'\n') = bytes.get(probe).copied() {
+        probe += 1;
+        while let Some(b) = bytes.get(probe) {
+            if *b == b' ' || *b == b'\t' {
+                probe += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let next = bytes.get(probe).copied();
+    let next2 = bytes.get(probe + 1).copied();
+    match (next, next2) {
+        (Some(b'='), Some(b'=' | b'>')) => FieldRefKind::Read,
+        (Some(b'='), _) => FieldRefKind::Write,
+        (Some(b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^'), Some(b'=')) => {
+            FieldRefKind::Write
+        }
+        (Some(b'<'), Some(b'<')) | (Some(b'>'), Some(b'>')) => {
+            if bytes.get(probe + 2).copied() == Some(b'=') {
+                FieldRefKind::Write
+            } else {
+                FieldRefKind::Read
+            }
+        }
+        _ => {
+            if has_mut_borrow_prefix(source, after_name.saturating_sub(1)) {
+                FieldRefKind::Write
+            } else {
+                FieldRefKind::Read
+            }
+        }
+    }
+}
+
+fn has_mut_borrow_prefix(source: &str, idx: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut probe = idx;
+    while probe > 0
+        && matches!(
+            bytes[probe],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'.' | b':' | b'?'
+        )
+    {
+        probe -= 1;
+    }
+    while probe > 0 && bytes[probe].is_ascii_whitespace() {
+        probe -= 1;
+    }
+    if probe < 4 {
+        return false;
+    }
+    let window = &source[probe.saturating_sub(4)..probe + 1];
+    window.ends_with("&mut")
+}
+
+fn line_at(source: &str, byte: usize) -> Option<&str> {
+    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = source[byte..]
+        .find('\n')
+        .map(|i| byte + i)
+        .unwrap_or(source.len());
+    source.get(line_start..line_end)
+}
+
+fn line_is_comment(source: &str, byte: usize) -> bool {
+    let line_start = source[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &source[line_start..];
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//")
+}

@@ -145,6 +145,15 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
+        def_read(),
+        def_outline(),
+        def_implementations(),
+        def_unsafe_patterns(),
+        def_diagnostics(),
+        def_config(),
+        def_signature_search(),
+        def_constructors(),
+        def_field_sites(),
     ];
     if !ast_grep_available() {
         definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
@@ -1645,6 +1654,301 @@ fn def_session_recall() -> ToolDefinition {
                     "description": "If true, also return the top-touched code areas (default: false)."
                 }
             }
+        }),
+    )
+}
+
+fn def_field_sites() -> ToolDefinition {
+    def(
+        "tokensave_field_sites",
+        "Field Read/Write Sites",
+        "Find every read and write site of a named field across the codebase. \
+         Returns two arrays: write_sites (assignments to the field) and \
+         read_sites (everything else). Each entry includes file, line, \
+         enclosing symbol, and a source snippet. Useful when renaming, \
+         removing, or adding an invariant to a field — the write-site list \
+         is the exact blast radius. Pattern matches `.<field>` references; \
+         field-by-name is shorthand for any struct's same-named field, while \
+         `Struct::field` form narrows to a specific declaration.",
+        json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs; qualified form ('GraphStats::last_sync_at') narrows to one struct's field."
+                },
+                "writes_only": {
+                    "type": "boolean",
+                    "description": "When true, returns only write_sites and omits reads. Default false."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum sites per kind (default: 200, max: 2000)."
+                }
+            },
+            "required": ["field"]
+        }),
+    )
+}
+
+fn def_constructors() -> ToolDefinition {
+    def(
+        "tokensave_constructors",
+        "Struct Literal Sites",
+        "Find every place a given struct is instantiated as a literal \
+         ({ field: value, ... }). Each result includes the file, line, the \
+         field list present in that literal, and the set of fields missing \
+         relative to the struct's current definition (from the graph). The \
+         missing-fields list is the typical refactor signal: after adding a \
+         required field, this tool surfaces every site that needs updating, \
+         before cargo even compiles. Currently best-effort for Rust source; \
+         pattern matching ignores `match` arms and `if let` patterns.",
+        json!({
+            "type": "object",
+            "properties": {
+                "struct": {
+                    "type": "string",
+                    "description": "Struct name to search literal sites of (e.g. 'GraphStats', 'Config')."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of literal sites to return (default: 100, max: 1000)."
+                }
+            },
+            "required": ["struct"]
+        }),
+    )
+}
+
+fn def_signature_search() -> ToolDefinition {
+    def(
+        "tokensave_signature_search",
+        "Signature Search",
+        "Find functions and methods by signature shape: return type, parameter \
+         substring, async, or path. Searches the cached `signature` column on \
+         every Function/Method node. Substring-matched with case-sensitive \
+         compare; combine multiple criteria for narrower hits. Use \
+         tokensave_search for plain name lookups; this tool is for refactor \
+         questions like 'find every function returning Result<_, MyError>' or \
+         'every async fn taking &mut self'.",
+        json!({
+            "type": "object",
+            "properties": {
+                "returns": {
+                    "type": "string",
+                    "description": "Substring that must appear in the return-type portion of the signature (after '->'). E.g. 'Result<', 'impl Future', 'Vec<u32>'."
+                },
+                "params": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Substrings that must all appear in the parameter list portion of the signature. E.g. ['&mut self'], ['i32', 'String']."
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": "When true, only return functions marked async. When false, exclude them. Omit to ignore async-ness."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to symbols defined under this directory."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum matches to return (default: 50, max: 500)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_config() -> ToolDefinition {
+    def(
+        "tokensave_config",
+        "Config File Query",
+        "Query TOML or JSON config files by dotted key path. Use 'path' for a \
+         single file (e.g. Cargo.toml, tsconfig.json, pyproject.toml) or 'glob' \
+         to query the same key across multiple files. The 'key' is dot-separated \
+         (e.g. 'package.version', 'dependencies.tokio'). Returns each match's \
+         file, parsed value, and the line where the key is defined. Format is \
+         detected from extension: .toml → TOML, .json → JSON. \
+         \n\nDoes not query the code graph — pure filesystem + parser. Works \
+         on uninitialized projects.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative path to a single config file (e.g. 'Cargo.toml'). Mutually exclusive with 'glob'."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to match multiple config files (e.g. '**/Cargo.toml', 'crates/*/Cargo.toml'). Mutually exclusive with 'path'."
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Dot-separated key path (e.g. 'package.version', 'dependencies.tokio.version'). Required."
+                }
+            },
+            "required": ["key"]
+        }),
+    )
+}
+
+fn def_diagnostics() -> ToolDefinition {
+    def(
+        "tokensave_diagnostics",
+        "Compile / Type-Check Diagnostics",
+        "Run the project's type-checker (cargo check for Rust, tsc for \
+         TypeScript, pyright for Python) and return structured errors and \
+         warnings. Each diagnostic includes file, line range, level, code, \
+         message, driver, and the enclosing graph node when one can be \
+         resolved. Replaces the recurring 'run cargo → parse text → read \
+         file' loop with a single structured response. \
+         \n\nNote: the cargo target dir is forced to .tokensave/target/ so \
+         we don't race with the user's interactive cargo runs. The first \
+         call against a fresh tree builds dependencies from scratch, which \
+         can take several minutes on large workspaces; subsequent calls \
+         are sub-second. Build scripts and proc macros from the project \
+         execute as part of cargo check — same trust model as running it \
+         manually.",
+        json!({
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["workspace", "package", "file"],
+                    "description": "Run scope. Default 'workspace'. 'package' requires `name`; 'file' requires `path` and currently runs workspace + post-filter (cargo has no native single-file mode)."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Package name when scope='package' (e.g. 'tokensave', 'serde-json')."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative file path when scope='file'."
+                }
+            }
+        }),
+    )
+}
+
+fn def_unsafe_patterns() -> ToolDefinition {
+    def(
+        "tokensave_unsafe_patterns",
+        "Risky Pattern Finder",
+        "Find unwrap(), expect(), panic!(), todo!(), unimplemented!(), and unsafe \
+         { } sites across the project. Each match includes the file, line, kind, \
+         enclosing symbol, the source line, and an in_test flag derived from the \
+         path. Use this in security/quality reviews to surface panic sites before \
+         a release. Defaults to all kinds; pass `kinds` to narrow.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Subset of patterns to search. Default: ['unwrap', 'expect', 'panic', 'todo', 'unimplemented', 'unsafe_block']."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory (relative to project root)."
+                },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": "When true, skips files whose path looks like a test (default: false)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of matches to return (default: 200, max: 2000)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_implementations() -> ToolDefinition {
+    def(
+        "tokensave_implementations",
+        "Trait / Method Implementations",
+        "Find every type implementing a given trait, or every body of a given \
+         method name. The 'trait' form returns each implementing type plus the \
+         methods on its impl block. The 'method' form returns every function/ \
+         method named X across the project, grouped by enclosing type when \
+         present. Each result includes file, signature, and the method body.",
+        json!({
+            "type": "object",
+            "properties": {
+                "trait": {
+                    "type": "string",
+                    "description": "Trait name to look up implementations of (e.g. 'LanguageExtractor', 'Display'). Mutually exclusive with 'method'."
+                },
+                "method": {
+                    "type": "string",
+                    "description": "Method or function name to find every implementation of (e.g. 'extensions', 'count_complexity'). Mutually exclusive with 'trait'."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of implementations to return (default: 20, max: 200)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_outline() -> ToolDefinition {
+    def(
+        "tokensave_outline",
+        "File Outline",
+        "Flat list of every top-level symbol defined in a file (functions, structs, \
+         enums, traits, classes, impls, etc.) — like a table of contents. Sorted by \
+         line number; no code bodies. Optional 'kinds' filter narrows to specific \
+         node kinds. Use this as the cheapest way to orient before zooming into a \
+         large file with tokensave_node, tokensave_body, or tokensave_read.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative path to the file (e.g. 'src/sync.rs')."
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional filter on node kinds. Common values: 'function', 'struct', 'enum', 'trait', 'impl', 'class', 'method', 'const'. Case-insensitive. Default: all kinds."
+                }
+            },
+            "required": ["file"]
+        }),
+    )
+}
+
+fn def_read() -> ToolDefinition {
+    def(
+        "tokensave_read",
+        "Read File (mode-aware)",
+        "Read a file or its symbol map. Modes: 'full' (entire file), 'lines' \
+         (1-based inclusive byte-range slice via the 'lines' arg, e.g. '120-180'), \
+         'map' (flat list of every top-level symbol from the graph — no source \
+         bytes touched), 'signatures' (functions and types with their cached \
+         signature). Cross-session cached: a re-call on an unchanged file returns \
+         a tiny stub with 'unchanged: true'.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative or absolute path to the file (e.g. 'src/sync.rs')."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["full", "lines", "map", "signatures"],
+                    "description": "Read mode. Default: 'full'."
+                },
+                "lines": {
+                    "type": "string",
+                    "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'."
+                }
+            },
+            "required": ["file"]
         }),
     )
 }

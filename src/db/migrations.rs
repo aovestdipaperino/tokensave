@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 8;
+const LATEST_VERSION: u32 = 9;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -188,6 +188,23 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_code_areas_path ON memory_code_areas(path);
         CREATE INDEX IF NOT EXISTS idx_memory_decisions_created_at ON memory_decisions(created_at);
 
+        CREATE TABLE IF NOT EXISTS read_cache (
+            project_id   TEXT NOT NULL,
+            session_id   TEXT NOT NULL,
+            file_path    TEXT NOT NULL,
+            mtime_ns     INTEGER NOT NULL,
+            mode         TEXT NOT NULL,
+            args_hash    TEXT NOT NULL,
+            digest       TEXT NOT NULL,
+            body         BLOB NOT NULL,
+            token_count  INTEGER NOT NULL,
+            created_at   INTEGER NOT NULL,
+            PRIMARY KEY (project_id, session_id, file_path, mode, args_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_read_cache_session
+            ON read_cache(session_id, created_at);
+
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_decisions_fts USING fts5(
             text, reason,
             content='memory_decisions', content_rowid='id'
@@ -298,6 +315,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         6 => migrate_v6(conn).await,
         7 => migrate_v7(conn).await,
         8 => migrate_v8(conn).await,
+        9 => migrate_v9(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -668,6 +686,42 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v8: failed to create memory tables: {e}"),
         operation: "migrate_v8".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V9: read cache table for tokensave_read
+// ---------------------------------------------------------------------------
+
+/// Creates the `read_cache` table used by `tokensave_read` to serve unchanged
+/// files as a tiny stub across sessions. Rows are keyed by
+/// `(project_id, session_id, file_path, mode, args_hash)` and the `mtime_ns`
+/// column drives freshness checks.
+async fn migrate_v9(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS read_cache (
+            project_id   TEXT NOT NULL,
+            session_id   TEXT NOT NULL,
+            file_path    TEXT NOT NULL,
+            mtime_ns     INTEGER NOT NULL,
+            mode         TEXT NOT NULL,
+            args_hash    TEXT NOT NULL,
+            digest       TEXT NOT NULL,
+            body         BLOB NOT NULL,
+            token_count  INTEGER NOT NULL,
+            created_at   INTEGER NOT NULL,
+            PRIMARY KEY (project_id, session_id, file_path, mode, args_hash)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_read_cache_session
+            ON read_cache(session_id, created_at);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v9: failed to create read_cache table: {e}"),
+        operation: "migrate_v9".to_string(),
     })?;
 
     Ok(())

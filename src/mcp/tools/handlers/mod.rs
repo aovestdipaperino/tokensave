@@ -176,6 +176,17 @@ pub async fn handle_tool_call(
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
         "tokensave_body" => info::handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
+        "tokensave_read" => info::handle_read(cg, args).await,
+        "tokensave_outline" => info::handle_outline(cg, args).await,
+        "tokensave_config" => info::handle_config(cg, args).await,
+        "tokensave_signature_search" => info::handle_signature_search(cg, args, scope_prefix).await,
+        "tokensave_implementations" => graph::handle_implementations(cg, args, scope_prefix).await,
+        "tokensave_unsafe_patterns" => {
+            analysis::handle_unsafe_patterns(cg, args, scope_prefix).await
+        }
+        "tokensave_diagnostics" => analysis::handle_diagnostics(cg, args).await,
+        "tokensave_constructors" => analysis::handle_constructors(cg, args, scope_prefix).await,
+        "tokensave_field_sites" => analysis::handle_field_sites(cg, args, scope_prefix).await,
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
         "tokensave_by_qualified_name" => graph::handle_by_qualified_name(cg, args).await,
         "tokensave_signature" => graph::handle_signature(cg, args).await,
@@ -213,9 +224,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            60
+            69
         } else {
-            59
+            68
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -284,6 +295,15 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_record_decision"));
         assert!(tool_names.contains(&"tokensave_record_code_area"));
         assert!(tool_names.contains(&"tokensave_session_recall"));
+        assert!(tool_names.contains(&"tokensave_read"));
+        assert!(tool_names.contains(&"tokensave_outline"));
+        assert!(tool_names.contains(&"tokensave_implementations"));
+        assert!(tool_names.contains(&"tokensave_unsafe_patterns"));
+        assert!(tool_names.contains(&"tokensave_diagnostics"));
+        assert!(tool_names.contains(&"tokensave_config"));
+        assert!(tool_names.contains(&"tokensave_signature_search"));
+        assert!(tool_names.contains(&"tokensave_constructors"));
+        assert!(tool_names.contains(&"tokensave_field_sites"));
     }
 
     #[test]

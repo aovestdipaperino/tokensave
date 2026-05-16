@@ -27,6 +27,7 @@ pub mod daemon;
 pub mod db;
 pub mod derive_table;
 pub mod diagnose;
+pub mod diagnostics;
 pub mod display;
 pub mod doctor;
 pub mod errors;

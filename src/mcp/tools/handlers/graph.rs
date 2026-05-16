@@ -945,3 +945,177 @@ pub(super) fn cost_to_expand(node: &crate::types::Node, file_size_bytes: u64) ->
         "full_file": full_file_tokens,
     })
 }
+
+/// Handles `tokensave_implementations` — trait / method implementor lookup.
+pub(super) async fn handle_implementations(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let trait_name = args.get("trait").and_then(|v| v.as_str());
+    let method_name = args.get("method").and_then(|v| v.as_str());
+
+    if trait_name.is_none() && method_name.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_implementations requires either 'trait' or 'method'".to_string(),
+        });
+    }
+    if trait_name.is_some() && method_name.is_some() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_implementations: 'trait' and 'method' are mutually exclusive"
+                .to_string(),
+        });
+    }
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.clamp(1, 200) as usize);
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut entries: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    if let Some(name) = trait_name {
+        let candidates = cg
+            .db()
+            .search_nodes_by_exact_name(&[name.to_string()], 50)
+            .await?;
+        let trait_nodes: Vec<&crate::types::Node> = candidates
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::Trait | NodeKind::Interface | NodeKind::InterfaceType
+                )
+            })
+            .collect();
+        if trait_nodes.is_empty() {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("No trait or interface named '{name}' found.") }]
+                }),
+                touched_files: vec![],
+            });
+        }
+
+        for trait_node in trait_nodes {
+            let implementors = cg
+                .db()
+                .get_incoming_edges(&trait_node.id, &[EdgeKind::Implements])
+                .await?;
+            for edge in implementors {
+                let Some(impl_node) = cg.db().get_node_by_id(&edge.source).await? else {
+                    continue;
+                };
+                if scope_prefix.is_some_and(|p| !impl_node.file_path.starts_with(p)) {
+                    continue;
+                }
+                let methods = collect_method_bodies(cg, &impl_node, &project_root).await?;
+                if !touched.contains(&impl_node.file_path) {
+                    touched.push(impl_node.file_path.clone());
+                }
+                entries.push(json!({
+                    "type": impl_node.name,
+                    "qualified_name": impl_node.qualified_name,
+                    "kind": impl_node.kind.as_str(),
+                    "file": impl_node.file_path,
+                    "line": impl_node.start_line,
+                    "trait": trait_node.qualified_name,
+                    "methods": methods,
+                }));
+                if entries.len() >= limit {
+                    break;
+                }
+            }
+            if entries.len() >= limit {
+                break;
+            }
+        }
+    } else if let Some(name) = method_name {
+        let nodes = cg
+            .db()
+            .search_nodes_by_exact_name(&[name.to_string()], limit * 4)
+            .await?;
+        let method_nodes: Vec<&crate::types::Node> = nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+            .filter(|n| scope_prefix.is_none_or(|p| n.file_path.starts_with(p)))
+            .take(limit)
+            .collect();
+        if method_nodes.is_empty() {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("No function or method named '{name}' found.") }]
+                }),
+                touched_files: vec![],
+            });
+        }
+        for n in method_nodes {
+            let abs_path = project_root.join(&n.file_path);
+            let body = match crate::sync::read_source_file(&abs_path) {
+                Ok(source) => super::info::extract_lines(&source, n.start_line, n.end_line),
+                Err(_) => String::from("<file unreadable>"),
+            };
+            if !touched.contains(&n.file_path) {
+                touched.push(n.file_path.clone());
+            }
+            entries.push(json!({
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "end_line": n.end_line,
+                "signature": n.signature,
+                "body": body,
+            }));
+        }
+    }
+
+    let payload = json!({
+        "match_count": entries.len(),
+        "implementations": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+async fn collect_method_bodies(
+    cg: &TokenSave,
+    impl_node: &crate::types::Node,
+    project_root: &std::path::Path,
+) -> Result<Vec<Value>> {
+    let outgoing = cg
+        .db()
+        .get_outgoing_edges(&impl_node.id, &[EdgeKind::Contains])
+        .await?;
+    let mut out: Vec<Value> = Vec::new();
+    for edge in outgoing {
+        let Some(child) = cg.db().get_node_by_id(&edge.target).await? else {
+            continue;
+        };
+        if !matches!(child.kind, NodeKind::Method | NodeKind::Function) {
+            continue;
+        }
+        let abs_path = project_root.join(&child.file_path);
+        let body = match crate::sync::read_source_file(&abs_path) {
+            Ok(source) => super::info::extract_lines(&source, child.start_line, child.end_line),
+            Err(_) => String::from("<file unreadable>"),
+        };
+        out.push(json!({
+            "name": child.name,
+            "kind": child.kind.as_str(),
+            "line": child.start_line,
+            "signature": child.signature,
+            "body": body,
+        }));
+    }
+    Ok(out)
+}

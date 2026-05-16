@@ -454,14 +454,14 @@ async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
         .expect("migrate failed");
     assert!(migrated, "expected v7 migration to run");
 
-    // user_version is now LATEST (= 8).
+    // user_version is now LATEST (= 9).
     let mut rows = conn
         .query("PRAGMA user_version", ())
         .await
         .expect("read version");
     let row = rows.next().await.expect("row").expect("some row");
     let version: i64 = row.get(0).expect("version");
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 
     // attrs_start_line is backfilled from start_line for both rows.
     // Row a: start_line=42 -> attrs_start_line=42.
