@@ -7,14 +7,14 @@
 # the TOKENSAVE_PROBE_REPOS env var (path to an alternative repos.toml).
 
 [[repos]]
-name = "emacs"
-path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/emacs"
-languages = ["c"]
+name = "sotf"
+path = "/Users/pierre/src/sotf"
+languages = ["rust"]
 
 [[repos]]
-name = "node"
-path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/node"
-languages = ["javascript"]
+name = "sonium"
+path = "/Users/pierre/src/sonium"
+languages = ["rust"]
 
 [[repos]]
 name = "scirs"
@@ -25,8 +25,3 @@ languages = ["rust"]
 name = "polkadot"
 path = "/Volumes/home_ext1/Src/0parity/polkadot-sdk"
 languages = ["rust"]
-
-[[repos]]
-name = "scipy"
-path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/scipy"
-languages = ["python"]
