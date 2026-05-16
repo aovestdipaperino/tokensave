@@ -7,19 +7,29 @@
 # the TOKENSAVE_PROBE_REPOS env var (path to an alternative repos.toml).
 
 [[repos]]
+name = "chromium"
+path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/chromium"
+languages = ["cpp"]
+
+[[repos]]
+name = "elasticsearch"
+path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/elasticsearch"
+languages = ["java"]
+
+[[repos]]
 name = "emacs"
 path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/emacs"
+languages = ["c"]
+
+[[repos]]
+name = "linux"
+path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/linux"
 languages = ["c"]
 
 [[repos]]
 name = "node"
 path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/node"
 languages = ["javascript"]
-
-[[repos]]
-name = "scirs"
-path = "/Volumes/home_ext1/Src/scirs"
-languages = ["rust"]
 
 [[repos]]
 name = "polkadot"
@@ -30,3 +40,8 @@ languages = ["rust"]
 name = "scipy"
 path = "/Volumes/home_ext1/tmp/tokensave-bench-dir/scipy"
 languages = ["python"]
+[[repos]]
+name = "scirs"
+path = "/Volumes/home_ext1/Src/scirs"
+languages = ["rust"]
+

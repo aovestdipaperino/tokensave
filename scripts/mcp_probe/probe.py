@@ -37,11 +37,26 @@ REPO_ROOT = ROOT.parents[1]
 DEFAULT_BIN = REPO_ROOT / "target" / "release" / "tokensave"
 DEFAULT_LOG = "/tmp/tokensave_matrix.log"
 DEFAULT_REPOS = ROOT / "repos.toml"
+DEFAULT_STDERR_DIR = "/tmp/tokensave_matrix_stderr"
 
 BIN = Path(os.environ.get("TOKENSAVE_PROBE_BIN", str(DEFAULT_BIN)))
 LOG_PATH = os.environ.get("TOKENSAVE_PROBE_LOG", DEFAULT_LOG)
 REPOS_CONF = Path(os.environ.get("TOKENSAVE_PROBE_REPOS", str(DEFAULT_REPOS)))
 TIMEOUT = float(os.environ.get("TOKENSAVE_PROBE_TIMEOUT", "25"))
+STDERR_DIR = Path(os.environ.get("TOKENSAVE_PROBE_STDERR_DIR", DEFAULT_STDERR_DIR))
+
+
+class McpInitError(RuntimeError):
+    """Raised when a freshly-spawned MCP server fails to complete handshake.
+
+    Carries the path of the per-repo stderr capture so the caller can point
+    a human at it instead of swallowing the diagnosis."""
+
+    def __init__(self, repo: str, stderr_path: Path, hint: str):
+        super().__init__(f"MCP init failed for {repo}: {hint} (stderr: {stderr_path})")
+        self.repo = repo
+        self.stderr_path = stderr_path
+        self.hint = hint
 
 
 class McpClient:
@@ -49,30 +64,65 @@ class McpClient:
     awaiting caller by id, so a late response from a previously-timed-out
     request cannot be misread as the response to a later request."""
 
-    def __init__(self, repo_path: str):
+    def __init__(self, repo_path: str, repo_name: str = "unknown"):
+        # Capture stderr per-repo. Earlier revisions piped to DEVNULL, which
+        # made server crashes during init look like a BrokenPipeError from
+        # the probe driver — totally unactionable. Real causes (missing
+        # .tokensave/tokensave.db, unreadable DB, OOM on large repos like
+        # chromium) showed up on stderr but were silently discarded.
+        STDERR_DIR.mkdir(parents=True, exist_ok=True)
+        self.stderr_path = STDERR_DIR / f"{repo_name}.stderr"
+        self.stderr_file = open(self.stderr_path, "wb")
         self.proc = subprocess.Popen(
             [str(BIN), "serve"],
             cwd=repo_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=self.stderr_file,
             bufsize=0,
         )
         self._id = 0
         self._buf = b""
         self._stale: set[int] = set()  # ids whose original caller already gave up
-        self._send({
-            "jsonrpc": "2.0",
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "tokensave-probe", "version": "1"},
-            },
-            "id": self._next(),
-        })
-        self._recv_id(self._id, timeout=15)
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+        # Initialize handshake — fail loud, fail early. Earlier the code
+        # ignored a missing/error response and tried to push the
+        # "initialized" notification regardless; if the server had already
+        # exited, that second write blew up the whole probe with a bare
+        # BrokenPipeError instead of skipping the repo.
+        try:
+            self._send({
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "tokensave-probe", "version": "1"},
+                },
+                "id": self._next(),
+            })
+        except (BrokenPipeError, OSError) as exc:
+            raise McpInitError(repo_name, self.stderr_path,
+                               f"server died before initialize ({exc})") from exc
+
+        resp = self._recv_id(self._id, timeout=15)
+        if resp is None:
+            raise McpInitError(repo_name, self.stderr_path,
+                               "server closed stdout during initialize")
+        if isinstance(resp, dict) and resp.get("_timeout"):
+            raise McpInitError(repo_name, self.stderr_path,
+                               "initialize timed out after 15s")
+        if isinstance(resp, dict) and "error" in resp:
+            err = resp["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise McpInitError(repo_name, self.stderr_path,
+                               f"initialize returned error: {msg[:200]}")
+
+        try:
+            self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        except (BrokenPipeError, OSError) as exc:
+            raise McpInitError(repo_name, self.stderr_path,
+                               f"server died after initialize ({exc})") from exc
 
     # ------------------------------------------------------------------ low-level
 
@@ -156,11 +206,15 @@ class McpClient:
 
     def close(self) -> None:
         try:
-            assert self.proc.stdin is not None
-            self.proc.stdin.close()
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
             self.proc.wait(timeout=3)
         except Exception:
             self.proc.kill()
+        try:
+            self.stderr_file.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -310,7 +364,15 @@ def main() -> int:
             print(f"skip {name}: {path} not found", file=sys.stderr)
             continue
         print(f"=== {name} ({path}) ===", file=sys.stderr, flush=True)
-        cli = McpClient(path)
+        try:
+            cli = McpClient(path, repo_name=name)
+        except McpInitError as exc:
+            # Skip the repo but record the failure in the matrix so it
+            # surfaces in build_matrix.py instead of just vanishing.
+            print(f"skip {name}: {exc.hint} — see {exc.stderr_path}", file=sys.stderr)
+            log.write(f"{name}\t_init_\t{{}}\tBAD\t{exc.hint}\n")
+            log.flush()
+            continue
         try:
             discovered = discover(cli)
             probes = load_probe_set(repo.get("languages", []), discovered)

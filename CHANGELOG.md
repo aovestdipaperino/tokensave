@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.14.11] - 2026-05-16
+
+### Performance
+- **Same `node.child(i)` O(N²) trap fixed in `batch_extractor.rs`.** `visit_top_level`, `visit_label`, `extract_docstring`, and `extract_label_call_sites` all walked top-level children of the Batch program via `root.child(i)` in an index loop. Refactored: `visit_top_level` materialises children once into a `Vec<TsNode>` via cursor (`collect_children` helper) and downstream helpers take `&[TsNode]` + index instead of `(root, index)`. One O(N) allocation up front, O(1) lookups thereafter, no behavior change.
+- **Same trap fixed in `powershell_extractor.rs::find_descendant_by_kind`.** The iterative DFS pushed children with `current.child(i)` in a `for i in (0..N).rev()` loop. Replaced with a `TreeCursor` walk + `stack[start..].reverse()` to preserve first-child-pops-first order — matches the `complexity.rs::push_children` pattern from 4.14.10.
+- **Same trap fixed in `clojure_extractor.rs::extract_calls`.** Top-level form iteration over `list_lit` children used `node.child(i)` indexed loop. Replaced with cursor stepping (with `goto_next_sibling` `skip` times for the `skip` parameter). Particularly relevant on Clojure files with hundreds of top-level forms.
+- **Same trap fixed in `cobol_extractor.rs::visit_procedure_division`.** The seed pass that collects PROCEDURE DIVISION children into a `Vec` for multi-pass paragraph grouping used `node.child(i)` in a loop — bites on monolithic COBOL files with many paragraphs. Switched to cursor walk; same O(N) materialisation, O(1) downstream indexing.
+
+## [4.14.10] - 2026-05-16
+
+### Performance
+- **`count_complexity` (called from every extractor on every function) no longer hits an O(N²) trap on high-fanout AST nodes.** The body-walk in `src/extraction/complexity.rs` seeded its stack and pushed children with `node.child(i)` inside a `for i in 0..N` loop. Tree-sitter's `node.child(i)` is **O(i)** — it walks the linked sibling chain from the first child — so the seed + per-pop push pair was O(N²) for every node along the way. On `kernel/bpf/verifier.c` (20 K lines, monster switch statements with thousands of cases) a single `tokensave init` showed the progress bar wedged on that one file long enough that users reported it as "stuck"; chromium had files taking ~3 min individually. New `push_children` helper uses a `TreeCursor` (O(1) per sibling step) and reverses the appended slice so LIFO pop order still produces left-to-right traversal. Same fix applied to `extract_call_name`, `extract_macro_name`, and `rightmost_identifier` — all three did the same O(N²) `child(i)` scan over identifier candidates. Measured on `verifier.c` after the fix: 78 ms end-to-end (file read + parse + extract). Includes `examples/bench_extract.rs` so you can re-measure with `cargo run --release --example bench_extract <path-to-c-file>`.
+
+## [4.14.9] - 2026-05-16
+
+### Fixed
+- **Revert the 4.14.8 `find_dead_code` CTE refactor — it was a massive regression on real repos.** 4.14.8 moved the test-marker name match into `WITH test_marker_ids AS (...)` thinking that would amortise the leading-wildcard `LIKE`. In practice SQLite does not always materialise a single-reference CTE, and `e2.source IN (SELECT id FROM test_marker_ids)` inside a correlated `NOT EXISTS` degenerated into a per-row scan of the full `annotation_usage` table. On scirs (76 K annotation_usage rows, 153 K annotates edges) `tokensave_dead_code` went from **0.097 s** (pre-4.14.8) to **>60 s timeout**, which hung the MCP probe matrix — every subsequent tool then appeared to time out because the late response poisoned the JSON-RPC id matching (the cascade caveat in `scripts/mcp_probe/README.md`). The original `JOIN nodes a ON a.id = e2.source` form works because `idx_edges_target_kind` narrows to the (typically 0-3) annotates edges per candidate first, then joins via the nodes PK, so the LIKE only runs on that small per-candidate slice. A `Do NOT lift this into a CTE` comment is left at the call site so future refactors don't repeat the mistake. Other 4.14.8 perf changes (SCC frame clone, multi-source BFS, lines cache, dedup'd FTS terms, file-content cache, cycle-path borrowing, inheritance-depth CTE shape, has_bare_call fast path, placeholder builder) are kept as-is.
+
 ## [4.14.8] - 2026-05-16
 
 ### Performance

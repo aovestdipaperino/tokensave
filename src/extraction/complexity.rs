@@ -78,16 +78,13 @@ pub fn count_complexity(
     // Stack: (tree-sitter node, current nesting depth)
     let mut stack: Vec<(TsNode<'_>, u32)> = Vec::new();
 
-    // Seed with direct children of the function node (skip the function
-    // declaration itself so we only measure the body).
-    let child_count = node.child_count();
-    let mut idx: u32 = 0;
-    while (idx as usize) < child_count {
-        if let Some(child) = node.child(idx) {
-            stack.push((child, 0));
-        }
-        idx += 1;
-    }
+    // Seed with direct children of the function node. Earlier revisions used
+    // `node.child(i)` in a `for i in 0..N` loop — tree-sitter's `child(i)`
+    // is O(i) because it walks sibling links from the first child, so the
+    // seed loop alone was O(N²) for high-fanout nodes (e.g. the giant
+    // `switch` in `kernel/bpf/verifier.c` with thousands of cases). Use a
+    // cursor for O(1) per step.
+    push_children(&mut stack, node, 0);
 
     let mut iterations: usize = 0;
 
@@ -155,15 +152,9 @@ pub fn count_complexity(
             depth
         };
 
-        // Push children (reverse order so left-to-right processing).
-        let cc = current.child_count() as u32;
-        let mut ci = cc;
-        while ci > 0 {
-            ci -= 1;
-            if let Some(child) = current.child(ci) {
-                stack.push((child, new_depth));
-            }
-        }
+        // Push children via cursor — see `push_children`. Same O(N²) trap
+        // as the seed loop above.
+        push_children(&mut stack, current, new_depth);
     }
 
     debug_assert!(
@@ -175,6 +166,28 @@ pub fn count_complexity(
         "iteration count invariant violated"
     );
     metrics
+}
+
+/// Pushes the direct children of `parent` onto `stack` in reverse order, so
+/// a LIFO pop reproduces left-to-right traversal. Iterates via a `TreeCursor`
+/// — sibling walks are O(1) each, vs. O(i) for `parent.child(i)`. Skipping
+/// this matters: high-fanout nodes (1 K+ children, common in switch-heavy
+/// C files like `kernel/bpf/verifier.c`) turn `for i in 0..N { child(i) }`
+/// into an O(N²) trap that dominated indexing time before this helper.
+fn push_children<'a>(stack: &mut Vec<(TsNode<'a>, u32)>, parent: TsNode<'a>, depth: u32) {
+    let start = stack.len();
+    let mut cursor = parent.walk();
+    if cursor.goto_first_child() {
+        loop {
+            stack.push((cursor.node(), depth));
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    // Reverse the slice we just appended so the next `pop()` sees the
+    // first child first.
+    stack[start..].reverse();
 }
 
 /// Extracts the method/function name from a call expression node.
@@ -195,11 +208,11 @@ fn extract_call_name(node: TsNode<'_>, method_field: &str, source: &[u8]) -> Opt
         }
     }
 
-    // Fallback: first child that is an identifier or has a selector child.
-    let child_count = node.child_count();
-    let mut i: u32 = 0;
-    while (i as usize) < child_count {
-        if let Some(child) = node.child(i) {
+    // Fallback: scan direct children via cursor (O(N), not O(N²)).
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
             let ck = child.kind();
             if ck == "identifier" || ck == "field_identifier" || ck == "property_identifier" {
                 if let Ok(text) = child.utf8_text(source) {
@@ -213,8 +226,10 @@ fn extract_call_name(node: TsNode<'_>, method_field: &str, source: &[u8]) -> Opt
                     return Some(text);
                 }
             }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
-        i += 1;
     }
     None
 }
@@ -223,18 +238,20 @@ fn extract_call_name(node: TsNode<'_>, method_field: &str, source: &[u8]) -> Opt
 ///
 /// Looks for the first identifier child, stripping a trailing `!` if present.
 fn extract_macro_name(node: TsNode<'_>, source: &[u8]) -> Option<String> {
-    let child_count = node.child_count();
-    let mut i: u32 = 0;
-    while (i as usize) < child_count {
-        if let Some(child) = node.child(i) {
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
             let ck = child.kind();
             if ck == "identifier" || ck == "scoped_identifier" {
                 if let Ok(text) = child.utf8_text(source) {
                     return Some(text.trim_end_matches('!').to_string());
                 }
             }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
-        i += 1;
     }
     None
 }
@@ -246,19 +263,25 @@ fn rightmost_identifier(node: TsNode<'_>, source: &[u8]) -> String {
     if nk == "identifier" || nk == "field_identifier" || nk == "property_identifier" {
         return node.utf8_text(source).unwrap_or("").to_string();
     }
-    // Walk children right-to-left for the first identifier.
-    let cc = node.child_count();
-    let mut i = cc as u32;
-    while i > 0 {
-        i -= 1;
-        if let Some(child) = node.child(i) {
+    // Walk children via cursor and remember the rightmost match — `node.child(i)`
+    // would be O(N²) for the right-to-left scan the previous revision did.
+    let mut cursor = node.walk();
+    let mut found = String::new();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
             let ck = child.kind();
             if ck == "identifier" || ck == "field_identifier" || ck == "property_identifier" {
-                return child.utf8_text(source).unwrap_or("").to_string();
+                if let Ok(text) = child.utf8_text(source) {
+                    found = text.to_string();
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }
-    String::new()
+    found
 }
 
 // ---------------------------------------------------------------------------

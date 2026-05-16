@@ -66,6 +66,25 @@ impl ExtractionState {
     }
 }
 
+/// Collects the direct children of `parent` into a `Vec` via cursor walk.
+///
+/// Tree-sitter's `parent.child(i)` is O(i) — it walks sibling links — so a
+/// `for i in 0..N { parent.child(i) }` loop is O(N²). Materializing once
+/// up front gives O(N) build + O(1) lookups for the rest of the extraction.
+fn collect_children(parent: TsNode<'_>) -> Vec<TsNode<'_>> {
+    let mut out = Vec::with_capacity(parent.child_count());
+    let mut cursor = parent.walk();
+    if cursor.goto_first_child() {
+        loop {
+            out.push(cursor.node());
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    out
+}
+
 impl BatchExtractor {
     /// Extract code graph nodes and edges from a Batch source file.
     ///
@@ -138,26 +157,25 @@ impl BatchExtractor {
     /// Batch files use labels as function-like constructs. Labels are top-level
     /// siblings in the AST (not containers). We group code between consecutive
     /// labels as the body of each label's "function".
+    ///
+    /// Children are materialized into a `Vec` once via a cursor (O(N)), and
+    /// downstream helpers index into that slice instead of calling
+    /// `root.child(i)` repeatedly — tree-sitter's `child(i)` is O(i), so the
+    /// previous index loops were O(N²) on large `.bat` files. See `complexity.rs`
+    /// for the same fix on the universal hot path.
     fn visit_top_level(state: &mut ExtractionState, root: TsNode<'_>) {
-        let child_count = root.child_count();
-        let mut i: usize = 0;
+        let children = collect_children(root);
 
-        while i < child_count {
-            let Some(child) = root.child(i as u32) else {
-                i += 1;
-                continue;
-            };
-
+        for (i, child) in children.iter().enumerate() {
             match child.kind() {
                 "label" => {
-                    Self::visit_label(state, root, i);
+                    Self::visit_label(state, &children, i);
                 }
                 "variable_assignment" => {
-                    Self::visit_variable_assignment(state, child);
+                    Self::visit_variable_assignment(state, *child);
                 }
                 _ => {}
             }
-            i += 1;
         }
     }
 
@@ -165,8 +183,12 @@ impl BatchExtractor {
     ///
     /// In Batch, labels (:Name) serve as subroutine entry points.
     /// The body extends from the label to the next label or end of file.
-    fn visit_label(state: &mut ExtractionState, root: TsNode<'_>, label_index: usize) {
-        let Some(label_node) = root.child(label_index as u32) else {
+    fn visit_label(
+        state: &mut ExtractionState,
+        children: &[TsNode<'_>],
+        label_index: usize,
+    ) {
+        let Some(&label_node) = children.get(label_index) else {
             return;
         };
 
@@ -183,24 +205,19 @@ impl BatchExtractor {
         let start_column = label_node.start_position().column as u32;
 
         // Find the end line: scan forward to the next label or end of file.
-        let child_count = root.child_count();
         let mut end_line = label_node.end_position().row as u32;
         let mut end_column = label_node.end_position().column as u32;
-        let mut j = label_index + 1;
-        while j < child_count {
-            if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "label" {
-                    // End just before the next label.
-                    break;
-                }
-                end_line = sibling.end_position().row as u32;
-                end_column = sibling.end_position().column as u32;
+        for sibling in children.iter().skip(label_index + 1) {
+            if sibling.kind() == "label" {
+                // End just before the next label.
+                break;
             }
-            j += 1;
+            end_line = sibling.end_position().row as u32;
+            end_column = sibling.end_position().column as u32;
         }
 
         let signature = Some(label_text.trim().to_string());
-        let docstring = Self::extract_docstring(state, root, label_index);
+        let docstring = Self::extract_docstring(state, children, label_index);
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
         let metrics = ComplexityMetrics::default();
@@ -242,7 +259,7 @@ impl BatchExtractor {
         }
 
         // Extract call sites from siblings belonging to this label's body.
-        Self::extract_label_call_sites(state, root, label_index, &id);
+        Self::extract_label_call_sites(state, children, label_index, &id);
     }
 
     /// Extract a `set VAR=value` variable assignment as a Const node.
@@ -326,10 +343,12 @@ impl BatchExtractor {
     /// Extract docstrings from `REM` or `::` comment lines preceding a label.
     ///
     /// Looks backward from the label's position in the root children list
-    /// for consecutive comment nodes.
+    /// for consecutive comment nodes. Takes a `&[TsNode]` slice (built once
+    /// by `visit_top_level`) instead of the root node — see the cursor
+    /// rationale on `visit_top_level`.
     fn extract_docstring(
         state: &ExtractionState,
-        root: TsNode<'_>,
+        children: &[TsNode<'_>],
         label_index: usize,
     ) -> Option<String> {
         let mut comments: Vec<String> = Vec::new();
@@ -337,7 +356,7 @@ impl BatchExtractor {
 
         while idx > 0 {
             idx -= 1;
-            let prev = root.child(idx as u32)?;
+            let prev = *children.get(idx)?;
             if prev.kind() == "comment" {
                 let text = state.node_text(prev);
                 let stripped = text
@@ -368,21 +387,15 @@ impl BatchExtractor {
     /// Looks for `call_stmt` nodes and extracts the callee label name.
     fn extract_label_call_sites(
         state: &mut ExtractionState,
-        root: TsNode<'_>,
+        children: &[TsNode<'_>],
         label_index: usize,
         fn_node_id: &str,
     ) {
-        let child_count = root.child_count();
-        let mut j = label_index + 1;
-
-        while j < child_count {
-            if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "label" {
-                    break;
-                }
-                Self::extract_call_sites_recursive(state, sibling, fn_node_id);
+        for sibling in children.iter().skip(label_index + 1) {
+            if sibling.kind() == "label" {
+                break;
             }
-            j += 1;
+            Self::extract_call_sites_recursive(state, *sibling, fn_node_id);
         }
     }
 

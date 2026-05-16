@@ -385,15 +385,19 @@ impl CobolExtractor {
     /// followed by statements. We group statements between paragraph headers
     /// into logical "function" bodies.
     fn visit_procedure_division(state: &mut ExtractionState, node: TsNode<'_>) {
-        // Collect all children for multi-pass grouping.
-        let child_count = node.child_count();
-        let mut children: Vec<TsNode<'_>> = Vec::new();
-        let mut i: usize = 0;
-        while i < child_count {
-            if let Some(child) = node.child(i as u32) {
-                children.push(child);
+        // Collect all children for multi-pass grouping. Walks via cursor
+        // (O(N)) instead of `node.child(i)` in a loop — `child(i)` is O(i),
+        // turning the seed into O(N²) on PROCEDURE DIVISIONs with hundreds
+        // of paragraphs.
+        let mut children: Vec<TsNode<'_>> = Vec::with_capacity(node.child_count());
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                children.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
             }
-            i += 1;
         }
 
         // Group: find paragraph_header nodes and associate them with their

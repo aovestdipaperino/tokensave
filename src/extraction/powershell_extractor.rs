@@ -478,15 +478,21 @@ impl PowerShellExtractor {
             if current.kind() == kind {
                 return Some(current);
             }
-            let count = current.child_count();
-            // Push children in reverse so first child is processed first.
-            let mut i = count;
-            while i > 0 {
-                i -= 1;
-                if let Some(child) = current.child(i as u32) {
-                    stack.push(child);
+            // Push children via cursor (O(N) per node) and reverse so the
+            // first child pops first. Previous revision used `current.child(i)`
+            // in a `for i in (0..N).rev()` loop, which is O(N²) per node
+            // because `child(i)` walks sibling links from index 0.
+            let start = stack.len();
+            let mut cursor = current.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    stack.push(cursor.node());
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
                 }
             }
+            stack[start..].reverse();
         }
         None
     }

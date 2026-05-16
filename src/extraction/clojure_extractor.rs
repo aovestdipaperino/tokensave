@@ -442,33 +442,47 @@ impl ClojureExtractor {
     }
 
     /// Collects call sites from the body of a defn, skipping the first `skip` children.
+    ///
+    /// Iterates direct children via a cursor (O(N)) and skips the first
+    /// `skip` via `Iterator::skip`. Earlier revisions used
+    /// `for i in skip..N { node.child(i) }` — tree-sitter's `child(i)` is
+    /// O(i) so that was O(N²) per `list_lit`, painful on Clojure forms with
+    /// hundreds of top-level statements.
     fn extract_calls(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str, skip: usize) {
-        let child_count = node.child_count();
-        let mut i = skip;
-        while i < child_count {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "list_lit" {
-                    if let Some(head) = Self::first_sym(state, child) {
-                        if !matches!(
-                            head.as_str(),
-                            "defn" | "defn-" | "defmacro" | "def" | "defonce" | "ns"
-                        ) {
-                            state.unresolved_refs.push(UnresolvedRef {
-                                from_node_id: fn_id.to_string(),
-                                reference_name: head,
-                                reference_kind: EdgeKind::Calls,
-                                line: child.start_position().row as u32,
-                                column: child.start_position().column as u32,
-                                file_path: state.file_path.clone(),
-                            });
-                        }
-                        Self::extract_calls(state, child, fn_id, 1);
-                    }
-                } else {
-                    Self::extract_calls(state, child, fn_id, 0);
-                }
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        for _ in 0..skip {
+            if !cursor.goto_next_sibling() {
+                return;
             }
-            i += 1;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "list_lit" {
+                if let Some(head) = Self::first_sym(state, child) {
+                    if !matches!(
+                        head.as_str(),
+                        "defn" | "defn-" | "defmacro" | "def" | "defonce" | "ns"
+                    ) {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_id.to_string(),
+                            reference_name: head,
+                            reference_kind: EdgeKind::Calls,
+                            line: child.start_position().row as u32,
+                            column: child.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                    Self::extract_calls(state, child, fn_id, 1);
+                }
+            } else {
+                Self::extract_calls(state, child, fn_id, 0);
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
     }
 
