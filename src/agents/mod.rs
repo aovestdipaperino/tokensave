@@ -15,6 +15,7 @@ pub mod cursor;
 pub mod gemini;
 pub mod kilo;
 pub mod kimi;
+pub mod kiro;
 pub mod opencode;
 pub mod roo_code;
 pub mod vibe;
@@ -35,6 +36,7 @@ pub use cursor::CursorIntegration;
 pub use gemini::GeminiIntegration;
 pub use kilo::KiloIntegration;
 pub use kimi::KimiIntegration;
+pub use kiro::KiroIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
@@ -117,6 +119,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
         "antigravity" => Ok(Box::new(AntigravityIntegration)),
         "kilo" => Ok(Box::new(KiloIntegration)),
+        "kiro" => Ok(Box::new(KiroIntegration)),
         "kimi" => Ok(Box::new(KimiIntegration)),
         "vibe" => Ok(Box::new(VibeIntegration)),
         _ => Err(TokenSaveError::Config {
@@ -142,6 +145,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(RooCodeIntegration),
         Box::new(AntigravityIntegration),
         Box::new(KiloIntegration),
+        Box::new(KiroIntegration),
         Box::new(KimiIntegration),
         Box::new(VibeIntegration),
     ]
@@ -161,6 +165,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "roo-code",
         "antigravity",
         "kilo",
+        "kiro",
         "kimi",
         "vibe",
     ]
@@ -1368,6 +1373,20 @@ mod git_hook_tests {
 pub fn tool_names() -> Vec<String> {
     get_tool_definitions()
         .iter()
+        .map(|t| t.name.clone())
+        .collect()
+}
+
+pub fn read_only_tool_names() -> Vec<String> {
+    get_tool_definitions()
+        .iter()
+        .filter(|t| {
+            t.annotations
+                .as_ref()
+                .and_then(|annotations| annotations.get("readOnlyHint"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        })
         .map(|t| t.name.clone())
         .collect()
 }

@@ -146,18 +146,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // retired in 4.3.12. The beta channel is open again as of v5.0.0-beta.1
     // and beta users now stay on beta until they explicitly switch off.
 
-    // Best-effort check: warn if install needs re-running
-    if !matches!(command, Commands::Install { .. } | Commands::Reinstall) {
+    let skip_agent_install_maintenance = should_skip_agent_install_maintenance(&command);
+
+    // Best-effort check: warn if install needs re-running.
+    if !skip_agent_install_maintenance {
         tokensave::agents::claude::check_install_stale();
     }
 
     // Silent reinstall: if the running version is newer than the one that last
     // installed agents, re-run the install for every tracked agent so that
     // permissions, hooks, and MCP config stay in sync with the new binary.
-    if !matches!(
-        command,
-        Commands::Install { .. } | Commands::Reinstall | Commands::Uninstall { .. }
-    ) {
+    if !skip_agent_install_maintenance {
         let running = env!("CARGO_PKG_VERSION");
         if !user_config.installed_agents.is_empty()
             && !running.is_empty()
@@ -828,6 +827,24 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::HookStop => {
             tokensave::hooks::hook_stop().await;
         }
+        Commands::HookKiroPreToolUse => {
+            let code = tokensave::hooks::hook_kiro_pre_tool_use();
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookKiroPromptSubmit => {
+            let code = tokensave::hooks::hook_kiro_prompt_submit().await;
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookKiroPostToolUse => {
+            let code = tokensave::hooks::hook_kiro_post_tool_use().await;
+            if code != 0 {
+                process::exit(code);
+            }
+        }
         Commands::Serve { path } => {
             if std::env::var("DISABLE_TOKENSAVE").as_deref() == Ok("true") {
                 // Allow users to opt out per-project by setting
@@ -1217,6 +1234,52 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
     }
     Ok(())
+}
+
+fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Install { .. }
+            | Commands::Reinstall
+            | Commands::Uninstall { .. }
+            | Commands::Doctor { .. }
+    )
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::{should_skip_agent_install_maintenance, Commands};
+
+    #[test]
+    fn doctor_skips_agent_install_maintenance() {
+        let command = Commands::Doctor {
+            agent: Some("kiro".to_string()),
+        };
+        assert!(should_skip_agent_install_maintenance(&command));
+    }
+
+    #[test]
+    fn explicit_agent_config_commands_skip_agent_install_maintenance() {
+        assert!(should_skip_agent_install_maintenance(&Commands::Install {
+            agent: Some("kiro".to_string()),
+        }));
+        assert!(should_skip_agent_install_maintenance(&Commands::Reinstall));
+        assert!(should_skip_agent_install_maintenance(
+            &Commands::Uninstall {
+                agent: Some("kiro".to_string()),
+            }
+        ));
+    }
+
+    #[test]
+    fn normal_commands_keep_agent_install_maintenance() {
+        assert!(!should_skip_agent_install_maintenance(&Commands::Status {
+            path: None,
+            json: false,
+            short: false,
+            details: false,
+        }));
+    }
 }
 
 // handle_branch_action, handle_wipe, handle_list, handle_no_command,

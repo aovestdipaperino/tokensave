@@ -1,10 +1,14 @@
-use clap::{Parser, Subcommand};
+use clap::{builder::PossibleValuesParser, Parser, Subcommand};
+
+fn agent_value_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new(tokensave::agents::available_integrations())
+}
 
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
 #[command(
     name = "tokensave",
-    about = "Code intelligence for 15 languages — semantic graph queries instead of file reads",
+    about = "Code intelligence for 34 languages — semantic graph queries instead of file reads",
     version
 )]
 pub struct Cli {
@@ -120,7 +124,7 @@ pub enum Commands {
     #[command(name = "install", visible_alias = "claude-install")]
     Install {
         /// Agent to configure (auto-detects if omitted)
-        #[arg(long)]
+        #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
     },
     /// Refresh settings for all already-installed agents
@@ -129,7 +133,7 @@ pub enum Commands {
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {
         /// Agent to remove (removes all if omitted)
-        #[arg(long)]
+        #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
     },
     /// Extraction worker (spawned by tokensave itself; not for direct use).
@@ -144,6 +148,15 @@ pub enum Commands {
     /// Stop hook handler (prints session token savings)
     #[command(name = "hook-stop", hide = true)]
     HookStop,
+    /// Kiro PreToolUse hook handler (called by Kiro, not by users directly)
+    #[command(name = "hook-kiro-pre-tool-use", hide = true)]
+    HookKiroPreToolUse,
+    /// Kiro UserPromptSubmit hook handler (called by Kiro, not by users directly)
+    #[command(name = "hook-kiro-prompt-submit", hide = true)]
+    HookKiroPromptSubmit,
+    /// Kiro PostToolUse hook handler for incremental sync
+    #[command(name = "hook-kiro-post-tool-use", hide = true)]
+    HookKiroPostToolUse,
     /// Start MCP server over stdio
     Serve {
         /// Project path
@@ -189,7 +202,7 @@ pub enum Commands {
     /// Check tokensave installation, configuration, and agent integration
     Doctor {
         /// Check only this agent (default: all agents)
-        #[arg(long)]
+        #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
     },
     /// Background file watcher daemon

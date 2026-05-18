@@ -181,7 +181,7 @@ This is the default. It registers the MCP server in `~/.claude/settings.json`, g
 
 ### Other agents
 
-Tokensave supports thirteen agents. Pass `--agent` to install for a specific one:
+Tokensave supports fourteen agents. Pass `--agent` to install for a specific one:
 
 ```bash
 tokensave install --agent claude      # Claude Code (default)
@@ -195,11 +195,19 @@ tokensave install --agent cline       # Cline
 tokensave install --agent roo-code    # Roo Code
 tokensave install --agent antigravity # Antigravity (Windsurf)
 tokensave install --agent kilo        # Kilo CLI
+tokensave install --agent kiro        # AWS Kiro
 tokensave install --agent kimi        # Moonshot Kimi CLI
 tokensave install --agent vibe        # Mistral Vibe
 ```
 
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
+
+Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, adds steering in
+`~/.kiro/steering/AGENTS.md`, and writes a tokensave-managed agent with hooks
+that block research delegation until tokensave MCP tools have been tried and
+sync the index after Kiro writes files. If you already have a different custom
+default agent or a user-managed `tokensave` agent, tokensave leaves it alone and
+prints a warning.
 
 The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook and the background daemon (more on those below).
 
@@ -384,7 +392,10 @@ To check only a specific agent:
 ```bash
 tokensave doctor --agent claude
 tokensave doctor --agent codex
+tokensave doctor --agent kiro
 ```
+
+The accepted agent values are the same values supported by `tokensave install --agent`.
 
 ---
 
@@ -517,7 +528,7 @@ Marked functions are excluded from `tokensave_test_risk` coverage calculations, 
 | `tokensave_session_start` | Save current health metrics as a baseline before starting work. |
 | `tokensave_session_end` | Compare current health against the baseline to detect structural degradation during the session. |
 
-All tools are read-only and safe to call in parallel, except `tokensave_session_start` which writes a baseline file.
+Discovery and analysis tools are read-only and safe to call in parallel. Session baseline tools write/remove `.tokensave/session_baseline.json`, memory-recording tools update the project database, and edit tools modify source files.
 
 ---
 

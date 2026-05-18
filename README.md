@@ -70,8 +70,8 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **48 MCP Tools** | **34 Languages** | **9 Agent Integrations** |
-| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 26 more, including Markdown header extraction. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe. |
+| **48 MCP Tools** | **34 Languages** | **14 Agent Integrations** |
+| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 26 more, including Markdown header extraction. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
 | Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Background daemon syncs the index automatically. Survives reboots. Restarts after upgrades. |
 | **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
@@ -127,6 +127,7 @@ tokensave install --agent copilot         # GitHub Copilot
 tokensave install --agent cursor          # Cursor
 tokensave install --agent gemini          # Gemini CLI
 tokensave install --agent kilo            # Kilo CLI
+tokensave install --agent kiro            # AWS Kiro
 tokensave install --agent kimi            # Moonshot Kimi CLI
 tokensave install --agent opencode        # OpenCode
 tokensave install --agent roo-code        # Roo Code
@@ -134,7 +135,7 @@ tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed
 ```
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions.
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, read-only tokensave auto-approval, AGENTS.md steering, and a tokensave-managed default agent with delegation guardrail hooks plus post-write sync; user-managed Kiro agents are preserved.
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook and the background daemon service.
 
@@ -355,7 +356,7 @@ Different from the criterion bench above: criterion measures per-iteration laten
 
 ## 48 MCP Tools
 
-The discovery and analysis tools are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The four edit primitives (the only writers) are scoped to single files and re-index in place. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+The discovery and analysis tools are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Discovery
 
@@ -701,7 +702,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
 | **Languages** | 34 (3 tiers: lite/medium/full) | 19+ |
 | **MCP tools** | 48 | 9 |
-| **Agent integrations** | 13 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kimi, Vibe) | 1 (Claude Code) |
+| **Agent integrations** | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
 | **Background daemon** | Yes (launchd/systemd/Windows Service) | No (hook-based sync only) |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
@@ -746,7 +747,7 @@ tokensave works at the symbol level: functions, structs, fields, call edges, typ
 
 ### Broadest agent support
 
-9 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Other agents get MCP server registration in their native config format.
+14 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, read-only tokensave auto-approval, AGENTS.md steering, a managed agent, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 

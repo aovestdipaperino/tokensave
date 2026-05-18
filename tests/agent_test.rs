@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 13);
+    assert_eq!(all.len(), 14);
 }
 
 #[test]
@@ -27,9 +27,10 @@ fn test_available_integrations() {
     assert!(ids.contains(&"roo-code"));
     assert!(ids.contains(&"antigravity"));
     assert!(ids.contains(&"kilo"));
+    assert!(ids.contains(&"kiro"));
     assert!(ids.contains(&"kimi"));
     assert!(ids.contains(&"vibe"));
-    assert_eq!(ids.len(), 13);
+    assert_eq!(ids.len(), 14);
 }
 
 #[test]
@@ -46,6 +47,7 @@ fn test_get_integration_valid() {
         "roo-code",
         "antigravity",
         "kilo",
+        "kiro",
         "kimi",
         "vibe",
     ] {
@@ -88,6 +90,7 @@ fn test_agent_names_are_human_readable() {
         ("roo-code", "Roo Code"),
         ("antigravity", "Antigravity"),
         ("kilo", "Kilo CLI"),
+        ("kiro", "Kiro"),
         ("kimi", "Kimi CLI"),
         ("vibe", "Mistral Vibe"),
     ];
@@ -887,6 +890,7 @@ fn test_every_tested_agent_advertises_primary_config_path() {
         (&KiloIntegration, "kilo"),
         (&AntigravityIntegration, "antigravity"),
         (&CodexIntegration, "codex"),
+        (&KiroIntegration, "kiro"),
         (&KimiIntegration, "kimi"),
     ];
     for (agent, id) in agents {
@@ -1627,6 +1631,7 @@ fn test_uninstall_without_install_does_not_crash() {
     ZedIntegration.uninstall(&ctx).unwrap();
     ClineIntegration.uninstall(&ctx).unwrap();
     RooCodeIntegration.uninstall(&ctx).unwrap();
+    KiroIntegration.uninstall(&ctx).unwrap();
     VibeIntegration.uninstall(&ctx).unwrap();
 }
 
@@ -1695,6 +1700,38 @@ fn test_tool_names_not_empty() {
         assert!(
             name.starts_with("tokensave_"),
             "tool name should start with tokensave_: {name}"
+        );
+    }
+}
+
+#[test]
+fn test_read_only_tool_names_excludes_mutating_tools() {
+    let read_only = read_only_tool_names();
+    let read_only_set: std::collections::HashSet<&str> =
+        read_only.iter().map(String::as_str).collect();
+    let known_tools: std::collections::HashSet<String> = tool_names().into_iter().collect();
+    assert!(!read_only.is_empty());
+
+    for name in &read_only {
+        assert!(
+            known_tools.contains(name),
+            "read-only tool should be a known MCP tool: {name}"
+        );
+    }
+
+    for mutating in [
+        "tokensave_str_replace",
+        "tokensave_multi_str_replace",
+        "tokensave_insert_at",
+        "tokensave_ast_grep_rewrite",
+        "tokensave_session_start",
+        "tokensave_session_end",
+        "tokensave_record_decision",
+        "tokensave_record_code_area",
+    ] {
+        assert!(
+            !read_only_set.contains(mutating),
+            "mutating tool should not be read-only: {mutating}"
         );
     }
 }
