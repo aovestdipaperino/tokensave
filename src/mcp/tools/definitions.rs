@@ -1504,15 +1504,19 @@ fn def_session_start() -> ToolDefinition {
 }
 
 fn def_session_end() -> ToolDefinition {
-    def(
-        "tokensave_session_end",
-        "Session End",
-        "Re-scan and compare current health against session baseline (saved by session_start). Returns diff showing what improved or degraded.",
-        json!({
+    ToolDefinition {
+        name: "tokensave_session_end".to_string(),
+        description: "Re-scan and compare current health against session baseline (saved by session_start). Returns diff showing what improved or degraded.".to_string(),
+        input_schema: json!({
             "type": "object",
             "properties": {}
         }),
-    )
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Session End"
+        })),
+        meta: None,
+    }
 }
 
 fn def_body() -> ToolDefinition {

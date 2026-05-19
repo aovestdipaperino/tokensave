@@ -1,4 +1,4 @@
-use tokensave::hooks::evaluate_hook_decision;
+use tokensave::hooks::{evaluate_hook_decision, evaluate_kiro_pre_tool_use};
 
 fn is_blocked(json: &str) -> bool {
     let v: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -147,4 +147,58 @@ fn test_block_response_uses_correct_hook_schema() {
     assert!(v["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .is_some());
+}
+
+#[test]
+fn test_kiro_blocks_delegate_code_research_task() {
+    let input = r#"{
+        "hook_event_name": "preToolUse",
+        "tool_name": "delegate",
+        "tool_input": {
+            "task": "Explore the codebase architecture and call graph"
+        }
+    }"#;
+    let reason = evaluate_kiro_pre_tool_use(input).unwrap();
+    assert!(reason.contains("tokensave MCP tools"));
+}
+
+#[test]
+fn test_kiro_blocks_subagent_research_prompt() {
+    let input = r#"{
+        "hook_event_name": "preToolUse",
+        "tool_name": "subagent",
+        "tool_input": {
+            "prompt": "who calls the process_data function?"
+        }
+    }"#;
+    assert!(evaluate_kiro_pre_tool_use(input).is_some());
+}
+
+#[test]
+fn test_kiro_allows_delegate_execution_task() {
+    let input = r#"{
+        "hook_event_name": "preToolUse",
+        "tool_name": "delegate",
+        "tool_input": {
+            "task": "Run the full test suite and report failures"
+        }
+    }"#;
+    assert!(evaluate_kiro_pre_tool_use(input).is_none());
+}
+
+#[test]
+fn test_kiro_allows_non_delegation_tool() {
+    let input = r#"{
+        "hook_event_name": "preToolUse",
+        "tool_name": "read",
+        "tool_input": {
+            "prompt": "Explore the entire codebase"
+        }
+    }"#;
+    assert!(evaluate_kiro_pre_tool_use(input).is_none());
+}
+
+#[test]
+fn test_kiro_allows_invalid_json() {
+    assert!(evaluate_kiro_pre_tool_use("not json").is_none());
 }

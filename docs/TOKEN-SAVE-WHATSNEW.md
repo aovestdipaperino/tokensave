@@ -185,7 +185,7 @@ Some features don't fit neatly into "languages" or "tools." They're the connecti
 
 **The worldwide counter** (1.4.0) aggregates anonymous token-savings counts across all TokenSave users via a Cloudflare Worker. `tokensave status` shows three tiers: project, all local projects, and worldwide. The counter is opt-out. Getting the accounting right took a few iterations: 1.5.4 fixed an inflation bug, and the periodic flush interval moved from shutdown-only to every 30 seconds during MCP sessions.
 
-**MCP resources** (3.3.0) expose four read-only resources via the standard `resources/list` and `resources/read` protocol: `tokensave://status`, `tokensave://files`, `tokensave://overview`, and `tokensave://branches`. MCP annotations (`readOnlyHint`, `title`) on all 37 tools and `anthropic/alwaysLoad` on the three core tools ensure clients can run all tokensave tools concurrently without permission prompts and load the essentials without a tool-search round-trip.
+**MCP resources** (3.3.0) expose four read-only resources via the standard `resources/list` and `resources/read` protocol: `tokensave://status`, `tokensave://files`, `tokensave://overview`, and `tokensave://branches`. MCP annotations (`readOnlyHint`, `title`) distinguish read-only tools from edit and session-memory tools, and `anthropic/alwaysLoad` on the three core tools lets clients load the essentials without a tool-search round-trip.
 
 **Atomic config writes** (3.0.1) protect agent config files from corruption. A `.bak` copy is created before any modification, new content is written to a `.new` sibling file, and an atomic `rename(2)` moves it into place. A crash during install can't leave a half-written config. Twenty regression tests cover the full lifecycle.
 

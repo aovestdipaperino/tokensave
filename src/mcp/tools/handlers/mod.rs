@@ -326,6 +326,7 @@ mod tests {
             "tokensave_insert_at",
             "tokensave_ast_grep_rewrite",
             "tokensave_session_start",
+            "tokensave_session_end",
             "tokensave_record_decision",
             "tokensave_record_code_area",
         ];

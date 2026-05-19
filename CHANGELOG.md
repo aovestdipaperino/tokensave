@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Kiro agent integration.** `tokensave install --agent kiro` now installs the MCP server, global steering, managed Kiro agent config, default CLI agent selection, and Kiro hook mappings for prompt context, delegated tool context, and post-write re-indexing. Doctor and uninstall support are included with coverage for workspace overrides and idempotent cleanup.
+
 ## [5.1.1] - 2026-05-16
 
 ### Performance

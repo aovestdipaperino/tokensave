@@ -575,8 +575,10 @@ impl McpServer {
                     Start with tokensave_context for any code exploration task \
                     — it returns relevant symbols, relationships, and code \
                     snippets for a natural-language query. Use tokensave_search \
-                    to find specific symbols by name. All tools are read-only \
-                    and safe to call in parallel. \
+                    to find specific symbols by name. Discovery and analysis \
+                    tools are read-only and safe to call in parallel. Edit \
+                    and session-memory tools can mutate local project state \
+                    and declare readOnlyHint=false. \
                     When a tool result contains a `tokensave_metrics:` line, \
                     report the savings to the user (e.g. 'TokenSave\\'d ~N tokens')."
             }),
