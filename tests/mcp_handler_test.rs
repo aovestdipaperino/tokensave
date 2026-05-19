@@ -1787,6 +1787,45 @@ async fn test_multi_str_replace_atomic_failure() {
 }
 
 #[tokio::test]
+async fn test_multi_str_replace_unicode_preview_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    let original = "fn main() {}\n";
+    fs::write(project.join("src/main.rs"), original).unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let missing_old = format!("{}é", "a".repeat(19));
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_multi_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "replacements": [
+                [missing_old, "replacement"]
+            ]
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    let message = parsed["message"].as_str().unwrap();
+    assert!(message.contains("matches 0 times"));
+    assert!(message.contains("must match exactly once"));
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert_eq!(content, original);
+}
+
+#[tokio::test]
 async fn test_str_replace_unsupported_file_type_succeeds() {
     // Regression: editing unsupported types (e.g. .css) previously wrote the
     // file then returned a reindex error, silently mutating the file.
@@ -2139,6 +2178,43 @@ async fn test_insert_at_anchor_not_found() {
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(parsed["success"], false);
     assert!(parsed["message"].as_str().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn test_insert_at_unicode_anchor_prefix_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    let original = "line one\nline two\n";
+    fs::write(project.join("src/main.rs"), original).unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let long_anchor = format!("{}é", "a".repeat(99));
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": "src/main.rs",
+            "anchor": long_anchor,
+            "content": "should not be inserted",
+            "before": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], false);
+    assert!(parsed["message"].as_str().unwrap().contains("not found"));
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert_eq!(content, original);
 }
 
 #[tokio::test]

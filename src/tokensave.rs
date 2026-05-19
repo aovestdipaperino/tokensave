@@ -1469,6 +1469,19 @@ impl TokenSave {
         Ok(())
     }
 
+    fn utf8_prefix_at_or_before(s: &str, max_bytes: usize) -> &str {
+        // Preserve byte budgets while avoiding invalid UTF-8 slice boundaries.
+        if s.len() <= max_bytes {
+            return s;
+        }
+
+        let mut end = max_bytes;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
     /// Performs a single string replacement.
     /// Fails if `old_str` is not found or matches more than once.
     pub async fn str_replace(
@@ -1557,7 +1570,7 @@ impl TokenSave {
                     applied_count: 0,
                     message: format!(
                         "replacement '{}' matches {} times, must match exactly once",
-                        if old.len() > 20 { &old[..20] } else { old },
+                        Self::utf8_prefix_at_or_before(old, 20),
                         count
                     ),
                 });
@@ -1626,10 +1639,11 @@ impl TokenSave {
             }
             line_num - 1
         } else {
+            let anchor_prefix = Self::utf8_prefix_at_or_before(anchor, 100);
             let matching_lines: Vec<usize> = lines
                 .iter()
                 .enumerate()
-                .filter(|(_, line)| line.contains(&anchor[..anchor.len().min(100)]))
+                .filter(|(_, line)| line.contains(anchor_prefix))
                 .map(|(i, _)| i)
                 .collect();
 
