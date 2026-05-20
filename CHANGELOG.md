@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Edit tool UTF-8 failure handling.** `tokensave_multi_str_replace` and `tokensave_insert_at` no longer panic when failure previews or long anchors contain multi-byte UTF-8 characters.
+- **GW-BASIC / MSBASIC2 REM stripping.** Comment extraction no longer relies on a byte-length guard; the `REM` keyword is now content-checked (case-insensitive) before slicing, eliminating a latent panic on multi-byte comment text.
+
+### Changed
+- **Shared `text::utf8_prefix_at_or_before` helper.** The UTF-8-safe byte-budgeted prefix logic introduced for the edit-tool fix is now a shared `crate::text` utility, and `context::builder` reuses it in place of its hand-rolled `is_char_boundary` walk-back.
 
 ## [5.1.1] - 2026-05-16
 

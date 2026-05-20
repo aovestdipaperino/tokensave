@@ -41,6 +41,7 @@ pub mod monitor;
 pub mod project_watcher;
 pub mod resolution;
 pub mod sync;
+pub mod text;
 pub mod tokensave;
 pub mod types;
 pub mod upgrade;

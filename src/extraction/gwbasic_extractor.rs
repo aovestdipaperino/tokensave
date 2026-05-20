@@ -200,12 +200,15 @@ impl GwBasicExtractor {
             statement_kind = child.kind().to_string();
             if child.kind() == "comment" {
                 let text = state.node_text(child);
-                // Strip "REM " prefix.
-                let stripped = if text.len() > 4 {
-                    text[4..].trim().to_string()
-                } else {
-                    text.trim_start_matches("REM").trim().to_string()
-                };
+                // Strip a leading "REM" keyword (case-insensitive) when present.
+                // Content-checked so non-ASCII text never lands the byte cut
+                // inside a multi-byte character.
+                let stripped = text
+                    .get(..3)
+                    .filter(|p| p.eq_ignore_ascii_case("REM"))
+                    .map_or(text.as_str(), |_| &text[3..])
+                    .trim()
+                    .to_string();
                 comment_text = Some(stripped);
             }
         }

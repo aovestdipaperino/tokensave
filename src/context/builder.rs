@@ -397,16 +397,11 @@ impl<'a> ContextBuilder<'a> {
 
             if let Some(code) = self.get_code_cached(node, file_cache) {
                 let truncated = if code.len() > options.max_code_block_size {
-                    let mut end = options.max_code_block_size;
-                    // Ensure we land on a valid UTF-8 boundary
-                    while !code.is_char_boundary(end) && end > 0 {
-                        end -= 1;
-                    }
-                    // Try to truncate at a line boundary
-                    if let Some(pos) = code[..end].rfind('\n') {
-                        end = pos;
-                    }
-                    format!("{}...", &code[..end])
+                    let prefix =
+                        crate::text::utf8_prefix_at_or_before(&code, options.max_code_block_size);
+                    // Prefer a line boundary within the truncated prefix.
+                    let end = prefix.rfind('\n').unwrap_or(prefix.len());
+                    format!("{}...", &prefix[..end])
                 } else {
                     code
                 };
