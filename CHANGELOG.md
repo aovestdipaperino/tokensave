@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-05-20
+
 ### Added
 - **Kiro agent integration.** `tokensave install --agent kiro` now installs the MCP server, global steering, managed Kiro agent config, default CLI agent selection, and Kiro hook mappings for prompt context, delegated tool context, and post-write re-indexing. Doctor and uninstall support are included with coverage for workspace overrides and idempotent cleanup.
 
 ### Fixed
-- **Edit tool UTF-8 failure handling.** `tokensave_multi_str_replace` and `tokensave_insert_at` no longer panic when failure previews or long anchors contain multi-byte UTF-8 characters.
+- **Edit tool UTF-8 failure handling (#78).** `tokensave_multi_str_replace` and `tokensave_insert_at` no longer panic when failure previews or long anchors contain multi-byte UTF-8 characters.
 - **GW-BASIC / MSBASIC2 REM stripping.** Comment extraction no longer relies on a byte-length guard; the `REM` keyword is now content-checked (case-insensitive) before slicing, eliminating a latent panic on multi-byte comment text.
 
 ### Changed
