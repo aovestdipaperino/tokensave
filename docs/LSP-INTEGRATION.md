@@ -249,7 +249,7 @@ Deferred to a future iteration. These servers have long initialization times (10
 | Dart | dart language-server | Dart SDK | 5-15s |
 | Swift | sourcekit-lsp | Swift toolchain | 5-15s |
 
-These are better suited to a daemon model where the LSP server stays alive between syncs rather than being spawned per-sync.
+These are better suited to a long-running model (e.g. embedded in the MCP server process) where the LSP server stays alive between syncs rather than being spawned per-sync.
 
 ### No LSP Available
 
@@ -334,7 +334,7 @@ The dominant cost is server initialization, not per-request latency. Once initia
 
 ### Mitigation Strategies
 
-**Daemon-kept servers.** When the tokensave daemon is running, LSP servers can be kept alive between syncs. The initialization cost is paid once; subsequent syncs only pay per-request costs. This changes the delta from +10-30s to +1-5s for incremental syncs.
+**MCP-kept servers.** When the tokensave MCP server is running, LSP servers can be kept alive between incremental syncs driven by the embedded watcher. The initialization cost is paid once; subsequent syncs only pay per-request costs. This changes the delta from +10-30s to +1-5s for incremental syncs.
 
 **Parallel server startup.** Phase 1 servers (all standalone binaries) can be spawned concurrently. A project using Rust + Go + C++ pays the init cost of the slowest server (rust-analyzer, ~10s), not the sum.
 
@@ -396,12 +396,12 @@ Work breakdown:
 
 Estimated total: ~630 lines, ~3-4 days.
 
-### Phase 3: Daemon Integration
+### Phase 3: MCP Server Integration
 
-Target: keep LSP servers alive between syncs via the daemon.
+Target: keep LSP servers alive between syncs via the embedded MCP watcher.
 
 Work breakdown:
-1. `LspManager` integration with `src/daemon.rs` (~200 lines)
+1. `LspManager` integration with the MCP server's project watcher (~200 lines)
 2. Server health checking and restart logic (~150 lines)
 3. Memory-bounded file cache (avoid re-opening unchanged files) (~200 lines)
 
@@ -409,7 +409,7 @@ Estimated total: ~550 lines, ~3-4 days.
 
 ### Phase 4: Heavy Runtime Servers
 
-Target: Java, Kotlin, Scala, C#, Dart, Swift. Deferred until Phase 3 (daemon integration) is complete, since these servers are only practical as long-running processes.
+Target: Java, Kotlin, Scala, C#, Dart, Swift. Deferred until Phase 3 (MCP integration) is complete, since these servers are only practical as long-running processes.
 
 ## Appendix: Broken-Code Tolerance Ranking
 

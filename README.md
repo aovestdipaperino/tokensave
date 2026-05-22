@@ -73,7 +73,7 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 | **48 MCP Tools** | **34 Languages** | **14 Agent Integrations** |
 | From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 26 more, including Markdown header extraction. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
-| Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Background daemon syncs the index automatically. Survives reboots. Restarts after upgrades. |
+| Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Embedded file watcher (when MCP server is running) syncs the index automatically. Multi-agent safe via per-project sync lock. |
 | **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
 | A native crash in any tree-sitter grammar (abort, segfault, anything) kills only the worker; the pool respawns it and sync continues. Sync never dies on a malformed file. | Composite health score (0-10000), Gini inequality, file-DAG depth, design-structure matrix, risk-weighted test gaps, and session deltas. | Edit files without regex or shell-quoting hazards: unique-anchor `str_replace`, atomic multi-replace, AST-rewrite, anchored insert. Auto re-indexes after writes. |
 
@@ -137,7 +137,7 @@ tokensave install --agent zed             # Zed
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, read-only tokensave auto-approval, AGENTS.md steering, and a tokensave-managed default agent with delegation guardrail hooks plus post-write sync; user-managed Kiro agents are preserved.
 
-All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook and the background daemon service.
+All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook.
 
 ### 3. Index your project
 
@@ -516,18 +516,51 @@ All tokensave users contribute to an anonymous aggregate counter. `tokensave sta
 
 ---
 
-## Background Daemon
+## Embedded File Watcher
 
-The daemon watches all tracked projects for file changes and runs incremental syncs automatically.
+When the tokensave MCP server is running (i.e. an agent is attached), it
+watches the project directory for file changes and automatically runs
+incremental syncs. The watcher lives for the lifetime of the MCP process —
+no separate daemon, no PID files, no system-service installation required.
 
-```bash
-tokensave daemon                       # start in foreground
-tokensave daemon --enable-autostart    # install as launchd/systemd/Windows Service
-tokensave daemon --disable-autostart   # remove autostart service
-tokensave daemon --status              # show daemon status
+Multiple agents on the same project coordinate via a per-project sync lock:
+only one sync runs at a time, and the others read the resulting fresh DB on
+their next query.
+
+Configure the debounce window in `~/.tokensave/config.toml`:
+
+```toml
+watcher_debounce = "2s"
 ```
 
-The daemon is upgrade-aware: it snapshots its own binary's mtime and size at startup and checks every 60 seconds. When a package manager replaces the binary (`brew upgrade`, `cargo install`, `scoop update`), the daemon flushes pending syncs and exits. The service manager (launchd `KeepAlive`, systemd `Restart=on-failure`, Windows SCM failure actions) automatically relaunches with the new version.
+**CLI-only workflows:** If you run `tokensave` commands without an attached
+agent, the watcher is not running. Install a git post-commit hook to keep
+your index fresh between commits:
+
+```bash
+cp scripts/post-commit .git/hooks/post-commit
+chmod +x .git/hooks/post-commit
+```
+
+### Upgrading from 5.x
+
+The standalone `tokensave daemon` command and its launchd/systemd/Windows
+Service autostart support were removed in 6.0.0. If you had a daemon
+autostart installed under 5.x, remove it manually.
+
+If you don't remember the exact service/plist name, list them first:
+
+- macOS: `launchctl list | grep tokensave`
+- Linux: `systemctl --user list-units | grep tokensave`
+- Windows: `sc.exe query state= all | findstr -i tokensave`
+
+Then remove the entry matching your install:
+
+- macOS: `launchctl unload ~/Library/LaunchAgents/com.tokensave.daemon.plist && rm ~/Library/LaunchAgents/com.tokensave.daemon.plist`
+- Linux: `systemctl --user disable --now tokensave-daemon && rm ~/.config/systemd/user/tokensave-daemon.service`
+- Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
+
+Once your agent is attached, the embedded watcher takes over automatically.
 
 ---
 
@@ -540,7 +573,7 @@ tokensave channel beta             # switch to beta channel
 tokensave channel stable           # switch back to stable
 ```
 
-`tokensave upgrade` downloads the correct platform binary from GitHub releases, stops the daemon, replaces the binary, and restarts the daemon. Supports stable and beta channels independently.
+`tokensave upgrade` downloads the correct platform binary from GitHub releases and replaces the running binary in place. Supports stable and beta channels independently.
 
 ---
 
@@ -561,7 +594,7 @@ tokensave cost --export json|csv   # Export cost data
 tokensave query <search> [path]    # Search symbols
 tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
-tokensave install [--agent NAME]   # Configure agent integration + daemon offer
+tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
 tokensave serve                    # Start MCP server
@@ -570,7 +603,6 @@ tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
 tokensave branch add|list|remove|removeall|gc   # Multi-branch management
-tokensave daemon [--enable-autostart|--disable-autostart|--status]
 tokensave current-counter          # Show per-project token counter
 tokensave reset-counter            # Reset per-project token counter
 tokensave disable-upload-counter   # Opt out of worldwide counter uploads
@@ -587,7 +619,7 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
-Checks: binary location, project index, global DB, user config, daemon status, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
+Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
@@ -703,7 +735,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Languages** | 34 (3 tiers: lite/medium/full) | 19+ |
 | **MCP tools** | 48 | 9 |
 | **Agent integrations** | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
-| **Background daemon** | Yes (launchd/systemd/Windows Service) | No (hook-based sync only) |
+| **Embedded file watcher** | Yes (in MCP process, multi-agent safe) | No (hook-based sync only) |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
@@ -761,10 +793,6 @@ The only tool that reports exactly how many tokens each individual MCP tool call
 
 MIT-licensed Rust, auditable end to end. Dual-Graph's core engine (`graperoot` on PyPI) is proprietary -- you can't see what it does with your code graph. OpenWolf is AGPL-3.0, which requires derivative works to be open-sourced.
 
-### Background daemon with upgrade awareness
-
-The only tool that runs as a system service (launchd/systemd/Windows SCM), persists across sessions and reboots, and automatically restarts when the binary is upgraded by any package manager.
-
 ### Performance
 
 Full-index benchmark on a 1,782-file mixed Rust/Java/Scala codebase (57K nodes, 103K edges):
@@ -806,7 +834,7 @@ Large projects take longer on the first full index.
 
 - Subsequent runs use incremental sync and are much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
-- The background daemon handles sync automatically
+- The embedded MCP watcher handles sync automatically while agents are connected
 
 ### Disabling tokensave for specific projects
 

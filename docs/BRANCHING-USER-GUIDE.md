@@ -3,8 +3,8 @@
 ## The problem
 
 Tokensave maintains a code graph in a single SQLite database per project. When you switch
-git branches, the files on disk change but the graph still reflects the old branch. The daemon
-eventually catches up by re-indexing changed files, but there are two costs:
+git branches, the files on disk change but the graph still reflects the old branch. The
+embedded MCP watcher eventually catches up by re-indexing changed files, but there are two costs:
 
 1. **Stale window.** Between the checkout and the next sync, every MCP query returns results
    from the old branch. A symbol search might surface a function that doesn't exist on the
@@ -15,13 +15,13 @@ eventually catches up by re-indexing changed files, but there are two costs:
    On large projects this adds up to minutes of wasted CPU and disk I/O per day.
 
 Multi-branch indexing solves both problems by keeping a separate database per branch. Each
-branch's graph is always accurate, switching is instant, and the daemon syncs only the branch
+branch's graph is always accurate, switching is instant, and the watcher syncs only the branch
 you're actually working on.
 
 ## How it works
 
 Multi-branch is fully opt-in. Without it, tokensave behaves exactly as before: one database,
-one graph, the daemon re-indexes whatever is on disk.
+one graph, the watcher re-indexes whatever is on disk.
 
 When you opt in, tokensave creates a `branch-meta.json` file inside `.tokensave/` that tracks
 which branches have their own database. The storage layout looks like this:
@@ -99,19 +99,19 @@ tokensave branch gc
 This checks each tracked branch against `.git/refs/heads/` and `packed-refs`, and deletes
 databases for branches that are gone.
 
-## How the daemon handles branches
+## How the watcher handles branches
 
-The daemon's behavior depends on whether multi-branch is active:
+The embedded MCP watcher's behavior depends on whether multi-branch is active:
 
-**Without multi-branch (default):** The daemon watches for file changes and syncs the single
+**Without multi-branch (default):** The watcher monitors for file changes and syncs the single
 `tokensave.db`. Switching branches triggers a sync of all changed files.
 
-**With multi-branch:** Before each sync, the daemon checks the current branch. If that branch
+**With multi-branch:** Before each sync, the watcher checks the current branch. If that branch
 is tracked, it syncs that branch's database. If it's not tracked, it syncs the default
 branch's database. After syncing, it updates the `last_synced_at` timestamp in the metadata.
 
-You don't need to restart the daemon after adding a branch. It picks up metadata changes on
-the next sync cycle.
+You don't need to restart the MCP server after adding a branch. The watcher picks up metadata
+changes on the next sync cycle.
 
 ## How the MCP server selects a database
 
@@ -222,7 +222,7 @@ Yes, using `tokensave_branch_search` and `tokensave_branch_diff`. These open the
 branch's database directly without requiring a checkout.
 
 **What happens on detached HEAD?**
-The MCP server falls back to the default branch's database with a warning. The daemon syncs
+The MCP server falls back to the default branch's database with a warning. The watcher syncs
 the default branch's database.
 
 **Does this work with worktrees?**

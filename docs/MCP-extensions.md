@@ -336,8 +336,8 @@ between "usable" and "fall back to raw source."
 ## Design observation: heavy file re-reads
 
 Not a tool proposal — but the scan found single-conversation Read counts of 76× for
-`src/tokensave.rs`, 85× for `claurst/src-rust/crates/api/src/lib.rs`, 47× for
-`src/daemon.rs`. This suggests either (a) the assistant doesn't trust prior cached snippets
+`src/tokensave.rs`, 85× for `claurst/src-rust/crates/api/src/lib.rs`, 47× for the
+since-removed `src/daemon.rs`. This suggests either (a) the assistant doesn't trust prior cached snippets
 to still be current, or (b) it lacks a "what's changed in this file since my last call"
 signal and re-reads defensively. Worth investigating before adding more tools — could be
 a `tokensave_context` mode flag (`incremental: true`) that returns only deltas since the

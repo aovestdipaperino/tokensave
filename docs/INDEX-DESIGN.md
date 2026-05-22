@@ -6,7 +6,7 @@ How tokensave builds and maintains a semantic code graph from source files, and 
 
 tokensave indexes a codebase into a directed graph stored in a single SQLite database at `.tokensave/tokensave.db`. Source files are parsed with tree-sitter to extract **nodes** (code entities) and **edges** (relationships between them). Cross-file references that cannot be resolved during single-file extraction are stored as **unresolved refs** and resolved in a second pass once all files have been processed.
 
-The graph is kept up-to-date through incremental sync: only files whose content hash has changed are re-extracted. A file-level lock prevents concurrent sync operations from the CLI and the background daemon.
+The graph is kept up-to-date through incremental sync: only files whose content hash has changed are re-extracted. A file-level lock prevents concurrent sync operations from the CLI and the embedded MCP file watcher (and from multiple MCP servers attached to the same project).
 
 ## Database Schema
 
@@ -186,7 +186,7 @@ The database runs with these pragmas applied on every connection:
 
 | Pragma | Value | Why |
 |---|---|---|
-| `journal_mode` | WAL | Concurrent readers during writes; daemon can serve queries while syncing |
+| `journal_mode` | WAL | Concurrent readers during writes; the MCP server can serve queries while the embedded watcher syncs |
 | `foreign_keys` | ON | Enforce CASCADE deletes |
 | `busy_timeout` | 120000 | 2-minute wait for locks instead of immediate SQLITE_BUSY |
 | `synchronous` | NORMAL | Acceptable durability trade-off for a rebuildable index |

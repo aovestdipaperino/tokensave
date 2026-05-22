@@ -2,7 +2,7 @@
 
 Both projects compress context for AI coding agents but with different centers of gravity:
 
-- **tokensave** — code-graph engine (libSQL + tree-sitter, 34 languages). 48 MCP tools focused on symbol-level intelligence (callers/callees, impact, complexity, DSM, test_risk, code-health composite, branch diffs, atomic edit primitives). Cost tracking, daemon, monitor TUI.
+- **tokensave** — code-graph engine (libSQL + tree-sitter, 34 languages). 48 MCP tools focused on symbol-level intelligence (callers/callees, impact, complexity, DSM, test_risk, code-health composite, branch diffs, atomic edit primitives). Cost tracking, embedded MCP file watcher, monitor TUI.
 - **lean-ctx** — context runtime that *also* compresses arbitrary file reads and shell output. ~56 MCP tools plus 95+ shell-hook patterns, multi-mode file reads, hybrid search with embeddings, portable `.lctxpkg` bundles, persistent knowledge facts.
 
 The two overlap in graph/impact analysis but diverge on read modes, shell-output compression, and persistent knowledge. Tokensave is deeper on graph quality metrics; lean-ctx is broader on the I/O surface.

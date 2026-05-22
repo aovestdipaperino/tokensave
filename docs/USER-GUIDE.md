@@ -15,7 +15,7 @@ Everything runs locally. Your code never leaves your machine.
 3. [Connecting to Your Agent](#connecting-to-your-agent)
 4. [Exploring Your Codebase from the CLI](#exploring-your-codebase-from-the-cli)
 5. [Keeping the Index Fresh](#keeping-the-index-fresh)
-6. [The Background Daemon](#the-background-daemon)
+6. [The Embedded File Watcher](#the-embedded-file-watcher)
 7. [Checking Your Setup with Doctor](#checking-your-setup-with-doctor)
 8. [Finding Affected Tests](#finding-affected-tests)
 9. [MCP Tools for AI Agents](#mcp-tools-for-ai-agents)
@@ -209,7 +209,7 @@ sync the index after Kiro writes files. If you already have a different custom
 default agent or a user-managed `tokensave` agent, tokensave leaves it alone and
 prints a warning.
 
-The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook and the background daemon (more on those below).
+The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook (more on that below).
 
 #### Config backups
 
@@ -319,52 +319,59 @@ cp scripts/post-commit .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 ```
 
-### Background daemon
+### Embedded file watcher
 
-The daemon watches all your tracked projects for file changes and syncs automatically. See the next section.
+When you start the tokensave MCP server (e.g. via your agent), it watches the project directory and syncs automatically. See the next section.
 
 ---
 
-## The Background Daemon
+## The Embedded File Watcher
 
-The background daemon monitors all projects you've indexed and runs incremental syncs whenever files change on disk. This means your index is always up to date, even between commits.
+When you start the tokensave MCP server (e.g. via your agent), it watches
+the project directory for file changes and automatically runs incremental
+syncs in the background. The watcher's lifetime is bound to the MCP
+process — when the agent exits, the watcher exits.
 
-### Starting the daemon
+Multiple MCP servers on the same project (e.g. two agents) coordinate via
+a per-project sync lock: only one sync runs at a time.
 
-```bash
-tokensave daemon
+Configure the debounce interval in `~/.tokensave/config.toml`:
+
+```toml
+watcher_debounce = "15s"
 ```
 
-This forks into the background. To run it in the foreground (useful for debugging), pass `--foreground`:
+### CLI-Only Workflows
+
+If you don't keep an agent attached, the watcher is not running. Use a
+git post-commit hook to refresh the index on commit:
 
 ```bash
-tokensave daemon --foreground
+cp scripts/post-commit .git/hooks/post-commit
+chmod +x .git/hooks/post-commit
 ```
 
-### Checking daemon status
+Or run `tokensave sync` manually when you need a fresh index.
 
-```bash
-tokensave daemon --status
-```
+### Upgrading from 5.x
 
-### Stopping the daemon
+The standalone `tokensave daemon` command and its system-service autostart
+were removed in 6.0.0. If you had a daemon autostart installed under 5.x,
+remove it manually.
 
-```bash
-tokensave daemon --stop
-```
+If you don't remember the exact service/plist name, list them first:
 
-### Autostart on boot
+- macOS: `launchctl list | grep tokensave`
+- Linux: `systemctl --user list-units | grep tokensave`
+- Windows: `sc.exe query state= all | findstr -i tokensave`
 
-You can register the daemon as a system service so it starts automatically when you log in:
+Then remove the entry matching your install:
 
-```bash
-tokensave daemon --enable-autostart    # install launchd (macOS) / systemd (Linux) / Windows Service
-tokensave daemon --disable-autostart   # remove the autostart service
-```
+- macOS: `launchctl unload ~/Library/LaunchAgents/com.tokensave.daemon.plist && rm ~/Library/LaunchAgents/com.tokensave.daemon.plist`
+- Linux: `systemctl --user disable --now tokensave-daemon && rm ~/.config/systemd/user/tokensave-daemon.service`
+- Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
 
-### Upgrade-aware restarts
-
-When you upgrade tokensave (via `brew upgrade`, `cargo install`, `scoop update`, or any other method), the running daemon detects that its binary has been replaced and automatically restarts with the new version. You don't need to manually stop and start it.
+Once your agent is attached, the embedded watcher takes over automatically.
 
 ---
 
@@ -622,7 +629,7 @@ The `upgrade` command downloads the latest release from GitHub and replaces the 
 tokensave upgrade
 ```
 
-It automatically stops the background daemon before replacing the binary and restarts it afterwards if it was running. Beta and stable are separate update channels — a beta build only sees beta releases and vice versa.
+Beta and stable are separate update channels — a beta build only sees beta releases and vice versa. Any attached MCP servers will continue running with the previous binary until you restart your agent.
 
 You can also update through your package manager:
 
@@ -704,7 +711,7 @@ The initial full index of a large project can take a few seconds. This is normal
 
 - Subsequent syncs are incremental and much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
-- The post-commit hook and daemon run in the background so they never block you
+- The post-commit hook and the embedded MCP watcher run in the background so they never block you
 
 ### Stale install warning
 
