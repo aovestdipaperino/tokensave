@@ -1,4 +1,4 @@
-# TokenSave: From 1.0 to 4.0, the Story So Far
+# TokenSave: From 1.0 to 6.0, the Story So Far
 
 [Illustration: generate a landscape oriented image of a glowing semantic knowledge graph floating above a laptop screen, with nodes and edges made of light connecting code symbols, a small orange crab perched on the laptop corner observing the graph, dark workspace background with subtle warm lighting, photographic style with shallow depth of field]
 
@@ -232,6 +232,43 @@ flowchart TB
 ```
 
 Languages went from 15 to 31. MCP tools from 9 to 37. Supported agents from 1 to 9. Test count from a handful to over 1,000 with 84% line coverage (measured at v3.4.0). The database schema migrated multiple times, each migration triggering an automatic re-index so users never have to think about it. The codebase refactored itself twice along the way: once to extract the agent abstraction (1.8.0), once to decompose oversized functions for NASA Power of 10 compliance (1.7.1, where no function exceeds 47 lines).
+
+## The Daemon Goes Away (6.0.0)
+
+The daemon was a 4.x-era idea, and by 5.x it had become disproportionate to what it actually provided. Roughly 1,100 lines of OS-coupling code -- Unix fork/setsid, launchd plists, systemd user units, Windows SCM registration with failure-recovery actions, PID files, upgrade self-detection, idempotent re-installs, UAC elevation for service registration -- all in service of one job: notice when files change and run an incremental sync. Useful, but the cost-to-benefit ratio kept getting worse with every platform-specific bug fix.
+
+Meanwhile, the MCP server was always running anyway. Whenever an agent is attached to a project, an MCP server instance is alive for the duration of that session. It already has exactly the lifecycle a file watcher needs: it starts when the agent connects and dies when the agent disconnects. Version 6.0.0 moves the file watcher inside it. When the MCP server boots, it spawns a `notify`-backed watcher that debounces file events and runs `sync_incremental` directly. No separate process, no service registration, no platform-specific install steps.
+
+Multiple agents on the same project converge correctly through the existing per-project sync lock plus a `sync_if_stale_silent` peer-coordination call. When two MCP servers see a file change at nearly the same moment, only one of them holds the lock and performs the sync; the other detects that the index is already fresh and skips. No new coordination primitive was needed -- the locking that already protected concurrent writes turned out to be sufficient for concurrent watchers, too.
+
+The config field renames accordingly: `daemon_debounce` becomes `watcher_debounce`. The rename is friendly in both directions. Existing `~/.tokensave/config.toml` files load fine because the new field is annotated with `#[serde(alias = "daemon_debounce")]`, and the next command that mutates the config (anything that writes it back -- adding an agent, switching channels, etc.) silently rewrites the file using the new name. There is no manual migration step; users who never edit their config will see the new name appear naturally the first time the file is touched.
+
+### Breaking
+
+- The `tokensave daemon` subcommand is removed. The autostart flags (`--enable-autostart`, `--disable-autostart`), the foreground mode, and all `daemon-kit`-backed service registration are gone.
+- `UserConfig::daemon_debounce` is now `UserConfig::watcher_debounce`. This is a programmatic-API break. The `user_config` module is `pub`, so any external crate that constructs a `UserConfig` literal referencing the old field name will fail to compile. The serde alias only covers deserialization from TOML, not Rust struct literals.
+
+### Migration
+
+Users who previously ran `tokensave daemon --enable-autostart` need to remove the orphaned service. The command depends on platform:
+
+- **macOS:** `launchctl unload ~/Library/LaunchAgents/com.tokensave.daemon.plist`, then `rm ~/Library/LaunchAgents/com.tokensave.daemon.plist`.
+- **Linux:** `systemctl --user disable --now tokensave-daemon`, then remove the unit file from `~/.config/systemd/user/`.
+- **Windows:** `sc.exe delete tokensave-daemon` from an elevated terminal.
+
+If you don't remember whether you registered autostart, these discovery commands will tell you:
+
+- **macOS:** `launchctl list | grep tokensave`
+- **Linux:** `systemctl --user list-units | grep tokensave`
+- **Windows:** `sc.exe query state= all | findstr -i tokensave`
+
+CLI-only users (anyone who runs `tokensave` commands without an attached agent) lose automatic background syncing. The recommended replacement is a git post-commit hook -- a starter script lives at `scripts/post-commit` in the tokensave repo. Drop it into `.git/hooks/post-commit` in each project where you want the index to update on commit.
+
+### What this means for you
+
+If you use TokenSave through an AI coding agent (Claude Code, Codex CLI, OpenCode, Gemini, Cursor, Zed, Cline, Roo Code, or Copilot), nothing changes from your perspective except that you no longer have a background process to manage. The MCP server keeps your index fresh while you work, exactly as the daemon used to, just without a separate lifecycle to debug.
+
+If you use TokenSave purely from the CLI without an attached agent, this is a real regression: the index won't update on its own anymore. Install the post-commit hook, or run `tokensave sync` manually before queries. The trade is honest -- removing 1,100 lines of platform glue meant accepting that the embedded watcher only runs when an agent is attached.
 
 ## What Comes Next
 
