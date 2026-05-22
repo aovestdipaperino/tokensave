@@ -106,7 +106,6 @@ walkdir = "2"
 ignore = "0.4"
 gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
 dirs = "6"
-daemon-kit = "0.1.4"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
 rayon = "1"
