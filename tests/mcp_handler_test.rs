@@ -4369,3 +4369,35 @@ pub mod e;
         "first search hit for LinearOperator should be the trait definition, got '{first_kind}' (full: {arr:?})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// McpServer::refresh_file_token_map
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn refresh_file_token_map_picks_up_new_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
+
+    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    let server = tokensave::mcp::McpServer::new(cg, None).await;
+    let initial_map = server.file_token_map_snapshot();
+    let initial_keys: std::collections::HashSet<_> = initial_map.keys().cloned().collect();
+
+    // Add a new file, sync it, then refresh.
+    std::fs::write(project.join("b.rs"), "fn b() { let y = 2; }").unwrap();
+    let cg2 = tokensave::tokensave::TokenSave::open(project).await.unwrap();
+    cg2.sync().await.unwrap();
+
+    server.refresh_file_token_map().await;
+    let after_map = server.file_token_map_snapshot();
+    let after_keys: std::collections::HashSet<_> = after_map.keys().cloned().collect();
+
+    assert!(
+        after_keys.len() > initial_keys.len(),
+        "refresh should pick up b.rs"
+    );
+}

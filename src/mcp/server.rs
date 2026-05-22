@@ -244,6 +244,29 @@ impl McpServer {
         delta
     }
 
+    /// Re-read the file-to-token-count map from the DB and swap it into the
+    /// cached `file_token_map`. Called by the embedded watcher after each
+    /// background sync so the accounting tracks newly indexed / removed files.
+    pub async fn refresh_file_token_map(&self) {
+        // best-effort; leave stale map in place if the DB read fails
+        let Ok(fresh) = self.cg.get_file_token_map().await else {
+            return;
+        };
+        if let Ok(mut guard) = self.file_token_map.lock() {
+            *guard = fresh;
+        }
+    }
+
+    /// Internal: snapshot of the current `file_token_map`. Exposed for
+    /// integration tests only; not part of the stable public API.
+    #[doc(hidden)]
+    pub fn file_token_map_snapshot(&self) -> HashMap<String, u64> {
+        self.file_token_map
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     /// Flushes pending tokens to the worldwide counter if at least 30 seconds
     /// have elapsed since the last flush. Best-effort, never blocks for long.
     async fn maybe_flush_worldwide(&self) {
