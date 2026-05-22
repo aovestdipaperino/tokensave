@@ -890,24 +890,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     .map(|rel| rel.to_string_lossy().into_owned())
             });
 
-            // If the daemon isn't running, watch this project for local changes.
-            let watcher_cancel = if tokensave::daemon::running_daemon_pid().is_none() {
-                let config = tokensave::user_config::UserConfig::load();
-                let debounce = tokensave::user_config::parse_duration(&config.watcher_debounce)
-                    .unwrap_or(std::time::Duration::from_secs(15));
-                if let Some(pw) =
-                    tokensave::project_watcher::ProjectWatcher::new(project_path.clone(), debounce)
-                {
-                    let token = tokio_util::sync::CancellationToken::new();
-                    tokio::spawn(pw.run(token.clone()));
-                    Some(token)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
             let server = tokensave::mcp::McpServer::new(cg, scope_prefix).await;
             let mut transport = tokensave::mcp::StdioTransport::new();
             // If we peeked at stdin to read `initialize` roots, replay that line.
@@ -915,11 +897,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 server.handle_and_write(&line, &mut transport).await;
             }
             server.run(&mut transport).await?;
-
-            // Stop the watcher when the server exits.
-            if let Some(token) = watcher_cancel {
-                token.cancel();
-            }
+            server.shutdown().await;
         }
         Commands::Upgrade => {
             tokensave::upgrade::run_upgrade()?;

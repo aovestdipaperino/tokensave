@@ -4401,3 +4401,39 @@ async fn refresh_file_token_map_picks_up_new_files() {
         "refresh should pick up b.rs"
     );
 }
+
+// ---------------------------------------------------------------------------
+// McpServer-owned embedded watcher
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
+
+    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    let server = tokensave::mcp::McpServer::new(cg, None).await;
+    let initial_count = server.file_token_map_snapshot().len();
+
+    // Edit a file. The embedded watcher should debounce + sync + refresh.
+    std::fs::write(project.join("b.rs"), "fn b() {}").unwrap();
+
+    // Wait for debounce + sync + refresh with a generous ceiling.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while server.file_token_map_snapshot().len() <= initial_count
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let after_count = server.file_token_map_snapshot().len();
+    assert!(
+        after_count > initial_count,
+        "embedded watcher should have refreshed map ({initial_count} -> {after_count})"
+    );
+
+    server.shutdown().await;
+}

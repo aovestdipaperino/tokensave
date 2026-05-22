@@ -6,7 +6,8 @@
 //! allowing AI assistants to query the code graph interactively.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -172,11 +173,24 @@ pub struct McpServer {
     /// this holds the relative path prefix (e.g. `"src/mcp"`). Listing tools
     /// use it as the default path filter. `None` when cwd == project root.
     scope_prefix: Option<String>,
+    /// Cancellation token for the embedded file watcher. `None` if the
+    /// watcher could not be started (e.g. inotify watch limit exceeded).
+    watcher_cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// Set to `true` after `shutdown` runs once; makes shutdown idempotent so
+    /// callers can invoke it explicitly after `run` returns without re-running
+    /// persistence logic.
+    shutdown_done: AtomicBool,
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
-    pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Self {
+    ///
+    /// The returned `Arc<Self>` owns an embedded `ProjectWatcher` task that
+    /// debounces file-system changes, syncs the index in the background, and
+    /// refreshes `file_token_map` after each sync. The watcher is bound to the
+    /// server's lifetime via a `Weak<Self>` so it cannot extend it; call
+    /// [`shutdown`](Self::shutdown) for prompt cancellation.
+    pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
@@ -184,7 +198,7 @@ impl McpServer {
         if let Some(ref gdb) = global_db {
             gdb.upsert(cg.project_root(), persisted).await;
         }
-        Self {
+        let server = Arc::new(Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
@@ -199,7 +213,51 @@ impl McpServer {
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
             scope_prefix,
+            watcher_cancel: std::sync::Mutex::new(None),
+            shutdown_done: AtomicBool::new(false),
+        });
+
+        // Start the embedded file watcher (best-effort; may fail under
+        // inotify watch limits or on unsupported filesystems).
+        let config = crate::user_config::UserConfig::load();
+        // Fallback matches the literal `"2s"` returned by
+        // `user_config::default_watcher_debounce`; keep in sync.
+        let debounce = crate::user_config::parse_duration(&config.watcher_debounce)
+            .unwrap_or(std::time::Duration::from_secs(2));
+        let project_root = server.cg.project_root().to_path_buf();
+
+        if let Some(pw) =
+            crate::project_watcher::ProjectWatcher::new(project_root.clone(), debounce)
+        {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let cancel_for_task = cancel.clone();
+            // Weak ref: the watcher task must not keep the server alive.
+            let server_for_cb = Arc::downgrade(&server);
+
+            tokio::spawn(async move {
+                pw.run_with_callback(cancel_for_task, move || {
+                    let weak = server_for_cb.clone();
+                    async move {
+                        if let Some(s) = weak.upgrade() {
+                            s.refresh_file_token_map().await;
+                        }
+                    }
+                })
+                .await;
+            });
+
+            if let Ok(mut guard) = server.watcher_cancel.lock() {
+                *guard = Some(cancel);
+            }
+        } else {
+            eprintln!(
+                "[tokensave] warning: failed to start embedded file watcher for {}; \
+                 index will not auto-refresh on file changes",
+                project_root.display()
+            );
         }
+
+        server
     }
 
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
@@ -482,10 +540,34 @@ impl McpServer {
         Ok(())
     }
 
-    /// Performs graceful shutdown: persists the tokens-saved counter,
-    /// flushes pending tokens to the worldwide counter, checkpoints the WAL,
-    /// and logs a session summary.
-    async fn shutdown(&self) {
+    /// Performs graceful shutdown: cancels the embedded file watcher,
+    /// persists the tokens-saved counter, flushes pending tokens to the
+    /// worldwide counter, checkpoints the WAL, and logs a session summary.
+    ///
+    /// Idempotent — safe to call multiple times. `run` invokes it once when
+    /// its main loop exits; callers (e.g. `main.rs`, tests) may invoke it
+    /// explicitly afterwards without re-running the persistence logic.
+    pub async fn shutdown(&self) {
+        // Cancel the embedded watcher first so its final-flush sync can race
+        // with the rest of shutdown rather than after.
+        let cancel = self
+            .watcher_cancel
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        if let Some(token) = cancel {
+            token.cancel();
+        }
+
+        // Idempotency guard: only run the persistence path once.
+        if self.shutdown_done.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        // Give the watcher's final-flush sync a moment to land before we
+        // checkpoint the WAL.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         let uptime = self.stats.started_at.elapsed();
         let tool_calls = self.stats.tool_calls.load(Ordering::Relaxed);
         let tokens_saved = self.tokens_saved.load(Ordering::Relaxed);
@@ -1115,5 +1197,21 @@ impl McpServer {
         }
 
         stats
+    }
+}
+
+impl Drop for McpServer {
+    fn drop(&mut self) {
+        // Best-effort cancellation: if `shutdown()` wasn't called, ensure the
+        // embedded watcher task still receives a cancel signal so it can exit
+        // promptly instead of relying on `Weak::upgrade()` no-ops.
+        // `CancellationToken::cancel()` is sync and idempotent; `Option::take`
+        // makes repeated drops a no-op. `if let Ok` matches the poisoned-mutex
+        // resilience used elsewhere in this file.
+        if let Ok(mut guard) = self.watcher_cancel.lock() {
+            if let Some(token) = guard.take() {
+                token.cancel();
+            }
+        }
     }
 }
