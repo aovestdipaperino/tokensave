@@ -739,7 +739,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             user_cfg.save();
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
-            tokensave::daemon::offer_daemon_autostart();
         }
         Commands::Reinstall => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
@@ -966,33 +965,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Doctor { agent } => {
             tokensave::doctor::run_doctor(agent.as_deref()).await;
-        }
-        Commands::Daemon {
-            foreground,
-            stop,
-            status,
-            enable_autostart,
-            disable_autostart,
-            debounce,
-        } => {
-            if stop {
-                tokensave::daemon::stop()?;
-            } else if status {
-                let code = tokensave::daemon::status();
-                std::process::exit(code);
-            } else if enable_autostart {
-                tokensave::daemon::enable_autostart()?;
-            } else if disable_autostart {
-                tokensave::daemon::disable_autostart()?;
-            } else {
-                let upgraded = tokensave::daemon::run(foreground, debounce).await?;
-                if upgraded {
-                    // Exit with non-zero code so the service manager (launchd
-                    // KeepAlive / systemd Restart=on-failure / Windows SCM
-                    // failure actions) restarts with the new binary.
-                    std::process::exit(1);
-                }
-            }
         }
         Commands::Cost {
             range,
@@ -1267,4 +1239,3 @@ mod startup_tests {
 // gather_local_projects, gather_local_projects_from, find_descendant_tokensave,
 // print_flash_warning, and tokensave_dir_size have been moved to src/global.rs.
 // direct test 1774739850
-// daemon-test-1774740132

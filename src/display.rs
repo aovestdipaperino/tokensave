@@ -247,20 +247,8 @@ fn shuffle_flags(flags: &[String]) -> Vec<String> {
 
 fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let version = env!("CARGO_PKG_VERSION");
-    let daemon_running = crate::daemon::running_daemon_pid().is_some();
-    let title = if daemon_running {
-        format!("😈 TokenSave v{version}")
-    } else {
-        format!("   TokenSave v{version}")
-    };
-    // "😈 " is 3 display columns (2-wide emoji + space) but 6 bytes;
-    // "   " is 3 display columns and 3 bytes.
-    // Display width = byte len minus the overhead of the emoji bytes.
-    let title_display_width = if daemon_running {
-        title.len() - 2
-    } else {
-        title.len()
-    };
+    let title = format!("   TokenSave v{version}");
+    let title_display_width = title.len();
     let available = inner_width.saturating_sub(2);
 
     if country_flags.is_empty() {

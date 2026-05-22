@@ -23,7 +23,6 @@ pub mod branch_meta;
 pub mod cloud;
 pub mod config;
 pub mod context;
-pub mod daemon;
 pub mod db;
 pub mod derive_table;
 pub mod diagnose;

@@ -3,13 +3,11 @@
 //! Downloads the latest release asset directly from GitHub, extracts the
 //! binary, and replaces the running executable using `self_replace`.
 //! Beta and stable are separate channels — a beta build only sees beta
-//! releases and vice versa. The daemon is stopped before the binary is
-//! replaced and restarted afterwards if it was running.
+//! releases and vice versa.
 
 use std::path::Path;
 
 use crate::cloud::{self, InstallMethod};
-use crate::daemon;
 use crate::errors::{Result, TokenSaveError};
 
 const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
@@ -478,8 +476,8 @@ fn replace_for_scoop(new_exe: &Path, _new_version: &str) -> Result<()> {
 
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
 /// Verifies the release asset exists on GitHub and returns the download URL.
-/// Call this *before* stopping the daemon so we don't disrupt the user when
-/// CI hasn't finished building the release yet.
+/// Call this early so we fail fast when CI hasn't finished building the
+/// release yet.
 fn preflight_asset_check(version: &str, is_beta: bool) -> Result<String> {
     let tag = release_tag(version);
     let expected = asset_name(version, is_beta);
@@ -506,30 +504,6 @@ fn perform_upgrade(version: &str, asset_url: &str, method: &InstallMethod) -> Re
     eprintln!(" Done");
 
     Ok(())
-}
-
-/// Restart the daemon by spawning a detached `tokensave daemon` process.
-fn restart_daemon() {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "  \x1b[33mwarning:\x1b[0m could not determine executable path to restart daemon: {e}"
-            );
-            return;
-        }
-    };
-
-    match std::process::Command::new(&exe)
-        .arg("daemon")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => eprintln!("  \x1b[32m✔\x1b[0m Daemon restarted"),
-        Err(e) => eprintln!("  \x1b[33mwarning:\x1b[0m failed to restart daemon: {e}"),
-    }
 }
 
 fn brew_upgrade_command() -> (&'static str, [&'static str; 2]) {
@@ -568,8 +542,7 @@ fn run_brew_upgrade(current: &str) -> Result<String> {
 
 /// Check for a newer version and perform the upgrade if one is available.
 ///
-/// Stops the daemon before replacing the binary and restarts it after if
-/// it was running. Returns the new version string on success.
+/// Returns the new version string on success.
 pub fn run_upgrade() -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let is_beta = cloud::is_beta();
@@ -604,34 +577,11 @@ pub fn run_upgrade() -> Result<String> {
 
     eprintln!("Upgrading v{current} → v{latest}...");
 
-    // Verify the binary asset exists before disrupting the daemon.
     let asset_url = preflight_asset_check(latest, is_beta)?;
 
-    let daemon_was_running = daemon::running_daemon_pid().is_some();
-    if daemon_was_running {
-        eprintln!("  Stopping daemon...");
-        daemon::stop().ok();
-    }
-
-    let result = perform_upgrade(latest, &asset_url, &method);
-
-    match result {
-        Ok(()) => {
-            eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
-            if daemon_was_running {
-                eprintln!("  Restarting daemon...");
-                restart_daemon();
-            }
-            Ok(latest.to_string())
-        }
-        Err(e) => {
-            if daemon_was_running {
-                eprintln!("  Restarting daemon (upgrade failed, old version still in place)...");
-                restart_daemon();
-            }
-            Err(e)
-        }
-    }
+    perform_upgrade(latest, &asset_url, &method)?;
+    eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
+    Ok(latest.to_string())
 }
 
 /// Print the current channel.
@@ -642,9 +592,6 @@ pub fn show_channel() {
 }
 
 /// Switch to a different channel by downloading the latest release from it.
-///
-/// Stops the daemon before replacing the binary and restarts it afterwards
-/// if it was running.
 pub fn switch_channel(target_channel: &str) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let current_is_beta = cloud::is_beta();
@@ -680,34 +627,11 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 
     eprintln!("  Target: v{latest}");
 
-    // Verify the binary asset exists before disrupting the daemon.
     let asset_url = preflight_asset_check(&latest, target_is_beta)?;
 
-    let daemon_was_running = daemon::running_daemon_pid().is_some();
-    if daemon_was_running {
-        eprintln!("  Stopping daemon...");
-        daemon::stop().ok();
-    }
-
-    let result = perform_upgrade(&latest, &asset_url, &method);
-
-    match result {
-        Ok(()) => {
-            eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
-            if daemon_was_running {
-                eprintln!("  Restarting daemon...");
-                restart_daemon();
-            }
-            Ok(latest)
-        }
-        Err(e) => {
-            if daemon_was_running {
-                eprintln!("  Restarting daemon (switch failed, old version still in place)...");
-                restart_daemon();
-            }
-            Err(e)
-        }
-    }
+    perform_upgrade(&latest, &asset_url, &method)?;
+    eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
+    Ok(latest)
 }
 
 #[cfg(test)]

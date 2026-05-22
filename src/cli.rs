@@ -205,27 +205,6 @@ pub enum Commands {
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
     },
-    /// Background file watcher daemon
-    Daemon {
-        /// Run in foreground (don't fork)
-        #[arg(long)]
-        foreground: bool,
-        /// Stop the running daemon
-        #[arg(long)]
-        stop: bool,
-        /// Show daemon status
-        #[arg(long)]
-        status: bool,
-        /// Install autostart service (launchd/systemd)
-        #[arg(long)]
-        enable_autostart: bool,
-        /// Remove autostart service
-        #[arg(long)]
-        disable_autostart: bool,
-        /// Override debounce duration (e.g. "2s", "15s", "1m"). Overrides config.
-        #[arg(long)]
-        debounce: Option<String>,
-    },
     /// Token cost summary from Claude Code sessions
     Cost {
         /// Time range: "today", "7d", "30d", "month", or "all"

@@ -1,9 +1,9 @@
 // Rust guideline compliant 2025-10-17
 //! Single-project file watcher with debounced incremental sync.
 //!
-//! Extracted from the daemon's per-project logic so it can be reused
-//! from both [`crate::daemon`] (multi-project) and the MCP server
-//! (single-project, when the daemon isn't running).
+//! Embedded inside the MCP server to keep the project index fresh while
+//! agents are connected. Multiple MCP peers coordinate through a sync
+//! lock so only one runs an incremental sync at a time.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

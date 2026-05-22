@@ -855,7 +855,7 @@ impl TokenSave {
         // Try to acquire sync lock and do an incremental sync.
         // The full sync will pick up any changed files, including our stale ones.
         let Ok(lock) = try_acquire_sync_lock(&self.project_root) else {
-            // Another sync is in progress (likely daemon) — let caller warn
+            // Another sync is in progress (likely another MCP peer) — let caller warn
             return Ok(true);
         };
 
