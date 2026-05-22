@@ -83,41 +83,13 @@ impl ProjectWatcher {
         &self.project_root
     }
 
-    /// Run the watch loop until the cancellation token fires.
+    /// Run the watch loop until the cancellation token fires, invoking
+    /// `on_sync` after each successful sync completes.
     ///
     /// Flushes any pending sync before returning so that changes observed
-    /// shortly before shutdown are not lost.
-    pub async fn run(mut self, cancel: CancellationToken) {
-        let mut deadline: Option<Instant> = None;
-
-        loop {
-            let sleep_dur = match deadline {
-                Some(d) => d.saturating_duration_since(Instant::now()),
-                None => Duration::from_hours(1),
-            };
-
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    if deadline.is_some() {
-                        sync_project(&self.project_root).await;
-                    }
-                    break;
-                }
-                Some(()) = self.rx.recv() => {
-                    deadline = Some(Instant::now() + self.debounce);
-                }
-                () = tokio::time::sleep(sleep_dur), if deadline.is_some() => {
-                    deadline = None;
-                    sync_project(&self.project_root).await;
-                }
-            }
-        }
-    }
-
-    /// Like `run`, but invokes `on_sync` after each successful sync completes.
-    ///
-    /// Used by the embedded MCP watcher to refresh in-memory caches
-    /// (e.g. `file_token_map`) after each background sync.
+    /// shortly before shutdown are not lost. Used by the embedded MCP
+    /// watcher to refresh in-memory caches (e.g. `file_token_map`) after
+    /// each background sync.
     pub async fn run_with_callback<F, Fut>(
         mut self,
         cancel: CancellationToken,
