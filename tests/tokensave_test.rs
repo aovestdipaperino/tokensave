@@ -425,3 +425,29 @@ async fn test_get_stats() {
     assert!(stats.node_count > 0, "should have nodes");
     assert!(stats.file_count > 0, "should have files");
 }
+
+// ---------------------------------------------------------------------------
+// sync_if_stale_silent
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sync_if_stale_silent_returns_ok_when_lock_held() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path();
+    std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
+
+    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    // Hold the sync lock to simulate a peer MCP syncing.
+    let lock = tokensave::tokensave::try_acquire_sync_lock(project).expect("lock");
+
+    // Touch the file so it's stale.
+    std::fs::write(project.join("a.rs"), "fn a() { let x = 1; }").unwrap();
+
+    // Silent variant should return Ok(()) without complaining.
+    let result = cg.sync_if_stale_silent(&["a.rs".to_string()]).await;
+    assert!(result.is_ok(), "expected Ok, got {result:?}");
+
+    drop(lock);
+}

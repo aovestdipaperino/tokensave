@@ -545,7 +545,10 @@ fn print_corruption_warning() {
 /// RAII guard that holds the sync lockfile open. Removing the lockfile on drop
 /// is best-effort; if it fails (e.g. permissions), the stale-PID check on the
 /// next attempt will reclaim it.
-struct SyncLockGuard {
+///
+/// Internal: exposed for integration tests; not part of the stable public API.
+#[doc(hidden)]
+pub struct SyncLockGuard {
     path: PathBuf,
 }
 
@@ -561,7 +564,10 @@ impl Drop for SyncLockGuard {
 /// already exists and the PID inside is still alive, returns a `SyncLock`
 /// error. Stale lockfiles (dead PID or unreadable content) are reclaimed
 /// automatically.
-fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
+///
+/// Internal: exposed for integration tests; not part of the stable public API.
+#[doc(hidden)]
+pub fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
     use std::io::Write;
     let lock_path = get_tokensave_dir(project_root).join("sync.lock");
     let pid = std::process::id();
@@ -867,6 +873,31 @@ impl TokenSave {
             }
             Err(_) => Ok(true), // Sync failed — warn caller
         }
+    }
+
+    /// Like `sync_if_stale` but treats lock contention as success.
+    ///
+    /// Use this from the embedded MCP watcher when another MCP (or any peer
+    /// process) already holds the project sync lock — the peer will produce
+    /// the updated DB, so this caller has nothing to do and no reason to warn.
+    pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
+        if stale_files.is_empty() {
+            return Ok(());
+        }
+
+        let still_stale_before = self.check_file_staleness(stale_files).await;
+        if still_stale_before.is_empty() {
+            return Ok(());
+        }
+
+        let Ok(lock) = try_acquire_sync_lock(&self.project_root) else {
+            // Peer is syncing. That's fine — they'll write the updated DB.
+            return Ok(());
+        };
+
+        let _ = self.sync_single_files(stale_files).await;
+        drop(lock);
+        Ok(())
     }
 
     /// Index/reexamine the given file paths, updating their graph nodes and edges.
