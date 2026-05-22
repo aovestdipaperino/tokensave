@@ -77,21 +77,6 @@ impl BinarySnapshot {
     }
 }
 
-/// Parse a human-readable duration string like "15s" or "1m" into a Duration.
-pub fn parse_duration(s: &str) -> Option<Duration> {
-    let s = s.trim();
-    if let Some(secs) = s.strip_suffix('s') {
-        secs.trim().parse::<u64>().ok().map(Duration::from_secs)
-    } else if let Some(mins) = s.strip_suffix('m') {
-        mins.trim()
-            .parse::<u64>()
-            .ok()
-            .map(|m| Duration::from_secs(m * 60))
-    } else {
-        s.parse::<u64>().ok().map(Duration::from_secs)
-    }
-}
-
 /// Returns the `~/.tokensave` directory used for PID/log files.
 fn daemon_pid_dir() -> PathBuf {
     dirs::home_dir()
@@ -452,9 +437,10 @@ pub async fn run(foreground: bool, debounce_override: Option<String>) -> Result<
 
     let config = crate::user_config::UserConfig::load();
     let debounce = if let Some(ref override_str) = debounce_override {
-        parse_duration(override_str).unwrap_or(Duration::from_secs(2))
+        crate::user_config::parse_duration(override_str).unwrap_or(Duration::from_secs(2))
     } else {
-        parse_duration(&config.daemon_debounce).unwrap_or(Duration::from_secs(2))
+        crate::user_config::parse_duration(&config.watcher_debounce)
+            .unwrap_or(Duration::from_secs(2))
     };
 
     if foreground {
@@ -788,31 +774,6 @@ pub fn offer_daemon_autostart() {
 )]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_duration_seconds() {
-        assert_eq!(parse_duration("15s"), Some(Duration::from_secs(15)));
-        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
-        assert_eq!(parse_duration(" 5s "), Some(Duration::from_secs(5)));
-    }
-
-    #[test]
-    fn parse_duration_minutes() {
-        assert_eq!(parse_duration("1m"), Some(Duration::from_secs(60)));
-        assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
-    }
-
-    #[test]
-    fn parse_duration_bare_number() {
-        assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn parse_duration_invalid() {
-        assert_eq!(parse_duration("abc"), None);
-        assert_eq!(parse_duration(""), None);
-        assert_eq!(parse_duration("1h"), None);
-    }
 
     #[test]
     fn binary_snapshot_captures_current_exe() {

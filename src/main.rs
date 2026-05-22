@@ -893,7 +893,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // If the daemon isn't running, watch this project for local changes.
             let watcher_cancel = if tokensave::daemon::running_daemon_pid().is_none() {
                 let config = tokensave::user_config::UserConfig::load();
-                let debounce = tokensave::daemon::parse_duration(&config.daemon_debounce)
+                let debounce = tokensave::user_config::parse_duration(&config.watcher_debounce)
                     .unwrap_or(std::time::Duration::from_secs(15));
                 if let Some(pw) =
                     tokensave::project_watcher::ProjectWatcher::new(project_path.clone(), debounce)

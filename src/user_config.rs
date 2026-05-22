@@ -50,9 +50,9 @@ pub struct UserConfig {
     #[serde(default)]
     pub installed_agents: Vec<String>,
 
-    /// Debounce duration for the daemon file watcher (e.g. "2s", "15s", "1m").
-    #[serde(default = "default_daemon_debounce")]
-    pub daemon_debounce: String,
+    /// Debounce duration for the embedded MCP file watcher (e.g. "2s", "15s", "1m").
+    #[serde(default = "default_watcher_debounce", alias = "daemon_debounce")]
+    pub watcher_debounce: String,
 
     /// Cached country flags from the worldwide counter.
     #[serde(default)]
@@ -83,7 +83,7 @@ fn default_true() -> bool {
     true
 }
 
-fn default_daemon_debounce() -> String {
+fn default_watcher_debounce() -> String {
     "2s".to_string()
 }
 
@@ -104,7 +104,7 @@ impl Default for UserConfig {
             last_version_check_at: 0,
             last_version_warning_at: 0,
             installed_agents: Vec::new(),
-            daemon_debounce: default_daemon_debounce(),
+            watcher_debounce: default_watcher_debounce(),
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
             last_pricing_fetch_at: 0,
@@ -152,5 +152,59 @@ impl UserConfig {
     /// Returns true if this is a fresh config (file did not exist before).
     pub fn is_fresh() -> bool {
         config_path().is_none_or(|p| !p.exists())
+    }
+}
+
+/// Parse a human-readable duration string like "15s" or "1m" into a Duration.
+pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    if let Some(secs) = s.strip_suffix('s') {
+        secs.trim()
+            .parse::<u64>()
+            .ok()
+            .map(std::time::Duration::from_secs)
+    } else if let Some(mins) = s.strip_suffix('m') {
+        mins.trim()
+            .parse::<u64>()
+            .ok()
+            .map(|m| std::time::Duration::from_secs(m * 60))
+    } else {
+        s.parse::<u64>().ok().map(std::time::Duration::from_secs)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::duration_suboptimal_units
+)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration("15s"), Some(Duration::from_secs(15)));
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration(" 5s "), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration("1m"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn parse_duration_bare_number() {
+        assert_eq!(parse_duration("10"), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn parse_duration_invalid() {
+        assert_eq!(parse_duration("abc"), None);
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("1h"), None);
     }
 }
