@@ -237,7 +237,7 @@ Languages went from 15 to 31. MCP tools from 9 to 37. Supported agents from 1 to
 
 The daemon was a 4.x-era idea, and by 5.x it had become disproportionate to what it actually provided. Roughly 1,100 lines of OS-coupling code -- Unix fork/setsid, launchd plists, systemd user units, Windows SCM registration with failure-recovery actions, PID files, upgrade self-detection, idempotent re-installs, UAC elevation for service registration -- all in service of one job: notice when files change and run an incremental sync. Useful, but the cost-to-benefit ratio kept getting worse with every platform-specific bug fix.
 
-Meanwhile, the MCP server was always running anyway. Whenever an agent is attached to a project, an MCP server instance is alive for the duration of that session. It already has exactly the lifecycle a file watcher needs: it starts when the agent connects and dies when the agent disconnects. Version 6.0.0 moves the file watcher inside it. When the MCP server boots, it spawns a `notify`-backed watcher that debounces file events and runs `sync_incremental` directly. No separate process, no service registration, no platform-specific install steps.
+Meanwhile, the MCP server was always running anyway. Whenever an agent is attached to a project, an MCP server instance is alive for the duration of that session. It already has exactly the lifecycle a file watcher needs: it starts when the agent connects and dies when the agent disconnects. Version 6.0.0 moves the file watcher inside it. When the MCP server boots, it spawns a `notify`-backed watcher that debounces file events and runs `sync_if_stale_silent` directly. No separate process, no service registration, no platform-specific install steps.
 
 Multiple agents on the same project converge correctly through the existing per-project sync lock plus a `sync_if_stale_silent` peer-coordination call. When two MCP servers see a file change at nearly the same moment, only one of them holds the lock and performs the sync; the other detects that the index is already fresh and skips. No new coordination primitive was needed -- the locking that already protected concurrent writes turned out to be sufficient for concurrent watchers, too.
 
@@ -247,6 +247,7 @@ The config field renames accordingly: `daemon_debounce` becomes `watcher_debounc
 
 - The `tokensave daemon` subcommand is removed. The autostart flags (`--enable-autostart`, `--disable-autostart`), the foreground mode, and all `daemon-kit`-backed service registration are gone.
 - `UserConfig::daemon_debounce` is now `UserConfig::watcher_debounce`. This is a programmatic-API break. The `user_config` module is `pub`, so any external crate that constructs a `UserConfig` literal referencing the old field name will fail to compile. The serde alias only covers deserialization from TOML, not Rust struct literals.
+- `McpServer::new` now returns `Arc<Self>` instead of `Self`. The embedded watcher task captures a `Weak<Self>` so it cannot extend the server's lifetime, which forces the constructor to own the strong `Arc`. External embedders that previously bound the return value (e.g. `let server = McpServer::new(cg, None).await;`) keep compiling, but anything that destructured by value or stored the server in a non-`Arc` field needs to adapt.
 
 ### Migration
 

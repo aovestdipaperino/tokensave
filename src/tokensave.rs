@@ -2448,22 +2448,42 @@ impl TokenSave {
 // ---------------------------------------------------------------------------
 
 impl TokenSave {
-    /// Check if specific files have been modified on disk since they were indexed.
-    /// Returns a list of relative paths for files whose mtime is newer than `indexed_at`.
+    /// Check whether the given files need (re-/un-)indexing to bring the DB
+    /// into agreement with the filesystem.
+    ///
+    /// A file is reported stale when any of:
+    /// - it is in the DB and has been modified on disk since `indexed_at`,
+    /// - it is in the DB but no longer exists on disk (deletion — DB needs cleanup),
+    /// - it exists on disk but has no DB record (new file — needs indexing).
+    ///
+    /// A file that exists in neither the DB nor on disk is out of scope and
+    /// is silently dropped.
     pub async fn check_file_staleness(&self, file_paths: &[String]) -> Vec<String> {
         let mut stale = Vec::new();
         for path in file_paths {
-            if let Ok(Some(record)) = self.db.get_file(path).await {
-                let abs_path = self.project_root.join(path);
-                if let Ok(metadata) = std::fs::metadata(&abs_path) {
-                    if let Ok(mtime) = metadata.modified() {
-                        let mtime_secs = mtime
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64;
-                        if mtime_secs > record.indexed_at {
-                            stale.push(path.clone());
+            let abs_path = self.project_root.join(path);
+            let file_exists = abs_path.exists();
+            match self.db.get_file(path).await {
+                Ok(Some(record)) => {
+                    if !file_exists {
+                        // Indexed but deleted — DB needs cleanup.
+                        stale.push(path.clone());
+                    } else if let Ok(metadata) = std::fs::metadata(&abs_path) {
+                        if let Ok(mtime) = metadata.modified() {
+                            let mtime_secs = mtime
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64;
+                            if mtime_secs > record.indexed_at {
+                                stale.push(path.clone());
+                            }
                         }
+                    }
+                }
+                _ => {
+                    // Not in the DB. If it exists on disk, it's new and needs indexing.
+                    if file_exists {
+                        stale.push(path.clone());
                     }
                 }
             }

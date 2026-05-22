@@ -258,6 +258,46 @@ async fn test_check_file_staleness_after_modification() {
     );
 }
 
+#[tokio::test]
+async fn test_check_file_staleness_new_file_not_in_db() {
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let project = tmp.path();
+    fs::write(project.join("a.rs"), "fn a() {}").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    // Now add a new file but DON'T sync. b.rs is on disk but not in the DB.
+    fs::write(project.join("b.rs"), "fn b() {}").unwrap();
+
+    let stale = cg.check_file_staleness(&["b.rs".to_string()]).await;
+    assert_eq!(
+        stale,
+        vec!["b.rs".to_string()],
+        "new file on disk but not in DB should be reported stale"
+    );
+}
+
+#[tokio::test]
+async fn test_check_file_staleness_deleted_indexed_file() {
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let project = tmp.path();
+    fs::write(project.join("a.rs"), "fn a() {}").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    // Delete the file. It's indexed but no longer on disk.
+    fs::remove_file(project.join("a.rs")).unwrap();
+
+    let stale = cg.check_file_staleness(&["a.rs".to_string()]).await;
+    assert_eq!(
+        stale,
+        vec!["a.rs".to_string()],
+        "indexed file deleted from disk should be reported stale"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // get_tokens_saved / set_tokens_saved — round-trip
 // ---------------------------------------------------------------------------
