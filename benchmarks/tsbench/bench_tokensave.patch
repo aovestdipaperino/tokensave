@@ -1,0 +1,228 @@
+--- bench.py	2026-05-25 13:32:43
++++ bench_tokensave.py	2026-05-25 14:16:23
+@@ -28,42 +28,40 @@
+ if not CLAUDE_CWD.exists():
+     CLAUDE_CWD.symlink_to(ROOT)
+ TASKS_DIR = ROOT / "tasks"
+-RESULTS_DIR = ROOT / "results"
++RESULTS_DIR = ROOT / "results-tokensave"
+ RAW_DIR = RESULTS_DIR / "raw"
+ GT_PATH = ROOT / "GROUND_TRUTH.json"
+ 
+ TIMEOUT_SECONDS = 300
+ MAX_TURNS = 30
+ 
+-WARMUP_PROMPT_B = "List available token-savior tools and switch to project tsbench."
++WARMUP_PROMPT_B = "List available tokensave tools and confirm the project is indexed."
+ WARMUP_PROMPT_A = "Hello. Reply with the literal text 'ready' and nothing else."
+ 
+-SYSTEM_PROMPT_TS = """You are ONLY allowed to use mcp__token-savior__* tools for any code navigation and editing. Calling Read, Grep, Glob, Edit, Write, Bash, or Agent (sub-agent delegation) for code files is a hard violation. NEVER spawn a sub-agent via Agent — do all edits directly in the main session. If you cannot answer with mcp__token-savior__* tools alone, say 'CANNOT_ANSWER' and stop.
++SYSTEM_PROMPT_TS = """You PREFER `mcp__tokensave__*` tools for code navigation and editing. NEVER spawn a sub-agent via Agent — do all work in the main session. Read / Grep / Glob / Edit / Write / Bash are ALLOWED only as a fallback when no tokensave tool covers the task (env-var orphan audits in `.env*` files, Dockerfile inspection, add-field-to-model on `.prisma`/`.ts`, multi-file symbol moves). For everything else, use `mcp__tokensave__*`.
+ 
+-Active project: "tsbench" (preset — no switch_project needed). Do NOT call memory_search or memory_save.
++Active project: "tsbench" (indexed in-place — no init needed). Do NOT call any memory/recording tools (`tokensave_record_decision`, `tokensave_record_code_area`, `tokensave_session_recall`, `tokensave_session_start`, `tokensave_session_end`).
+ 
+ CORE
+-- Locate: find_symbol(name, level=2). One call.
+-- Read: get_function_source(name) or get_class_source(name). One call.
+-- Whole context (loc + source + callers + deps): get_full_context(name, depth=1).
+-- Edit code (.py/.ts/.tsx/.js/.jsx): replace_symbol_source or insert_near_symbol. NEVER Edit/Write on code files (Edit/Write OK on .env/.yml/.md/.json).
+-- Add a model field (.prisma/.py/.ts): add_field_to_model. NEVER insert_near_symbol on .prisma.
+-- Move a symbol with import fixup: move_symbol(name, target_file).
+-- Detect cycles: find_import_cycles. Do not infer manually.
+-- Detect duplicates: find_semantic_duplicates(max_groups=30) and enumerate ALL pairs (file + symbol).
+-- Diff between refs/branches: detect_breaking_changes(ref="v1") — NOT get_changed_symbols (worktree noise).
+-- Call chain between two symbols: get_call_chain(source, target).
+-- Files importing X: get_file_dependents("file.py").
+-- Orphan env vars: analyze_config(checks=["orphans"]).
+-- Dead code: find_dead_code — take the first N candidates from output (already sorted by cleanup-marker).
+-- Docker audit: analyze_docker — read GROUND_TRUTH.json and prefix each issue with its DOCKER-XXX/INFRA-XXX ID.
+-- After empty find_symbol: try search_codebase. After empty search_codebase: Read/Grep are allowed for non-indexed files (.prisma, .sql, .graphql, .proto).
++- Locate (exact name): `tokensave_find_exact_symbol(name)`. One call. O(log n) index probe.
++- Locate (ranked, fuzzy): `tokensave_search(query, limit)`. Use when you don't know the exact name.
++- Read source of a function/class/struct/etc: `tokensave_body(symbol, limit=1)`. One call. Returns the full body text.
++- Whole-task context (loc + related code): `tokensave_context(task="<question>")`. Use this when the prompt is open-ended.
++- Edit a function/method/class body: `tokensave_replace_symbol(symbol, new_source)`. The new_source MUST include the symbol's own declaration line (e.g. `def foo(...):`). Reindex is automatic.
++- Insert near a symbol: `tokensave_insert_at_symbol(symbol, content, position="before"|"after")`. For non-symbol locations use `tokensave_insert_at(path, anchor, content)`.
++- Add a field to a Prisma model or TS interface/type: NO direct tokensave tool — use `Edit` or `tokensave_str_replace(path, old_str, new_str)`. Re-run after to verify the edit landed.
++- Move a symbol across files: NO direct tokensave tool — combine `tokensave_body` (read), `tokensave_str_replace` (delete from source file + paste in target file), and `Edit` for import-site fixups.
++- Detect cycles: `tokensave_circular`. Do not infer manually.
++- Detect duplicates: `tokensave_similar(name|file)`. Enumerate the pairs returned. The MCP tool surfaces semantic neighbors, not strict duplicates — interpret accordingly.
++- Diff between refs/branches: `tokensave_branch_diff(base, head)` for tracked branches, or `tokensave_changelog` for commit-based diffs.
++- Call chain between two symbols: resolve both with `tokensave_find_exact_symbol`, then `tokensave_call_chain(from_id, to_id)`.
++- Callers/callees of a symbol: `tokensave_callers(node_id)` / `tokensave_callees(node_id)` after resolving via `tokensave_find_exact_symbol`.
++- Files importing X: `tokensave_file_dependents(file)`.
++- Impact radius (transitive dependents): `tokensave_impact(node_id)`.
++- Dead code: `tokensave_dead_code`.
++- Orphan env vars / Dockerfile audits: tokensave does NOT analyse these — use `Read` on `.env*` and `Dockerfile`, then judgment. Cite IDs from `GROUND_TRUTH.json` (`SECRET-*`, `ORPHAN-*`, `UNDECL-*`, `DOCKER-*`, `INFRA-*`).
++- After empty `tokensave_find_exact_symbol`: fall back to `tokensave_search`. After empty `tokensave_search`: `Read`/`Grep` are allowed for non-indexed files (`.prisma`, `.sql`, `.graphql`, `.proto`, `.env*`, `Dockerfile`).
+ 
+-BATCH MODE — pass `names=[...]` (max 10) instead of multiple sequential calls:
+-  get_function_source(names=["a", "b", "c"])
+-  find_symbol(names=["x", "y"], level=2)
+-  get_full_context(names=["x", "y"])
+-
+ LIMITS
+ - Max 5 tool calls per simple task; 4 for explain/trace/describe tasks.
+ - For impact/dependency/cycle/duplicate/breaking-change answers: ENUMERATE every file/symbol/ID, never summarize.
+@@ -71,8 +69,8 @@
+ - For changelog/version-diff prompts: cross-check detect_breaking_changes against any project-level CHANGELOG/MIGRATION/breaking_changes.py file and cite each BREAK-XXX with its snake_case kind token (rename_function, signature_change, remove_function, route_removed, default_change, type_change, add_function).
+ - Stub/missing endpoint: NEVER answer just CANNOT_ANSWER — produce a structured walkthrough (router → service → repository) citing file:line, append "(implementation is stub)".
+ - Implement-task / code_generation: write the FULL code block in your response. ALWAYS include `import` statements at the top of the block (e.g. `import re`, `import os`) AND mention the target file path explicitly in your response (e.g. a heading `### packages/utils/foo.py` before the code block, or in the prose). The judge looks for both.
+-- Rename-task: use `replace_symbol_source` on the function definition + `search_codebase` for callers in the same module/package. NEVER touch same-named symbols in OTHER modules. NEVER delegate to Agent.
+-- Add-field task (.prisma + .ts/.py): use `add_field_to_model` directly on each file. ONE call per file. Do NOT delegate to Agent.
++- Rename-task: use `tokensave_replace_symbol` on the function definition + `tokensave_callers` (or `tokensave_search`) to enumerate caller sites for `tokensave_str_replace` rewrites. NEVER touch same-named symbols in OTHER modules. NEVER delegate to Agent.
++- Add-field task (`.prisma` + `.ts`/`.py`): use `Edit` or `tokensave_str_replace` to splice the new field inside the model/interface block. ONE edit per file. Do NOT delegate to Agent.
+ 
+ CONCISION (CRITICAL): Réponds en moins de 500 tokens output sauf si le prompt demande explicitement du code long. Pas de préambule ("Voici", "Je vais", "Bien sûr"). Pas de récap final. Pas de répétition. Énumère les faits demandés sans paraphrase. Pour les implementations, le code parle — n'ajoute pas de commentaires explicatifs ni de bullet-list "ce que j'ai fait".
+ 
+@@ -100,32 +98,19 @@
+ # under results/archive-run-C-final-20260420/. Kept code path removed;
+ # --run C is now refused at CLI level. If hybrid work resumes, revisit here.
+ 
+-# MCP config for Run B: token-savior only, with tsbench in WORKSPACE_ROOTS.
+-# Honors TS_PROFILE env var ("tiny"|"tiny_plus"|"ultra"|"lean"|"core"|"full")
+-# so the benchmark can A/B different manifest-size profiles. Default tiny_plus
+-# (12 tools, ~2 KT) — Pareto-optimal on tsbench-26/04 (97.4 % score, -42 %
+-# active vs lean dégradé). TS_CAPTURE_DISABLED=1 prevents the agent from
+-# burning tokens re-fetching sandboxed outputs (TASK-039 saw +40k cache
+-# creation on lean dégradé due to capture_get round-trips).
+-_TS_MCP_ENV = {
+-    "WORKSPACE_ROOTS": "/root/projects/tsbench",
+-    "TOKEN_SAVIOR_CLIENT": "claude-code",
+-    "EXCLUDE_EXTRA": "**/.next/**:**/node_modules/**:**/dist/**:**/.git/**:**/coverage/**:**/__pycache__/**",
+-    "TS_CAPTURE_DISABLED": "1",
+-    # Thin schemas : retire description sub-properties des inputSchema (-44%
+-    # manifest tokens sur tiny_plus, mesure 18/05). Le model utilise quand
+-    # meme correctement les tools car la description top-level reste.
+-    "TS_THIN_SCHEMAS": "1",
+-}
+-_TS_MCP_ENV["TOKEN_SAVIOR_PROFILE"] = os.environ.get("TS_PROFILE", "tiny_plus")
+-
++# MCP config for Run B: tokensave only. The tokensave binary path is honored
++# via TOKENSAVE_BIN env var; defaults to the release build of the local
++# checkout. The serve subprocess gets `--timings` so per-call handler latency
++# is recorded in `_meta.duration_us` for later analysis.
++_TOKENSAVE_BIN = os.environ.get(
++    "TOKENSAVE_BIN", "/Users/enzol/Code/tokensave/target/release/tokensave"
++)
+ TS_MCP_CONFIG = {
+     "mcpServers": {
+-        "token-savior-recall": {
++        "tokensave": {
+             "type": "stdio",
+-            "command": "/root/.local/token-savior-venv/bin/python",
+-            "args": ["-m", "token_savior.server"],
+-            "env": _TS_MCP_ENV,
++            "command": _TOKENSAVE_BIN,
++            "args": ["serve", "-p", str(ROOT), "--timings"],
+         }
+     }
+ }
+@@ -210,7 +195,7 @@
+ 
+     # Seed-and-fork session strategy. Session ID is per-bench-run, cached on
+     # disk so concurrent harness invocations on the same run share it.
+-    seed_path = ROOT / ".bench-session-id"
++    seed_path = ROOT / ".bench-tokensave-session-id"
+     seed_uuid: str | None = None
+     if seed_path.exists():
+         try:
+@@ -245,7 +230,11 @@
+         # rename/add-field edit tasks by spawning an Agent sub-agent that
+         # lacked MCP context, then returning CANNOT_ANSWER (TASK-011, 012).
+         # Forcing them to use the direct edit primitives lifts those tasks.
+-        base_disallowed = ["Read", "Grep", "Glob", "Agent"]
++        # Tokensave variant: allow Read / Grep / Glob since tokensave has
++        # no analyze_config / analyze_docker / add_field_to_model tools and
++        # those tasks require text-level fallback. Still ban Agent so the
++        # model can't dodge edit tasks via sub-agent delegation.
++        base_disallowed = ["Agent"]
+         if extra_disallowed:
+             base_disallowed = list(dict.fromkeys(base_disallowed + extra_disallowed))
+         cmd += ["--disallowedTools", ",".join(base_disallowed)]
+@@ -265,7 +254,7 @@
+     # makes Claude terse/CANNOT_ANSWER too early.
+     env["TS_MEMORY_DISABLE"] = "1"
+     if run == "B":
+-        env["CLAUDE_PROJECT_ROOT"] = "/root/projects/tsbench"
++        env["CLAUDE_PROJECT_ROOT"] = str(ROOT)
+ 
+     start = time.time()
+     timed_lines: list[tuple[float, str]] = []
+@@ -442,7 +431,7 @@
+             if ev.get("is_error"):
+                 error = ev.get("subtype") or "api_error"
+ 
+-    ts_prefixes = ("mcp__token-savior__", "mcp__token-savior-recall__")
++    ts_prefixes = ("mcp__tokensave__",)
+ 
+     def _is_ts(name):
+         return isinstance(name, str) and any(name.startswith(p) for p in ts_prefixes)
+@@ -546,7 +535,9 @@
+ 
+ 
+ def _is_ts_tool(name: str) -> bool:
+-    return bool(name) and (name.startswith("mcp__token-savior") or name.startswith("token-savior"))
++    return bool(name) and (
++        name.startswith("mcp__tokensave__") or name.startswith("tokensave_")
++    )
+ 
+ 
+ 
+@@ -1006,7 +997,7 @@
+     start of every prewarm so a stale uuid (claude session expired) can't
+     cause --resume failures.
+     """
+-    seed_path = ROOT / ".bench-session-id"
++    seed_path = ROOT / ".bench-tokensave-session-id"
+     if seed_path.exists():
+         try:
+             seed_path.unlink()
+@@ -1030,7 +1021,7 @@
+     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+     path.write_text(json.dumps(record, indent=2) + "\n")
+     tb = " ".join(
+-        f"{k.replace('mcp__token-savior__','ts:')}×{v}"
++        f"{k.replace('mcp__tokensave__','ts:')}×{v}"
+         for k, v in record["tool_calls_breakdown"].items()
+     )
+     err = f" ERROR={record['error']}" if record.get("error") else ""
+@@ -1111,7 +1102,7 @@
+     sequentially, prewarm_run_b will overwrite this seed before run B
+     starts — which is fine: each run pays its own warmup cost once.
+     """
+-    seed_path = ROOT / ".bench-session-id"
++    seed_path = ROOT / ".bench-tokensave-session-id"
+     if seed_path.exists():
+         try:
+             seed_path.unlink()
+@@ -1172,7 +1163,7 @@
+         "task_id": task_id,
+         "run": run,
+         "agent": agent,
+-        "baseline": {"A": "plain", "B": "token-savior"}.get(run, "plain"),
++        "baseline": {"A": "plain", "B": "tokensave"}.get(run, "plain"),
+         **metrics,
+         "score": score,
+         "max_score": max_score,
+@@ -1182,7 +1173,7 @@
+     RAW_DIR.mkdir(parents=True, exist_ok=True)
+     out_path.write_text(json.dumps(record, indent=2) + "\n")
+ 
+-    tb = " ".join(f"{k.replace('mcp__token-savior__','ts:')}×{v}" for k, v in record["tool_calls_breakdown"].items())
++    tb = " ".join(f"{k.replace('mcp__tokensave__','ts:')}×{v}" for k, v in record["tool_calls_breakdown"].items())
+     err = f" ERROR={record['error']}" if record.get("error") else ""
+     print(
+         f"[{task_id} | Run {run} | {agent}] done — {record['wall_time_seconds']}s | "
+@@ -1383,8 +1374,8 @@
+     for name, n in top_a[:5]:
+         lines.append(f"- `{name}` : {n}")
+     total_b = sum(n for _, n in top_b) or 1
+-    ts_b = sum(n for name, n in top_b if name.startswith("mcp__token-savior__"))
+-    lines.append(f"\n**Run B (token-savior)** — top 5 (TS/total = {ts_b}/{total_b} = {ts_b/total_b*100:.0f}%) :")
++    ts_b = sum(n for name, n in top_b if name.startswith("mcp__tokensave__"))
++    lines.append(f"\n**Run B (tokensave)** — top 5 (TS/total = {ts_b}/{total_b} = {ts_b/total_b*100:.0f}%) :")
+     for name, n in top_b[:5]:
+         lines.append(f"- `{name}` : {n}")
+ 
