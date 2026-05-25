@@ -222,8 +222,18 @@ impl McpServer {
             timings_enabled: AtomicBool::new(false),
         });
 
-        // Start the embedded file watcher (best-effort; may fail under
-        // inotify watch limits or on unsupported filesystems).
+        // Start the embedded file watcher asynchronously. Constructing the
+        // watcher is *synchronous and slow* on macOS: `notify_debouncer_full`
+        // registers an FSEvents stream per watched subtree, which under the
+        // hood does a `walkdir` over every file inside (#84). On large JS/TS
+        // monorepos with multi-gigabyte `node_modules` / `.next` / `dist`
+        // trees that walk can take 30+ seconds — long enough for an MCP
+        // client's `initialize` handshake to time out.
+        //
+        // We move the construction onto a blocking thread, return from
+        // `new()` immediately so MCP `initialize` can be answered, and let
+        // the watcher attach itself when ready. The `CancellationToken` is
+        // stored on the server up front so `shutdown` can cancel mid-build.
         let config = crate::user_config::UserConfig::load();
         // Fallback matches the literal `"2s"` returned by
         // `user_config::default_watcher_debounce`; keep in sync.
@@ -231,36 +241,62 @@ impl McpServer {
             .unwrap_or(std::time::Duration::from_secs(2));
         let project_root = server.cg.project_root().to_path_buf();
 
-        if let Some(pw) =
-            crate::project_watcher::ProjectWatcher::new(project_root.clone(), debounce)
-        {
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let cancel_for_task = cancel.clone();
-            // Weak ref: the watcher task must not keep the server alive.
-            let server_for_cb = Arc::downgrade(&server);
-
-            tokio::spawn(async move {
-                pw.run_with_callback(cancel_for_task, move || {
-                    let weak = server_for_cb.clone();
-                    async move {
-                        if let Some(s) = weak.upgrade() {
-                            s.refresh_file_token_map().await;
-                        }
-                    }
-                })
-                .await;
-            });
-
-            if let Ok(mut guard) = server.watcher_cancel.lock() {
-                *guard = Some(cancel);
-            }
-        } else {
-            eprintln!(
-                "[tokensave] warning: failed to start embedded file watcher for {}; \
-                 index will not auto-refresh on file changes",
-                project_root.display()
-            );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        if let Ok(mut guard) = server.watcher_cancel.lock() {
+            *guard = Some(cancel.clone());
         }
+
+        // Weak ref: the watcher task must not keep the server alive.
+        let server_for_cb = Arc::downgrade(&server);
+        let cancel_for_task = cancel.clone();
+        let project_root_for_msg = project_root.clone();
+
+        tokio::spawn(async move {
+            let setup = tokio::task::spawn_blocking({
+                let project_root = project_root_for_msg.clone();
+                let cancel = cancel_for_task.clone();
+                move || {
+                    if cancel.is_cancelled() {
+                        return None;
+                    }
+                    crate::project_watcher::ProjectWatcher::new(project_root, debounce)
+                }
+            })
+            .await;
+
+            let pw = match setup {
+                Ok(Some(pw)) => pw,
+                Ok(None) => {
+                    eprintln!(
+                        "[tokensave] warning: failed to start embedded file watcher for {}; \
+                         index will not auto-refresh on file changes",
+                        project_root_for_msg.display()
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[tokensave] warning: file-watcher setup task panicked ({e}); \
+                         index will not auto-refresh on file changes"
+                    );
+                    return;
+                }
+            };
+
+            if cancel_for_task.is_cancelled() {
+                return;
+            }
+
+            pw.run_with_callback(cancel_for_task, move || {
+                let weak = server_for_cb.clone();
+                async move {
+                    if let Some(s) = weak.upgrade() {
+                        s.refresh_file_token_map().await;
+                    }
+                }
+            })
+            .await;
+        });
 
         server
     }

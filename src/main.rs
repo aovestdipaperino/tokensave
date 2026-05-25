@@ -121,6 +121,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::extraction_worker::run_worker();
     }
 
+    let skip_agent_install_maintenance = should_skip_agent_install_maintenance(&command);
+
     // First-run notice (check BEFORE any config save creates the file)
     let is_first_run = tokensave::user_config::UserConfig::is_fresh();
 
@@ -132,10 +134,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Init { .. } | Commands::Sync { .. } | Commands::Status { .. }
     );
     let mut user_config = tokensave::user_config::UserConfig::load();
-    global::try_flush(&mut user_config, is_force_flush);
+    // Skip the worldwide-counter flush on hot startup paths. `try_flush`
+    // makes a synchronous HTTP call (#84) which can add seconds to
+    // `tokensave serve` startup on slow networks — long enough to blow the
+    // MCP client's 30 s `initialize` timeout.
+    if !skip_agent_install_maintenance {
+        global::try_flush(&mut user_config, is_force_flush);
+    }
     user_config.save();
 
-    if is_first_run {
+    if is_first_run && !skip_agent_install_maintenance {
         eprintln!(
             "note: tokensave uploads anonymous token-saved counts to a worldwide counter.\n\
              \x20     Run `tokensave disable-upload-counter` to opt out."
@@ -145,8 +153,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // The "beta merged into stable" nudge that lived here through 4.3.x was
     // retired in 4.3.12. The beta channel is open again as of v5.0.0-beta.1
     // and beta users now stay on beta until they explicitly switch off.
-
-    let skip_agent_install_maintenance = should_skip_agent_install_maintenance(&command);
 
     // Best-effort check: warn if install needs re-running.
     if !skip_agent_install_maintenance {
@@ -1447,6 +1453,14 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             | Commands::Reinstall
             | Commands::Uninstall { .. }
             | Commands::Doctor { .. }
+            // `Serve` is the hot path used by MCP clients (Claude Code,
+            // Codex, etc.). Clients impose a 30 s `initialize` timeout, so
+            // every pre-serve startup task — `try_flush` network round-trip,
+            // `check_install_stale`, the silent-reinstall loop over every
+            // tracked agent — risks pushing us past it on slow networks or
+            // big home-dir trees (#84). Skip them; the same maintenance
+            // runs on the user's next interactive `tokensave …` invocation.
+            | Commands::Serve { .. }
     )
 }
 
@@ -1483,6 +1497,18 @@ mod startup_tests {
             short: false,
             details: false,
             runtime: false,
+        }));
+    }
+
+    #[test]
+    fn serve_skips_agent_install_maintenance() {
+        // `tokensave serve` is the MCP hot path with a 30 s client-side
+        // `initialize` timeout (#84). Pre-serve maintenance work
+        // (worldwide-counter flush, install-stale check, silent reinstall)
+        // must NOT run on this path.
+        assert!(should_skip_agent_install_maintenance(&Commands::Serve {
+            path: None,
+            timings: false,
         }));
     }
 }
