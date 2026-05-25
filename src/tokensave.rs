@@ -2703,6 +2703,23 @@ impl TokenSave {
         self.db.last_index_time().await
     }
 
+    /// Returns the timestamp of the most recent successful sync.
+    ///
+    /// Prefers the `last_sync_at` metadata key, which advances on every sync
+    /// invocation regardless of whether any files actually changed. Falls
+    /// back to `last_index_time` (the max file `indexed_at`) only if the
+    /// metadata key is missing or unreadable — that fallback gives the wrong
+    /// answer on quiet repos because `indexed_at` is per-file and only moves
+    /// when a file is reindexed, which is exactly the bug #86 was reporting.
+    pub async fn last_sync_timestamp(&self) -> i64 {
+        if let Ok(Some(raw)) = self.db.get_metadata("last_sync_at").await {
+            if let Ok(t) = raw.parse::<i64>() {
+                return t;
+            }
+        }
+        self.db.last_index_time().await.unwrap_or(0)
+    }
+
     /// Count git commits newer than the given UNIX timestamp.
     /// Returns 0 if git is unavailable or the directory is not a git repository.
     pub fn git_commits_since(&self, since_timestamp: i64) -> usize {

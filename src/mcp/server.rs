@@ -1202,13 +1202,19 @@ impl McpServer {
                 }
 
                 // Check overall index age (warn if older than 1 hour).
-                if let Ok(last_time) = self.cg.last_index_time().await {
+                // Uses `last_sync_timestamp` (sync execution time) not the
+                // max file `indexed_at` — a no-change sync still updates the
+                // sync metadata even though no file gets a fresh `indexed_at`,
+                // so a per-file fallback fires the warning forever on quiet
+                // repos (#86).
+                {
+                    let last_time = self.cg.last_sync_timestamp().await;
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64;
                     let age_secs = now - last_time;
-                    if age_secs > 3600 {
+                    if last_time > 0 && age_secs > 3600 {
                         let hours = age_secs / 3600;
                         let mins = (age_secs % 3600) / 60;
                         let warning = if hours >= 24 {

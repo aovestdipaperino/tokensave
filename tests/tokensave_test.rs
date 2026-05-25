@@ -493,3 +493,65 @@ async fn sync_if_stale_silent_returns_ok_when_lock_held() {
 
     drop(lock);
 }
+
+// ---------------------------------------------------------------------------
+// #86 — last_sync_timestamp prefers metadata over max(indexed_at)
+// ---------------------------------------------------------------------------
+
+/// Regression for #86: the MCP `last synced N ago` warning was reading
+/// `MAX(files.indexed_at)`, which only advances when a file is actually
+/// reindexed. On quiet repos a successful sync (with 0 changes) leaves
+/// `indexed_at` stuck and the warning fires forever. `last_sync_at`
+/// metadata is the right source of truth because `sync()` writes it
+/// unconditionally.
+#[tokio::test]
+async fn last_sync_timestamp_uses_metadata_not_indexed_at() {
+    let (cg, _dir) = setup().await;
+
+    // Backdate every file's `indexed_at` to simulate a long-quiet repo
+    // (typical state before a no-change sync). We use `1` rather than 0
+    // because `last_sync_timestamp` treats 0 as "no info available".
+    let stale = 1_i64;
+    cg.db()
+        .conn()
+        .execute("UPDATE files SET indexed_at = ?1", libsql::params![stale])
+        .await
+        .unwrap();
+
+    // Have the metadata reflect a recent sync.
+    let fresh = tokensave::tokensave::current_timestamp();
+    cg.db()
+        .set_metadata("last_sync_at", &fresh.to_string())
+        .await
+        .unwrap();
+
+    let observed = cg.last_sync_timestamp().await;
+    assert_eq!(
+        observed, fresh,
+        "last_sync_timestamp must return the metadata value, not MAX(indexed_at) (stale={stale}, got {observed})",
+    );
+    assert_ne!(
+        observed, stale,
+        "regression: still reading stale indexed_at"
+    );
+}
+
+/// Fallback: if `last_sync_at` metadata is missing, fall back to
+/// `last_index_time`. This keeps freshly-imported projects (no sync yet,
+/// only an `init`) honest.
+#[tokio::test]
+async fn last_sync_timestamp_falls_back_to_indexed_at_without_metadata() {
+    let (cg, _dir) = setup().await;
+    cg.db()
+        .conn()
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            libsql::params!["last_sync_at"],
+        )
+        .await
+        .unwrap();
+
+    let observed = cg.last_sync_timestamp().await;
+    let fallback = cg.last_index_time().await.unwrap();
+    assert_eq!(observed, fallback);
+}
