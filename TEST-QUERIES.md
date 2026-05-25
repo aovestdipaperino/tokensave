@@ -553,6 +553,109 @@ tokensave_health(path="src/mcp", details=true)
 ```
 Expected: Same structure but scoped to files under `src/mcp/` only.
 
+Test that `details=true` surfaces raw counts + interpretation per dimension:
+```
+tokensave_health(details=true)
+```
+Expected: Each dimension is a `{ score, source, ... }` object. `equality` carries `gini` and an `interpretation` string. `acyclicity` carries `edges_in_cycles`. `depth` carries `max_chain` / `ideal_chain`. `modularity` carries `interpretation` and `components_after_hub_removal`. `redundancy` carries `dead_count` / `total_fns`. `coverage_discipline` carries `skip_test_coverage_count` / `total_fns`.
+
+---
+
+## tokensave_redundancy
+
+> Find functions and methods that look like duplicates of each other.
+
+Test with defaults:
+```
+tokensave_redundancy()
+```
+Expected: Returns `{candidates, scanned, skipped_for_size, pair_count, pairs: [...], ranked_by, scope, thresholds}`. Each pair has `similarity` (0.0-1.0), `severity` (`definite` / `likely` / `naming_only`), `overlap_kind` (`ast_isomorphic` / `control_flow` / `algorithmic` / `token_overlap` / `naming`), `a` / `b` symbol info (`file`, `line`, `name`, `id`), and a `signals` block with `ast_match`, `cfg_match`, `call_seq_match`, `shingle_jaccard`, and `body_tokens`. Pairs are sorted by similarity descending. Default thresholds: `min_lines=8`, `max_pairs=20`, `similarity_threshold=0.6`, `include_naming_only=false`.
+
+Test path scope:
+```
+tokensave_redundancy(path="src/mcp/")
+```
+Expected: Same structure but only candidates under `src/mcp/`. Useful for module-scoped consolidation work.
+
+Test tightened threshold (only "definite" duplicates):
+```
+tokensave_redundancy(similarity_threshold=0.85)
+```
+Expected: Only AST-isomorphic pairs survive — the AST signal alone contributes 0.40 to the composite score, so anything ≥ 0.85 with `severity: "definite"` is a strong consolidation candidate.
+
+Test surface naming-only candidates:
+```
+tokensave_redundancy(include_naming_only=true, similarity_threshold=0.1)
+```
+Expected: Long-tail matches where only names look similar but bodies diverge. Most are false positives — useful for naming-convention audits, not for refactoring.
+
+Test minimum function size:
+```
+tokensave_redundancy(min_lines=20)
+```
+Expected: Skips functions shorter than 20 source lines. Helps suppress noise from tiny boilerplate (getters, simple wrappers) that often look structurally identical without warranting consolidation.
+
+Cost model:
+- First call on a fresh index parses each candidate file once and writes fingerprints to the `node_fingerprints` table (schema v10).
+- Subsequent calls reuse cached fingerprints when the body source hash is unchanged.
+- Pairwise comparison is bucketed by `body_tokens` (±25 % window), so cost is sub-quadratic on large repos.
+
+Cross-language note: signals derive from raw tree-sitter kind names. Two duplicates only match within the same language — cross-language matching (e.g. a Python helper and its TypeScript twin) is intentionally out of scope.
+
+---
+
+## tokensave_runtime
+
+> Capture process + database telemetry for triaging unexpected CPU or RAM consumption (issue #80).
+
+Test:
+```
+tokensave_runtime()
+```
+Expected: Returns a snapshot with the shape:
+```
+{
+  "captured_at": <unix-seconds>,
+  "tokensave_version": "6.0.0",
+  "host_os": "macos" | "linux" | "windows" | ...,
+  "process": {
+    "pid": ...,
+    "rss_bytes": ...,
+    "virtual_bytes": ...,
+    "cpu_percent": ...,       // sampled over a 200 ms window
+    "uptime_secs": ...,
+    "system_cpu_count": ...,
+    "system_total_memory_bytes": ...
+  },
+  "database": {
+    "project_root": "...",
+    "db_path": "...",
+    "db_size_bytes": ...,
+    "wal_size_bytes": ...,
+    "shm_size_bytes": ...,
+    "journal_mode": "wal" | "delete" | ...,
+    "source_total_bytes": ...,
+    "node_count": ...,
+    "edge_count": ...
+  }
+}
+```
+
+`cpu_percent` is the delta between two `sysinfo` refreshes 200 ms apart — values above 100 are legitimate on multi-threaded workloads; divide by `system_cpu_count` to get "fraction of total host CPU."
+
+Latency note: the tool blocks for ~200 ms because the CPU% sample needs two readings around a sleep. This is intentional — a one-shot read would always report 0.
+
+CLI equivalent (for offline reporters who can't call MCP tools):
+```
+tokensave status --runtime           # human-readable text
+tokensave status --runtime --json    # machine-parseable JSON, same shape
+```
+
+Diagnostic ratios worth eyeballing:
+- `database.db_size_bytes / database.source_total_bytes` — values much greater than ~10 suggest WAL/checkpoint bloat or retained history.
+- `database.wal_size_bytes` / `database.shm_size_bytes` vs `database.db_size_bytes` — a WAL larger than the DB itself usually means a checkpoint hasn't run recently.
+- `process.rss_bytes / process.system_total_memory_bytes` — high values explain "everything got slow" symptoms.
+
 ---
 
 ## tokensave_gini
