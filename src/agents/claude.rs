@@ -161,21 +161,24 @@ fn install_hook_inner(settings: &mut serde_json::Value, tokensave_bin: &str, qui
     install_single_hook(
         settings,
         "PreToolUse",
-        &format!("{tokensave_bin} hook-pre-tool-use"),
+        tokensave_bin,
+        "hook-pre-tool-use",
         Some("Agent"),
         quiet,
     );
     install_single_hook(
         settings,
         "UserPromptSubmit",
-        &format!("{tokensave_bin} hook-prompt-submit"),
+        tokensave_bin,
+        "hook-prompt-submit",
         None,
         quiet,
     );
     install_single_hook(
         settings,
         "Stop",
-        &format!("{tokensave_bin} hook-stop"),
+        tokensave_bin,
+        "hook-stop",
         None,
         quiet,
     );
@@ -183,12 +186,15 @@ fn install_hook_inner(settings: &mut serde_json::Value, tokensave_bin: &str, qui
 
 /// Install a single hook entry under `settings.hooks.<event>` (idempotent).
 ///
-/// If `matcher` is `Some`, the hook entry includes a `"matcher"` field
-/// (used by `PreToolUse`). Matcherless hooks apply unconditionally.
+/// Writes the modern Claude Code shape `{type, command, args}`, where the exe
+/// path is the entire `command` and the subcommand is the only entry in
+/// `args`. This sidesteps Claude Code's whitespace-splitter so install paths
+/// containing spaces work unchanged.
 fn install_single_hook(
     settings: &mut serde_json::Value,
     event: &str,
-    command: &str,
+    tokensave_bin: &str,
+    subcommand: &str,
     matcher: Option<&str>,
     quiet: bool,
 ) {
@@ -197,22 +203,18 @@ fn install_single_hook(
         .cloned()
         .unwrap_or_default();
 
-    let has_hook = hooks_arr.iter().any(|h| {
-        let hooks_list = h.get("hooks").and_then(|a| a.as_array());
-        hooks_list.is_some_and(|arr| {
-            arr.iter().any(|entry| {
-                entry
-                    .get("command")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|c| c.contains("tokensave"))
-            })
-        })
-    });
+    let has_hook = hooks_arr
+        .iter()
+        .any(|h| hook_entry_command(h).is_some_and(|c| c.contains("tokensave")));
 
     if !has_hook {
         let mut new_hooks = hooks_arr;
         let mut entry = json!({
-            "hooks": [{ "type": "command", "command": command }]
+            "hooks": [{
+                "type": "command",
+                "command": tokensave_bin,
+                "args": [subcommand],
+            }]
         });
         if let Some(m) = matcher {
             entry["matcher"] = json!(m);
@@ -225,6 +227,55 @@ fn install_single_hook(
     } else if !quiet {
         eprintln!("  {event} hook already present, skipping");
     }
+}
+
+/// Extract the `command` string from a hook event entry (the wrapper that
+/// holds an `"hooks": [{...}]` array). Returns the first inner command.
+fn hook_entry_command(entry: &serde_json::Value) -> Option<&str> {
+    entry
+        .get("hooks")?
+        .as_array()?
+        .iter()
+        .find_map(|c| c.get("command").and_then(|v| v.as_str()))
+}
+
+/// Parse a hook inner-entry into `(bin, subcommand)`.
+///
+/// Accepts both the modern `{command, args: [subcmd]}` shape and the legacy
+/// single-string `"bin subcmd"` shape (which is broken for paths with
+/// spaces). The legacy variant is returned so callers can detect it and
+/// rewrite, but the subcommand split is intentionally best-effort.
+fn parse_hook_command(cmd_entry: &serde_json::Value) -> Option<(String, String)> {
+    let command = cmd_entry.get("command")?.as_str()?;
+    if let Some(args) = cmd_entry.get("args").and_then(|a| a.as_array()) {
+        let sub = args.iter().find_map(|v| v.as_str()).unwrap_or("");
+        return Some((command.to_string(), sub.to_string()));
+    }
+    // Legacy single-string shape — best-effort split on first space.
+    let mut parts = command.splitn(2, char::is_whitespace);
+    let bin = parts.next().unwrap_or("").to_string();
+    let sub = parts.next().unwrap_or("").to_string();
+    Some((bin, sub))
+}
+
+/// Find the first tokensave hook entry under an event and return
+/// `(bin, subcommand, is_legacy_shape)`. `is_legacy_shape` is true when the
+/// entry uses the broken single-string command shape and needs rewriting.
+fn find_tokensave_hook(
+    settings: &serde_json::Value,
+    event: &str,
+) -> Option<(String, String, bool)> {
+    let arr = settings["hooks"][event].as_array()?;
+    arr.iter().find_map(|wrapper| {
+        let cmd_entry = wrapper.get("hooks")?.as_array()?.first()?;
+        let raw_command = cmd_entry.get("command").and_then(|c| c.as_str())?;
+        if !raw_command.contains("tokensave") {
+            return None;
+        }
+        let (bin, sub) = parse_hook_command(cmd_entry)?;
+        let is_legacy = cmd_entry.get("args").is_none();
+        Some((bin, sub, is_legacy))
+    })
 }
 
 /// Add MCP tool permissions (idempotent).
@@ -773,91 +824,82 @@ fn doctor_check_hook(dc: &mut DoctorCounters, settings: &serde_json::Value) {
 /// Check a single hook event for a tokensave entry.
 /// Validates that the subcommand is correct for this event.
 fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Value, event: &str) {
-    let hook_cmd_str: Option<String> = settings["hooks"][event].as_array().and_then(|arr| {
-        arr.iter().find_map(|h| {
-            h["hooks"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|c| c["command"].as_str())
-                .filter(|c| c.contains("tokensave"))
-                .map(String::from)
-        })
-    });
-    let Some(ref hook_cmd) = hook_cmd_str else {
+    let Some((bin, sub, is_legacy)) = find_tokensave_hook(settings, event) else {
         dc.fail(&format!("{event} hook NOT installed"));
         return;
     };
 
-    // Validate the subcommand is correct for this event.
     let expected_sub = expected_hook_subcommand(event);
-    let parts: Vec<&str> = hook_cmd.split_whitespace().collect();
-    let actual_sub = parts.get(1).copied().unwrap_or("");
-    if actual_sub != expected_sub {
+    if is_legacy {
         dc.fail(&format!(
-            "{event} hook has wrong subcommand: \"{actual_sub}\" (expected \"{expected_sub}\")"
+            "{event} hook uses legacy single-string shape (breaks on paths with spaces) — will be auto-repaired"
+        ));
+        return;
+    }
+    if sub != expected_sub {
+        dc.fail(&format!(
+            "{event} hook has wrong subcommand: \"{sub}\" (expected \"{expected_sub}\")"
         ));
         return;
     }
 
     dc.pass(&format!("{event} hook installed"));
 
-    let hook_bin = parts.first().copied().unwrap_or(hook_cmd.as_str());
-    if Path::new(hook_bin).exists() {
-        dc.pass(&format!("Hook binary exists: {hook_bin}"));
+    if Path::new(&bin).exists() {
+        dc.pass(&format!("Hook binary exists: {bin}"));
     } else {
         dc.fail(&format!(
-            "Hook binary not found: {hook_bin} — run `tokensave install`"
+            "Hook binary not found: {bin} — run `tokensave install`"
         ));
     }
 }
 
 /// Auto-repair missing or misconfigured hooks. Only touches hooks that are
 /// actually wrong — correctly configured hooks are left untouched.
+///
+/// Bin resolution per event:
+/// - missing → use `current_exe()`
+/// - legacy single-string shape → use `current_exe()` (the embedded path
+///   cannot be parsed unambiguously when it contains spaces — issue #81)
+/// - modern shape with wrong subcommand → reuse the existing bin
 fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &serde_json::Value) {
-    // Determine the tokensave binary: prefer existing hook, fall back to current exe.
-    let bin = extract_tokensave_bin_from_hooks(settings).or_else(|| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.to_str().map(String::from))
-    });
-    let Some(bin) = bin else {
-        return;
-    };
+    let current_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from));
 
     let mut settings = settings.clone();
     let mut repaired = false;
 
     for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
         let expected_sub = expected_hook_subcommand(event);
-        let expected_cmd = format!("{bin} {expected_sub}");
 
-        // Find the existing tokensave command for this event (if any).
-        let current_cmd: Option<String> = settings["hooks"][event].as_array().and_then(|arr| {
-            arr.iter().find_map(|h| {
-                h["hooks"]
-                    .as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|c| c["command"].as_str())
-                    .filter(|c| c.contains("tokensave"))
-                    .map(String::from)
-            })
-        });
-
-        match current_cmd {
-            Some(cmd) if cmd == expected_cmd => continue, // already correct
-            Some(_) => {
-                // Wrong subcommand — remove the bad entry, then add the correct one.
-                uninstall_single_hook(&mut settings, event);
-            }
-            None => {} // missing — just add below
+        let current = find_tokensave_hook(&settings, event);
+        let correct = current
+            .as_ref()
+            .is_some_and(|(_, s, legacy)| !*legacy && s == expected_sub);
+        if correct {
+            continue;
         }
 
+        let bin = match &current {
+            // Modern shape with wrong subcommand: keep user's bin path.
+            Some((b, _, false)) => Some(b.clone()),
+            // Legacy shape or missing: only repair if we know our own path.
+            _ => current_exe.clone(),
+        };
+        let Some(bin) = bin else {
+            continue;
+        };
+
+        if current.is_some() {
+            uninstall_single_hook(&mut settings, event);
+        }
         let matcher = if *event == "PreToolUse" {
             Some("Agent")
         } else {
             None
         };
-        install_single_hook(&mut settings, event, &expected_cmd, matcher, true);
+        install_single_hook(&mut settings, event, &bin, expected_sub, matcher, true);
         repaired = true;
     }
 
@@ -1183,24 +1225,31 @@ fn normalize_hook_command_paths(settings: &mut serde_json::Value) {
 /// Extracts the tokensave binary path from any existing hook command.
 ///
 /// Scans all hook events for a command containing "tokensave" and returns
-/// the binary portion (everything before the first space/subcommand).
-/// Returns `None` if no tokensave hook is found.
+/// the binary path. Handles both the modern `{command, args}` shape and the
+/// legacy single-string shape. Returns `None` if no tokensave hook is found.
 fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<String> {
     let hooks = settings.get("hooks")?.as_object()?;
-    for (_event, entries) in hooks {
-        let arr = entries.as_array()?;
+    for entries in hooks.values() {
+        let Some(arr) = entries.as_array() else {
+            continue;
+        };
         for entry in arr {
-            if let Some(cmds) = entry.get("hooks").and_then(|a| a.as_array()) {
-                for cmd in cmds {
-                    if let Some(command) = cmd.get("command").and_then(|c| c.as_str()) {
-                        if command.contains("tokensave") {
-                            // "path/to/tokensave hook-pre-tool-use" → "path/to/tokensave"
-                            let bin = command.split_whitespace().next().unwrap_or(command);
-                            // Normalize backslashes from pre-fix Windows installs.
-                            return Some(bin.replace('\\', "/"));
-                        }
-                    }
+            let Some(cmds) = entry.get("hooks").and_then(|a| a.as_array()) else {
+                continue;
+            };
+            for cmd in cmds {
+                let Some(raw) = cmd.get("command").and_then(|c| c.as_str()) else {
+                    continue;
+                };
+                if !raw.contains("tokensave") {
+                    continue;
                 }
+                let bin = if cmd.get("args").is_some() {
+                    raw.to_string()
+                } else {
+                    raw.split_whitespace().next().unwrap_or(raw).to_string()
+                };
+                return Some(bin.replace('\\', "/"));
             }
         }
     }
@@ -1213,8 +1262,31 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Build a settings value with the three tokensave hooks installed.
+    /// Build a settings value with the three tokensave hooks installed
+    /// (modern `{command, args}` shape).
     fn settings_with_all_hooks(bin: &str) -> serde_json::Value {
+        json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Agent",
+                    "hooks": [{ "type": "command", "command": bin, "args": ["hook-pre-tool-use"] }]
+                }],
+                "UserPromptSubmit": [{
+                    "hooks": [{ "type": "command", "command": bin, "args": ["hook-prompt-submit"] }]
+                }],
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": bin, "args": ["hook-stop"] }]
+                }]
+            },
+            "permissions": {
+                "allow": ["mcp__tokensave__search", "mcp__tokensave__lookup"]
+            }
+        })
+    }
+
+    /// Build a settings value with the legacy single-string command shape
+    /// (broken for paths with spaces — used to test migration/repair).
+    fn settings_with_legacy_hooks(bin: &str) -> serde_json::Value {
         json!({
             "hooks": {
                 "PreToolUse": [{
@@ -1227,9 +1299,6 @@ mod tests {
                 "Stop": [{
                     "hooks": [{ "type": "command", "command": format!("{bin} hook-stop") }]
                 }]
-            },
-            "permissions": {
-                "allow": ["mcp__tokensave__search", "mcp__tokensave__lookup"]
             }
         })
     }
@@ -1360,6 +1429,112 @@ mod tests {
         // Should have both entries in UserPromptSubmit.
         let arr = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
+    }
+
+    /// Regression for issue #81: paths with spaces must not be concatenated
+    /// into the `command` field — Claude Code whitespace-splits it.
+    #[test]
+    fn install_uses_args_array_for_paths_with_spaces() {
+        let bin = "C:/Path With Spaces/tokensave.exe";
+        let mut settings = json!({});
+        install_hook(&mut settings, bin);
+
+        for (event, expected_sub) in [
+            ("PreToolUse", "hook-pre-tool-use"),
+            ("UserPromptSubmit", "hook-prompt-submit"),
+            ("Stop", "hook-stop"),
+        ] {
+            let inner = &settings["hooks"][event][0]["hooks"][0];
+            assert_eq!(
+                inner["command"].as_str().unwrap(),
+                bin,
+                "{event}: command must be the exe path alone — no concatenated subcommand"
+            );
+            assert_eq!(
+                inner["args"].as_array().unwrap(),
+                &vec![json!(expected_sub)],
+                "{event}: subcommand must live in args[]"
+            );
+        }
+    }
+
+    #[test]
+    fn install_is_idempotent_for_legacy_shape() {
+        // A legacy single-string install must not get a second entry added —
+        // the doctor is what rewrites it, not a re-run of install.
+        let mut settings = settings_with_legacy_hooks("/usr/bin/tokensave");
+        let before = settings.clone();
+        install_hook(&mut settings, "/usr/bin/tokensave");
+        assert_eq!(settings, before);
+    }
+
+    // -----------------------------------------------------------------------
+    // doctor_fix_hooks tests (issue #81)
+    // -----------------------------------------------------------------------
+
+    /// Issue #81: legacy single-string shape with a path-with-spaces cannot
+    /// be parsed unambiguously. Repair must rewrite to the modern `args`
+    /// shape using `current_exe()` (the binary that's actually running),
+    /// not a whitespace-split of the legacy command. This is what breaks
+    /// the doctor → install loop.
+    #[test]
+    fn doctor_repairs_legacy_shape_to_args_array() {
+        let legacy_bin = "C:/Path With Spaces/tokensave.exe";
+        let settings_dir = tempfile::tempdir().unwrap();
+        let settings_path = settings_dir.path().join("settings.json");
+        let settings = settings_with_legacy_hooks(legacy_bin);
+        std::fs::write(&settings_path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let mut dc = DoctorCounters::default();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let expected_bin = std::env::current_exe()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        for (event, expected_sub) in [
+            ("PreToolUse", "hook-pre-tool-use"),
+            ("UserPromptSubmit", "hook-prompt-submit"),
+            ("Stop", "hook-stop"),
+        ] {
+            let inner = &after["hooks"][event][0]["hooks"][0];
+            assert_eq!(
+                inner["command"].as_str().unwrap(),
+                expected_bin,
+                "{event}: must use current_exe (legacy path cannot be parsed safely)"
+            );
+            assert_eq!(
+                inner["args"].as_array().unwrap(),
+                &vec![json!(expected_sub)],
+                "{event}: subcommand must move into args[]"
+            );
+            assert!(
+                !inner["command"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected_sub),
+                "{event}: subcommand must not be embedded in the command string"
+            );
+        }
+    }
+
+    #[test]
+    fn doctor_is_noop_on_correctly_installed_hooks() {
+        let bin = "/usr/bin/tokensave";
+        let settings_dir = tempfile::tempdir().unwrap();
+        let settings_path = settings_dir.path().join("settings.json");
+        let settings = settings_with_all_hooks(bin);
+        std::fs::write(&settings_path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        let mut dc = DoctorCounters::default();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(after, settings);
     }
 
     // -----------------------------------------------------------------------
@@ -1530,7 +1705,6 @@ mod tests {
     #[test]
     fn doctor_passes_when_user_prompt_submit_present() {
         let mut dc = DoctorCounters::new();
-        // Use the actual test binary path so the exists() check passes.
         let bin = std::env::current_exe()
             .unwrap()
             .to_str()
@@ -1539,7 +1713,11 @@ mod tests {
         let settings = json!({
             "hooks": {
                 "UserPromptSubmit": [{
-                    "hooks": [{ "type": "command", "command": format!("{bin} hook-prompt-submit") }]
+                    "hooks": [{
+                        "type": "command",
+                        "command": bin,
+                        "args": ["hook-prompt-submit"],
+                    }]
                 }]
             }
         });
@@ -1629,17 +1807,30 @@ mod tests {
     fn doctor_fix_replaces_wrong_subcommand() {
         let dir = tempfile::tempdir().unwrap();
         let settings_path = dir.path().join("settings.json");
+        // Modern shape with a wrong subcommand on UserPromptSubmit.
         let settings = json!({
             "hooks": {
                 "PreToolUse": [{
                     "matcher": "Agent",
-                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave hook-pre-tool-use" }]
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["hook-pre-tool-use"],
+                    }]
                 }],
                 "UserPromptSubmit": [{
-                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave invalidcommand" }]
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["invalidcommand"],
+                    }]
                 }],
                 "Stop": [{
-                    "hooks": [{ "type": "command", "command": "/usr/bin/tokensave hook-stop" }]
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["hook-stop"],
+                    }]
                 }]
             }
         });
@@ -1654,13 +1845,14 @@ mod tests {
 
         let fixed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-        let cmd = fixed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap();
-        assert!(
-            cmd.ends_with("hook-prompt-submit"),
-            "should have correct subcommand, got: {cmd}"
+        let inner = &fixed["hooks"]["UserPromptSubmit"][0]["hooks"][0];
+        assert_eq!(
+            inner["args"].as_array().unwrap(),
+            &vec![json!("hook-prompt-submit")],
+            "should have correct subcommand in args[]"
         );
+        // Should keep the original bin path on a modern-shape repair.
+        assert_eq!(inner["command"].as_str().unwrap(), "/usr/bin/tokensave");
     }
 
     #[test]

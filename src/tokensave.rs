@@ -2422,6 +2422,19 @@ impl TokenSave {
         &self.project_root
     }
 
+    /// Recompute the on-disk path to the SQLite DB this instance is
+    /// serving. Useful for diagnostics (e.g. WAL/SHM size sampling) —
+    /// returns the same path that `Database::open` was called with.
+    pub fn db_path(&self) -> PathBuf {
+        let tokensave_dir = get_tokensave_dir(&self.project_root);
+        let (path, _, _) = Self::resolve_db_for_branch(
+            &self.project_root,
+            &tokensave_dir,
+            self.serving_branch.as_deref(),
+        );
+        path
+    }
+
     /// Returns the active git branch, if any.
     pub fn active_branch(&self) -> Option<&str> {
         self.active_branch.as_deref()

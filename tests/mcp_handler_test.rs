@@ -2420,6 +2420,182 @@ async fn test_health_detailed() {
     assert!(dims.get("modularity").is_some(), "modularity score missing");
 }
 
+/// Issue #83: tokensave_redundancy must surface AST-isomorphic duplicate
+/// pairs and rank them by composite similarity. Plant two structurally
+/// identical functions in a fixture and assert the pair surfaces in the
+/// top hit with the `definite` severity bucket.
+#[tokio::test]
+async fn test_redundancy_finds_planted_duplicate() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // Two functions: identical structure, renamed identifiers.
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub fn compute_a(value: i32) -> i32 {
+    let mut acc = 0;
+    for i in 0..value {
+        if i % 2 == 0 {
+            acc += i;
+        } else {
+            acc -= i;
+        }
+    }
+    acc
+}
+
+pub fn compute_b(input: i32) -> i32 {
+    let mut total = 0;
+    for j in 0..input {
+        if j % 2 == 0 {
+            total += j;
+        } else {
+            total -= j;
+        }
+    }
+    total
+}
+
+pub fn unrelated(x: i32) -> i32 {
+    x * 2
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_redundancy",
+        json!({ "min_lines": 5, "similarity_threshold": 0.5 }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    let pair_count = parsed["pair_count"].as_u64().unwrap_or(0);
+    assert!(pair_count >= 1, "expected at least 1 duplicate pair, got: {text}");
+
+    let pairs = parsed["pairs"].as_array().expect("pairs array");
+    let top = &pairs[0];
+    let kind = top["overlap_kind"].as_str().unwrap_or("");
+    assert_eq!(kind, "ast_isomorphic", "top pair should be AST-isomorphic; full output: {text}");
+    let severity = top["severity"].as_str().unwrap_or("");
+    assert_eq!(severity, "definite", "AST-identical pair should be 'definite'");
+    let names: Vec<&str> = vec![
+        top["a"]["name"].as_str().unwrap_or(""),
+        top["b"]["name"].as_str().unwrap_or(""),
+    ];
+    assert!(
+        names.contains(&"compute_a") && names.contains(&"compute_b"),
+        "expected compute_a/compute_b in pair, got {names:?}"
+    );
+
+    // Calling again should be a cache hit (no panic, same result).
+    let result2 = handle_tool_call(
+        &cg,
+        "tokensave_redundancy",
+        json!({ "min_lines": 5, "similarity_threshold": 0.5 }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_str(extract_text(&result2.value)).unwrap();
+    assert_eq!(parsed2["pair_count"], parsed["pair_count"]);
+}
+
+/// Issue #80: `tokensave_runtime` must surface process + DB telemetry so
+/// users hitting unexpected CPU/RAM can capture a structured snapshot
+/// without leaving the chat session.
+#[tokio::test]
+async fn test_runtime_snapshot_exposes_process_and_db_signals() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(&cg, "tokensave_runtime", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    // Top-level envelope.
+    assert!(parsed.get("captured_at").is_some());
+    assert!(parsed["tokensave_version"].is_string());
+    assert!(parsed["host_os"].is_string());
+
+    // Process block — PID must match our own.
+    let proc = &parsed["process"];
+    assert_eq!(
+        proc["pid"].as_u64().unwrap_or(0),
+        u64::from(std::process::id()),
+        "snapshot must report this process's PID"
+    );
+    assert!(proc["rss_bytes"].as_u64().unwrap_or(0) > 0, "RSS should be non-zero");
+    assert!(proc["system_cpu_count"].as_u64().unwrap_or(0) >= 1);
+    assert!(proc["system_total_memory_bytes"].as_u64().unwrap_or(0) > 0);
+
+    // Database block — the DB file we just opened must be present and sized.
+    let db = &parsed["database"];
+    assert!(db["db_path"].is_string());
+    assert!(db["db_size_bytes"].as_u64().unwrap_or(0) > 0, "DB file should have non-zero size");
+    assert!(db["node_count"].as_u64().unwrap_or(0) > 0, "fixture indexed > 0 nodes");
+    // journal_mode pragma should be readable on a libsql connection.
+    assert!(db["journal_mode"].is_string() || db["journal_mode"].is_null());
+}
+
+/// Issue #82: `details=true` must surface raw counts + interpretation per
+/// dimension, not just the scalar score, so callers don't have to compose
+/// six separate tools to reproduce the breakdown.
+#[tokio::test]
+async fn test_health_detailed_includes_raw_signals() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_health",
+        json!({ "details": true }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    let dims = parsed.get("dimensions").expect("dimensions should exist");
+
+    for dim in [
+        "acyclicity",
+        "depth",
+        "equality",
+        "redundancy",
+        "modularity",
+        "coverage_discipline",
+    ] {
+        let d = dims.get(dim).unwrap_or_else(|| panic!("missing {dim}"));
+        assert!(
+            d.get("score").is_some(),
+            "{dim}: 'score' field missing in details view"
+        );
+        assert!(
+            d.get("source").is_some(),
+            "{dim}: 'source' formula attribution missing"
+        );
+    }
+
+    // Specific raw signals that the issue called out as missing today.
+    assert!(dims["equality"].get("gini").is_some());
+    assert!(dims["equality"].get("interpretation").is_some());
+    assert!(dims["acyclicity"].get("edges_in_cycles").is_some());
+    assert!(dims["depth"].get("max_chain").is_some());
+    assert!(dims["depth"].get("ideal_chain").is_some());
+    assert!(dims["modularity"].get("interpretation").is_some());
+    assert!(dims["redundancy"].get("dead_count").is_some());
+}
+
 // ---------------------------------------------------------------------------
 // tokensave_dsm
 // ---------------------------------------------------------------------------

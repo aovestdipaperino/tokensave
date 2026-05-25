@@ -343,6 +343,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             json,
             short,
             details,
+            runtime,
         } => {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = if TokenSave::is_initialized(&project_path) {
@@ -366,6 +367,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     return Ok(());
                 }
             };
+            if runtime {
+                let snap = tokensave::runtime_telemetry::collect(&cg).await?;
+                if json {
+                    println!("{}", tokensave::runtime_telemetry::to_pretty_json(&snap));
+                } else {
+                    print!("{}", tokensave::runtime_telemetry::to_text_report(&snap));
+                }
+                return Ok(());
+            }
             let stats = cg.get_stats().await?;
             if json {
                 println!(
@@ -1228,6 +1238,7 @@ mod startup_tests {
             json: false,
             short: false,
             details: false,
+            runtime: false,
         }));
     }
 }

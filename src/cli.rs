@@ -56,6 +56,10 @@ pub enum Commands {
         /// Show node-kind breakdown
         #[arg(short, long)]
         details: bool,
+        /// Capture a runtime telemetry snapshot (PID, RSS, CPU%, DB / WAL
+        /// sizes) — useful when reporting unexpected resource use (#80).
+        #[arg(long)]
+        runtime: bool,
     },
     /// Search for symbols
     Query {

@@ -10,6 +10,17 @@ use crate::graph::health::{
     acyclicity_score, compute_composite_health, dependency_depth, depth_score, gini_coefficient,
     gini_label, modularity_score, HealthDimensions,
 };
+
+/// Coarse human label for a modularity score in [0,1].
+fn modularity_label(score: f64) -> &'static str {
+    if score >= 0.75 {
+        "high"
+    } else if score >= 0.5 {
+        "moderate"
+    } else {
+        "low"
+    }
+}
 use crate::graph::queries::GraphQueryManager;
 use crate::tokensave::TokenSave;
 use crate::types::{EdgeKind, NodeKind};
@@ -30,6 +41,15 @@ pub(super) struct HealthSnapshot {
     pub(super) redundancy: f64,
     pub(super) modularity: f64,
     pub(super) coverage_discipline: f64,
+    /// Raw signals retained for `details=true` (#82).
+    pub(super) gini: f64,
+    pub(super) edges_in_cycles: usize,
+    pub(super) max_chain: usize,
+    pub(super) ideal_chain: usize,
+    pub(super) modularity_components: usize,
+    pub(super) dead_count: usize,
+    pub(super) total_fns: usize,
+    pub(super) skip_coverage_count: usize,
 }
 
 /// Computes all 5 health dimensions and the composite signal for a given scope.
@@ -42,7 +62,7 @@ pub(super) async fn compute_health_snapshot(
         .await?;
     let files_analyzed = adj.len();
 
-    let (acyclicity, _) = acyclicity_score(&adj);
+    let (acyclicity, edges_in_cycles) = acyclicity_score(&adj);
     let depth_result = dependency_depth(&adj, 1);
     let depth = depth_score(depth_result.max_depth, depth_result.ideal_depth);
 
@@ -99,7 +119,7 @@ pub(super) async fn compute_health_snapshot(
         (1.0 - dead_count as f64 / total_fns as f64).clamp(0.0, 1.0)
     };
 
-    let (modularity, _) = modularity_score(&adj);
+    let (modularity, modularity_components) = modularity_score(&adj);
 
     // coverage_discipline: penalise overuse of skip-test-coverage annotations.
     let skip_coverage = cg
@@ -137,6 +157,14 @@ pub(super) async fn compute_health_snapshot(
         redundancy,
         modularity,
         coverage_discipline,
+        gini,
+        edges_in_cycles,
+        max_chain: depth_result.max_depth,
+        ideal_chain: depth_result.ideal_depth,
+        modularity_components,
+        dead_count,
+        total_fns,
+        skip_coverage_count: skipped_in_scope,
     })
 }
 
@@ -390,17 +418,50 @@ pub(super) async fn handle_health(
     let snap = compute_health_snapshot(cg, path_prefix).await?;
 
     let output = if details {
+        let r4 = |x: f64| (x * 10000.0).round() / 10000.0;
         json!({
             "quality_signal": snap.quality_signal,
             "files_analyzed": snap.files_analyzed,
             "dimensions": {
-                "acyclicity": (snap.acyclicity * 10000.0).round() / 10000.0,
-                "depth": (snap.depth * 10000.0).round() / 10000.0,
-                "equality": (snap.equality * 10000.0).round() / 10000.0,
-                "redundancy": (snap.redundancy * 10000.0).round() / 10000.0,
-                "modularity": (snap.modularity * 10000.0).round() / 10000.0,
-                "coverage_discipline": snap.coverage_discipline,
-            }
+                "acyclicity": {
+                    "score": r4(snap.acyclicity),
+                    "edges_in_cycles": snap.edges_in_cycles,
+                    "source": "1 - edges_in_nontrivial_SCCs / total_edges",
+                },
+                "depth": {
+                    "score": r4(snap.depth),
+                    "max_chain": snap.max_chain,
+                    "ideal_chain": snap.ideal_chain,
+                    "source": "min(1, ideal_chain / max_chain), ideal = ceil(log2(file_count))",
+                },
+                "equality": {
+                    "score": r4(snap.equality),
+                    "gini": r4(snap.gini),
+                    "interpretation": gini_label(snap.gini),
+                    "source": "1 - gini(per_file_complexity)",
+                },
+                "redundancy": {
+                    "score": r4(snap.redundancy),
+                    "dead_count": snap.dead_count,
+                    "total_fns": snap.total_fns,
+                    "source": "1 - dead_fns / total_fns",
+                },
+                "modularity": {
+                    "score": r4(snap.modularity),
+                    "interpretation": modularity_label(snap.modularity),
+                    "components_after_hub_removal": snap.modularity_components,
+                    "source": "1 - 1/components_after_hub_removal",
+                },
+                "coverage_discipline": {
+                    "score": r4(snap.coverage_discipline),
+                    "skip_test_coverage_count": snap.skip_coverage_count,
+                    "total_fns": snap.total_fns,
+                    "source": "1 - skip_test_coverage_annotations / total_fns",
+                },
+            },
+            "weights": {
+                "note": "quality_signal is geometric mean × 10000",
+            },
         })
     } else {
         json!({
@@ -410,6 +471,22 @@ pub(super) async fn handle_health(
     };
 
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_runtime` tool calls.
+///
+/// Issue #80 — surface process and database telemetry so users hitting
+/// unexpected CPU/RAM pressure can attach a structured snapshot to a
+/// bug report. The MCP wrapper just delegates to `runtime_telemetry`.
+pub(super) async fn handle_runtime(cg: &TokenSave, _args: Value) -> Result<ToolResult> {
+    let snap = crate::runtime_telemetry::collect(cg).await?;
+    let formatted = crate::runtime_telemetry::to_pretty_json(&snap);
     Ok(ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&formatted) }]

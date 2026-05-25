@@ -129,6 +129,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_gini(),
         def_dependency_depth(),
         def_health(),
+        def_redundancy(),
+        def_runtime(),
         def_dsm(),
         def_test_risk(),
         def_session_start(),
@@ -1302,6 +1304,51 @@ fn def_health() -> ToolDefinition {
                 "details": {
                     "type": "boolean",
                     "description": "If true, include full dimension breakdown (default: false)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_runtime() -> ToolDefinition {
+    def(
+        "tokensave_runtime",
+        "Runtime Snapshot",
+        "Capture a process + database telemetry snapshot for the running tokensave MCP server: PID, resident memory, virtual size, sustained CPU% (sampled over ~200ms), thread count, system memory, DB / WAL / SHM file sizes, journal mode, and the DB-to-source byte ratio. Use this when triaging unexpected CPU or RAM consumption (issue #80). Single call — output is a JSON object.",
+        json!({
+            "type": "object",
+            "properties": {}
+        }),
+    )
+}
+
+fn def_redundancy() -> ToolDefinition {
+    def(
+        "tokensave_redundancy",
+        "Redundancy Hunt",
+        "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "min_lines": {
+                    "type": "number",
+                    "description": "Skip functions shorter than this many source lines (default: 8)"
+                },
+                "max_pairs": {
+                    "type": "number",
+                    "description": "Maximum number of duplicate pairs to return (default: 20, max: 500)"
+                },
+                "similarity_threshold": {
+                    "type": "number",
+                    "description": "Drop pairs scoring below this composite similarity (default: 0.6, range 0.0-1.0)"
+                },
+                "include_naming_only": {
+                    "type": "boolean",
+                    "description": "If true, include 'naming_only' / low-confidence matches in the output (default: false)"
                 }
             }
         }),

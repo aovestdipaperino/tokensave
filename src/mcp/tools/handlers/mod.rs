@@ -11,6 +11,7 @@ pub mod graph;
 pub mod health;
 pub mod info;
 pub mod memory;
+pub mod redundancy;
 pub mod workflow;
 
 use std::collections::HashSet;
@@ -170,6 +171,8 @@ pub async fn handle_tool_call(
             health::handle_dependency_depth(cg, args, scope_prefix).await
         }
         "tokensave_health" => health::handle_health(cg, args, scope_prefix).await,
+        "tokensave_redundancy" => redundancy::handle_redundancy(cg, args, scope_prefix).await,
+        "tokensave_runtime" => health::handle_runtime(cg, args).await,
         "tokensave_dsm" => health::handle_dsm(cg, args, scope_prefix).await,
         "tokensave_test_risk" => health::handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_session_start" => health::handle_session_start(cg, args, scope_prefix).await,
@@ -224,9 +227,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            69
+            71
         } else {
-            68
+            70
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -286,6 +289,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_gini"));
         assert!(tool_names.contains(&"tokensave_dependency_depth"));
         assert!(tool_names.contains(&"tokensave_health"));
+        assert!(tool_names.contains(&"tokensave_redundancy"));
+        assert!(tool_names.contains(&"tokensave_runtime"));
         assert!(tool_names.contains(&"tokensave_dsm"));
         assert!(tool_names.contains(&"tokensave_test_risk"));
         assert!(tool_names.contains(&"tokensave_session_start"));

@@ -101,12 +101,24 @@ fn test_install_creates_settings_with_hook() {
         "PreToolUse should contain a hook with matcher=Agent and command containing tokensave"
     );
 
-    // Verify the hook command format
+    // Verify the hook command format (issue #81: modern args[] shape).
     let hook = tokensave_hook.unwrap();
-    let cmd = hook["hooks"][0]["command"].as_str().unwrap();
+    let inner = &hook["hooks"][0];
+    let cmd = inner["command"].as_str().unwrap();
     assert!(
-        cmd.contains("tokensave hook-pre-tool-use"),
-        "hook command should contain 'tokensave hook-pre-tool-use', got: {cmd}"
+        cmd.contains("tokensave"),
+        "hook command should be the tokensave exe path, got: {cmd}"
+    );
+    let args: Vec<&str> = inner["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        args,
+        vec!["hook-pre-tool-use"],
+        "subcommand must live in args[], not concatenated into command"
     );
 }
 

@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 9;
+const LATEST_VERSION: u32 = 10;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -170,6 +170,20 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
         CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id);
 
+        CREATE TABLE IF NOT EXISTS node_fingerprints (
+            node_id TEXT PRIMARY KEY,
+            ast_hash TEXT NOT NULL,
+            cfg_hash TEXT NOT NULL,
+            call_seq_hash TEXT NOT NULL,
+            shingles TEXT NOT NULL,
+            body_tokens INTEGER NOT NULL,
+            source_hash TEXT NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_node_fingerprints_ast ON node_fingerprints(ast_hash);
+        CREATE INDEX IF NOT EXISTS idx_node_fingerprints_size ON node_fingerprints(body_tokens);
+
         CREATE TABLE IF NOT EXISTS memory_decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
@@ -318,6 +332,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         7 => migrate_v7(conn).await,
         8 => migrate_v8(conn).await,
         9 => migrate_v9(conn).await,
+        10 => migrate_v10(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -823,6 +838,39 @@ async fn migrate_v9(conn: &Connection) -> Result<()> {
     .map_err(|e| TokenSaveError::Database {
         message: format!("v9: failed to create idx_nodes_parent_id: {e}"),
         operation: "migrate_v9".to_string(),
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V10: node_fingerprints (issue #83 — tokensave_redundancy)
+// ---------------------------------------------------------------------------
+
+/// Creates the `node_fingerprints` table used by `tokensave_redundancy` to
+/// detect AST-isomorphic, control-flow-equivalent, and token-similar
+/// function/method duplicates. Populated lazily on first redundancy query
+/// and invalidated by `source_hash` mismatch.
+async fn migrate_v10(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS node_fingerprints (
+            node_id TEXT PRIMARY KEY,
+            ast_hash TEXT NOT NULL,
+            cfg_hash TEXT NOT NULL,
+            call_seq_hash TEXT NOT NULL,
+            shingles TEXT NOT NULL,
+            body_tokens INTEGER NOT NULL,
+            source_hash TEXT NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_node_fingerprints_ast ON node_fingerprints(ast_hash);
+        CREATE INDEX IF NOT EXISTS idx_node_fingerprints_size ON node_fingerprints(body_tokens);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v10: failed to create node_fingerprints table: {e}"),
+        operation: "migrate_v10".to_string(),
     })?;
 
     Ok(())

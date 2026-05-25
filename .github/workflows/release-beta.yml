@@ -1,8 +1,17 @@
 name: Release (Beta)
 
+# Beta channel is DISABLED as of 6.0.0.
+#
+# The workflow code is intentionally preserved so the beta channel can be
+# revived later by:
+#   1. Reverting this `on:` block to the previous `release: [published]`
+#      trigger.
+#   2. Removing the `BETA_CHANNEL_ENABLED` guard from every job (`if:`).
+#
+# While the guard is `false`, the workflow can still be exercised
+# manually via `workflow_dispatch` for debugging — the jobs simply skip.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 # Only runs for prerelease tags — stable releases handled by release.yml
 
@@ -11,11 +20,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Single toggle that gates every job in this workflow. Flip to `true`
+  # (or remove the guard from each `if:` line below) to re-enable.
+  BETA_CHANNEL_ENABLED: 'false'
 
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    if: github.event.release.prerelease
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -99,7 +111,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap (beta)
-    if: github.event.release.prerelease && !cancelled()
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -191,7 +203,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket (beta)
-    if: github.event.release.prerelease && !cancelled()
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
