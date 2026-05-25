@@ -26,6 +26,7 @@
 //! which matches user expectations.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Parser, Tree};
@@ -66,7 +67,7 @@ impl Fingerprint {
                 s.push(',');
             }
             // Use std fmt; not perf-critical, called once per persist.
-            s.push_str(&format!("{h:08x}"));
+            let _ = write!(s, "{h:08x}");
         }
         s
     }
@@ -108,9 +109,9 @@ pub fn compute_fingerprint(full_source: &str, body_node: Node<'_>) -> Fingerprin
 /// `Tree`. Returns `None` when parsing fails (malformed input, missing
 /// grammar). Builds a fresh `Parser` per call — the call site for
 /// fingerprint computation invokes this once per file, not per node.
-pub fn parse_file(source: &str, language: tree_sitter::Language) -> Option<Tree> {
+pub fn parse_file(source: &str, language: &tree_sitter::Language) -> Option<Tree> {
     let mut parser = Parser::new();
-    parser.set_language(&language).ok()?;
+    parser.set_language(language).ok()?;
     parser.parse(source, None)
 }
 
@@ -455,7 +456,7 @@ fn short_hex(bytes: &[u8]) -> String {
     // between two functions in the same repo astronomically unlikely.
     let mut s = String::with_capacity(16);
     for b in bytes.iter().take(8) {
-        s.push_str(&format!("{b:02x}"));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -471,14 +472,14 @@ fn short_sha256(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
     /// Helper that parses a Rust snippet and returns the first function body.
     fn fingerprint_for_rust_fn(snippet: &str) -> Fingerprint {
         let lang = crate::extraction::ts_provider::language("rust");
-        let tree = parse_file(snippet, lang).expect("parse failed");
+        let tree = parse_file(snippet, &lang).expect("parse failed");
         let root = tree.root_node();
         let fn_node = find_first_kind(root, "function_item").expect("no function in snippet");
         compute_fingerprint(snippet, fn_node)
@@ -505,13 +506,14 @@ mod tests {
 
     #[test]
     fn identical_functions_have_identical_ast_hash() {
-        let a = fingerprint_for_rust_fn(
-            "fn a(x: i32) -> i32 { if x > 0 { x + 1 } else { x - 1 } }",
+        let a =
+            fingerprint_for_rust_fn("fn a(x: i32) -> i32 { if x > 0 { x + 1 } else { x - 1 } }");
+        let b =
+            fingerprint_for_rust_fn("fn b(y: i32) -> i32 { if y > 0 { y + 1 } else { y - 1 } }");
+        assert_eq!(
+            a.ast_hash, b.ast_hash,
+            "renamed identifiers must not change AST hash"
         );
-        let b = fingerprint_for_rust_fn(
-            "fn b(y: i32) -> i32 { if y > 0 { y + 1 } else { y - 1 } }",
-        );
-        assert_eq!(a.ast_hash, b.ast_hash, "renamed identifiers must not change AST hash");
         // AST + CFG + call-seq all match; shingles diverge because token
         // names changed. Score lower-bound: 0.40+0.25+0.20 = 0.85.
         let score = composite_similarity(&a, &b);
@@ -523,9 +525,8 @@ mod tests {
     #[test]
     fn different_structure_produces_different_ast_hash() {
         let a = fingerprint_for_rust_fn("fn a(x: i32) -> i32 { x + 1 }");
-        let b = fingerprint_for_rust_fn(
-            "fn b(x: i32) -> i32 { if x > 0 { x + 1 } else { x - 1 } }",
-        );
+        let b =
+            fingerprint_for_rust_fn("fn b(x: i32) -> i32 { if x > 0 { x + 1 } else { x - 1 } }");
         assert_ne!(a.ast_hash, b.ast_hash);
         assert_ne!(a.cfg_hash, b.cfg_hash);
     }
@@ -552,8 +553,12 @@ mod tests {
 
     #[test]
     fn jaccard_disjoint_is_zero() {
-        let a = fingerprint_for_rust_fn("fn a() { let aaaa = 1; let bbbb = 2; let cccc = 3; let dddd = 4; let eeee = 5; }");
-        let b = fingerprint_for_rust_fn("fn b() { let zzzz = 9; let yyyy = 8; let xxxx = 7; let wwww = 6; let vvvv = 5; }");
+        let a = fingerprint_for_rust_fn(
+            "fn a() { let aaaa = 1; let bbbb = 2; let cccc = 3; let dddd = 4; let eeee = 5; }",
+        );
+        let b = fingerprint_for_rust_fn(
+            "fn b() { let zzzz = 9; let yyyy = 8; let xxxx = 7; let wwww = 6; let vvvv = 5; }",
+        );
         let j = jaccard_similarity(&a.shingles, &b.shingles);
         // Some token overlap (e.g. `let`), but should be very low.
         assert!(j < 0.4, "expected low Jaccard, got {j}");
@@ -577,15 +582,9 @@ mod tests {
 
     #[test]
     fn call_sequence_captures_order() {
-        let a = fingerprint_for_rust_fn(
-            "fn a() { foo(); bar(); baz(); }",
-        );
-        let b = fingerprint_for_rust_fn(
-            "fn b() { foo(); bar(); baz(); }",
-        );
-        let c = fingerprint_for_rust_fn(
-            "fn c() { baz(); bar(); foo(); }",
-        );
+        let a = fingerprint_for_rust_fn("fn a() { foo(); bar(); baz(); }");
+        let b = fingerprint_for_rust_fn("fn b() { foo(); bar(); baz(); }");
+        let c = fingerprint_for_rust_fn("fn c() { baz(); bar(); foo(); }");
         assert_eq!(a.call_seq_hash, b.call_seq_hash);
         assert_ne!(a.call_seq_hash, c.call_seq_hash);
     }

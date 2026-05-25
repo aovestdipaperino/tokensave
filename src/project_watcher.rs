@@ -152,10 +152,7 @@ impl ProjectWatcher {
                         watched += 1;
                     }
                     Err(e) => {
-                        log_msg(&format!(
-                            "watcher: failed to watch {}: {e}",
-                            path.display()
-                        ));
+                        log_msg(&format!("watcher: failed to watch {}: {e}", path.display()));
                     }
                 }
             }

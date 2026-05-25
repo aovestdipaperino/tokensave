@@ -76,7 +76,7 @@ pub struct DatabaseSnapshot {
 /// Capture a runtime snapshot for the given project.
 ///
 /// Two responsibilities: (a) sample our own process via `sysinfo`,
-/// (b) `stat` the SQLite files and ask the connection for its journal
+/// (b) `stat` the `SQLite` files and ask the connection for its journal
 /// mode. Both are best-effort — failures degrade to zeroes / `None`
 /// rather than failing the whole snapshot, because the value of this
 /// tool is recording *what's available* during a spike.
@@ -85,8 +85,7 @@ pub async fn collect(cg: &crate::tokensave::TokenSave) -> Result<RuntimeSnapshot
     let database = sample_database(cg).await?;
     let captured_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     Ok(RuntimeSnapshot {
         captured_at,
         tokensave_version: env!("CARGO_PKG_VERSION"),
@@ -184,10 +183,10 @@ fn sample_process() -> ProcessSnapshot {
     );
 
     let proc = sys.process(pid);
-    let rss_bytes = proc.map(sysinfo::Process::memory).unwrap_or(0);
-    let virtual_bytes = proc.map(sysinfo::Process::virtual_memory).unwrap_or(0);
-    let cpu_percent = proc.map(sysinfo::Process::cpu_usage).unwrap_or(0.0);
-    let uptime_secs = proc.map(sysinfo::Process::run_time).unwrap_or(0);
+    let rss_bytes = proc.map_or(0, sysinfo::Process::memory);
+    let virtual_bytes = proc.map_or(0, sysinfo::Process::virtual_memory);
+    let cpu_percent = proc.map_or(0.0, sysinfo::Process::cpu_usage);
+    let uptime_secs = proc.map_or(0, sysinfo::Process::run_time);
 
     ProcessSnapshot {
         pid: std::process::id(),
@@ -206,7 +205,7 @@ fn sample_process() -> ProcessSnapshot {
 
 async fn sample_database(cg: &crate::tokensave::TokenSave) -> Result<DatabaseSnapshot> {
     let project_root = cg.project_root().to_path_buf();
-    let db_path = cg.db_path().to_path_buf();
+    let db_path = cg.db_path().clone();
     let db_size_bytes = file_size(&db_path);
     let wal_size_bytes = file_size(&with_suffix(&db_path, "-wal"));
     let shm_size_bytes = file_size(&with_suffix(&db_path, "-shm"));
@@ -227,7 +226,7 @@ async fn sample_database(cg: &crate::tokensave::TokenSave) -> Result<DatabaseSna
 }
 
 fn file_size(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {

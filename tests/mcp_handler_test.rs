@@ -2480,14 +2480,23 @@ pub fn unrelated(x: i32) -> i32 {
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
 
     let pair_count = parsed["pair_count"].as_u64().unwrap_or(0);
-    assert!(pair_count >= 1, "expected at least 1 duplicate pair, got: {text}");
+    assert!(
+        pair_count >= 1,
+        "expected at least 1 duplicate pair, got: {text}"
+    );
 
     let pairs = parsed["pairs"].as_array().expect("pairs array");
     let top = &pairs[0];
     let kind = top["overlap_kind"].as_str().unwrap_or("");
-    assert_eq!(kind, "ast_isomorphic", "top pair should be AST-isomorphic; full output: {text}");
+    assert_eq!(
+        kind, "ast_isomorphic",
+        "top pair should be AST-isomorphic; full output: {text}"
+    );
     let severity = top["severity"].as_str().unwrap_or("");
-    assert_eq!(severity, "definite", "AST-identical pair should be 'definite'");
+    assert_eq!(
+        severity, "definite",
+        "AST-identical pair should be 'definite'"
+    );
     let names: Vec<&str> = vec![
         top["a"]["name"].as_str().unwrap_or(""),
         top["b"]["name"].as_str().unwrap_or(""),
@@ -2535,15 +2544,24 @@ async fn test_runtime_snapshot_exposes_process_and_db_signals() {
         u64::from(std::process::id()),
         "snapshot must report this process's PID"
     );
-    assert!(proc["rss_bytes"].as_u64().unwrap_or(0) > 0, "RSS should be non-zero");
+    assert!(
+        proc["rss_bytes"].as_u64().unwrap_or(0) > 0,
+        "RSS should be non-zero"
+    );
     assert!(proc["system_cpu_count"].as_u64().unwrap_or(0) >= 1);
     assert!(proc["system_total_memory_bytes"].as_u64().unwrap_or(0) > 0);
 
     // Database block — the DB file we just opened must be present and sized.
     let db = &parsed["database"];
     assert!(db["db_path"].is_string());
-    assert!(db["db_size_bytes"].as_u64().unwrap_or(0) > 0, "DB file should have non-zero size");
-    assert!(db["node_count"].as_u64().unwrap_or(0) > 0, "fixture indexed > 0 nodes");
+    assert!(
+        db["db_size_bytes"].as_u64().unwrap_or(0) > 0,
+        "DB file should have non-zero size"
+    );
+    assert!(
+        db["node_count"].as_u64().unwrap_or(0) > 0,
+        "fixture indexed > 0 nodes"
+    );
     // journal_mode pragma should be readable on a libsql connection.
     assert!(db["journal_mode"].is_string() || db["journal_mode"].is_null());
 }
@@ -4556,7 +4574,9 @@ async fn refresh_file_token_map_picks_up_new_files() {
     let project = tmp.path();
     std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
 
-    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    let cg = tokensave::tokensave::TokenSave::init(project)
+        .await
+        .unwrap();
     cg.sync().await.unwrap();
 
     let server = tokensave::mcp::McpServer::new(cg, None).await;
@@ -4565,7 +4585,9 @@ async fn refresh_file_token_map_picks_up_new_files() {
 
     // Add a new file, sync it, then refresh.
     std::fs::write(project.join("b.rs"), "fn b() { let y = 2; }").unwrap();
-    let cg2 = tokensave::tokensave::TokenSave::open(project).await.unwrap();
+    let cg2 = tokensave::tokensave::TokenSave::open(project)
+        .await
+        .unwrap();
     cg2.sync().await.unwrap();
 
     server.refresh_file_token_map().await;
@@ -4588,7 +4610,9 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
     let project = tmp.path();
     std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
 
-    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    let cg = tokensave::tokensave::TokenSave::init(project)
+        .await
+        .unwrap();
     cg.sync().await.unwrap();
 
     let server = tokensave::mcp::McpServer::new(cg, None).await;

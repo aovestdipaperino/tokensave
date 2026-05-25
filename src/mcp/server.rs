@@ -550,11 +550,7 @@ impl McpServer {
     pub async fn shutdown(&self) {
         // Cancel the embedded watcher first so its final-flush sync can race
         // with the rest of shutdown rather than after.
-        let cancel = self
-            .watcher_cancel
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
+        let cancel = self.watcher_cancel.lock().ok().and_then(|mut g| g.take());
         if let Some(token) = cancel {
             token.cancel();
         }

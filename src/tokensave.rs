@@ -2422,7 +2422,7 @@ impl TokenSave {
         &self.project_root
     }
 
-    /// Recompute the on-disk path to the SQLite DB this instance is
+    /// Recompute the on-disk path to the `SQLite` DB this instance is
     /// serving. Useful for diagnostics (e.g. WAL/SHM size sampling) —
     /// returns the same path that `Database::open` was called with.
     pub fn db_path(&self) -> PathBuf {

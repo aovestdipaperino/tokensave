@@ -194,7 +194,7 @@ async fn ensure_fingerprints(
         // At least one node in this file needs a fresh fingerprint —
         // parse once and compute for every miss.
         let language = crate::extraction::ts_provider::language(lang_key);
-        let Some(tree) = parse_file(&source, language) else {
+        let Some(tree) = parse_file(&source, &language) else {
             continue;
         };
 
@@ -289,12 +289,13 @@ fn body_slice(source: &str, start_line: u32, end_line: u32) -> &str {
 /// by `compute_fingerprint` (first 8 bytes of SHA-256, hex-encoded).
 fn quick_body_hash(body: &str) -> String {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
     let mut h = Sha256::new();
     h.update(body.as_bytes());
     let d = h.finalize();
     let mut s = String::with_capacity(16);
     for b in d.iter().take(8) {
-        s.push_str(&format!("{b:02x}"));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }

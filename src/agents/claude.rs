@@ -174,14 +174,7 @@ fn install_hook_inner(settings: &mut serde_json::Value, tokensave_bin: &str, qui
         None,
         quiet,
     );
-    install_single_hook(
-        settings,
-        "Stop",
-        tokensave_bin,
-        "hook-stop",
-        None,
-        quiet,
-    );
+    install_single_hook(settings, "Stop", tokensave_bin, "hook-stop", None, quiet);
 }
 
 /// Install a single hook entry under `settings.hooks.<event>` (idempotent).
@@ -1512,10 +1505,7 @@ mod tests {
                 "{event}: subcommand must move into args[]"
             );
             assert!(
-                !inner["command"]
-                    .as_str()
-                    .unwrap()
-                    .contains(expected_sub),
+                !inner["command"].as_str().unwrap().contains(expected_sub),
                 "{event}: subcommand must not be embedded in the command string"
             );
         }

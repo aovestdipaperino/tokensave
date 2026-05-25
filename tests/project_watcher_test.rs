@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
-use tokio_util::sync::CancellationToken;
 use tokensave::project_watcher::ProjectWatcher;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn post_sync_callback_fires_after_sync() {
@@ -12,7 +12,9 @@ async fn post_sync_callback_fires_after_sync() {
     std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
 
     // Initialize the project so sync() has a DB to write to.
-    let cg = tokensave::tokensave::TokenSave::init(&project).await.unwrap();
+    let cg = tokensave::tokensave::TokenSave::init(&project)
+        .await
+        .unwrap();
     cg.sync().await.unwrap();
     drop(cg);
 
@@ -21,8 +23,7 @@ async fn post_sync_callback_fires_after_sync() {
     let cancel = CancellationToken::new();
     let cancel_for_task = cancel.clone();
 
-    let pw = ProjectWatcher::new(project.clone(), Duration::from_millis(100))
-        .expect("watcher");
+    let pw = ProjectWatcher::new(project.clone(), Duration::from_millis(100)).expect("watcher");
 
     let handle = tokio::spawn(async move {
         pw.run_with_callback(cancel_for_task, move || {
@@ -71,7 +72,9 @@ async fn writes_in_ignored_dirs_do_not_trigger_sync() {
         std::fs::create_dir(project.join(ignored)).unwrap();
     }
 
-    let cg = tokensave::tokensave::TokenSave::init(&project).await.unwrap();
+    let cg = tokensave::tokensave::TokenSave::init(&project)
+        .await
+        .unwrap();
     cg.sync().await.unwrap();
     drop(cg);
 
@@ -80,8 +83,7 @@ async fn writes_in_ignored_dirs_do_not_trigger_sync() {
     let cancel = CancellationToken::new();
     let cancel_for_task = cancel.clone();
 
-    let pw = ProjectWatcher::new(project.clone(), Duration::from_millis(100))
-        .expect("watcher");
+    let pw = ProjectWatcher::new(project.clone(), Duration::from_millis(100)).expect("watcher");
 
     let handle = tokio::spawn(async move {
         pw.run_with_callback(cancel_for_task, move || {

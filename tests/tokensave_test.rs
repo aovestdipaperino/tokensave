@@ -476,7 +476,9 @@ async fn sync_if_stale_silent_returns_ok_when_lock_held() {
     let project = tmp.path();
     std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
 
-    let cg = tokensave::tokensave::TokenSave::init(project).await.unwrap();
+    let cg = tokensave::tokensave::TokenSave::init(project)
+        .await
+        .unwrap();
     cg.sync().await.unwrap();
 
     // Hold the sync lock to simulate a peer MCP syncing.
