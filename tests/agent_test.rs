@@ -854,6 +854,94 @@ fn test_antigravity_install_preserves_existing_config() {
     );
 }
 
+/// Regression for #85: `tokensave install --agent antigravity` must populate
+/// both the IDE config and the CLI plugin file so the `agy` CLI can see the
+/// server. Before the fix only the IDE path was written, which left the CLI
+/// invisible in `/mcp`.
+#[test]
+fn test_antigravity_install_writes_cli_plugin() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let bin = "/usr/local/bin/tokensave";
+    let ctx = InstallContext {
+        home: home.to_path_buf(),
+        tokensave_bin: bin.to_string(),
+        tool_permissions: expected_tool_perms(),
+    };
+
+    AntigravityIntegration.install(&ctx).expect("install ok");
+
+    let ide_path = home.join(".gemini/antigravity/mcp_config.json");
+    let cli_path = home.join(".gemini/antigravity-cli/plugins/tokensave.json");
+    assert!(
+        ide_path.exists(),
+        "IDE config must be written: {ide_path:?}"
+    );
+    assert!(
+        cli_path.exists(),
+        "CLI plugin must be written: {cli_path:?}"
+    );
+
+    for path in [&ide_path, &cli_path] {
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let server = body
+            .get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .expect("tokensave entry");
+        assert_eq!(
+            server.get("command").and_then(|v| v.as_str()),
+            Some(bin),
+            "{path:?} must point at the install bin"
+        );
+        assert!(
+            server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("serve"))),
+            "{path:?} must invoke `serve`"
+        );
+    }
+}
+
+/// Uninstall must remove the CLI plugin file outright (it belongs only to
+/// tokensave) and remove the `tokensave` entry from the shared IDE config
+/// without touching the user's other entries.
+#[test]
+fn test_antigravity_uninstall_removes_both_locations() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let bin = "/usr/local/bin/tokensave";
+    let ctx = InstallContext {
+        home: home.to_path_buf(),
+        tokensave_bin: bin.to_string(),
+        tool_permissions: expected_tool_perms(),
+    };
+
+    AntigravityIntegration.install(&ctx).unwrap();
+    AntigravityIntegration.uninstall(&ctx).unwrap();
+
+    let cli_path = home.join(".gemini/antigravity-cli/plugins/tokensave.json");
+    assert!(
+        !cli_path.exists(),
+        "CLI plugin file must be deleted, still exists at {cli_path:?}"
+    );
+
+    let ide_path = home.join(".gemini/antigravity/mcp_config.json");
+    // IDE config either deleted (empty) or rewritten without our entry —
+    // both are acceptable; what's not acceptable is the entry persisting.
+    if ide_path.exists() {
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ide_path).unwrap()).unwrap();
+        assert!(
+            body.get("mcpServers")
+                .and_then(|v| v.get("tokensave"))
+                .is_none(),
+            "tokensave entry must be removed from {ide_path:?}"
+        );
+    }
+}
+
 #[test]
 fn test_copilot_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
