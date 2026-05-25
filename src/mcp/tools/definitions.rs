@@ -156,6 +156,11 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_signature_search(),
         def_constructors(),
         def_field_sites(),
+        def_call_chain(),
+        def_file_dependents(),
+        def_replace_symbol(),
+        def_insert_at_symbol(),
+        def_find_exact_symbol(),
     ];
     if !ast_grep_available() {
         definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
@@ -2000,6 +2005,137 @@ fn def_read() -> ToolDefinition {
                 }
             },
             "required": ["file"]
+        }),
+    )
+}
+
+fn def_call_chain() -> ToolDefinition {
+    def(
+        "tokensave_call_chain",
+        "Call Chain",
+        "Find the shortest directed call chain between two symbols, following \
+         only outgoing `calls` edges. Returns the ordered sequence of nodes \
+         and edges that connect `from_id` to `to_id`, or a not-found result. \
+         Use `tokensave_search` or `tokensave_by_qualified_name` first to \
+         resolve symbol names into node IDs.",
+        json!({
+            "type": "object",
+            "properties": {
+                "from_id": {
+                    "type": "string",
+                    "description": "Source node ID (the caller end of the chain)."
+                },
+                "to_id": {
+                    "type": "string",
+                    "description": "Target node ID (the callee end of the chain)."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum BFS depth (default: 8, max: 20)."
+                }
+            },
+            "required": ["from_id", "to_id"]
+        }),
+    )
+}
+
+fn def_file_dependents() -> ToolDefinition {
+    def(
+        "tokensave_file_dependents",
+        "File Dependents",
+        "List every indexed file that imports or otherwise depends on the \
+         given file. Path is interpreted relative to the project root. \
+         Useful for impact analysis on file-level changes.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Path to the file (relative to project root)."
+                }
+            },
+            "required": ["file"]
+        }),
+    )
+}
+
+fn def_replace_symbol() -> ToolDefinition {
+    def(
+        "tokensave_replace_symbol",
+        "Replace Symbol Source",
+        "Replace the full source of a named symbol (function, method, struct, \
+         enum, etc.) with new source text. Resolves the symbol via exact \
+         qualified-name match; on ambiguity, callable kinds win, and if \
+         still ambiguous the edit is refused. Preserves the surrounding \
+         file untouched and reindexes the file after writing.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name. Prefer a fully qualified name for disambiguation."
+                },
+                "new_source": {
+                    "type": "string",
+                    "description": "Full replacement source — must include the symbol's own declaration line."
+                }
+            },
+            "required": ["symbol", "new_source"]
+        }),
+    )
+}
+
+fn def_find_exact_symbol() -> ToolDefinition {
+    def(
+        "tokensave_find_exact_symbol",
+        "Exact Symbol Lookup",
+        "Return every node whose `name` column equals the given bare \
+         identifier — a single O(log n) index probe against `idx_nodes_name`. \
+         No BM25, no fuzzy match, no scoring. Use this when you already know \
+         the symbol name and want the cheapest possible lookup; use \
+         `tokensave_search` for relevance-ranked discovery instead.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact bare symbol name (no `::`, no glob)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum matches to return (default: 20, max: 200)."
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
+fn def_insert_at_symbol() -> ToolDefinition {
+    def(
+        "tokensave_insert_at_symbol",
+        "Insert Near Symbol",
+        "Insert content immediately before or after a named symbol's source \
+         range. Same resolution semantics as `tokensave_replace_symbol`. \
+         Use `position=\"before\"` or `position=\"after\"` (default: after).",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name. Prefer a fully qualified name for disambiguation."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Source text to insert. Newlines are preserved as-is."
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["before", "after"],
+                    "description": "Where to insert relative to the symbol's range. Default: after."
+                }
+            },
+            "required": ["symbol", "content"]
         }),
     )
 }

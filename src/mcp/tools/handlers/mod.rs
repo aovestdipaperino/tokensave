@@ -191,6 +191,13 @@ pub async fn handle_tool_call(
         "tokensave_constructors" => analysis::handle_constructors(cg, args, scope_prefix).await,
         "tokensave_field_sites" => analysis::handle_field_sites(cg, args, scope_prefix).await,
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
+        "tokensave_call_chain" => graph::handle_call_chain(cg, args).await,
+        "tokensave_file_dependents" => graph::handle_file_dependents(cg, args).await,
+        "tokensave_replace_symbol" => edit::handle_replace_symbol(cg, args).await,
+        "tokensave_insert_at_symbol" => edit::handle_insert_at_symbol(cg, args).await,
+        "tokensave_find_exact_symbol" => {
+            graph::handle_find_exact_symbol(cg, args, scope_prefix).await
+        }
         "tokensave_by_qualified_name" => graph::handle_by_qualified_name(cg, args).await,
         "tokensave_signature" => graph::handle_signature(cg, args).await,
         "tokensave_impls" => graph::handle_impls(cg, args).await,
@@ -227,9 +234,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            71
+            76
         } else {
-            70
+            75
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -309,6 +316,11 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_signature_search"));
         assert!(tool_names.contains(&"tokensave_constructors"));
         assert!(tool_names.contains(&"tokensave_field_sites"));
+        assert!(tool_names.contains(&"tokensave_call_chain"));
+        assert!(tool_names.contains(&"tokensave_file_dependents"));
+        assert!(tool_names.contains(&"tokensave_replace_symbol"));
+        assert!(tool_names.contains(&"tokensave_insert_at_symbol"));
+        assert!(tool_names.contains(&"tokensave_find_exact_symbol"));
     }
 
     #[test]

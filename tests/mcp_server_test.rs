@@ -7,6 +7,7 @@
 
 use serde_json::{json, Value};
 use std::fs;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokensave::mcp::transport::ChannelTransport;
 use tokensave::mcp::McpServer;
@@ -17,7 +18,7 @@ use tokensave::tokensave::TokenSave;
 // ---------------------------------------------------------------------------
 
 /// Creates a temporary Rust project, indexes it, and returns a ready server.
-async fn setup_server() -> (McpServer, TempDir) {
+async fn setup_server() -> (Arc<McpServer>, TempDir) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -34,7 +35,7 @@ async fn setup_server() -> (McpServer, TempDir) {
 
 /// Sends a sequence of JSON-RPC messages to a server, runs it to completion,
 /// and returns all non-empty response lines.
-async fn run_server_with_messages(server: McpServer, messages: Vec<String>) -> Vec<String> {
+async fn run_server_with_messages(server: Arc<McpServer>, messages: Vec<String>) -> Vec<String> {
     let (mut transport, sender, mut receiver) = ChannelTransport::new();
 
     for msg in messages {
@@ -263,6 +264,65 @@ async fn test_tools_call_search() {
             .unwrap_or(false)
     });
     assert!(has_helper, "search results should contain 'helper'");
+}
+
+// ---------------------------------------------------------------------------
+// 6b. test_tools_call_timings_flag
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_tools_call_timings_flag_off_by_default() {
+    let (server, _dir) = setup_server().await;
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(31),
+            "tools/call",
+            json!({"name": "tokensave_search", "arguments": {"query": "helper"}}),
+        )],
+    )
+    .await;
+    let resp = parse_response(
+        responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == 31)
+            .expect("response with id 31"),
+    );
+    assert!(
+        resp["result"]["_meta"]["duration_us"].is_null(),
+        "duration_us must NOT be present when timings flag is off — got {}",
+        resp["result"]["_meta"]
+    );
+}
+
+#[tokio::test]
+async fn test_tools_call_timings_flag_on_emits_duration_us() {
+    let (server, _dir) = setup_server().await;
+    server.set_timings_enabled(true);
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(32),
+            "tools/call",
+            json!({"name": "tokensave_search", "arguments": {"query": "helper"}}),
+        )],
+    )
+    .await;
+    let resp = parse_response(
+        responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == 32)
+            .expect("response with id 32"),
+    );
+    let dur = resp["result"]["_meta"]["duration_us"]
+        .as_u64()
+        .expect("duration_us must be a u64 when timings are enabled");
+    // Lower-bound sanity: any real query takes at least a few microseconds.
+    // Upper bound is generous so the test isn't flaky on slow CI runners.
+    assert!(
+        dur < 5_000_000,
+        "duration_us should be well under 5 s, got {dur}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +805,7 @@ async fn test_resources_list() {
     let resources = resp["result"]["resources"]
         .as_array()
         .expect("should have resources array");
-    assert_eq!(resources.len(), 4, "should expose 4 resources");
+    assert_eq!(resources.len(), 5, "should expose 5 resources");
 
     let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
     assert!(
@@ -763,6 +823,10 @@ async fn test_resources_list() {
     assert!(
         uris.contains(&"tokensave://branches"),
         "should have branches resource"
+    );
+    assert!(
+        uris.contains(&"tokensave://schema"),
+        "should have schema resource"
     );
 
     // All resources should have name, description, and mimeType.

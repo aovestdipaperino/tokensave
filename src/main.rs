@@ -854,7 +854,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 process::exit(code);
             }
         }
-        Commands::Serve { path } => {
+        Commands::Serve { path, timings } => {
             if std::env::var("DISABLE_TOKENSAVE").as_deref() == Ok("true") {
                 // Allow users to opt out per-project by setting
                 // DISABLE_TOKENSAVE=true in their MCP server config (#19).
@@ -900,6 +900,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             });
 
             let server = tokensave::mcp::McpServer::new(cg, scope_prefix).await;
+            server.set_timings_enabled(timings);
             let mut transport = tokensave::mcp::StdioTransport::new();
             // If we peeked at stdin to read `initialize` roots, replay that line.
             if let Some(line) = peeked_line {
@@ -1192,8 +1193,251 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::List { all } => {
             commands::handle_list(all).await?;
         }
+        Commands::Body {
+            symbol,
+            path,
+            limit,
+            json,
+        } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
+            let matches = resolve_symbol_to_nodes(&cg, &symbol, limit).await?;
+            if matches.is_empty() {
+                if json {
+                    println!("{}", serde_json::json!({ "match_count": 0, "matches": [] }));
+                } else {
+                    println!("No symbol named '{symbol}' found.");
+                }
+                return Ok(());
+            }
+
+            let project_root = cg.project_root();
+            let mut payload = Vec::with_capacity(matches.len());
+            for n in &matches {
+                let abs = project_root.join(&n.file_path);
+                let body = match tokensave::sync::read_source_file(&abs) {
+                    Ok(src) => extract_body_lines(&src, n.start_line, n.end_line),
+                    Err(_) => String::from("<file unreadable>"),
+                };
+                payload.push(serde_json::json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "qualified_name": n.qualified_name,
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "start_line": n.start_line.saturating_add(1),
+                    "end_line": n.end_line.saturating_add(1),
+                    "signature": n.signature,
+                    "body": body,
+                }));
+            }
+            if json {
+                let out = serde_json::json!({
+                    "match_count": payload.len(),
+                    "matches": payload,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            } else {
+                for m in &payload {
+                    println!(
+                        "{} ({}) — {}:{}-{}",
+                        m["name"].as_str().unwrap_or(""),
+                        m["kind"].as_str().unwrap_or(""),
+                        m["file"].as_str().unwrap_or(""),
+                        m["start_line"],
+                        m["end_line"],
+                    );
+                    if let Some(sig) = m["signature"].as_str() {
+                        println!("  {sig}");
+                    }
+                    println!();
+                    println!("{}", m["body"].as_str().unwrap_or(""));
+                    println!();
+                }
+            }
+        }
+        Commands::Impact {
+            symbol,
+            path,
+            max_depth,
+            json,
+        } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
+            let nodes = resolve_symbol_to_nodes(&cg, &symbol, 1).await?;
+            let Some(target) = nodes.into_iter().next() else {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "node_count": 0, "edge_count": 0, "nodes": [] })
+                    );
+                } else {
+                    println!("No symbol named '{symbol}' found.");
+                }
+                return Ok(());
+            };
+            let subgraph = cg.get_impact_radius(&target.id, max_depth).await?;
+            if json {
+                let items: Vec<serde_json::Value> = subgraph
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "id": n.id,
+                            "name": n.name,
+                            "kind": n.kind.as_str(),
+                            "file": n.file_path,
+                            "line": n.start_line,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "root": {
+                        "name": target.name,
+                        "kind": target.kind.as_str(),
+                        "file": target.file_path,
+                    },
+                    "node_count": subgraph.nodes.len(),
+                    "edge_count": subgraph.edges.len(),
+                    "nodes": items,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            } else {
+                println!(
+                    "Impact for {} ({}) — {} nodes, {} edges (depth {})",
+                    target.name,
+                    target.kind.as_str(),
+                    subgraph.nodes.len(),
+                    subgraph.edges.len(),
+                    max_depth,
+                );
+                for n in &subgraph.nodes {
+                    println!(
+                        "  {} ({}) — {}:{}",
+                        n.name,
+                        n.kind.as_str(),
+                        n.file_path,
+                        n.start_line
+                    );
+                }
+            }
+        }
+        Commands::Callers {
+            symbol,
+            path,
+            max_depth,
+            json,
+        } => {
+            let project_path = tokensave::config::resolve_path(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
+            let nodes = resolve_symbol_to_nodes(&cg, &symbol, 1).await?;
+            let Some(target) = nodes.into_iter().next() else {
+                if json {
+                    println!("[]");
+                } else {
+                    println!("No symbol named '{symbol}' found.");
+                }
+                return Ok(());
+            };
+            let callers = cg.get_callers(&target.id, max_depth).await?;
+            if json {
+                let items: Vec<serde_json::Value> = callers
+                    .iter()
+                    .map(|(n, e)| {
+                        serde_json::json!({
+                            "id": n.id,
+                            "name": n.name,
+                            "kind": n.kind.as_str(),
+                            "file": n.file_path,
+                            "line": n.start_line,
+                            "edge_kind": e.kind.as_str(),
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&items).unwrap_or_default()
+                );
+            } else {
+                println!(
+                    "{} caller(s) of {} ({}) (depth {})",
+                    callers.len(),
+                    target.name,
+                    target.kind.as_str(),
+                    max_depth,
+                );
+                for (n, e) in &callers {
+                    println!(
+                        "  {} ({}) [{}] — {}:{}",
+                        n.name,
+                        n.kind.as_str(),
+                        e.kind.as_str(),
+                        n.file_path,
+                        n.start_line,
+                    );
+                }
+            }
+        }
     }
     Ok(())
+}
+
+async fn resolve_symbol_to_nodes(
+    cg: &TokenSave,
+    symbol: &str,
+    limit: usize,
+) -> tokensave::errors::Result<Vec<Node>> {
+    let mut nodes = cg.get_nodes_by_qualified_name(symbol).await?;
+    if nodes.is_empty() {
+        nodes = cg
+            .search(symbol, limit.saturating_mul(4).max(20))
+            .await?
+            .into_iter()
+            .map(|r| r.node)
+            .collect();
+    }
+    nodes.sort_by_key(|n| body_kind_preference(&n.kind));
+    nodes.truncate(limit);
+    Ok(nodes)
+}
+
+fn extract_body_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = start_line as usize;
+    let end = (end_line as usize).saturating_add(1).min(lines.len());
+    if start >= lines.len() || start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+fn body_kind_preference(kind: &NodeKind) -> u8 {
+    match kind {
+        NodeKind::Function
+        | NodeKind::Method
+        | NodeKind::StructMethod
+        | NodeKind::Constructor
+        | NodeKind::AbstractMethod
+        | NodeKind::ArrowFunction
+        | NodeKind::Procedure => 0,
+        NodeKind::Struct
+        | NodeKind::Enum
+        | NodeKind::Trait
+        | NodeKind::Class
+        | NodeKind::InnerClass
+        | NodeKind::Interface
+        | NodeKind::InterfaceType
+        | NodeKind::Record
+        | NodeKind::CaseClass
+        | NodeKind::DataClass
+        | NodeKind::SealedClass
+        | NodeKind::TypeAlias
+        | NodeKind::Union
+        | NodeKind::Typedef => 1,
+        NodeKind::Impl => 2,
+        NodeKind::Const | NodeKind::Static | NodeKind::Macro | NodeKind::PreprocessorDef => 3,
+        _ => 4,
+    }
 }
 
 fn should_skip_agent_install_maintenance(command: &Commands) -> bool {

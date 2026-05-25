@@ -180,6 +180,10 @@ pub struct McpServer {
     /// callers can invoke it explicitly after `run` returns without re-running
     /// persistence logic.
     shutdown_done: AtomicBool,
+    /// When true, every `tools/call` response gains a `_meta.duration_us`
+    /// field measuring the handler's pure execution time. Toggled by
+    /// `tokensave serve --timings`. Off by default to keep responses clean.
+    timings_enabled: AtomicBool,
 }
 
 impl McpServer {
@@ -215,6 +219,7 @@ impl McpServer {
             scope_prefix,
             watcher_cancel: std::sync::Mutex::new(None),
             shutdown_done: AtomicBool::new(false),
+            timings_enabled: AtomicBool::new(false),
         });
 
         // Start the embedded file watcher (best-effort; may fail under
@@ -263,6 +268,23 @@ impl McpServer {
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
     pub fn scope_prefix(&self) -> Option<&str> {
         self.scope_prefix.as_deref()
+    }
+
+    /// Enables or disables per-call timing reporting. When enabled, every
+    /// `tools/call` response gains a `_meta.duration_us` field with the
+    /// handler's pure execution time in microseconds. Useful for profiling
+    /// where time is spent inside the index vs. on the JSON-RPC/stdio
+    /// transport. Safe to flip at any time — the next call observes the
+    /// new setting.
+    pub fn set_timings_enabled(&self, enabled: bool) {
+        self.timings_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns whether timing reporting is currently enabled.
+    pub fn timings_enabled(&self) -> bool {
+        self.timings_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Adds the approximate token count for the given file paths to the
@@ -979,16 +1001,32 @@ impl McpServer {
             None
         };
 
-        match handle_tool_call(
+        let timings_enabled = self.timings_enabled();
+        let handler_start = if timings_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        let dispatch_outcome = handle_tool_call(
             &self.cg,
             tool_name,
             arguments,
             server_stats,
             self.scope_prefix(),
         )
-        .await
-        {
+        .await;
+        let handler_elapsed_us = handler_start.map(|t| t.elapsed().as_micros() as u64);
+        match dispatch_outcome {
             Ok(mut result) => {
+                if let Some(us) = handler_elapsed_us {
+                    let obj = result.value.as_object_mut();
+                    if let Some(map) = obj {
+                        let meta = map.entry("_meta").or_insert_with(|| json!({}));
+                        if let Some(meta_obj) = meta.as_object_mut() {
+                            meta_obj.insert("duration_us".to_string(), json!(us));
+                        }
+                    }
+                }
                 let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
                 crate::monitor::write_entry(
                     self.cg.project_root(),

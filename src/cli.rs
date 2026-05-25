@@ -86,6 +86,48 @@ pub enum Commands {
         #[arg(short, long, default_value = "markdown")]
         format: String,
     },
+    /// Print the source body of a symbol (function, method, struct, etc.)
+    Body {
+        /// Symbol name to look up (qualified or bare)
+        symbol: String,
+        /// Project path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Maximum number of matches to return
+        #[arg(short, long, default_value = "1")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// Show the change-impact subgraph for a symbol (transitive dependents)
+    Impact {
+        /// Symbol name to look up
+        symbol: String,
+        /// Project path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Max traversal depth
+        #[arg(short, long, default_value = "3")]
+        max_depth: usize,
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+    /// List callers (direct + transitive) of a symbol
+    Callers {
+        /// Symbol name to look up
+        symbol: String,
+        /// Project path
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Max traversal depth
+        #[arg(short, long, default_value = "3")]
+        max_depth: usize,
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
     /// List indexed files
     Files {
         /// Project path
@@ -166,6 +208,11 @@ pub enum Commands {
         /// Project path
         #[arg(short, long)]
         path: Option<String>,
+        /// Annotate every `tools/call` response with `_meta.duration_us`,
+        /// reporting the handler's pure execution time in microseconds.
+        /// Useful for profiling index work vs. JSON-RPC / stdio overhead.
+        #[arg(long)]
+        timings: bool,
     },
     /// Download and install the latest version from GitHub
     Upgrade,

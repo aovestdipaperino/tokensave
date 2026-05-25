@@ -1097,6 +1097,31 @@ impl Database {
         Ok(result)
     }
 
+    /// Returns all nodes whose `name` column matches the given bare identifier.
+    ///
+    /// Pure index lookup against `idx_nodes_name` — O(log n) with no BM25
+    /// scoring, no fuzzy match, no fallback. Use this when you already know
+    /// the exact symbol name and don't want the relevance-ranked behavior of
+    /// `search`. Multiple nodes can share a name (overloads, same-named items
+    /// across modules); `LIMIT 200` caps pathological cases.
+    pub async fn get_nodes_by_name(&self, name: &str) -> Result<Vec<Node>> {
+        let sql = "SELECT id, kind, name, qualified_name, file_path,
+                          start_line, end_line, start_column, end_column,
+                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                   FROM nodes
+                   WHERE name = ?1
+                   LIMIT 200";
+        let mut rows =
+            self.conn()
+                .query(sql, params![name])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query by name: {e}"),
+                    operation: "get_nodes_by_name".to_string(),
+                })?;
+        collect_rows(&mut rows, row_to_node, "get_nodes_by_name").await
+    }
+
     /// Returns all nodes whose `qualified_name` matches the given string.
     ///
     /// Multiple rows can share a qualified name (overloads, generic
@@ -2414,21 +2439,32 @@ impl Database {
 
         let db_size_bytes = self.size().await.unwrap_or(0);
 
-        // Files grouped by language (derived from file extension)
-        let files_by_language = query_kind_counts(
-            self.conn(),
-            "SELECT \
-               CASE \
-                 WHEN path LIKE '%.rs' THEN 'Rust' \
-                 WHEN path LIKE '%.go' THEN 'Go' \
-                 WHEN path LIKE '%.java' THEN 'Java' \
-                 WHEN path LIKE '%.scala' OR path LIKE '%.sc' THEN 'Scala' \
-                 ELSE 'Other' \
-               END AS lang, \
-               COUNT(*) \
-             FROM files GROUP BY lang",
-        )
-        .await?;
+        // Files grouped by language. Done in Rust (not SQL) so the label set
+        // stays in sync with the extractor registry without an ever-growing
+        // CASE expression. See `display_language_for_path`.
+        let files_by_language = {
+            let mut rows = self
+                .conn()
+                .query("SELECT path FROM files", ())
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query files for language stats: {e}"),
+                    operation: "get_stats".to_string(),
+                })?;
+            let mut map: HashMap<String, u64> = HashMap::new();
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read file row: {e}"),
+                operation: "get_stats".to_string(),
+            })? {
+                let path: String = row.get(0).map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to read file path: {e}"),
+                    operation: "get_stats".to_string(),
+                })?;
+                *map.entry(display_language_for_path(&path).to_string())
+                    .or_insert(0) += 1;
+            }
+            map
+        };
 
         let last_sync_at = self
             .get_metadata("last_sync_at")
@@ -2897,6 +2933,74 @@ async fn collect_rows<T>(
     Ok(items)
 }
 
+/// Maps a file path to a human-readable language label used in
+/// `GraphStats::files_by_language`. Anything we don't recognise lands in
+/// `"Other"`. The label set must stay in sync with the language extractors
+/// registered in `crate::extraction::LanguageRegistry`; the test
+/// `files_by_language_covers_known_extensions` guards the mapping.
+fn display_language_for_path(path: &str) -> &'static str {
+    // Special-case extensionless files we still recognise by name.
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    let lower = basename.to_ascii_lowercase();
+    if lower == "dockerfile" || lower.starts_with("dockerfile.") {
+        return "Dockerfile";
+    }
+    if lower == "makefile" {
+        return "Makefile";
+    }
+    match path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rs" => "Rust",
+        "go" => "Go",
+        "py" | "pyi" | "pyx" => "Python",
+        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
+        "ts" | "tsx" | "mts" | "cts" => "TypeScript",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "scala" | "sc" => "Scala",
+        "swift" => "Swift",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "C++",
+        "cs" => "C#",
+        "fs" | "fsi" | "fsx" => "F#",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "dart" => "Dart",
+        "lua" => "Lua",
+        "pl" | "pm" => "Perl",
+        "sh" | "bash" => "Bash",
+        "ps1" | "psm1" => "PowerShell",
+        "nix" => "Nix",
+        "zig" => "Zig",
+        "proto" => "Protobuf",
+        "toml" => "TOML",
+        "sql" => "SQL",
+        "r" => "R",
+        "jl" => "Julia",
+        "ex" | "exs" => "Elixir",
+        "erl" | "hrl" => "Erlang",
+        "hs" => "Haskell",
+        "clj" | "cljs" | "cljc" | "edn" => "Clojure",
+        "ml" | "mli" => "OCaml",
+        "lean" => "Lean",
+        "m" | "mm" => "Objective-C",
+        "f" | "f90" | "f95" | "f03" | "f08" | "for" => "Fortran",
+        "cbl" | "cob" | "cpy" => "COBOL",
+        "pas" | "pp" | "dpr" => "Pascal",
+        "vb" => "VB.NET",
+        "bas" => "BASIC",
+        "bat" | "cmd" => "Batch",
+        "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" => "GLSL",
+        "qnt" => "Quint",
+        _ => "Other",
+    }
+}
+
 /// Executes a `SELECT label, COUNT(*) ... GROUP BY` query and returns
 /// the results as a `HashMap<String, u64>`.
 async fn query_kind_counts(conn: &libsql::Connection, sql: &str) -> Result<HashMap<String, u64>> {
@@ -3084,4 +3188,33 @@ fn row_to_fingerprint(row: &libsql::Row) -> Result<StoredFingerprint> {
             operation: "row_to_fingerprint".to_string(),
         })?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_language_for_path;
+
+    #[test]
+    fn maps_common_extensions_to_named_languages() {
+        assert_eq!(display_language_for_path("src/main.rs"), "Rust");
+        assert_eq!(display_language_for_path("a/b/foo.py"), "Python");
+        assert_eq!(display_language_for_path("foo.pyi"), "Python");
+        assert_eq!(display_language_for_path("foo.tsx"), "TypeScript");
+        assert_eq!(display_language_for_path("foo.cs"), "C#");
+        assert_eq!(display_language_for_path("foo.cpp"), "C++");
+        assert_eq!(display_language_for_path("Dockerfile"), "Dockerfile");
+        assert_eq!(
+            display_language_for_path("docker/Dockerfile.prod"),
+            "Dockerfile"
+        );
+        assert_eq!(display_language_for_path("Makefile"), "Makefile");
+        assert_eq!(display_language_for_path("readme.txt"), "Other");
+        assert_eq!(display_language_for_path("noext"), "Other");
+    }
+
+    #[test]
+    fn extension_match_is_case_insensitive() {
+        assert_eq!(display_language_for_path("Foo.RS"), "Rust");
+        assert_eq!(display_language_for_path("Foo.PY"), "Python");
+    }
 }

@@ -630,6 +630,88 @@ impl<'a> GraphTraverser<'a> {
         Ok(Some(path))
     }
 
+    /// Finds the shortest *directed* path from `from_id` to `to_id`, following
+    /// only outgoing edges of the given kinds. `max_depth` bounds the BFS so a
+    /// runaway call graph can't OOM us. Returns `None` if no path exists.
+    ///
+    /// Use this for "call chain from A to B" semantics: BFS expands only along
+    /// edges where A is the source, which models actual flow of execution. The
+    /// older `find_path` does a bidirectional walk that's right for "are these
+    /// connected at all" but wrong for directed-chain queries.
+    pub async fn find_path_directed(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+    ) -> Result<Option<GraphPath>> {
+        debug_assert!(!from_id.is_empty(), "find_path_directed: empty from_id");
+        debug_assert!(!to_id.is_empty(), "find_path_directed: empty to_id");
+        if from_id == to_id {
+            if let Some(node) = self.db.get_node_by_id(from_id).await? {
+                return Ok(Some(vec![(node, None)]));
+            }
+            return Ok(None);
+        }
+
+        let mut parent_map: std::collections::HashMap<String, (String, Edge)> =
+            std::collections::HashMap::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        visited.insert(from_id.to_string());
+        queue.push_back((from_id.to_string(), 0));
+
+        let mut found = false;
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
+            for edge in outgoing {
+                let neighbor = edge.target.clone();
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                visited.insert(neighbor.clone());
+                let is_target = neighbor == to_id;
+                parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
+                if is_target {
+                    found = true;
+                    break;
+                }
+                queue.push_back((neighbor, depth + 1));
+            }
+            if found {
+                break;
+            }
+        }
+
+        if !found {
+            return Ok(None);
+        }
+
+        let mut path_ids: Vec<(String, Option<Edge>)> = Vec::new();
+        let mut current = to_id.to_string();
+        while current != from_id {
+            if let Some((parent, edge)) = parent_map.remove(&current) {
+                path_ids.push((current, Some(edge)));
+                current = parent;
+            } else {
+                return Ok(None);
+            }
+        }
+        path_ids.push((from_id.to_string(), None));
+        path_ids.reverse();
+
+        let mut path: Vec<(Node, Option<Edge>)> = Vec::new();
+        for (id, edge) in path_ids {
+            if let Some(node) = self.db.get_node_by_id(&id).await? {
+                path.push((node, edge));
+            }
+        }
+        Ok(Some(path))
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------

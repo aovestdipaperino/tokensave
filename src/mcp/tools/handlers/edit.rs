@@ -121,6 +121,66 @@ pub(super) async fn handle_insert_at(cg: &TokenSave, args: Value) -> Result<Tool
     })
 }
 
+pub(super) async fn handle_replace_symbol(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+    let new_source = args
+        .get("new_source")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: new_source".to_string(),
+        })?;
+
+    let result = cg.replace_symbol(symbol, new_source).await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        vec![]
+    };
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
+pub(super) async fn handle_insert_at_symbol(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: content".to_string(),
+        })?;
+    let position = args
+        .get("position")
+        .and_then(|v| v.as_str())
+        .unwrap_or("after");
+
+    let result = cg.insert_at_symbol(symbol, content, position).await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        vec![]
+    };
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
 pub(super) async fn handle_ast_grep_rewrite(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let path = args
         .get("path")

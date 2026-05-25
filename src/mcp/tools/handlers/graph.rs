@@ -359,6 +359,154 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
     })
 }
 
+/// Handles `tokensave_find_exact_symbol` tool calls. Bare-name lookup against
+/// `idx_nodes_name` — no BM25 scoring, no fuzzy match, no qualified-name
+/// suffix walk. Returns every node whose `name` column equals the query
+/// exactly. Useful when you already know the symbol and want the apples-to-
+/// apples cost of an index hit instead of `tokensave_search`'s ranked query.
+pub(super) async fn handle_find_exact_symbol(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: name".to_string(),
+        })?;
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.min(200) as usize);
+
+    let mut nodes = cg.get_nodes_by_name(name).await?;
+    nodes = filter_by_scope(nodes, scope_prefix, |n| &n.file_path);
+    if nodes.len() > limit {
+        nodes.truncate(limit);
+    }
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": n.start_line,
+                "signature": n.signature,
+            })
+        })
+        .collect();
+
+    let body = json!({
+        "name": name,
+        "count": items.len(),
+        "matches": items,
+    });
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_call_chain` tool calls. Finds the shortest directed
+/// call path from `from_id` to `to_id` along outgoing `Calls` edges.
+pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let from_id = args
+        .get("from_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: from_id".to_string(),
+        })?;
+    let to_id =
+        args.get("to_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: to_id".to_string(),
+            })?;
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(8, |v| v.clamp(1, 20) as usize);
+
+    let path = cg.get_call_chain(from_id, to_id, max_depth).await?;
+    let (touched_files, body) = if let Some(steps) = path {
+        let files = unique_file_paths(steps.iter().map(|(n, _)| n.file_path.as_str()));
+        let items: Vec<Value> = steps
+            .iter()
+            .map(|(n, edge)| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "line": n.start_line,
+                    "edge_kind": edge.as_ref().map(|e| e.kind.as_str()),
+                })
+            })
+            .collect();
+        (
+            files,
+            json!({
+                "found": true,
+                "length": items.len(),
+                "steps": items,
+            }),
+        )
+    } else {
+        (
+            Vec::new(),
+            json!({
+                "found": false,
+                "length": 0,
+                "steps": [],
+                "message": format!("no directed call chain from {from_id} to {to_id} within {max_depth} hops"),
+            }),
+        )
+    };
+
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_file_dependents` tool calls.
+pub(super) async fn handle_file_dependents(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+
+    let dependents = cg.get_file_dependents(file).await?;
+    let touched_files = dependents.clone();
+    let body = json!({
+        "file": file,
+        "count": dependents.len(),
+        "dependents": dependents,
+    });
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 /// Handles `tokensave_impact` tool calls.
 pub(super) async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;

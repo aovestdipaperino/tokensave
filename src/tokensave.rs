@@ -1718,6 +1718,135 @@ impl TokenSave {
         })
     }
 
+    /// Replaces the full source of a named symbol (function, method, struct,
+    /// etc.) with `new_source`. Resolves the symbol via exact qualified-name
+    /// match — if the name is ambiguous, callable definitions win; if still
+    /// ambiguous after that filter, the edit is refused so we don't clobber
+    /// the wrong site.
+    pub async fn replace_symbol(&self, symbol: &str, new_source: &str) -> Result<EditResult> {
+        let target = resolve_symbol_for_edit(self, symbol).await?;
+        let rel_path = target.file_path.clone();
+        let abs_path = self.absolute_path(&rel_path);
+        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
+            message: format!("failed to read {rel_path}: {e}"),
+        })?;
+        let lines: Vec<&str> = source.lines().collect();
+        let start = target.start_line as usize;
+        let end_inclusive = (target.end_line as usize).min(lines.len().saturating_sub(1));
+        if start >= lines.len() || start > end_inclusive {
+            return Ok(EditResult {
+                success: false,
+                file_path: rel_path,
+                matched_str: symbol.to_string(),
+                new_str: String::new(),
+                message: format!(
+                    "symbol range [{}..={}] out of bounds for {}-line file",
+                    target.start_line,
+                    target.end_line,
+                    lines.len()
+                ),
+            });
+        }
+        let trailing_newline = source.ends_with('\n');
+        let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len());
+        rebuilt.extend(lines[..start].iter().map(|s| (*s).to_string()));
+        rebuilt.push(new_source.trim_end_matches('\n').to_string());
+        rebuilt.extend(lines[end_inclusive + 1..].iter().map(|s| (*s).to_string()));
+        let mut modified = rebuilt.join("\n");
+        if trailing_newline {
+            modified.push('\n');
+        }
+        tokio::fs::write(&abs_path, &modified)
+            .await
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("failed to write {rel_path}: {e}"),
+            })?;
+        self.reindex_file(&rel_path).await?;
+        Ok(EditResult {
+            success: true,
+            file_path: rel_path,
+            matched_str: format!("{} ({})", target.name, target.kind.as_str()),
+            new_str: new_source.to_string(),
+            message: format!(
+                "replaced {}:{}-{}",
+                target.file_path,
+                target.start_line + 1,
+                target.end_line + 1
+            ),
+        })
+    }
+
+    /// Inserts `content` immediately before or after a named symbol. `position`
+    /// is one of `"before"` or `"after"`. Uses the same resolution logic as
+    /// `replace_symbol`.
+    pub async fn insert_at_symbol(
+        &self,
+        symbol: &str,
+        content: &str,
+        position: &str,
+    ) -> Result<InsertResult> {
+        let before = match position {
+            "before" => true,
+            "after" => false,
+            other => {
+                return Err(TokenSaveError::Config {
+                    message: format!("position must be \"before\" or \"after\", got {other:?}"),
+                });
+            }
+        };
+        let target = resolve_symbol_for_edit(self, symbol).await?;
+        let rel_path = target.file_path.clone();
+        let abs_path = self.absolute_path(&rel_path);
+        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
+            message: format!("failed to read {rel_path}: {e}"),
+        })?;
+        let lines: Vec<&str> = source.lines().collect();
+        let anchor_line = if before {
+            target.start_line as usize
+        } else {
+            (target.end_line as usize).saturating_add(1)
+        };
+        if anchor_line > lines.len() {
+            return Ok(InsertResult {
+                success: false,
+                file_path: rel_path,
+                anchor_line: anchor_line as u32,
+                content: content.to_string(),
+                before,
+                message: format!("anchor line {anchor_line} past EOF ({})", lines.len()),
+            });
+        }
+        let trailing_newline = source.ends_with('\n');
+        let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len() + 1);
+        rebuilt.extend(lines[..anchor_line].iter().map(|s| (*s).to_string()));
+        rebuilt.push(content.trim_end_matches('\n').to_string());
+        rebuilt.extend(lines[anchor_line..].iter().map(|s| (*s).to_string()));
+        let mut modified = rebuilt.join("\n");
+        if trailing_newline {
+            modified.push('\n');
+        }
+        tokio::fs::write(&abs_path, &modified)
+            .await
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("failed to write {rel_path}: {e}"),
+            })?;
+        self.reindex_file(&rel_path).await?;
+        Ok(InsertResult {
+            success: true,
+            file_path: rel_path,
+            anchor_line: (anchor_line + 1) as u32,
+            content: content.to_string(),
+            before,
+            message: format!(
+                "inserted {} {} ({}) at line {}",
+                position,
+                target.name,
+                target.kind.as_str(),
+                anchor_line + 1
+            ),
+        })
+    }
+
     /// Performs structural rewrite using ast-grep CLI.
     pub async fn ast_grep_rewrite(
         &self,
@@ -1953,6 +2082,21 @@ impl TokenSave {
         traverser.get_impact_radius_multi(seed_ids, max_depth).await
     }
 
+    /// Finds the shortest directed call chain from `from_id` to `to_id`,
+    /// following only outgoing `Calls` edges. Returns `None` if no chain
+    /// exists within `max_depth` hops.
+    pub async fn get_call_chain(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        max_depth: usize,
+    ) -> Result<Option<crate::graph::traversal::GraphPath>> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser
+            .find_path_directed(from_id, to_id, &[crate::types::EdgeKind::Calls], max_depth)
+            .await
+    }
+
     /// Builds a bidirectional call graph around a node.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
         let traverser = GraphTraverser::new(&self.db);
@@ -2021,6 +2165,12 @@ impl TokenSave {
     /// Cross-run lookup independent of the content-hash node IDs.
     pub async fn get_nodes_by_qualified_name(&self, qname: &str) -> Result<Vec<Node>> {
         self.db.get_nodes_by_qualified_name(qname).await
+    }
+
+    /// Exact bare-name lookup using `idx_nodes_name`. No relevance scoring,
+    /// no fuzzy matching — for that, use [`search`](Self::search).
+    pub async fn get_nodes_by_name(&self, name: &str) -> Result<Vec<Node>> {
+        self.db.get_nodes_by_name(name).await
     }
 
     /// Returns outgoing edges from a source node.
@@ -2454,6 +2604,50 @@ impl TokenSave {
     pub fn is_fallback(&self) -> bool {
         self.fallback_warning.is_some()
     }
+}
+
+/// Resolves a symbol name to a single node suitable for symbol-aware editing.
+///
+/// Exact-qualified-name match wins; on ambiguity the resolver narrows to
+/// callable kinds (function/method/etc.). If still more than one candidate
+/// remains the edit is refused — silently picking the wrong site is far
+/// worse than asking the caller to disambiguate.
+async fn resolve_symbol_for_edit(cg: &TokenSave, symbol: &str) -> Result<Node> {
+    let nodes = cg.get_nodes_by_qualified_name(symbol).await?;
+    let mut iter = nodes.into_iter();
+    let Some(first) = iter.next() else {
+        return Err(TokenSaveError::Config {
+            message: format!("symbol '{symbol}' not found"),
+        });
+    };
+    let rest: Vec<Node> = iter.collect();
+    if rest.is_empty() {
+        return Ok(first);
+    }
+    let total = rest.len() + 1;
+    let mut callables: Vec<Node> = std::iter::once(first)
+        .chain(rest)
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Function
+                    | NodeKind::Method
+                    | NodeKind::StructMethod
+                    | NodeKind::Constructor
+                    | NodeKind::AbstractMethod
+                    | NodeKind::ArrowFunction
+                    | NodeKind::Procedure
+            )
+        })
+        .collect();
+    if callables.len() == 1 {
+        return Ok(callables.remove(0));
+    }
+    Err(TokenSaveError::Config {
+        message: format!(
+            "symbol '{symbol}' is ambiguous ({total} matches); pass a fully qualified name"
+        ),
+    })
 }
 
 // ---------------------------------------------------------------------------
