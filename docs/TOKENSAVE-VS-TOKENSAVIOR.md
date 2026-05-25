@@ -7,7 +7,7 @@ results from a synthetic indexer benchmark and a 96-task agent benchmark
 | | tokensave | token-savior |
 |---|---|---|
 | **Implementation** | Rust + SQLite + tree-sitter | Python + in-memory dict |
-| **Languages indexed** | 46 (Rust, Python, Go, TS/JS, Java, Kotlin, Scala, C#, Swift, C/C++, Ruby, PHP, Dart, Lua, Perl, Bash, Pascal, COBOL, Fortran, …) | Python only |
+| **Languages indexed** | 46 via tree-sitter grammars (Rust, Python, Go, TS/JS, Java, Kotlin, Scala, C#, Swift, C/C++, Ruby, PHP, Dart, Lua, Perl, Bash, Pascal, COBOL, Fortran, …) | 7 via regex annotators (Python, TS/JS, Rust, Go, C, C#) + 8 config formats (TOML/JSON/YAML/XML/INI/HCL/env/Dockerfile) |
 | **MCP tools exposed** | 75 (76 w/ ast-grep) | 68 (`full`), 15 (`optimized` default) |
 | **Branch-aware indexing** | yes — per-branch DB, `tokensave branch …` | no |
 | **Live file watching** | yes — embedded debounced sync | no |
@@ -24,21 +24,40 @@ results from a synthetic indexer benchmark and a 96-task agent benchmark
 
 ## 1. Where tokensave is stronger
 
-### 1.1 Multi-language reach
+### 1.1 Language coverage and parsing strategy
 
-token-savior is a Python-specialised tool: its annotators, brace-matchers, and
-config analyzers are all hand-written for Python (with limited extensions for
-TS, Prisma, and a few config formats). The index it produces is mostly
-useful on Python projects.
+Both tools are multi-language, but they take different approaches.
 
-tokensave parses **46 languages** through tree-sitter — Rust, Python, Go,
-TypeScript / TSX / JavaScript, Java, Kotlin, Scala, C#, Swift, C, C++,
-Objective-C, Ruby, PHP, Dart, Lua, Perl, Bash, Pascal, COBOL, Fortran, OCaml,
-Haskell, Elixir, Erlang, Clojure, Julia, R, GLSL, Nix, Zig, F#, VB.NET, SQL,
-Protobuf, Dockerfile, TOML, GW-BASIC, MSBASIC2, QBasic, QuickBasic, Lean,
-Quint — and emits a uniform node/edge graph regardless of source language.
-A polyglot monorepo (Python services, Go workers, TS frontends, Prisma
-schemas) is a single graph rather than a per-language patchwork.
+**token-savior** ships hand-written regex-based annotators per language:
+Python, TypeScript/JavaScript, Rust, Go, C, C# (each 200–750 lines of
+regex + brace-matching), plus structured-format annotators for TOML,
+JSON, YAML, XML, INI, HCL, `.env*`, and Dockerfile. Regex parsing is
+simple to extend, deliberately permissive on partial / malformed code,
+but doesn't carry type or scope information across constructs — it
+catches function/class declarations and import sites cleanly but
+won't resolve, for example, which `impl` block a Rust method
+belongs to or which interface a TS class implements.
+
+**tokensave** parses **46 languages** through tree-sitter grammars —
+Rust, Python, Go, TypeScript / TSX / JavaScript, Java, Kotlin, Scala,
+C#, Swift, C, C++, Objective-C, Ruby, PHP, Dart, Lua, Perl, Bash,
+Pascal, COBOL, Fortran, OCaml, Haskell, Elixir, Erlang, Clojure, Julia,
+R, GLSL, Nix, Zig, F#, VB.NET, SQL, Protobuf, Dockerfile, TOML,
+GW-BASIC, MSBASIC2, QBasic, QuickBasic, Lean, Quint. The full AST is
+available to the extractor, so edge kinds beyond "this name appears
+here" are recoverable: `implements`, `extends`, `type_of`, `annotates`,
+`returns`, `receives`, in addition to `calls` and `uses`. The trade-off
+is one tree-sitter grammar (and matching extractor) per language —
+adding a language is a several-hundred-line commitment vs. token-
+savior's regex-and-go.
+
+Practical implication: on the seven languages both tools cover,
+token-savior gets file outlines fast and reliably; tokensave gets
+richer graph queries (impact radius, call chains, type hierarchies)
+because the edges exist in the first place. On anything outside
+token-savior's annotator set — Java, Kotlin, Scala, Swift, C++, Ruby,
+PHP, Dart, Lua, etc. — tokensave is the only option that yields a
+structured index.
 
 ### 1.2 Branch-aware indexing
 
@@ -343,7 +362,12 @@ Reproduction harness, patch, and full per-task summary in
 ## 5. When to use which
 
 **Use tokensave when:**
-- The project is anything other than pure Python.
+- Your project uses a language outside token-savior's annotator set
+  (Java, Kotlin, Scala, Swift, C++, Ruby, PHP, Dart, Lua, OCaml,
+  Haskell, Elixir, Erlang, Clojure, etc.).
+- You need typed-edge queries (`implements`, `extends`, `type_of`,
+  `annotates`, impact radius, call chains, type hierarchies) — these
+  require AST-level parsing, not regex.
 - You need cross-branch indexing, durable on-disk state, or live file
   watching.
 - You need health analytics (hotspots, coupling, dsm, redundancy,
@@ -354,8 +378,10 @@ Reproduction harness, patch, and full per-task summary in
   cross-cutting renames, impact reviews).
 
 **Use token-savior when:**
-- The project is pure Python and small enough that the in-memory dict
-  model is fine.
+- Your project is in one of its six supported languages (Python,
+  TS/JS, Rust, Go, C, C#) and you mostly need symbol lookups +
+  file outlines — regex annotators are simple, permissive on
+  partial code, and have negligible startup cost.
 - You want `analyze_config` / `analyze_docker` linting out of the box.
 - You're running on a token-savior-tuned tsbench rubric and need the
   last ~2 percentage points of score.
