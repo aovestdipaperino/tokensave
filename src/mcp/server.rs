@@ -184,6 +184,14 @@ pub struct McpServer {
     /// field measuring the handler's pure execution time. Toggled by
     /// `tokensave serve --timings`. Off by default to keep responses clean.
     timings_enabled: AtomicBool,
+    /// Flipped to `true` by the background watcher-setup task once
+    /// `ProjectWatcher::new` returns a working watcher (or once that setup
+    /// has provably failed). Callers that care about deterministic
+    /// post-startup behaviour — primarily tests — can poll
+    /// [`watcher_attached`](Self::watcher_attached) or block via
+    /// [`wait_for_watcher_attached`](Self::wait_for_watcher_attached). End
+    /// users don't need to wait: the MCP loop runs regardless.
+    watcher_attached: AtomicBool,
 }
 
 impl McpServer {
@@ -220,6 +228,7 @@ impl McpServer {
             watcher_cancel: std::sync::Mutex::new(None),
             shutdown_done: AtomicBool::new(false),
             timings_enabled: AtomicBool::new(false),
+            watcher_attached: AtomicBool::new(false),
         });
 
         // Start the embedded file watcher asynchronously. Constructing the
@@ -267,6 +276,11 @@ impl McpServer {
             let pw = match setup {
                 Ok(Some(pw)) => pw,
                 Ok(None) => {
+                    if let Some(server) = server_for_cb.upgrade() {
+                        server
+                            .watcher_attached
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
                     eprintln!(
                         "[tokensave] warning: failed to start embedded file watcher for {}; \
                          index will not auto-refresh on file changes",
@@ -275,6 +289,11 @@ impl McpServer {
                     return;
                 }
                 Err(e) => {
+                    if let Some(server) = server_for_cb.upgrade() {
+                        server
+                            .watcher_attached
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
                     eprintln!(
                         "[tokensave] warning: file-watcher setup task panicked ({e}); \
                          index will not auto-refresh on file changes"
@@ -285,6 +304,11 @@ impl McpServer {
 
             if cancel_for_task.is_cancelled() {
                 return;
+            }
+            if let Some(server) = server_for_cb.upgrade() {
+                server
+                    .watcher_attached
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
 
             pw.run_with_callback(cancel_for_task, move || {
@@ -321,6 +345,30 @@ impl McpServer {
     pub fn timings_enabled(&self) -> bool {
         self.timings_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns true once the background watcher-setup task has finished —
+    /// either successfully (the FSEvents/inotify stream is observing the
+    /// project) or with a logged failure. Production code rarely needs to
+    /// check this: the MCP server runs whether or not the watcher attaches.
+    /// Tests use it to avoid the obvious race of writing a file before the
+    /// watcher has registered.
+    pub fn watcher_attached(&self) -> bool {
+        self.watcher_attached
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Polls `watcher_attached` with a 50 ms interval up to `timeout`,
+    /// returning `true` if the watcher attached within the budget.
+    pub async fn wait_for_watcher_attached(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.watcher_attached() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        true
     }
 
     /// Adds the approximate token count for the given file paths to the

@@ -4616,6 +4616,18 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
     cg.sync().await.unwrap();
 
     let server = tokensave::mcp::McpServer::new(cg, None).await;
+
+    // `McpServer::new` returns immediately and the embedded watcher attaches
+    // on a background task (#84). Wait for it to register before writing —
+    // FSEvents/inotify only deliver events that happen *after* the watch
+    // is attached, so a write that lands during the attach window is lost.
+    assert!(
+        server
+            .wait_for_watcher_attached(std::time::Duration::from_secs(10))
+            .await,
+        "embedded watcher should attach within 10s"
+    );
+
     let initial_count = server.file_token_map_snapshot().len();
 
     // Edit a file. The embedded watcher should debounce + sync + refresh.
