@@ -1,7 +1,7 @@
 // Rust guideline compliant 2025-10-17
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use walkdir::WalkDir;
@@ -878,8 +878,10 @@ impl TokenSave {
     /// Like `sync_if_stale` but treats lock contention as success.
     ///
     /// Use this from the embedded MCP watcher when another MCP (or any peer
-    /// process) already holds the project sync lock — the peer will produce
-    /// the updated DB, so this caller has nothing to do and no reason to warn.
+    /// process) already holds the project sync lock. If the peer holds the
+    /// lock, wait (bounded) for it to release so the DB is fresh by the time
+    /// the caller refreshes its view; if the peer covered our files, return
+    /// without doing extra work, otherwise sync ourselves.
     pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
         if stale_files.is_empty() {
             return Ok(());
@@ -890,9 +892,32 @@ impl TokenSave {
             return Ok(());
         }
 
-        let Ok(lock) = try_acquire_sync_lock(&self.project_root) else {
-            // Peer is syncing. That's fine — they'll write the updated DB.
-            return Ok(());
+        let lock = if let Ok(lock) = try_acquire_sync_lock(&self.project_root) {
+            lock
+        } else {
+            // Peer is syncing. Wait for them to release the lock so the
+            // caller (e.g. the embedded watcher's refresh hook) sees the
+            // post-sync DB state — returning early here leaves the caller
+            // refreshing against pre-sync data and silently dropping the
+            // update on the floor.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if Instant::now() >= deadline {
+                    // Peer is stuck or crashed — best-effort, give up.
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Ok(lock) = try_acquire_sync_lock(&self.project_root) {
+                    // Peer released. If they covered our files, the DB is
+                    // fresh and we're done; otherwise sync ourselves.
+                    let still_stale = self.check_file_staleness(stale_files).await;
+                    if still_stale.is_empty() {
+                        drop(lock);
+                        return Ok(());
+                    }
+                    break lock;
+                }
+            }
         };
 
         let _ = self.sync_single_files(stale_files).await;

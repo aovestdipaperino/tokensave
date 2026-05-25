@@ -470,28 +470,33 @@ async fn test_get_stats() {
 // sync_if_stale_silent
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn sync_if_stale_silent_returns_ok_when_lock_held() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_if_stale_silent_waits_for_peer_then_returns_ok() {
     let tmp = tempfile::tempdir().unwrap();
-    let project = tmp.path();
+    let project = tmp.path().to_path_buf();
     std::fs::write(project.join("a.rs"), "fn a() {}").unwrap();
 
-    let cg = tokensave::tokensave::TokenSave::init(project)
+    let cg = tokensave::tokensave::TokenSave::init(&project)
         .await
         .unwrap();
     cg.sync().await.unwrap();
 
-    // Hold the sync lock to simulate a peer MCP syncing.
-    let lock = tokensave::tokensave::try_acquire_sync_lock(project).expect("lock");
+    // Hold the sync lock to simulate a peer MCP syncing, then release it
+    // from a background task so the silent variant's bounded wait can make
+    // progress.
+    let lock = tokensave::tokensave::try_acquire_sync_lock(&project).expect("lock");
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(lock);
+    });
 
     // Touch the file so it's stale.
     std::fs::write(project.join("a.rs"), "fn a() { let x = 1; }").unwrap();
 
-    // Silent variant should return Ok(()) without complaining.
+    // Silent variant should wait for the peer to release the lock and
+    // return Ok(()).
     let result = cg.sync_if_stale_silent(&["a.rs".to_string()]).await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
-
-    drop(lock);
 }
 
 // ---------------------------------------------------------------------------
