@@ -61,110 +61,23 @@ pub enum Commands {
         #[arg(long)]
         runtime: bool,
     },
-    /// Search for symbols
-    Query {
-        /// Search query
-        search: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Maximum results
-        #[arg(short, long, default_value = "10")]
-        limit: usize,
-    },
-    /// Build context for a task
-    Context {
-        /// Task description
-        task: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Maximum symbols
-        #[arg(short = 'n', long, default_value = "20")]
-        max_nodes: usize,
-        /// Output format (markdown or json)
-        #[arg(short, long, default_value = "markdown")]
-        format: String,
-    },
-    /// Print the source body of a symbol (function, method, struct, etc.)
-    Body {
-        /// Symbol name to look up (qualified or bare)
-        symbol: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Maximum number of matches to return
-        #[arg(short, long, default_value = "1")]
-        limit: usize,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-    },
-    /// Show the change-impact subgraph for a symbol (transitive dependents)
-    Impact {
-        /// Symbol name to look up
-        symbol: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Max traversal depth
-        #[arg(short, long, default_value = "3")]
-        max_depth: usize,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-    },
-    /// List callers (direct + transitive) of a symbol
-    Callers {
-        /// Symbol name to look up
-        symbol: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Max traversal depth
-        #[arg(short, long, default_value = "3")]
-        max_depth: usize,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-    },
-    /// List indexed files
-    Files {
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Filter to files under this directory
-        #[arg(long)]
-        filter: Option<String>,
-        /// Filter files matching this glob pattern
-        #[arg(long)]
-        pattern: Option<String>,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-    },
-    /// Find test files affected by changed source files
-    Affected {
-        /// Changed file paths
-        files: Vec<String>,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Read file list from stdin (one per line)
-        #[arg(long)]
-        stdin: bool,
-        /// Max dependency traversal depth
-        #[arg(short, long, default_value = "5")]
-        depth: usize,
-        /// Custom glob filter for test files
-        #[arg(short, long)]
-        filter: Option<String>,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-        /// Only output file paths, no decoration
-        #[arg(short, long)]
-        quiet: bool,
+    /// Invoke an MCP tool from the CLI (e.g. `tokensave tool search foo`).
+    ///
+    /// Run `tokensave tool` (no name) to list every available tool.
+    /// Run `tokensave tool <name> --help` to see that tool's parameters.
+    //
+    // `disable_help_flag = true` lets `-h`/`--help` flow through to our parser
+    // so we can print the per-tool schema instead of clap's generic help.
+    #[command(disable_help_flag = true)]
+    Tool {
+        /// MCP tool name (with or without the `tokensave_` prefix). Omit to list all tools.
+        name: Option<String>,
+        /// Tool arguments as alternating `--key value` flags, plus reserved flags
+        /// `--json`, `--project <path>`, `--args <json>`, and `-h`/`--help`.
+        /// Any value starting with `@` is read from that file (handy for
+        /// multi-line replacement bodies).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Configure agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "install", visible_alias = "claude-install")]

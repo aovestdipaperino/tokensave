@@ -97,9 +97,9 @@ fn test_tool_definitions_count() {
     // the external `ast-grep` binary is on PATH — hide-when-missing so
     // agents never receive a tool that will instantly fail.
     let expected = if tokensave::mcp::tools::ast_grep_available() {
-        71
+        76
     } else {
-        70
+        75
     };
     assert_eq!(tools.len(), expected);
 }
