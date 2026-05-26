@@ -251,6 +251,11 @@ pub struct McpServer {
     /// spawn at most one pair of `git rev-parse` per session no matter how
     /// many tool calls fire. See [`crate::worktree`] and #312.
     worktree_mismatch: Option<crate::worktree::WorktreeIndexMismatch>,
+    /// Flipped to `true` once [`Self::run_startup_catch_up_sync`] finishes
+    /// (#414). Production code never reads this; tests poll it via
+    /// [`Self::wait_for_startup_catch_up`] so they can race-free assert on
+    /// the index state after the detached catch-up task completes.
+    startup_catch_up_done: AtomicBool,
 }
 
 impl McpServer {
@@ -308,6 +313,7 @@ impl McpServer {
             timings_enabled: AtomicBool::new(false),
             last_staleness_check_at: AtomicI64::new(0),
             worktree_mismatch,
+            startup_catch_up_done: AtomicBool::new(false),
         });
 
         // Catch-up sync (#414): pick up changes made while the server
@@ -416,11 +422,15 @@ impl McpServer {
     /// reconciled by the time the first MCP tool call arrives. The
     /// staleness-check stamp is updated on the way out so the first
     /// tool call doesn't re-walk the tree.
+    ///
+    /// The completion flag is flipped on every exit path (including
+    /// errors) so [`Self::wait_for_startup_catch_up`] never hangs.
     pub async fn run_startup_catch_up_sync(&self) {
         let stale = self.cg.find_stale_files().await;
         if !stale.is_empty() {
             if let Err(e) = self.cg.sync_if_stale_silent(&stale).await {
                 eprintln!("[tokensave] startup catch-up sync failed: {e}");
+                self.startup_catch_up_done.store(true, Ordering::Release);
                 return;
             }
         }
@@ -430,6 +440,31 @@ impl McpServer {
             .unwrap_or_default()
             .as_secs() as i64;
         self.last_staleness_check_at.store(now, Ordering::Release);
+        self.startup_catch_up_done.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` once the detached
+    /// [`Self::run_startup_catch_up_sync`] task has finished (success
+    /// or error). Production code never needs this — the MCP loop runs
+    /// regardless of catch-up state — but tests poll it to avoid
+    /// racing the catch-up task against later DB assertions.
+    pub fn startup_catch_up_done(&self) -> bool {
+        self.startup_catch_up_done.load(Ordering::Acquire)
+    }
+
+    /// Polls [`Self::startup_catch_up_done`] with a 25 ms interval up
+    /// to `timeout`, returning `true` if catch-up completed within the
+    /// budget. Tests use this to make the otherwise-detached #414
+    /// task observable.
+    pub async fn wait_for_startup_catch_up(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.startup_catch_up_done() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
     }
 
     /// Walk the project tree, sync any stale files, and refresh the
