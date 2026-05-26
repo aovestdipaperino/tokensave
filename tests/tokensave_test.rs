@@ -299,6 +299,80 @@ async fn test_check_file_staleness_deleted_indexed_file() {
 }
 
 // ---------------------------------------------------------------------------
+// #87 — Windows path-separator normalization
+// ---------------------------------------------------------------------------
+// The DB stores all file paths in canonical forward-slash form (the walker
+// in `accept_file` normalizes before insert). If a caller passed a
+// backslash-form path (`src\foo.py`) into the staleness / sync entry
+// points, the old code treated it as a different file from the
+// normalized `src/foo.py` already in the DB — which produced both a
+// "stale" verdict (DB miss for the backslash variant) and, after the
+// follow-up sync, a *second* row alongside the original. Tools doubled
+// their results, the redundancy score halved. This test pins the
+// post-fix behaviour: backslash-form input is treated as the same file
+// as the forward-slash row.
+
+#[tokio::test]
+async fn check_file_staleness_normalizes_backslash_paths() {
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let project = tmp.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/a.rs"), "fn a() {}").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    // The DB row is stored under `src/a.rs`. A caller handing us the
+    // Windows-shaped `src\a.rs` must hit the same row — not be treated
+    // as a missing file that needs indexing.
+    let stale = cg.check_file_staleness(&["src\\a.rs".to_string()]).await;
+    assert!(
+        stale.is_empty(),
+        "backslash-form path should match the forward-slash DB row, got stale={stale:?}"
+    );
+}
+
+#[tokio::test]
+async fn sync_if_stale_silent_does_not_create_duplicate_row_for_backslash_path() {
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let project = tmp.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/a.rs"), "fn a() {}").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.sync().await.unwrap();
+
+    // Sleep past the indexed_at second boundary so the mtime check in
+    // `check_file_staleness` fires when we rewrite the file. Without
+    // this, second-resolution mtimes on some filesystems can leave
+    // `mtime == indexed_at` and the staleness check returns empty.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    fs::write(project.join("src/a.rs"), "fn a() { let _x = 1; }").unwrap();
+
+    cg.sync_if_stale_silent(&["src\\a.rs".to_string()])
+        .await
+        .unwrap();
+
+    // Exactly one row should exist for this physical file. Pre-fix,
+    // both `src/a.rs` and `src\a.rs` would appear.
+    let all = cg.get_all_files().await.unwrap();
+    let matches: Vec<&String> = all
+        .iter()
+        .map(|f| &f.path)
+        .filter(|p| p.ends_with("a.rs"))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one a.rs row in DB, found {matches:?}"
+    );
+    assert_eq!(
+        matches[0], "src/a.rs",
+        "the surviving row must be the canonical forward-slash form"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // get_tokens_saved / set_tokens_saved — round-trip
 // ---------------------------------------------------------------------------
 

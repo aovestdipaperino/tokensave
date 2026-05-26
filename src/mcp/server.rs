@@ -173,9 +173,6 @@ pub struct McpServer {
     /// this holds the relative path prefix (e.g. `"src/mcp"`). Listing tools
     /// use it as the default path filter. `None` when cwd == project root.
     scope_prefix: Option<String>,
-    /// Cancellation token for the embedded file watcher. `None` if the
-    /// watcher could not be started (e.g. inotify watch limit exceeded).
-    watcher_cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     /// Set to `true` after `shutdown` runs once; makes shutdown idempotent so
     /// callers can invoke it explicitly after `run` returns without re-running
     /// persistence logic.
@@ -184,24 +181,25 @@ pub struct McpServer {
     /// field measuring the handler's pure execution time. Toggled by
     /// `tokensave serve --timings`. Off by default to keep responses clean.
     timings_enabled: AtomicBool,
-    /// Flipped to `true` by the background watcher-setup task once
-    /// `ProjectWatcher::new` returns a working watcher (or once that setup
-    /// has provably failed). Callers that care about deterministic
-    /// post-startup behaviour — primarily tests — can poll
-    /// [`watcher_attached`](Self::watcher_attached) or block via
-    /// [`wait_for_watcher_attached`](Self::wait_for_watcher_attached). End
-    /// users don't need to wait: the MCP loop runs regardless.
-    watcher_attached: AtomicBool,
+    /// UNIX timestamp (secs) of the most recent staleness check started by
+    /// the server. Read-modify-update via `compare_exchange` in
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so concurrent
+    /// tool calls don't pile on the same walk.
+    last_staleness_check_at: AtomicI64,
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
     ///
-    /// The returned `Arc<Self>` owns an embedded `ProjectWatcher` task that
-    /// debounces file-system changes, syncs the index in the background, and
-    /// refreshes `file_token_map` after each sync. The watcher is bound to the
-    /// server's lifetime via a `Weak<Self>` so it cannot extend it; call
-    /// [`shutdown`](Self::shutdown) for prompt cancellation.
+    /// Index freshness is maintained by a lazy staleness check
+    /// ([`maybe_sync_if_stale`](Self::maybe_sync_if_stale)) invoked at the
+    /// start of every `tools/call` and gated by a 30 s cooldown — there
+    /// is no background watcher task. This replaces the
+    /// `notify-debouncer-full` watcher removed in v6.x (#80), which was
+    /// the source of severe CPU and memory pressure on large monorepos
+    /// where nested ignored directories (`apps/*/node_modules`,
+    /// `packages/*/target`) drove unbounded event traffic and `FileId`
+    /// cache growth.
     pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
@@ -210,7 +208,7 @@ impl McpServer {
         if let Some(ref gdb) = global_db {
             gdb.upsert(cg.project_root(), persisted).await;
         }
-        let server = Arc::new(Self {
+        Arc::new(Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
@@ -225,104 +223,10 @@ impl McpServer {
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
             scope_prefix,
-            watcher_cancel: std::sync::Mutex::new(None),
             shutdown_done: AtomicBool::new(false),
             timings_enabled: AtomicBool::new(false),
-            watcher_attached: AtomicBool::new(false),
-        });
-
-        // Start the embedded file watcher asynchronously. Constructing the
-        // watcher is *synchronous and slow* on macOS: `notify_debouncer_full`
-        // registers an FSEvents stream per watched subtree, which under the
-        // hood does a `walkdir` over every file inside (#84). On large JS/TS
-        // monorepos with multi-gigabyte `node_modules` / `.next` / `dist`
-        // trees that walk can take 30+ seconds — long enough for an MCP
-        // client's `initialize` handshake to time out.
-        //
-        // We move the construction onto a blocking thread, return from
-        // `new()` immediately so MCP `initialize` can be answered, and let
-        // the watcher attach itself when ready. The `CancellationToken` is
-        // stored on the server up front so `shutdown` can cancel mid-build.
-        let config = crate::user_config::UserConfig::load();
-        // Fallback matches the literal `"2s"` returned by
-        // `user_config::default_watcher_debounce`; keep in sync.
-        let debounce = crate::user_config::parse_duration(&config.watcher_debounce)
-            .unwrap_or(std::time::Duration::from_secs(2));
-        let project_root = server.cg.project_root().to_path_buf();
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        if let Ok(mut guard) = server.watcher_cancel.lock() {
-            *guard = Some(cancel.clone());
-        }
-
-        // Weak ref: the watcher task must not keep the server alive.
-        let server_for_cb = Arc::downgrade(&server);
-        let cancel_for_task = cancel.clone();
-        let project_root_for_msg = project_root.clone();
-
-        tokio::spawn(async move {
-            let setup = tokio::task::spawn_blocking({
-                let project_root = project_root_for_msg.clone();
-                let cancel = cancel_for_task.clone();
-                move || {
-                    if cancel.is_cancelled() {
-                        return None;
-                    }
-                    crate::project_watcher::ProjectWatcher::new(project_root, debounce)
-                }
-            })
-            .await;
-
-            let pw = match setup {
-                Ok(Some(pw)) => pw,
-                Ok(None) => {
-                    if let Some(server) = server_for_cb.upgrade() {
-                        server
-                            .watcher_attached
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    eprintln!(
-                        "[tokensave] warning: failed to start embedded file watcher for {}; \
-                         index will not auto-refresh on file changes",
-                        project_root_for_msg.display()
-                    );
-                    return;
-                }
-                Err(e) => {
-                    if let Some(server) = server_for_cb.upgrade() {
-                        server
-                            .watcher_attached
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    eprintln!(
-                        "[tokensave] warning: file-watcher setup task panicked ({e}); \
-                         index will not auto-refresh on file changes"
-                    );
-                    return;
-                }
-            };
-
-            if cancel_for_task.is_cancelled() {
-                return;
-            }
-            if let Some(server) = server_for_cb.upgrade() {
-                server
-                    .watcher_attached
-                    .store(true, std::sync::atomic::Ordering::Release);
-            }
-
-            pw.run_with_callback(cancel_for_task, move || {
-                let weak = server_for_cb.clone();
-                async move {
-                    if let Some(s) = weak.upgrade() {
-                        s.refresh_file_token_map().await;
-                    }
-                }
-            })
-            .await;
-        });
-
-        server
+            last_staleness_check_at: AtomicI64::new(0),
+        })
     }
 
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
@@ -347,28 +251,13 @@ impl McpServer {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Returns true once the background watcher-setup task has finished —
-    /// either successfully (the FSEvents/inotify stream is observing the
-    /// project) or with a logged failure. Production code rarely needs to
-    /// check this: the MCP server runs whether or not the watcher attaches.
-    /// Tests use it to avoid the obvious race of writing a file before the
-    /// watcher has registered.
-    pub fn watcher_attached(&self) -> bool {
-        self.watcher_attached
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Polls `watcher_attached` with a 50 ms interval up to `timeout`,
-    /// returning `true` if the watcher attached within the budget.
-    pub async fn wait_for_watcher_attached(&self, timeout: std::time::Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
-        while !self.watcher_attached() {
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        true
+    /// Test-only accessor for the backing `TokenSave`. Exposed so
+    /// integration tests can drive the staleness pipeline directly,
+    /// bypassing the 30 s cooldown in
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale).
+    #[doc(hidden)]
+    pub fn cg(&self) -> &TokenSave {
+        &self.cg
     }
 
     /// Adds the approximate token count for the given file paths to the
@@ -409,8 +298,9 @@ impl McpServer {
     }
 
     /// Re-read the file-to-token-count map from the DB and swap it into the
-    /// cached `file_token_map`. Called by the embedded watcher after each
-    /// background sync so the accounting tracks newly indexed / removed files.
+    /// cached `file_token_map`. Called after each lazy sync triggered by
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so the accounting
+    /// tracks newly indexed / removed files.
     pub async fn refresh_file_token_map(&self) {
         // best-effort; leave stale map in place if the DB read fails
         let Ok(fresh) = self.cg.get_file_token_map().await else {
@@ -419,6 +309,53 @@ impl McpServer {
         if let Ok(mut guard) = self.file_token_map.lock() {
             *guard = fresh;
         }
+    }
+
+    /// Walk the project tree, sync any stale files, and refresh the
+    /// file-to-token-count map — but only if at least 30 s have passed
+    /// since the last successful sync. The cooldown is the gate: while
+    /// it holds, this returns immediately, so dropping it into every
+    /// `tools/call` handler is cheap.
+    ///
+    /// Concurrent callers are serialized via
+    /// [`Self::last_staleness_check_at`]: the first caller stamps `now`
+    /// into the field with `compare_exchange`; later callers within the
+    /// same window see the stamp and bail. If the actual sync work
+    /// fails, the stamp still advances — failure to walk the tree
+    /// should not cause every subsequent tool call to retry.
+    pub async fn maybe_sync_if_stale(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let last_sync = self.cg.last_sync_timestamp().await;
+        if now.saturating_sub(last_sync) < 30 {
+            return;
+        }
+
+        let previous = self.last_staleness_check_at.load(Ordering::Acquire);
+        if now.saturating_sub(previous) < 30 {
+            return;
+        }
+        if self
+            .last_staleness_check_at
+            .compare_exchange(previous, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let stale = self.cg.find_stale_files().await;
+        if !stale.is_empty() {
+            if let Err(e) = self.cg.sync_if_stale_silent(&stale).await {
+                eprintln!("[tokensave] lazy sync failed: {e}");
+                return;
+            }
+        }
+        // Always refresh: a sibling MCP peer may have synced the DB
+        // between our cooldown windows, in which case `stale` is empty
+        // here but our in-memory `file_token_map` is still pre-sync.
+        self.refresh_file_token_map().await;
     }
 
     /// Internal: snapshot of the current `file_token_map`. Exposed for
@@ -646,29 +583,17 @@ impl McpServer {
         Ok(())
     }
 
-    /// Performs graceful shutdown: cancels the embedded file watcher,
-    /// persists the tokens-saved counter, flushes pending tokens to the
+    /// Persists the tokens-saved counter, flushes pending tokens to the
     /// worldwide counter, checkpoints the WAL, and logs a session summary.
     ///
     /// Idempotent — safe to call multiple times. `run` invokes it once when
     /// its main loop exits; callers (e.g. `main.rs`, tests) may invoke it
     /// explicitly afterwards without re-running the persistence logic.
     pub async fn shutdown(&self) {
-        // Cancel the embedded watcher first so its final-flush sync can race
-        // with the rest of shutdown rather than after.
-        let cancel = self.watcher_cancel.lock().ok().and_then(|mut g| g.take());
-        if let Some(token) = cancel {
-            token.cancel();
-        }
-
         // Idempotency guard: only run the persistence path once.
         if self.shutdown_done.swap(true, Ordering::SeqCst) {
             return;
         }
-
-        // Give the watcher's final-flush sync a moment to land before we
-        // checkpoint the WAL.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let uptime = self.stats.started_at.elapsed();
         let tool_calls = self.stats.tool_calls.load(Ordering::Relaxed);
@@ -1073,6 +998,11 @@ impl McpServer {
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        // Notification-free freshness: walk the tree and resync any stale
+        // files, gated by a 30 s cooldown. Replaces the embedded watcher
+        // (see McpServer::new). No-op on the hot path most of the time.
+        self.maybe_sync_if_stale().await;
+
         self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
         eprintln!("[tokensave] tool call: {tool_name}");
         if let Ok(mut counts) = self.tool_call_counts.lock() {
@@ -1321,21 +1251,5 @@ impl McpServer {
         }
 
         stats
-    }
-}
-
-impl Drop for McpServer {
-    fn drop(&mut self) {
-        // Best-effort cancellation: if `shutdown()` wasn't called, ensure the
-        // embedded watcher task still receives a cancel signal so it can exit
-        // promptly instead of relying on `Weak::upgrade()` no-ops.
-        // `CancellationToken::cancel()` is sync and idempotent; `Option::take`
-        // makes repeated drops a no-op. `if let Ok` matches the poisoned-mutex
-        // resilience used elsewhere in this file.
-        if let Ok(mut guard) = self.watcher_cancel.lock() {
-            if let Some(token) = guard.take() {
-                token.cancel();
-            }
-        }
     }
 }

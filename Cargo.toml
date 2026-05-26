@@ -106,7 +106,6 @@ walkdir = "2"
 ignore = "0.4"
 gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
 dirs = "6"
-notify-debouncer-full = { version = "0.8.0-rc.2", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
 rayon = "1"
 bincode = "1.3"
