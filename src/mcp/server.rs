@@ -143,6 +143,65 @@ LIMIT 20;
 - `derives_macro` edges record `#[derive(...)]` usage but generated impls are not in the graph.
 ";
 
+/// Build the per-file staleness banner inserted at the top of any tool
+/// response that referenced files the in-line sync couldn't refresh.
+///
+/// The shape mimics codegraph's #428 banner: name each pending file with
+/// its edit age (how long since the on-disk mtime), and direct the agent
+/// to `Read` those specific files. The rest of the response is treated
+/// as authoritative — distinct from the previous binary "STALE INDEX"
+/// warning that asked the agent to distrust the whole answer.
+fn format_per_file_staleness_banner(
+    project_root: &std::path::Path,
+    stale_files: &[String],
+) -> String {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let mut lines = Vec::with_capacity(stale_files.len() + 2);
+    lines.push(format!(
+        "WARNING: {} file(s) referenced below were edited after the last sync. \
+         Read these directly; the rest of this response reflects the current index:",
+        stale_files.len()
+    ));
+    for path in stale_files {
+        let age = file_mtime_secs(project_root, path).map_or(0, |m| now_secs.saturating_sub(m));
+        lines.push(format!("  - {path} (edited {})", humanize_age(age)));
+    }
+    lines.push("Run `tokensave sync` to refresh the index.".to_string());
+    lines.join("\n")
+}
+
+/// Read the on-disk mtime (UNIX seconds) for `relative_path` joined onto
+/// `project_root`. Returns `None` when the file is missing or stat fails.
+fn file_mtime_secs(project_root: &std::path::Path, relative_path: &str) -> Option<i64> {
+    let abs = project_root.join(relative_path);
+    let meta = std::fs::metadata(&abs).ok()?;
+    let modified = meta.modified().ok()?;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(secs)
+}
+
+/// Render a duration in seconds as a compact phrase: `"5s ago"`,
+/// `"3m ago"`, `"2h ago"`, `"4d ago"`. Used in the staleness banner so
+/// the agent can judge how stale "still stale" actually is.
+fn humanize_age(secs: i64) -> String {
+    if secs < 60 {
+        format!("{}s ago", secs.max(0))
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
     latest: Option<String>,
@@ -186,6 +245,17 @@ pub struct McpServer {
     /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so concurrent
     /// tool calls don't pile on the same walk.
     last_staleness_check_at: AtomicI64,
+    /// Cached worktree-vs-index mismatch detection for this session. `None`
+    /// when no mismatch exists (the common case) or detection was skipped
+    /// (not a git repo / git missing). Computed once at startup so we
+    /// spawn at most one pair of `git rev-parse` per session no matter how
+    /// many tool calls fire. See [`crate::worktree`] and #312.
+    worktree_mismatch: Option<crate::worktree::WorktreeIndexMismatch>,
+    /// Flipped to `true` once [`Self::run_startup_catch_up_sync`] finishes
+    /// (#414). Production code never reads this; tests poll it via
+    /// [`Self::wait_for_startup_catch_up`] so they can race-free assert on
+    /// the index state after the detached catch-up task completes.
+    startup_catch_up_done: AtomicBool,
 }
 
 impl McpServer {
@@ -208,7 +278,23 @@ impl McpServer {
         if let Some(ref gdb) = global_db {
             gdb.upsert(cg.project_root(), persisted).await;
         }
-        Arc::new(Self {
+
+        // Detect borrowed-worktree index once at startup so every read
+        // tool can cheaply prefix a heads-up. Two git rev-parse spawns
+        // worst case (#312). spawn_blocking because the underlying
+        // `Command::output()` can sit on slow disks.
+        let worktree_mismatch = {
+            let project_root = cg.project_root().to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let cwd = std::env::current_dir().ok()?;
+                crate::worktree::detect_worktree_index_mismatch(&cwd, &project_root)
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+
+        let server = Arc::new(Self {
             cg,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
@@ -226,7 +312,25 @@ impl McpServer {
             shutdown_done: AtomicBool::new(false),
             timings_enabled: AtomicBool::new(false),
             last_staleness_check_at: AtomicI64::new(0),
-        })
+            worktree_mismatch,
+            startup_catch_up_done: AtomicBool::new(false),
+        });
+
+        // Catch-up sync (#414): pick up changes made while the server
+        // was down — terminal `git pull`, IDE edits before the agent
+        // launched, files touched by another tool. Detached + weak so
+        // it never extends the server's lifetime; non-blocking so MCP
+        // `initialize` doesn't wait on the walk.
+        {
+            let weak = Arc::downgrade(&server);
+            tokio::spawn(async move {
+                if let Some(s) = weak.upgrade() {
+                    s.run_startup_catch_up_sync().await;
+                }
+            });
+        }
+
+        server
     }
 
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
@@ -309,6 +413,58 @@ impl McpServer {
         if let Ok(mut guard) = self.file_token_map.lock() {
             *guard = fresh;
         }
+    }
+
+    /// Catch-up sync run once at startup (#414). Bypasses the 30 s
+    /// cooldown in [`Self::maybe_sync_if_stale`] so changes made while
+    /// the server was down — a terminal `git pull`, IDE edits before
+    /// the agent launched, files touched by another tool — are
+    /// reconciled by the time the first MCP tool call arrives. The
+    /// staleness-check stamp is updated on the way out so the first
+    /// tool call doesn't re-walk the tree.
+    ///
+    /// The completion flag is flipped on every exit path (including
+    /// errors) so [`Self::wait_for_startup_catch_up`] never hangs.
+    pub async fn run_startup_catch_up_sync(&self) {
+        let stale = self.cg.find_stale_files().await;
+        if !stale.is_empty() {
+            if let Err(e) = self.cg.sync_if_stale_silent(&stale).await {
+                eprintln!("[tokensave] startup catch-up sync failed: {e}");
+                self.startup_catch_up_done.store(true, Ordering::Release);
+                return;
+            }
+        }
+        self.refresh_file_token_map().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.last_staleness_check_at.store(now, Ordering::Release);
+        self.startup_catch_up_done.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` once the detached
+    /// [`Self::run_startup_catch_up_sync`] task has finished (success
+    /// or error). Production code never needs this — the MCP loop runs
+    /// regardless of catch-up state — but tests poll it to avoid
+    /// racing the catch-up task against later DB assertions.
+    pub fn startup_catch_up_done(&self) -> bool {
+        self.startup_catch_up_done.load(Ordering::Acquire)
+    }
+
+    /// Polls [`Self::startup_catch_up_done`] with a 25 ms interval up
+    /// to `timeout`, returning `true` if catch-up completed within the
+    /// budget. Tests use this to make the otherwise-detached #414
+    /// task observable.
+    pub async fn wait_for_startup_catch_up(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.startup_catch_up_done() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
     }
 
     /// Walk the project tree, sync any stale files, and refresh the
@@ -1119,35 +1275,30 @@ impl McpServer {
                     }
                 }
 
-                // Check per-file staleness for files touched by this tool call.
-                // If stale files exist, attempt an incremental sync first to keep
-                // the index up-to-date before returning the response.
+                // Per-file staleness banner (#428 design): files this response
+                // referenced that are still pending after the in-line sync
+                // attempt get a focused banner naming them with edit ages,
+                // telling the agent to Read THOSE files directly while
+                // treating the rest of the response as authoritative.
+                // Replaces the previous all-or-nothing "STALE INDEX"
+                // warning that made agents distrust the entire answer.
                 if !result.touched_files.is_empty() {
                     let stale_files = self.cg.check_file_staleness(&result.touched_files).await;
                     if !stale_files.is_empty() {
-                        // Try to sync before responding. If sync fails (e.g., lock
-                        // held by another process), we still warn the user.
                         let still_stale = match self.cg.sync_if_stale(&stale_files).await {
-                            Ok(false) => false,        // Sync completed and files are no longer stale
-                            Ok(true) | Err(_) => true, // Files still stale or sync failed
+                            Ok(false) => false,        // sync completed; files now fresh
+                            Ok(true) | Err(_) => true, // still stale (lock contention / sync error)
                         };
                         if still_stale {
-                            let warning = format!(
-                                "WARNING: STALE INDEX — {} file(s) modified since last sync: {}. Run `tokensave sync` to update.",
-                                stale_files.len(),
-                                stale_files.join(", ")
+                            let banner = format_per_file_staleness_banner(
+                                self.cg.project_root(),
+                                &stale_files,
                             );
-                            // Machine-readable marker so callers can distrust
-                            // any answer referencing these paths. Always
-                            // emitted (as text + structured field) when
-                            // post-sync stale files remain.
+                            // Machine-readable marker. Same shape as before
+                            // so existing scrapers keep working.
                             let stale_json = serde_json::to_string(&stale_files)
                                 .unwrap_or_else(|_| "[]".to_string());
                             let marker = format!("\ntokensave_graph_stale: {stale_json}");
-                            // Every handler returns an object with `content`;
-                            // crash hard in debug if a future handler ever
-                            // breaks that contract so we don't silently drop
-                            // the structured staleness signal.
                             debug_assert!(
                                 result.value.is_object(),
                                 "tool result must be a JSON object so graph_stale can be attached"
@@ -1160,7 +1311,7 @@ impl McpServer {
                                 .get_mut("content")
                                 .and_then(|c| c.as_array_mut())
                             {
-                                content.insert(0, json!({"type": "text", "text": &warning}));
+                                content.insert(0, json!({"type": "text", "text": &banner}));
                                 content.push(json!({"type": "text", "text": marker}));
                             }
                         }
@@ -1215,6 +1366,21 @@ impl McpServer {
                     }
                 }
 
+                // Borrowed-worktree heads-up (#312). Inserted LAST so it
+                // appears FIRST in the response — the index serving the
+                // wrong branch is the most serious of these warnings to
+                // surface to the agent.
+                if let Some(ref m) = self.worktree_mismatch {
+                    let notice = crate::worktree::worktree_mismatch_notice(m);
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": notice}));
+                    }
+                }
+
                 JsonRpcResponse::success(id, result.value)
             }
             Err(e) => JsonRpcResponse::error(
@@ -1250,6 +1416,65 @@ impl McpServer {
             }
         }
 
+        // Surface the verbose worktree-mismatch warning when present, so
+        // `tokensave_status` is the one tool whose output is loud about
+        // serving a borrowed index (#312).
+        if let Some(ref m) = self.worktree_mismatch {
+            stats["worktree_mismatch"] = json!({
+                "worktree_root": m.worktree_root.display().to_string(),
+                "index_root": m.index_root.display().to_string(),
+                "warning": crate::worktree::worktree_mismatch_warning(m),
+            });
+        }
+
         stats
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod staleness_banner_tests {
+    use super::{format_per_file_staleness_banner, humanize_age};
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn humanize_age_picks_right_unit() {
+        assert_eq!(humanize_age(0), "0s ago");
+        assert_eq!(humanize_age(45), "45s ago");
+        assert_eq!(humanize_age(125), "2m ago");
+        assert_eq!(humanize_age(3_700), "1h ago");
+        assert_eq!(humanize_age(90_000), "1d ago");
+    }
+
+    #[test]
+    fn banner_lists_stale_files_with_age() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b() {}").unwrap();
+
+        let stale = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let banner = format_per_file_staleness_banner(root, &stale);
+        assert!(banner.contains("2 file(s) referenced below were edited"));
+        assert!(banner.contains("src/a.rs ("));
+        assert!(banner.contains("src/b.rs ("));
+        assert!(banner.contains("ago)"));
+        assert!(banner.contains("tokensave sync"));
+        // Critical UX shift: should NOT say "STALE INDEX" — the whole
+        // point of #428 is to scope the warning, not blanket-distrust
+        // the entire response.
+        assert!(!banner.contains("STALE INDEX"));
+    }
+
+    #[test]
+    fn banner_handles_missing_file_gracefully() {
+        let tmp = tempdir().unwrap();
+        let stale = vec!["does/not/exist.rs".to_string()];
+        let banner = format_per_file_staleness_banner(tmp.path(), &stale);
+        // Missing files still get listed (e.g. file deleted between
+        // sync and tool response). Age falls back to 0s.
+        assert!(banner.contains("does/not/exist.rs"));
     }
 }

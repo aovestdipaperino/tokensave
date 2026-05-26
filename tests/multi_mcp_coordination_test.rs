@@ -1,3 +1,4 @@
+use std::time::Duration;
 use tempfile::tempdir;
 use tokensave::mcp::McpServer;
 use tokensave::tokensave::TokenSave;
@@ -18,6 +19,20 @@ async fn two_mcps_on_same_project_coordinate_via_sync_lock() {
     let cg2 = TokenSave::open(&project).await.unwrap();
     let server1 = McpServer::new(cg1, None).await;
     let server2 = McpServer::new(cg2, None).await;
+
+    // `McpServer::new` returns immediately and the #414 catch-up sync runs
+    // on a detached tokio task. Wait for both servers' catch-up tasks to
+    // finish before snapshotting so we don't race them against the
+    // manual staleness pipeline below — otherwise the file_token_map
+    // value we capture as `count_before` is non-deterministic.
+    for (label, server) in [("server1", &server1), ("server2", &server2)] {
+        assert!(
+            server
+                .wait_for_startup_catch_up(Duration::from_secs(10))
+                .await,
+            "{label}: startup catch-up should finish within 10s"
+        );
+    }
 
     let count_before = server1.file_token_map_snapshot().len();
 
