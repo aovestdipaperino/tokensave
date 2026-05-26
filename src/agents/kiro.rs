@@ -1,8 +1,8 @@
 //! AWS Kiro agent integration.
 //!
 //! Handles registration of the tokensave MCP server in Kiro's shared global
-//! MCP config (`~/.kiro/settings/mcp.json`), adds global AGENTS.md steering
-//! (`~/.kiro/steering/AGENTS.md`), and installs a tokensave-managed Kiro
+//! MCP config (`~/.kiro/settings/mcp.json`), adds global tokensave steering
+//! (`~/.kiro/steering/tokensave.md`), and installs a tokensave-managed Kiro
 //! agent selected as the default when doing so does not overwrite a user's
 //! existing default-agent choice.
 //!
@@ -20,8 +20,7 @@ use crate::errors::{Result, TokenSaveError};
 
 use super::{
     backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
-    read_only_tool_names, safe_write_json_file, tool_names, AgentIntegration, DoctorCounters,
-    HealthcheckContext, InstallContext,
+    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
 };
 
 /// Kiro agent.
@@ -32,6 +31,9 @@ const PROMPT_END_MARKER: &str = "<!-- tokensave:kiro:end -->";
 const KIRO_AGENT_NAME: &str = "tokensave";
 const OWNED_AGENT_DESCRIPTION: &str =
     "Default Kiro agent with tokensave MCP tools and code-research guardrails.";
+const KIRO_AGENT_ALL_TOOLS: &str = "*";
+const KIRO_ALLOWED_BUILTIN_TOOLS: &str = "@builtin";
+const KIRO_ALLOWED_TOKENSAVE_TOOLS: &str = "@tokensave";
 const KIRO_PRE_TOOL_HOOK: &str = "hook-kiro-pre-tool-use";
 const KIRO_PROMPT_HOOK: &str = "hook-kiro-prompt-submit";
 const KIRO_POST_TOOL_HOOK: &str = "hook-kiro-post-tool-use";
@@ -62,7 +64,7 @@ fn managed_agent_path(home: &Path) -> PathBuf {
 }
 
 fn steering_path(home: &Path) -> PathBuf {
-    kiro_home(home).join("steering/AGENTS.md")
+    kiro_home(home).join("steering/tokensave.md")
 }
 
 fn workspace_mcp_config_path(project_path: &Path) -> PathBuf {
@@ -85,10 +87,10 @@ impl AgentIntegration for KiroIntegration {
         install_mcp_server(&mcp_path, &ctx.tokensave_bin)?;
 
         let steering = steering_path(&ctx.home);
-        install_prompt_rules(&steering)?;
+        install_steering_rules(&steering)?;
 
         let agent_path = managed_agent_path(&ctx.home);
-        let owns_agent = install_managed_agent(&agent_path, &ctx.tokensave_bin)?;
+        let owns_agent = install_managed_agent(&agent_path, &ctx.tokensave_bin, &steering)?;
 
         let cli_path = cli_config_path(&ctx.home);
         install_default_agent(&cli_path, owns_agent)?;
@@ -106,7 +108,7 @@ impl AgentIntegration for KiroIntegration {
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
         uninstall_mcp_server(&mcp_config_path(&ctx.home));
-        uninstall_prompt_rules(&steering_path(&ctx.home));
+        remove_steering_rules(&steering_path(&ctx.home));
         let agent_path = managed_agent_path(&ctx.home);
         let owned_agent = is_owned_agent_file(&agent_path);
         uninstall_managed_agent(&agent_path);
@@ -160,30 +162,50 @@ fn mcp_server_entry(tokensave_bin: &str) -> serde_json::Value {
     json!({
         "command": tokensave_bin,
         "args": ["serve"],
-        "disabled": false,
-        "autoApprove": read_only_tool_names()
+        "disabled": false
     })
-}
-
-fn mutating_tool_names() -> Vec<String> {
-    let read_only: std::collections::HashSet<String> = read_only_tool_names().into_iter().collect();
-    tool_names()
-        .into_iter()
-        .filter(|name| !read_only.contains(name))
-        .collect()
 }
 
 fn hook_command(tokensave_bin: &str, subcommand: &str) -> String {
     format!("{tokensave_bin} {subcommand}")
 }
 
-fn managed_agent_config(tokensave_bin: &str) -> serde_json::Value {
+fn file_resource_uri(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let path = percent_encode_file_uri_path(&path);
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
+fn percent_encode_file_uri_path(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0F) as usize] as char);
+            }
+        }
+    }
+    encoded
+}
+
+fn managed_agent_config(tokensave_bin: &str, steering_path: &Path) -> serde_json::Value {
     json!({
         "name": KIRO_AGENT_NAME,
         "description": OWNED_AGENT_DESCRIPTION,
         "includeMcpJson": true,
-        "prompt": "file://../steering/AGENTS.md",
-        "tools": ["*"],
+        "resources": [file_resource_uri(steering_path)],
+        "tools": [KIRO_AGENT_ALL_TOOLS],
+        "allowedTools": [KIRO_ALLOWED_BUILTIN_TOOLS, KIRO_ALLOWED_TOKENSAVE_TOOLS],
         "hooks": {
             "userPromptSubmit": [
                 {
@@ -244,7 +266,7 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
 /// Returns true when tokensave owns the resulting agent file. A pre-existing
 /// user-managed `tokensave.json` is preserved and returns false so the default
 /// agent selector is not pointed at a file whose policy tokensave does not own.
-fn install_managed_agent(path: &Path, tokensave_bin: &str) -> Result<bool> {
+fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path) -> Result<bool> {
     if path.exists() && !is_owned_agent_file(path) {
         eprintln!(
             "  {} already exists and is user-managed, leaving unchanged",
@@ -254,7 +276,7 @@ fn install_managed_agent(path: &Path, tokensave_bin: &str) -> Result<bool> {
     }
 
     let backup = backup_config_file(path)?;
-    let config = managed_agent_config(tokensave_bin);
+    let config = managed_agent_config(tokensave_bin, steering_path);
     safe_write_json_file(path, &config, backup.as_deref())?;
     eprintln!(
         "\x1b[32m✔\x1b[0m Wrote tokensave Kiro agent to {}",
@@ -349,8 +371,8 @@ fn ensure_child_object(config: &mut serde_json::Value, key: &str, path: &Path) -
     }
 }
 
-/// Append global AGENTS.md steering for default Kiro sessions.
-fn install_prompt_rules(path: &Path) -> Result<()> {
+/// Add tokensave's global steering resource for default Kiro sessions.
+fn install_steering_rules(path: &Path) -> Result<()> {
     let existing = if path.exists() {
         std::fs::read_to_string(path).unwrap_or_default()
     } else {
@@ -358,24 +380,12 @@ fn install_prompt_rules(path: &Path) -> Result<()> {
     };
     if existing.contains(PROMPT_MARKER) {
         if existing.contains(PROMPT_END_MARKER) {
-            eprintln!("  Kiro AGENTS.md already contains tokensave rules, skipping");
+            eprintln!("  Kiro steering already contains tokensave rules, skipping");
             return Ok(());
         }
-        if let Some(range) = legacy_prompt_block_range(&existing) {
-            let mut updated = existing;
-            updated.replace_range(range, &prompt_rules_text());
-            std::fs::write(path, updated).map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {}: {e}", path.display()),
-            })?;
-            eprintln!(
-                "\x1b[32m✔\x1b[0m Updated tokensave rules in {}",
-                path.display()
-            );
-        } else {
-            eprintln!(
-                "  Kiro AGENTS.md contains legacy or edited tokensave rules without an end marker, leaving unchanged"
-            );
-        }
+        eprintln!(
+            "  Kiro steering contains tokensave rules without an owned end marker, leaving unchanged"
+        );
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -390,7 +400,12 @@ fn install_prompt_rules(path: &Path) -> Result<()> {
         .map_err(|e| TokenSaveError::Config {
             message: format!("failed to open {}: {e}", path.display()),
         })?;
-    write!(f, "\n{}\n", prompt_rules_text()).map_err(|e| TokenSaveError::Config {
+    let separator = if existing.trim().is_empty() {
+        ""
+    } else {
+        "\n\n"
+    };
+    writeln!(f, "{}{}", separator, prompt_rules_text()).map_err(|e| TokenSaveError::Config {
         message: format!("failed to write {}: {e}", path.display()),
     })?;
     eprintln!(
@@ -466,7 +481,7 @@ fn uninstall_mcp_server(path: &Path) {
     }
 }
 
-fn uninstall_prompt_rules(path: &Path) {
+fn remove_steering_rules(path: &Path) {
     if !path.exists() {
         return;
     }
@@ -474,12 +489,12 @@ fn uninstall_prompt_rules(path: &Path) {
         return;
     };
     if !contents.contains(PROMPT_MARKER) {
-        eprintln!("  Kiro AGENTS.md does not contain tokensave rules, skipping");
+        eprintln!("  Kiro steering does not contain tokensave rules, skipping");
         return;
     }
     let Some(range) = tokensave_prompt_block_range(&contents) else {
         eprintln!(
-            "  Kiro AGENTS.md contains tokensave rules without an owned end marker; leaving unchanged"
+            "  Kiro steering contains tokensave rules without an owned end marker; leaving unchanged"
         );
         return;
     };
@@ -585,25 +600,9 @@ fn is_owned_agent_config(config: &serde_json::Value) -> bool {
 
 fn tokensave_prompt_block_range(contents: &str) -> Option<Range<usize>> {
     let start = contents.find(PROMPT_MARKER)?;
-    if let Some(end_marker) = contents[start..].find(PROMPT_END_MARKER) {
-        let end = start + end_marker + PROMPT_END_MARKER.len();
-        return Some(start..end);
-    }
-    legacy_prompt_block_range(contents)
-}
-
-fn legacy_prompt_block_range(contents: &str) -> Option<Range<usize>> {
-    let start = contents.find(PROMPT_MARKER)?;
-    let after_marker = start + PROMPT_MARKER.len();
-    let end = contents[after_marker..]
-        .find("\n## ")
-        .map_or(contents.len(), |pos| after_marker + pos);
-    let candidate = &contents[start..end];
-    if candidate.trim() == prompt_rules_text_without_end_marker() {
-        Some(start..end)
-    } else {
-        None
-    }
+    let end_marker = contents[start..].find(PROMPT_END_MARKER)?;
+    let end = start + end_marker + PROMPT_END_MARKER.len();
+    Some(start..end)
 }
 
 // ---------------------------------------------------------------------------
@@ -657,48 +656,6 @@ fn doctor_check_mcp_config(dc: &mut DoctorCounters, home: &Path) -> Option<serde
         dc.fail("MCP server is disabled -- run `tokensave install --agent kiro`");
     } else {
         dc.pass("MCP server is enabled");
-    }
-
-    let expected = read_only_tool_names();
-    let approved_count = server
-        .get("autoApprove")
-        .and_then(|v| v.as_array())
-        .map_or(0, |arr| {
-            expected
-                .iter()
-                .filter(|name| arr.iter().any(|v| v.as_str() == Some(name.as_str())))
-                .count()
-        });
-    if approved_count >= expected.len() {
-        dc.pass(&format!(
-            "All {} read-only tokensave tools auto-approved",
-            expected.len()
-        ));
-    } else {
-        dc.warn(&format!(
-            "{approved_count}/{} read-only tokensave tools auto-approved -- run `tokensave install --agent kiro` to update",
-            expected.len()
-        ));
-    }
-
-    let auto_approve = server.get("autoApprove").and_then(|v| v.as_array());
-    if let Some(auto_approve) = auto_approve {
-        let has_broad = auto_approve.iter().any(|v| v.as_str() == Some("*"));
-        let mutating_approved: Vec<String> = mutating_tool_names()
-            .into_iter()
-            .filter(|name| {
-                auto_approve
-                    .iter()
-                    .any(|v| v.as_str() == Some(name.as_str()))
-            })
-            .collect();
-        if has_broad || !mutating_approved.is_empty() {
-            dc.warn(
-                "Kiro MCP autoApprove includes mutating tokensave tools -- run `tokensave install --agent kiro` to restore read-only defaults",
-            );
-        } else {
-            dc.pass("Kiro MCP autoApprove excludes mutating tokensave tools");
-        }
     }
 
     Some(server_value.clone())
@@ -770,37 +727,6 @@ fn doctor_check_workspace_mcp_override(
         }
     }
 
-    let expected = read_only_tool_names();
-    let approved_count = server
-        .get("autoApprove")
-        .and_then(|v| v.as_array())
-        .map_or(0, |arr| {
-            expected
-                .iter()
-                .filter(|name| arr.iter().any(|v| v.as_str() == Some(name.as_str())))
-                .count()
-        });
-    if approved_count < expected.len() {
-        dc.warn(&format!(
-            "Workspace Kiro MCP tokensave entry auto-approves {approved_count}/{} read-only tools and shadows the global install",
-            expected.len()
-        ));
-    }
-
-    if let Some(auto_approve) = server.get("autoApprove").and_then(|v| v.as_array()) {
-        let has_broad = auto_approve.iter().any(|v| v.as_str() == Some("*"));
-        let mutating_approved = mutating_tool_names().into_iter().any(|name| {
-            auto_approve
-                .iter()
-                .any(|v| v.as_str() == Some(name.as_str()))
-        });
-        if has_broad || mutating_approved {
-            dc.warn(
-                "Workspace Kiro MCP tokensave entry auto-approves mutating tools and shadows the global install",
-            );
-        }
-    }
-
     if compatible {
         dc.pass(&format!(
             "Workspace Kiro MCP tokensave override in {} is compatible",
@@ -812,18 +738,20 @@ fn doctor_check_workspace_mcp_override(
 fn doctor_check_steering(dc: &mut DoctorCounters, home: &Path) {
     let path = steering_path(home);
     if !path.exists() {
-        dc.warn("~/.kiro/steering/AGENTS.md does not exist");
+        dc.warn("~/.kiro/steering/tokensave.md does not exist");
         return;
     }
-    let has_rules = std::fs::read_to_string(&path)
-        .unwrap_or_default()
-        .contains(PROMPT_MARKER);
-    if has_rules {
-        dc.pass("Kiro global AGENTS.md contains tokensave rules");
-    } else {
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    if !contents.contains(PROMPT_MARKER) {
         dc.fail(
-            "Kiro global AGENTS.md missing tokensave rules -- run `tokensave install --agent kiro`",
+            "Kiro global tokensave.md missing tokensave rules -- run `tokensave install --agent kiro`",
         );
+    } else if tokensave_prompt_block_range(&contents).is_none() {
+        dc.fail(
+            "Kiro global tokensave.md contains tokensave rules without an owned end marker -- remove the stale block and run `tokensave install --agent kiro`",
+        );
+    } else {
+        dc.pass("Kiro global tokensave.md contains tokensave rules");
     }
 }
 
@@ -858,23 +786,22 @@ fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path) {
         dc.fail("Kiro tokensave agent missing includeMcpJson=true -- run `tokensave install --agent kiro`");
     }
 
-    if config
-        .get("tools")
-        .and_then(|v| v.as_array())
-        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("*")))
-    {
-        dc.pass("Kiro tokensave agent keeps default tool access");
-    } else {
-        dc.warn("Kiro tokensave agent tools list may not include all default Kiro tools");
-    }
+    doctor_check_agent_tools(dc, &config);
+    doctor_check_agent_allowed_tools(dc, &config);
 
-    if config.get("prompt").and_then(serde_json::Value::as_str)
-        == Some("file://../steering/AGENTS.md")
+    let expected_resource = file_resource_uri(&steering_path(home));
+    if config
+        .get("resources")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| {
+            arr.iter()
+                .any(|v| v.as_str() == Some(expected_resource.as_str()))
+        })
     {
-        dc.pass("Kiro tokensave agent references global steering");
+        dc.pass("Kiro tokensave agent loads global steering as a resource");
     } else {
         dc.fail(
-            "Kiro tokensave agent prompt should reference global steering -- run `tokensave install --agent kiro`",
+            "Kiro tokensave agent missing global steering resource -- run `tokensave install --agent kiro`",
         );
     }
 
@@ -910,6 +837,43 @@ fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path) {
         KIRO_POST_TOOL_HOOK,
         KIRO_SYNC_HOOK_TIMEOUT_MS,
     );
+}
+
+fn doctor_check_agent_tools(dc: &mut DoctorCounters, config: &serde_json::Value) {
+    if json_array_contains_str(config, "tools", KIRO_AGENT_ALL_TOOLS) {
+        dc.pass("Kiro tokensave agent exposes all configured tools");
+    } else {
+        dc.warn(
+            "Kiro tokensave agent tools list is not permissive -- run `tokensave install --agent kiro`",
+        );
+    }
+}
+
+fn doctor_check_agent_allowed_tools(dc: &mut DoctorCounters, config: &serde_json::Value) {
+    let required = [KIRO_ALLOWED_BUILTIN_TOOLS, KIRO_ALLOWED_TOKENSAVE_TOOLS];
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|tool| !json_array_contains_str(config, "allowedTools", tool))
+        .collect();
+
+    if missing.is_empty() {
+        dc.pass("Kiro tokensave agent pre-approves built-in and tokensave tools");
+    } else {
+        dc.warn(
+            "Kiro tokensave agent allowedTools is not permissive -- run `tokensave install --agent kiro`",
+        );
+        for tool in missing {
+            dc.info(&format!("missing allowedTools entry: {tool}"));
+        }
+    }
+}
+
+fn json_array_contains_str(config: &serde_json::Value, field: &str, expected: &str) -> bool {
+    config
+        .get(field)
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(expected)))
 }
 
 fn doctor_check_agent_hook(

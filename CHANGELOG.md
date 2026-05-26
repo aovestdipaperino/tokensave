@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Kiro steering is loaded as a resource.** The Kiro installer now writes `~/.kiro/steering/tokensave.md`, loads it from the managed agent's `resources` list with an absolute `file://` URI, leaves the custom-agent `prompt` unset so Kiro's default prompt is preserved, keeps MCP approval policy out of `mcp.json`, and installs permissive `tools: ["*"]` plus `allowedTools: ["@builtin", "@tokensave"]` defaults for the managed agent.
+
 ## [6.1.0] - 2026-05-25
 
 ### Added
