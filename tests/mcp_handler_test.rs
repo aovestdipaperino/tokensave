@@ -4617,34 +4617,26 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
 
     let server = tokensave::mcp::McpServer::new(cg, None).await;
 
-    // `McpServer::new` returns immediately and the embedded watcher attaches
-    // on a background task (#84). Wait for it to register before writing —
-    // FSEvents/inotify only deliver events that happen *after* the watch
-    // is attached, so a write that lands during the attach window is lost.
-    assert!(
-        server
-            .wait_for_watcher_attached(std::time::Duration::from_secs(10))
-            .await,
-        "embedded watcher should attach within 10s"
-    );
-
     let initial_count = server.file_token_map_snapshot().len();
 
-    // Edit a file. The embedded watcher should debounce + sync + refresh.
+    // Edit a file, then drive the lazy staleness check that replaced the
+    // notify-based watcher (#80). MCP `tools/call` triggers this on the
+    // hot path; here we exercise the same pipeline directly so the test
+    // doesn't have to wait through the 30 s cooldown gate in
+    // `maybe_sync_if_stale`.
     std::fs::write(project.join("b.rs"), "fn b() {}").unwrap();
-
-    // Wait for debounce + sync + refresh with a generous ceiling.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while server.file_token_map_snapshot().len() <= initial_count
-        && std::time::Instant::now() < deadline
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    let stale = server.cg().find_stale_files().await;
+    assert!(
+        !stale.is_empty(),
+        "find_stale_files should detect newly written b.rs"
+    );
+    server.cg().sync_if_stale_silent(&stale).await.unwrap();
+    server.refresh_file_token_map().await;
 
     let after_count = server.file_token_map_snapshot().len();
     assert!(
         after_count > initial_count,
-        "embedded watcher should have refreshed map ({initial_count} -> {after_count})"
+        "lazy sync should have refreshed map ({initial_count} -> {after_count})"
     );
 
     server.shutdown().await;

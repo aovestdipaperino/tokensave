@@ -21,6 +21,29 @@ use crate::resolution::ReferenceResolver;
 use crate::sync;
 use crate::types::*;
 
+/// Convert any backslash in a *relative* project-root-relative path to a
+/// forward slash, matching the canonical form the walker
+/// ([`scan_files`](TokenSave::scan_files) → [`accept_file`](TokenSave::accept_file))
+/// uses when writing to the DB.
+///
+/// Applied defensively at sync/staleness entry points so that callers
+/// holding OS-native paths (PowerShell-shaped `src\foo.py`, paths echoed
+/// back from MCP tool responses on Windows, etc.) hit the same `files`
+/// row as the walker would — preventing the duplicate-row corruption
+/// from #87 where the same physical file showed up as both `src/foo.py`
+/// and `src\foo.py` in the `files` table.
+fn normalize_rel_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// Normalize a slice of relative paths to canonical (forward-slash)
+/// form. Allocates a new `Vec` only when at least one entry needed
+/// normalization — common case on Unix is a zero-copy pass-through to
+/// the caller's existing `Vec`.
+fn normalize_rel_paths(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|p| normalize_rel_path(p)).collect()
+}
+
 /// Run `extractor.extract()` inside `catch_unwind` so a panic (e.g. from a
 /// malformed file or an extractor bug) skips the file instead of aborting sync.
 fn safe_extract(
@@ -845,33 +868,29 @@ impl TokenSave {
         if stale_files.is_empty() {
             return Ok(false);
         }
+        // Normalize once at the entry; downstream helpers can rely on
+        // forward-slash form matching the walker's canonical path
+        // (defends against #87 — Windows duplicate-row corruption).
+        let stale_files = normalize_rel_paths(stale_files);
 
-        // Quick check: are these files still stale before we even try to sync?
-        let still_stale_before = self.check_file_staleness(stale_files).await;
+        let still_stale_before = self.check_file_staleness(&stale_files).await;
         if still_stale_before.is_empty() {
             return Ok(false);
         }
 
-        // Try to acquire sync lock and do an incremental sync.
-        // The full sync will pick up any changed files, including our stale ones.
         let Ok(lock) = try_acquire_sync_lock(&self.project_root) else {
-            // Another sync is in progress (likely another MCP peer) — let caller warn
             return Ok(true);
         };
 
-        // Do a minimal sync focused on changed files
-        let result = self.sync_single_files(stale_files).await;
-
-        // Release lock
+        let result = self.sync_single_files(&stale_files).await;
         drop(lock);
 
         match result {
             Ok(()) => {
-                // Recheck if our files are still stale
-                let still_stale_after = self.check_file_staleness(stale_files).await;
+                let still_stale_after = self.check_file_staleness(&stale_files).await;
                 Ok(!still_stale_after.is_empty())
             }
-            Err(_) => Ok(true), // Sync failed — warn caller
+            Err(_) => Ok(true),
         }
     }
 
@@ -886,8 +905,10 @@ impl TokenSave {
         if stale_files.is_empty() {
             return Ok(());
         }
+        // Normalize once at the entry — see `sync_if_stale` and #87.
+        let stale_files = normalize_rel_paths(stale_files);
 
-        let still_stale_before = self.check_file_staleness(stale_files).await;
+        let still_stale_before = self.check_file_staleness(&stale_files).await;
         if still_stale_before.is_empty() {
             return Ok(());
         }
@@ -910,7 +931,7 @@ impl TokenSave {
                 if let Ok(lock) = try_acquire_sync_lock(&self.project_root) {
                     // Peer released. If they covered our files, the DB is
                     // fresh and we're done; otherwise sync ourselves.
-                    let still_stale = self.check_file_staleness(stale_files).await;
+                    let still_stale = self.check_file_staleness(&stale_files).await;
                     if still_stale.is_empty() {
                         drop(lock);
                         return Ok(());
@@ -920,7 +941,7 @@ impl TokenSave {
             }
         };
 
-        let _ = self.sync_single_files(stale_files).await;
+        let _ = self.sync_single_files(&stale_files).await;
         drop(lock);
         Ok(())
     }
@@ -934,11 +955,18 @@ impl TokenSave {
         let project_root = &self.project_root;
         let registry = &self.registry;
 
+        // Defence-in-depth: even though the public `sync_if_stale[_silent]`
+        // entry points already normalize, this is the single chokepoint
+        // where paths get written to the DB — so we normalize again here
+        // in case a future internal caller skips the wrappers. The DB's
+        // canonical form is forward-slash (#87).
+        let file_paths = normalize_rel_paths(file_paths);
+
         // Read and hash the files
         let mut hash_map: HashMap<String, String> = HashMap::new();
         let mut stat_map: HashMap<String, (i64, u64)> = HashMap::new();
 
-        for path in file_paths {
+        for path in &file_paths {
             let abs_path = project_root.join(path);
             if let Some((mtime, size)) = sync_mod::file_stat(&abs_path) {
                 stat_map.insert(path.clone(), (mtime, size));
@@ -952,7 +980,7 @@ impl TokenSave {
         // Extract graph data from the files in parallel (subprocess-isolated)
         let _ = stat_map; // worker re-stats internally; map kept for potential future use
         let (sync_extractions, _skipped_extractions) =
-            extract_files_isolated(project_root, registry, file_paths.to_vec());
+            extract_files_isolated(project_root, registry, file_paths.clone());
 
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
@@ -2693,13 +2721,19 @@ impl TokenSave {
     pub async fn check_file_staleness(&self, file_paths: &[String]) -> Vec<String> {
         let mut stale = Vec::new();
         for path in file_paths {
-            let abs_path = self.project_root.join(path);
+            // Match the DB's canonical form (forward slashes). Without this,
+            // a caller passing `src\foo.py` on Windows misses the row stored
+            // under `src/foo.py` and the file gets treated as "new" — a
+            // subsequent sync would insert a *second* row alongside the
+            // original, which is #87.
+            let normalized = normalize_rel_path(path);
+            let abs_path = self.project_root.join(&normalized);
             let file_exists = abs_path.exists();
-            match self.db.get_file(path).await {
+            match self.db.get_file(&normalized).await {
                 Ok(Some(record)) => {
                     if !file_exists {
                         // Indexed but deleted — DB needs cleanup.
-                        stale.push(path.clone());
+                        stale.push(normalized);
                     } else if let Ok(metadata) = std::fs::metadata(&abs_path) {
                         if let Ok(mtime) = metadata.modified() {
                             let mtime_secs = mtime
@@ -2707,7 +2741,7 @@ impl TokenSave {
                                 .unwrap_or_default()
                                 .as_secs() as i64;
                             if mtime_secs > record.indexed_at {
-                                stale.push(path.clone());
+                                stale.push(normalized);
                             }
                         }
                     }
@@ -2715,11 +2749,63 @@ impl TokenSave {
                 _ => {
                     // Not in the DB. If it exists on disk, it's new and needs indexing.
                     if file_exists {
-                        stale.push(path.clone());
+                        stale.push(normalized);
                     }
                 }
             }
         }
+        stale
+    }
+
+    /// Returns every file whose on-disk mtime is newer than its indexed
+    /// timestamp, plus on-disk files the DB doesn't know about yet, plus
+    /// DB-known files that no longer exist on disk (so a follow-up sync
+    /// can prune them).
+    ///
+    /// Walks the project tree with the same gitignore-aware logic used by
+    /// `sync()`, then compares against a single batched DB read of the
+    /// `files` table — no per-file SQL round trips. This is the
+    /// notification-free replacement for the `notify`-based watcher
+    /// removed in v6.x (see #80): the MCP server calls it on a 30 s
+    /// cooldown to keep the index fresh without burning CPU/memory on
+    /// kernel event streams.
+    pub async fn find_stale_files(&self) -> Vec<String> {
+        let on_disk = self.scan_files();
+        // DB read failed → be conservative and treat every on-disk file as
+        // stale rather than silently dropping the check.
+        let Ok(indexed) = self.get_all_files().await else {
+            return on_disk;
+        };
+
+        let indexed_map: HashMap<&str, i64> = indexed
+            .iter()
+            .map(|f| (f.path.as_str(), f.indexed_at))
+            .collect();
+        let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
+
+        let mut stale: Vec<String> = Vec::new();
+
+        for rel in &on_disk {
+            let abs = self.project_root.join(rel);
+            let mtime_secs = std::fs::metadata(&abs)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            match indexed_map.get(rel.as_str()) {
+                Some(&indexed_at) if mtime_secs <= indexed_at => {}
+                _ => stale.push(rel.clone()),
+            }
+        }
+
+        for indexed_path in indexed_map.keys() {
+            if !on_disk_set.contains(*indexed_path) {
+                stale.push((*indexed_path).to_string());
+            }
+        }
+
+        stale.sort();
+        stale.dedup();
         stale
     }
 
@@ -3307,5 +3393,34 @@ pub struct M;
 ";
         let derives = parse_derives_in_attr_block(src, 0, 5);
         assert_eq!(derives, vec!["Debug", "Clone", "Hash"]);
+    }
+}
+
+#[cfg(test)]
+mod path_normalization_tests {
+    use super::{normalize_rel_path, normalize_rel_paths};
+
+    #[test]
+    fn normalize_rel_path_converts_backslashes() {
+        assert_eq!(normalize_rel_path("src\\foo.py"), "src/foo.py");
+        assert_eq!(normalize_rel_path("a\\b\\c\\d.rs"), "a/b/c/d.rs");
+    }
+
+    #[test]
+    fn normalize_rel_path_leaves_forward_slashes_alone() {
+        assert_eq!(normalize_rel_path("src/foo.py"), "src/foo.py");
+        assert_eq!(normalize_rel_path("a"), "a");
+        assert_eq!(normalize_rel_path(""), "");
+    }
+
+    #[test]
+    fn normalize_rel_paths_processes_a_mixed_slice() {
+        let input = vec![
+            "src/a.rs".to_string(),
+            "src\\b.rs".to_string(),
+            "lib\\nested\\c.rs".to_string(),
+        ];
+        let out = normalize_rel_paths(&input);
+        assert_eq!(out, vec!["src/a.rs", "src/b.rs", "lib/nested/c.rs"]);
     }
 }
