@@ -202,12 +202,14 @@ tokensave install --agent vibe        # Mistral Vibe
 
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
 
-Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, adds steering in
-`~/.kiro/steering/AGENTS.md`, and writes a tokensave-managed agent with hooks
-that block research delegation until tokensave MCP tools have been tried and
-sync the index after Kiro writes files. If you already have a different custom
-default agent or a user-managed `tokensave` agent, tokensave leaves it alone and
-prints a warning.
+Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, writes steering to
+`~/.kiro/steering/tokensave.md`, and writes a tokensave-managed agent that loads
+that steering as a resource while keeping Kiro's default prompt. The managed
+agent exposes all configured tools and pre-approves Kiro built-ins plus the
+tokensave MCP server, then adds hooks that block research delegation until
+tokensave MCP tools have been tried and sync the index after Kiro writes files.
+If you already have a different custom default agent or a user-managed
+`tokensave` agent, tokensave leaves it alone and prints a warning.
 
 The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook (more on that below).
 

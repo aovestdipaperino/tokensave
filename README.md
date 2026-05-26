@@ -135,7 +135,7 @@ tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed
 ```
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, read-only tokensave auto-approval, AGENTS.md steering, and a tokensave-managed default agent with delegation guardrail hooks plus post-write sync; user-managed Kiro agents are preserved.
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook.
 
@@ -779,7 +779,7 @@ tokensave works at the symbol level: functions, structs, fields, call edges, typ
 
 ### Broadest agent support
 
-14 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, read-only tokensave auto-approval, AGENTS.md steering, a managed agent, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
+14 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 
