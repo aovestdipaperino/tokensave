@@ -58,6 +58,8 @@ mod glsl_extractor;
 mod gwbasic_extractor;
 #[cfg(feature = "lang-haskell")]
 mod haskell_extractor;
+#[cfg(feature = "lang-hlsl")]
+mod hlsl_extractor;
 #[cfg(feature = "lang-julia")]
 mod julia_extractor;
 #[cfg(feature = "lang-lean")]
@@ -66,6 +68,8 @@ mod lean_extractor;
 mod lua_extractor;
 #[cfg(feature = "lang-markdown")]
 mod markdown_extractor;
+#[cfg(feature = "lang-metal")]
+mod metal_extractor;
 #[cfg(feature = "lang-msbasic2")]
 mod msbasic2_extractor;
 #[cfg(feature = "lang-objc")]
@@ -86,6 +90,8 @@ mod r_extractor;
 mod sql_extractor;
 #[cfg(feature = "lang-toml")]
 mod toml_extractor;
+#[cfg(feature = "lang-wgsl")]
+mod wgsl_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
 
@@ -145,6 +151,8 @@ pub use glsl_extractor::GlslExtractor;
 pub use gwbasic_extractor::GwBasicExtractor;
 #[cfg(feature = "lang-haskell")]
 pub use haskell_extractor::HaskellExtractor;
+#[cfg(feature = "lang-hlsl")]
+pub use hlsl_extractor::HlslExtractor;
 #[cfg(feature = "lang-julia")]
 pub use julia_extractor::JuliaExtractor;
 #[cfg(feature = "lang-lean")]
@@ -153,6 +161,8 @@ pub use lean_extractor::LeanExtractor;
 pub use lua_extractor::LuaExtractor;
 #[cfg(feature = "lang-markdown")]
 pub use markdown_extractor::MarkdownExtractor;
+#[cfg(feature = "lang-metal")]
+pub use metal_extractor::MetalExtractor;
 #[cfg(feature = "lang-msbasic2")]
 pub use msbasic2_extractor::MsBasic2Extractor;
 #[cfg(feature = "lang-objc")]
@@ -173,6 +183,8 @@ pub use r_extractor::RExtractor;
 pub use sql_extractor::SqlExtractor;
 #[cfg(feature = "lang-toml")]
 pub use toml_extractor::TomlExtractor;
+#[cfg(feature = "lang-wgsl")]
+pub use wgsl_extractor::WgslExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
 
@@ -271,6 +283,12 @@ impl LanguageRegistry {
         extractors.push(Box::new(DockerfileExtractor));
         #[cfg(feature = "lang-glsl")]
         extractors.push(Box::new(GlslExtractor));
+        #[cfg(feature = "lang-wgsl")]
+        extractors.push(Box::new(WgslExtractor));
+        #[cfg(feature = "lang-hlsl")]
+        extractors.push(Box::new(HlslExtractor));
+        #[cfg(feature = "lang-metal")]
+        extractors.push(Box::new(MetalExtractor));
         #[cfg(feature = "lang-markdown")]
         extractors.push(Box::new(MarkdownExtractor));
         #[cfg(feature = "lang-r")]

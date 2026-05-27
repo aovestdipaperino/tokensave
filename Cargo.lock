@@ -4122,6 +4122,7 @@ name = "tokensave"
 version = "6.1.1"
 dependencies = [
  "bincode",
+ "cc",
  "clap",
  "criterion",
  "crossterm",
@@ -4155,6 +4156,8 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-dart",
+ "tree-sitter-hlsl",
+ "tree-sitter-language",
  "ureq",
  "walkdir",
  "windows-sys 0.61.2",
@@ -4677,6 +4680,16 @@ name = "tree-sitter-haskell"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-hlsl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ef1d03e58f55c1e313ac3418540f941a49a59605bd9447e1441091fafbd5df6"
 dependencies = [
  "cc",
  "tree-sitter-language",
