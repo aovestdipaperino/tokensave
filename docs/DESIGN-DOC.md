@@ -94,7 +94,7 @@ src/
     mod.rs            Agent trait, registry, shared helpers, git hooks
     claude.rs         Claude Code: MCP in ~/.claude.json, hooks, permissions
     codex.rs          Codex CLI: MCP in ~/.codex/config.toml, AGENTS.md
-    opencode.rs       OpenCode: MCP in opencode.json, OPENCODE.md
+    opencode.rs       OpenCode: MCP in ~/.config/opencode/opencode.json, ~/.config/opencode/AGENTS.md
     gemini.rs         Gemini CLI: MCP in ~/.gemini/settings.json, GEMINI.md
 ```
 
@@ -338,7 +338,7 @@ graph TB
 
         PROMPT --> P1["Claude: ~/.claude/CLAUDE.md"]
         PROMPT --> P2["Codex: ~/.codex/AGENTS.md"]
-        PROMPT --> P3["OpenCode: OPENCODE.md"]
+        PROMPT --> P3["OpenCode: ~/.config/opencode/AGENTS.md"]
         PROMPT --> P4["Gemini: ~/.gemini/GEMINI.md"]
     end
 ```
