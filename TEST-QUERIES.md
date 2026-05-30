@@ -1074,4 +1074,4 @@ tokensave_field_sites()                              # missing field → error
 
 ---
 
-> **Note:** All tools except `tokensave_session_start` are read-only and safe to call in parallel. `tokensave_session_start` writes `.tokensave/session_baseline.json` to the project root.
+> **Note:** Most tools are read-only and safe to call in parallel. The exceptions mutate state and should not be parallelised: the edit tools (`tokensave_str_replace`, `tokensave_multi_str_replace`, `tokensave_insert_at`, `tokensave_insert_at_symbol`, `tokensave_replace_symbol`, `tokensave_ast_grep_rewrite`) modify source files; the session and memory tools (`tokensave_session_start`, `tokensave_session_end`, `tokensave_record_decision`, `tokensave_record_code_area`) write to `.tokensave/`; and `tokensave_run_affected_tests` runs a `cargo` test subprocess.
