@@ -10,7 +10,7 @@ results from a synthetic indexer benchmark and a 96-task agent benchmark
 | **Languages indexed** | 46 via tree-sitter grammars (Rust, Python, Go, TS/JS, Java, Kotlin, Scala, C#, Swift, C/C++, Ruby, PHP, Dart, Lua, Perl, Bash, Pascal, COBOL, Fortran, …) | 7 via regex annotators (Python, TS/JS, Rust, Go, C, C#) + 8 config formats (TOML/JSON/YAML/XML/INI/HCL/env/Dockerfile) |
 | **MCP tools exposed** | 75 (76 w/ ast-grep) | 68 (`full`), 15 (`optimized` default) |
 | **Branch-aware indexing** | yes — per-branch DB, `tokensave branch …` | no |
-| **Live file watching** | yes — embedded debounced sync | no |
+| **Index freshness** | on-demand staleness check per MCP call + catch-up sync on connect | no |
 | **Health analytics** | 11 dedicated tools (complexity, hotspots, dead-code, redundancy, doc-coverage, coupling, dsm, gini, …) | 2 (dead-code, complexity) |
 | **Edit primitives** | symbol-aware (`replace_symbol`, `insert_at_symbol`) + range (`str_replace`, `insert_at`, `ast_grep_rewrite`) | `replace_symbol_source`, `insert_near_symbol`, `add_field_to_model`, `move_symbol` |
 | **Shell-output compaction** | out of scope — pair with [RTK](https://github.com/aovestdipaperino/rtk) | yes (34 compactors in v4.3+) |
@@ -103,12 +103,14 @@ Plus dedicated tools for cross-cutting agent workflows — `tokensave_diagnose`
 `tokensave_unsafe_patterns`, `tokensave_unused_imports`,
 `tokensave_implementations`, `tokensave_impls`, `tokensave_derives`.
 
-### 1.4 Live file watcher
+### 1.4 On-demand index freshness
 
-When `tokensave serve` is running, an embedded
-[`ProjectWatcher`](../src/project_watcher.rs) debounces filesystem events
-(default 2 s) and re-syncs touched files in the background. The agent's
-*next* query sees fresh data without paying re-index cost up front. Token-
+When `tokensave serve` is running, every MCP tool call first runs a
+staleness check (gated by a 30 s cooldown) and re-syncs any touched files
+before answering; the server also runs a catch-up sync when it connects.
+The agent's query always sees fresh data without a long-lived watcher
+process. (An embedded `ProjectWatcher` shipped in 6.0.0 but was removed in
+6.1.0 after it caused runaway CPU/memory on large monorepos.) Token-
 savior's cache is invalidated on a per-tool basis and re-built lazily.
 
 ### 1.5 Rust + SQLite: durable and fast

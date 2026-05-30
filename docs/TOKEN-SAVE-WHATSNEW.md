@@ -1,8 +1,8 @@
-# TokenSave: From 1.0 to 6.0, the Story So Far
+# TokenSave: From 1.0 to 6.1, the Story So Far
 
 [Illustration: generate a landscape oriented image of a glowing semantic knowledge graph floating above a laptop screen, with nodes and edges made of light connecting code symbols, a small orange crab perched on the laptop corner observing the graph, dark workspace background with subtle warm lighting, photographic style with shallow depth of field]
 
-TokenSave reached 1.0.0 on March 24, 2026. It could index Rust projects, serve a handful of MCP tools over stdio, and save Claude Code from burning tokens on redundant file scans. Useful, but narrow. Three weeks and forty-plus releases later, it speaks 31 programming languages, runs as an upgrade-aware background daemon, installs itself into nine different AI coding agents, maintains optional per-branch code graphs, tracks token savings down to the individual tool call, and ships with an interactive graph visualizer. All in a single ~25 MB binary with zero runtime dependencies.
+TokenSave reached 1.0.0 on March 24, 2026. It could index Rust projects, serve a handful of MCP tools over stdio, and save Claude Code from burning tokens on redundant file scans. Useful, but narrow. A few months and ninety-plus releases later, it speaks 52 programming languages, keeps its index fresh on demand with no background process, installs itself into fourteen different AI coding agents, maintains optional per-branch code graphs, tracks token savings down to the individual tool call, and edits files through atomic, anchor-based primitives. All in a single ~25 MB binary with zero runtime dependencies.
 
 This is the story of how it got there. Not a changelog transcription, but the arc of decisions, the problems that surfaced, and the features they demanded.
 
@@ -267,9 +267,11 @@ CLI-only users (anyone who runs `tokensave` commands without an attached agent) 
 
 ### What this means for you
 
-If you use TokenSave through an AI coding agent (Claude Code, Codex CLI, OpenCode, Gemini, Cursor, Zed, Cline, Roo Code, or Copilot), nothing changes from your perspective except that you no longer have a background process to manage. The MCP server keeps your index fresh while you work, exactly as the daemon used to, just without a separate lifecycle to debug.
+If you use TokenSave through an AI coding agent (Claude Code, Codex CLI, OpenCode, Gemini, Cursor, Zed, Cline, Roo Code, Copilot, Antigravity, Kilo, Kiro, Kimi, or Vibe), nothing changes from your perspective except that you no longer have a background process to manage. The MCP server keeps your index fresh while you work, just without a separate lifecycle to debug.
 
-If you use TokenSave purely from the CLI without an attached agent, this is a real regression: the index won't update on its own anymore. Install the post-commit hook, or run `tokensave sync` manually before queries. The trade is honest -- removing 1,100 lines of platform glue meant accepting that the embedded watcher only runs when an agent is attached.
+If you use TokenSave purely from the CLI without an attached agent, this is a real regression: the index won't update on its own anymore. Install the post-commit hook, or run `tokensave sync` manually before queries.
+
+**A 6.1.0 postscript.** The embedded watcher introduced here did not survive long. On large monorepos it registered OS-level watches on nested `node_modules`/`target`/`dist` trees that the top-level ignore filter missed, producing event storms and unbounded memory growth (one report reached 19 GB). 6.1.0 removed the watcher entirely — along with the `notify-debouncer-full` dependency — and replaced it with an on-demand staleness check at the top of every MCP tool call (30-second cooldown) plus a catch-up sync when the server connects. The reaction is no longer instant-on-save, but resource use is bounded, and concurrent multi-agent work is expected to use git worktrees rather than a shared watched directory.
 
 ## What Comes Next
 
@@ -277,11 +279,11 @@ The competitive landscape is getting interesting. Dual-Graph (GrapeRoot) approac
 
 Each tool has ideas worth learning from. CodeGraph's `codegraph_explore` tool, which combines search, traversal, and source extraction into a single call with budget signalling, represents a genuinely better interaction pattern for Explore agents. code-review-graph's multi-repo registry and accuracy benchmarks are features tokensave should adopt. OpenWolf's redundant-read blocking attacks a class of waste that graph queries alone don't address.
 
-The language coverage is broad but not complete. Haskell, Elixir, OCaml, and R are conspicuous absences. The feature-flag system makes adding them straightforward without bloating the default binary.
+The language coverage is broad — the functional family (Haskell, Elixir, OCaml, F#, Clojure, Erlang), the shader languages (GLSL, WGSL, HLSL, Metal), R, SQL, Julia, and most recently Svelte and Astro have all landed — but not complete. Vue single-file components, Solidity, and HCL/Terraform are plausible next targets. The feature-flag system makes adding them straightforward without bloating the default binary.
 
-The agent ecosystem keeps growing too. Every month brings a new AI coding tool with its own configuration format. The trait-based architecture handles this well, but the real challenge is keeping nine integration paths tested and working across three operating systems.
+The agent ecosystem keeps growing too. Every month brings a new AI coding tool with its own configuration format. The trait-based architecture handles this well, but the real challenge is keeping fourteen integration paths tested and working across three operating systems.
 
-TokenSave started as a way to make Claude Code stop reading the same files over and over. It's become something broader: a semantic index that any AI coding agent can query, running as a persistent service, understanding thirty-one languages across optional per-branch databases, tracking its own impact down to the individual tool call, and shipping as a single native binary that upgrades itself. The core insight hasn't changed. Give the AI a graph instead of making it grep. Everything else followed from that.
+TokenSave started as a way to make Claude Code stop reading the same files over and over. It's become something broader: a semantic index that any AI coding agent can query, refreshing its index on demand, understanding fifty-two languages across optional per-branch databases, tracking its own impact down to the individual tool call, and shipping as a single native binary that upgrades itself. The core insight hasn't changed. Give the AI a graph instead of making it grep. Everything else followed from that.
 
 ---
 

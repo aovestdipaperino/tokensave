@@ -8,7 +8,7 @@ Dual-Graph (also known as GrapeRoot, repository: [kunal12203/Codex-CLI-Compact](
 
 ### 1. Architecture & Design Philosophy
 
-**tokensave** is a queryable code intelligence engine. It builds a symbol-level graph (functions, structs, fields, call edges, type hierarchies, complexity metrics) in a libSQL database, then exposes 37 specialized MCP tools that let the AI ask precise, targeted questions. The AI drives the exploration -- it decides what to query and when.
+**tokensave** is a queryable code intelligence engine. It builds a symbol-level graph (functions, structs, fields, call edges, type hierarchies, complexity metrics) in a libSQL database, then exposes 76 specialized MCP tools that let the AI ask precise, targeted questions. The AI drives the exploration -- it decides what to query and when.
 
 **Dual-Graph** is a context prefill layer. It scans the codebase into a file/symbol/import graph stored in JSON files, then intercepts prompts and pre-loads ranked files before the AI sees them. The AI is mostly passive -- it receives pre-selected context and works with it. It also exposes a few MCP tools for deeper exploration when needed.
 
@@ -34,7 +34,7 @@ The JSON storage choice is significant. JSON doesn't support indexed queries, FT
 
 ### 3. MCP Tool Surface Area
 
-**tokensave (37 tools):**
+**tokensave (76 tools, representative sample below):**
 
 | Category | Tools |
 |---|---|
@@ -69,7 +69,7 @@ tokensave has ~7x more tools, and critically, they are specialized. "What breaks
 
 | | **tokensave** | **Dual-Graph** |
 |---|---|---|
-| Count | 31 | 11 |
+| Count | 52 | 11 |
 | Tier system | 3 tiers (lite/medium/full) for binary size control | No |
 | Deep extractors | Nix (derivation fields, flake schema), Protobuf (message/service/rpc), COBOL, Fortran, legacy BASIC variants | Standard extraction only |
 | Extraction depth | Functions, classes, methods, fields, imports, call sites, type relations, complexity, docstrings, annotations | Files, symbols, imports |
@@ -82,12 +82,12 @@ tokensave has ~7x more tools, and critically, they are specialized. "What breaks
 |---|---|---|
 | Full index speed | ~1.2s for 1,782 files; ~22s for 28K files | Not disclosed |
 | Incremental sync | Yes (hash + mtime/size pre-filter) | Rescans on launch |
-| Embedded watcher | Yes -- runs inside the MCP server, multi-agent safe via per-project sync lock | No |
+| Freshness model | On-demand staleness check on every MCP call (30 s cooldown) + catch-up sync on connect | No |
 | Git hooks | Global post-commit hook, auto-installed | No |
 | Multi-branch | Optional per-branch databases, cross-branch diff/search | No |
 | Sync doctor | `--doctor` flag shows added/modified/removed files | No |
 
-tokensave keeps the graph warm between sessions via incremental sync (driven by the embedded MCP watcher and the optional global git post-commit hook). Dual-Graph rebuilds its graph at the start of each session. For large codebases, this startup cost adds up.
+tokensave keeps the graph warm between sessions via incremental sync (an on-demand staleness check on each MCP tool call, a catch-up sync when the server connects, and the optional global git post-commit hook). Dual-Graph rebuilds its graph at the start of each session. For large codebases, this startup cost adds up.
 
 ---
 
@@ -134,7 +134,7 @@ Both are reasonably private. Dual-Graph sends a persistent install ID (even if r
 | Roo Code | Yes | No |
 | Zed | Yes | No |
 
-tokensave supports 9 agents vs Dual-Graph's 6. tokensave's Claude Code integration goes deeper -- it installs PreToolUse hooks that actively block wasteful Explore agents, plus UserPromptSubmit and Stop hooks for lifecycle tracking.
+tokensave supports 14 agents vs Dual-Graph's 6. tokensave's Claude Code integration goes deeper -- it installs PreToolUse hooks that actively block wasteful Explore agents, plus UserPromptSubmit and Stop hooks for lifecycle tracking.
 
 ---
 
@@ -164,7 +164,7 @@ Dual-Graph's localhost:8899 web dashboard shows estimated session cost in dollar
 
 #### Passive context injection
 
-Dual-Graph intercepts prompts and pre-loads ranked files before the AI sees them. The AI doesn't need to learn any new tools or change its behavior -- it just receives better context. This works well with less capable models that struggle to drive a large tool surface effectively. tokensave's 37 specialized tools are powerful but require the AI to know when and how to use each one. On smaller or less instruction-following models, passive prefill can outperform active querying.
+Dual-Graph intercepts prompts and pre-loads ranked files before the AI sees them. The AI doesn't need to learn any new tools or change its behavior -- it just receives better context. This works well with less capable models that struggle to drive a large tool surface effectively. tokensave's 76 specialized tools are powerful but require the AI to know when and how to use each one. On smaller or less instruction-following models, passive prefill can outperform active querying.
 
 #### Pre-query token estimation
 
@@ -182,7 +182,7 @@ Dual-Graph exposes environment variables (`DG_HARD_MAX_READ_CHARS`, `DG_TURN_REA
 
 ### 11. Where tokensave Is Ahead
 
-tokensave's advantages are covered in detail in sections 2-9 above. The short version: 37 vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 31 vs 11 languages, libSQL vs JSON storage, embedded MCP file watcher, optional multi-branch indexing, 9 vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
+tokensave's advantages are covered in detail in sections 2-9 above. The short version: 76 vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 52 vs 11 languages, libSQL vs JSON storage, on-demand freshness with catch-up sync on connect, optional multi-branch indexing, 14 vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
 
 ---
 
@@ -201,7 +201,7 @@ CodeGraph ([`@colbymchenry/codegraph`](https://www.npmjs.com/package/@colbymchen
 
 ### 1. Relationship
 
-tokensave started as a Rust port of CodeGraph and shares the core idea: parse a codebase with tree-sitter, store symbols and edges in a local database, expose the graph via MCP tools. The two projects have since evolved independently. CodeGraph continues to ship improvements (notably `codegraph_explore` and local embeddings), while tokensave has expanded into code quality analysis, optional multi-branch indexing, multi-agent support, and an embedded MCP file watcher.
+tokensave started as a Rust port of CodeGraph and shares the core idea: parse a codebase with tree-sitter, store symbols and edges in a local database, expose the graph via MCP tools. The two projects have since evolved independently. CodeGraph continues to ship improvements (notably `codegraph_explore` and local embeddings), while tokensave has expanded into code quality analysis, optional multi-branch indexing, multi-agent support, and atomic edit primitives.
 
 ---
 
@@ -211,10 +211,10 @@ tokensave started as a Rust port of CodeGraph and shares the core idea: parse a 
 |---|---|---|
 | Runtime | Native binary (Rust) | Node.js 18+ |
 | Install | `brew install`, `cargo install`, `scoop install`, prebuilt binaries | `npx @colbymchenry/codegraph` |
-| Languages | 31 (3 tiers: lite/medium/full) | 19+ (including Svelte) |
-| MCP tools | 37 | 9 |
-| Agent integrations | 9 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed) | 1 (Claude Code) |
-| Embedded MCP watcher | Yes (runs in the MCP process, multi-agent safe via per-project sync lock) | No (hook-based sync only) |
+| Languages | 52 (3 tiers: lite/medium/full; includes Svelte + Astro) | 19+ (including Svelte) |
+| MCP tools | 76 | 9 |
+| Agent integrations | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
+| Index freshness | On-demand staleness check per MCP call + catch-up sync on connect | Native OS-level file watcher (2 s debounce) + catch-up sync on connect |
 | Multi-branch indexing | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | Complexity metrics | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | Porting tools | Yes (`port_status`, `port_order`) | No |
@@ -255,10 +255,6 @@ Key properties that make it work:
 
 tokensave has `tokensave_context` with `include_code: true`, which is functionally equivalent internally. The gap is in output format, call budget signalling, session deduplication, and prompt routing rules -- not in the underlying query logic.
 
-#### Svelte language support
-
-CodeGraph supports Svelte (`.svelte`) among its 19+ languages. tokensave has 31 languages but Svelte is not among them. The `tree-sitter-svelte` grammar exists and is maintained. Relevant for SvelteKit projects.
-
 #### Local embedding search
 
 CodeGraph runs a local embedding model (nomic-embed-text-v1.5, 768-dim, ONNX) during indexing, storing a vector per symbol. Queries are embedded and matched by cosine similarity, so "authentication" finds `login()` even with zero lexical overlap.
@@ -267,7 +263,7 @@ tokensave takes a different path: the `keywords` parameter on `tokensave_context
 
 #### Native file watcher in the MCP server
 
-Both projects now embed a native file watcher inside the MCP server. CodeGraph debounces to a 2-second quiet window; tokensave defaults to 2s and is configurable via `watcher_debounce` in `~/.tokensave/config.toml`. tokensave additionally coordinates multiple MCP servers on the same project via a per-project sync lock, so two attached agents don't fight over the database.
+CodeGraph embeds a native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW) inside its MCP server, debounced to a 2-second quiet window. tokensave shipped an equivalent watcher in 6.0.0 but **removed it in 6.1.0** after it caused runaway CPU and memory on large monorepos (deep `node_modules`/`target` trees defeated the top-level ignore filter). tokensave now refreshes the index on demand — a staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. The trade-off: tokensave reacts on the next tool call rather than instantly on save, in exchange for bounded resource use; CodeGraph reacts immediately but carries the watcher's overhead.
 
 #### `codegraph uninit` command
 
@@ -289,12 +285,12 @@ The list is long enough that a table is more useful than prose:
 | Safety metrics | unsafe blocks, unchecked calls, assertions per function | -- |
 | Port tracking | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `simplify_scan`, `test_map`, `type_hierarchy` | -- |
-| Agent support | 9 agents with trait-based, per-agent config formats | Claude Code only |
+| Agent support | 14 agents with trait-based, per-agent config formats | Claude Code only |
 | Self-upgrade | `tokensave upgrade` with stable + beta channels | `npm update` |
-| Embedded MCP watcher | Runs in the MCP process, multi-agent safe | None |
+| Index freshness | On-demand staleness check per call + catch-up sync on connect | Native file watcher |
 | Multi-branch indexing | Per-branch DBs, cross-branch diff/search | No |
 | Annotation extraction | 13 languages | No |
-| Languages | 31 (3 tiers) | 19+ (single build) |
+| Languages | 52 (3 tiers) | 19+ (single build) |
 | Indexing speed | ~1.2s / 1,782 files | ~4s / 1,782 files |
 | Binary size | ~25 MB | ~80 MB |
 | Test coverage | 84% (v3.4.0), 1,000+ tests | Minimal |
@@ -320,7 +316,7 @@ In practice, the agent usually knows the right synonyms because it has already s
 
 ### 6. Summary
 
-CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. Its `codegraph_explore` tool represents a genuinely better interaction pattern for Explore agents that tokensave should adopt. tokensave extends the core concept with deeper analysis, more agents, background sync, optional multi-branch support, and a native binary with no runtime dependencies. The two projects are MIT-licensed and share the same philosophy -- they just diverge on scope and implementation language.
+CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. Its `codegraph_explore` tool represents a genuinely better interaction pattern for Explore agents that tokensave should adopt. tokensave extends the core concept with deeper analysis, more agents, optional multi-branch support, and a native binary with no runtime dependencies. The two projects are MIT-licensed and share the same philosophy -- they just diverge on scope and implementation language.
 
 ---
 ---
@@ -342,15 +338,15 @@ Both tools follow the same pipeline: tree-sitter parsing, SQLite storage, MCP ex
 | Parsing | Bundled tree-sitter grammars (zero runtime deps) | tree-sitter via Python bindings |
 | MCP server | Built into the binary (`tokensave serve`) | Separate process (`code-review-graph serve`) |
 | Incremental sync | Hash + mtime/size pre-filter, PID-locked | SHA-256 hash diff |
-| File watcher | Embedded inside the MCP server, multi-agent safe | `watch` command (foreground file watcher) |
+| Freshness model | On-demand staleness check per MCP call + catch-up sync on connect | `watch` command (foreground file watcher) |
 
-Both tools are local-only with no cloud dependency. code-review-graph's `watch` command is a standalone foreground process; tokensave runs the watcher inside the MCP server, so it starts and stops with the attached agent.
+Both tools are local-only with no cloud dependency. code-review-graph's `watch` command is a standalone foreground process; tokensave refreshes on demand inside the MCP server (a staleness check per tool call plus a catch-up sync on connect), so freshness is tied to tool activity rather than a long-lived watcher.
 
 ---
 
 ### 2. MCP Tool Comparison
 
-**tokensave (37 tools) vs code-review-graph (22 tools):**
+**tokensave (76 tools) vs code-review-graph (22 tools):**
 
 | Category | **tokensave** | **code-review-graph** |
 |---|---|---|
@@ -420,15 +416,15 @@ code-review-graph publishes impact accuracy metrics (average F1 0.54, precision 
 
 | Area | tokensave | code-review-graph |
 |---|---|---|
-| Languages | 31 (3 tiers) | 19 + notebooks |
+| Languages | 52 (3 tiers) | 19 + notebooks |
 | Language depth | Deep extractors (Nix derivation fields, Protobuf schema, COBOL, Fortran, legacy BASIC) | Standard tree-sitter extraction |
 | Code quality suite | `complexity`, `coupling`, `god_class`, `inheritance_depth`, `doc_coverage`, `recursion`, `unused_imports`, `dead_code`, `simplify_scan` | `find_large_functions_tool` only |
 | Type system | `type_hierarchy`, `inheritance_depth` | -- |
 | Multi-branch | Optional per-branch DBs, cross-branch diff/search | -- |
 | Porting tools | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `diff_context`, `changelog`, `test_map` | `detect_changes_tool` |
-| File watcher | Embedded in MCP server, multi-agent safe | Foreground `watch` only |
-| Agent support | 13 agents (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kimi, Vibe; lacks Windsurf, Continue) | 8 platforms (adds Windsurf, Continue; lacks Gemini, Copilot, Cline, Roo Code, Kilo, Kimi, Vibe) |
+| Index freshness | On-demand staleness check per call + catch-up sync on connect | Foreground `watch` only |
+| Agent support | 14 agents (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe; lacks Windsurf, Continue) | 8 platforms (adds Windsurf, Continue; lacks Gemini, Copilot, Cline, Roo Code, Kilo, Kimi, Vibe) |
 | Annotation extraction | 13 languages | -- |
 | Token tracking | Per-call metrics, session counter, live TUI monitor, worldwide counter | -- |
 | MCP resources | 4 (status, files, overview, branches) | -- |
@@ -467,7 +463,7 @@ Notable from code-review-graph's benchmarks: the tool performs worse than naive 
 
 ### 7. Summary
 
-code-review-graph is the most direct competitor to tokensave. Both build symbol-level graphs with tree-sitter, store them in SQLite, and expose them via MCP tools. The differences: tokensave has deeper code quality analysis, more languages, optional multi-branch indexing, an embedded multi-agent-safe file watcher in the MCP server, and ships as a zero-dependency Rust binary. code-review-graph has multi-repo support, execution flow analysis, community detection, wiki generation, MCP prompts, notebook support, and published accuracy benchmarks. Both are MIT-licensed and fully open source.
+code-review-graph is the most direct competitor to tokensave. Both build symbol-level graphs with tree-sitter, store them in SQLite, and expose them via MCP tools. The differences: tokensave has deeper code quality analysis, more languages, optional multi-branch indexing, on-demand index freshness with no long-lived watcher process, and ships as a zero-dependency Rust binary. code-review-graph has multi-repo support, execution flow analysis, community detection, wiki generation, MCP prompts, notebook support, and published accuracy benchmarks. Both are MIT-licensed and fully open source.
 
 ---
 ---
@@ -492,9 +488,9 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 
 | | **tokensave** | **OpenWolf** |
 |---|---|---|
-| Core mechanism | Semantic code graph queried via 37 MCP tools | 6 lifecycle hooks intercepting file reads/writes |
+| Core mechanism | Semantic code graph queried via 76 MCP tools | 6 lifecycle hooks intercepting file reads/writes |
 | Code understanding | Symbol-level (functions, call graphs, type hierarchies) | File-level (path, description, size estimate) |
-| Languages | 31 with deep extraction | Language-agnostic (file-level only) |
+| Languages | 52 with deep extraction | Language-agnostic (file-level only) |
 | Token tracking | Per-call metrics, session counter, live TUI monitor | Lifetime ledger with read/write counts, hit/miss rates, repeated-read blocking |
 | Redundancy prevention | Not addressed (the AI decides what to re-read) | Warns and blocks repeated file reads (~71% blocked) |
 | Correction memory | No | `cerebrum.md` carries forward mistakes, preferences, and do-not-repeat rules across sessions |
@@ -502,8 +498,8 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 | Action logging | `tokensave monitor` TUI shows tool calls | `memory.md` -- chronological log with token estimates |
 | Design QC | No | Auto-captures dev server screenshots for visual review |
 | Framework knowledge | No | Curated prompts for 12 UI frameworks with migration support |
-| MCP tools | 37 specialized tools | 0 (hook-based, no MCP) |
-| Agent support | 9 agents | Claude Code only |
+| MCP tools | 76 specialized tools | 0 (hook-based, no MCP) |
+| Agent support | 14 agents | Claude Code only |
 | Implementation | Rust, single binary | Node.js 20+, optional PM2 and puppeteer-core |
 | License | MIT | AGPL-3.0 |
 | Privacy | 100% local (optional anonymous counter upload) | 100% local |
@@ -550,10 +546,10 @@ OpenWolf has no code understanding. It knows files exist and how big they are, b
 | Refactoring support | `rename_preview`, `similar` | No |
 | Git-aware context | `commit_context`, `pr_context`, `diff_context` | No |
 | Multi-branch indexing | Optional per-branch DBs with cross-branch diff | No |
-| Language-specific extraction | 31 languages with deep tree-sitter parsing | Language-agnostic file listing |
-| MCP tools | 37 | 0 |
-| Agent support | 9 agents | Claude Code only |
-| Background process | Embedded MCP watcher (runs while agent is attached) | PM2 (optional) |
+| Language-specific extraction | 52 languages with deep tree-sitter parsing | Language-agnostic file listing |
+| MCP tools | 76 | 0 |
+| Agent support | 14 agents | Claude Code only |
+| Background process | None — on-demand staleness check while agent is attached | PM2 (optional) |
 | Dependencies | None (single Rust binary) | Node.js 20+, optional PM2, optional puppeteer-core |
 
 ---
@@ -589,17 +585,17 @@ The single highest-impact feature across both competitors. A unified MCP tool th
 
 A `tokensave_estimate_tokens` MCP tool that accepts a file path or symbol name and returns the approximate token count without actually reading the content. Lets the AI make budget-aware decisions ("this file is 8,000 tokens, read the smaller one instead"). Could be implemented cheaply using the `source_bytes` already stored in the nodes table and a bytes-to-tokens heuristic.
 
-### 4. Svelte language support -- from CodeGraph (medium value)
+### 4. Svelte + Astro language support -- from CodeGraph -- shipped in 6.1.2
 
-CodeGraph supports `.svelte` files. The `tree-sitter-svelte` grammar is maintained and the extraction patterns (script blocks containing TypeScript/JavaScript) are well-understood. Relevant for any project in the SvelteKit ecosystem.
+Shipped. tokensave now extracts both `.svelte` and `.astro` files by locating the script/frontmatter blocks and delegating to the TypeScript extractor (no extra grammar dependency), so symbols, interfaces, and exported functions in SvelteKit and Astro projects participate in graph queries with correct line numbers.
 
 ### 5. Per-turn read budget controls -- from Dual-Graph (low-medium value)
 
 Dual-Graph's `DG_HARD_MAX_READ_CHARS` and `DG_TURN_READ_BUDGET_CHARS` environment variables cap how much context is injected per turn. tokensave trusts the AI to self-regulate, which works well with capable models but offers no hard guardrail. A per-project config option (e.g. `max_context_tokens_per_call`) could cap the output size of tools like `tokensave_context` and `tokensave_explore`, giving users a safety valve for cost control.
 
-### 6. Embedded file watcher in `tokensave serve` -- shipped in 6.0.0
+### 6. Embedded file watcher in `tokensave serve` -- shipped in 6.0.0, removed in 6.1.0
 
-CodeGraph's MCP server watches for file changes using native OS events, debounced to a 2-second quiet window. tokensave shipped the same model in 6.0.0: `tokensave serve` (and the MCP launch path used by every supported agent) now embeds a `ProjectWatcher` whose lifetime is bound to the MCP process. Multiple MCP servers on the same project coordinate via a per-project sync lock, so two attached agents don't fight over the database. The debounce window is configurable via `watcher_debounce` in `~/.tokensave/config.toml`.
+CodeGraph's MCP server watches for file changes using native OS events, debounced to a 2-second quiet window. tokensave shipped the same model in 6.0.0 (an embedded `ProjectWatcher` bound to the MCP process) but **removed it in 6.1.0**: on large monorepos the watcher registered OS-level watches on nested `node_modules`/`target`/`dist` trees that the top-level ignore filter missed, producing event storms and unbounded memory growth (one report reached 19 GB). The replacement is an on-demand staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. This trades instant-on-save reaction for bounded resource use and removes the `notify-debouncer-full` dependency entirely. Multi-agent work is expected to use git worktrees rather than a shared watched directory.
 
 ### 7. Redundant-read detection in hooks -- from OpenWolf (medium value)
 
