@@ -11,11 +11,16 @@ Please do **not** open a public issue for security vulnerabilities. We aim to ac
 
 ## Supported Versions
 
+Only the current major release line is supported. All minor and patch versions within it receive security fixes.
+
 | Version | Supported |
 |---------|-----------|
-| 3.4.x   | Yes       |
-| 4.x-beta | Best-effort |
-| < 3.4   | No        |
+| 6.x (current) | Yes — all minor and patch releases |
+| < 6 | No |
+
+**No vulnerabilities have been reported or discovered to date.**
+
+When a vulnerability is found, the fix is shipped as a new release — there are no backports to older major versions. Fixes are not applied in place to existing binaries. **If you run tokensave in production automation (CI pipelines, scheduled agents, server-side MCP deployments), keep it updated to the latest release** so any future fix reaches you immediately via `tokensave upgrade`.
 
 ## Security Model
 
