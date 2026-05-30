@@ -29,11 +29,11 @@ fn opencode_config_path(home: &Path) -> std::path::PathBuf {
 
 fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
     // Mirrors the logic: if .config/opencode exists, use it
-    let modern = home.join(".config/opencode/OPENCODE.md");
+    let modern = home.join(".config/opencode/AGENTS.md");
     if modern.exists() || home.join(".config/opencode").exists() {
         return modern;
     }
-    home.join("OPENCODE.md")
+    home.join("AGENTS.md")
 }
 
 // ===========================================================================
@@ -80,16 +80,16 @@ fn test_install_creates_opencode_md_with_rules() {
     OpenCodeIntegration.install(&ctx).unwrap();
 
     let prompt_path = opencode_prompt_path(home);
-    assert!(prompt_path.exists(), "OPENCODE.md should be created");
+    assert!(prompt_path.exists(), "AGENTS.md should be created");
 
     let content = std::fs::read_to_string(&prompt_path).unwrap();
     assert!(
         content.contains("## Prefer tokensave MCP tools"),
-        "OPENCODE.md should contain the tokensave rules marker"
+        "AGENTS.md should contain the tokensave rules marker"
     );
     assert!(
         content.contains("tokensave_context"),
-        "OPENCODE.md should mention tokensave tools"
+        "AGENTS.md should mention tokensave tools"
     );
 }
 
@@ -165,11 +165,11 @@ fn test_install_preserves_existing_opencode_md_content() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
-    // Create OPENCODE.md with pre-existing content
+    // Create AGENTS.md with pre-existing content
     let config_dir = home.join(".config/opencode");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
-        config_dir.join("OPENCODE.md"),
+        config_dir.join("AGENTS.md"),
         "## My Custom Rules\n\nAlways use TypeScript.\n",
     )
     .unwrap();
@@ -177,7 +177,7 @@ fn test_install_preserves_existing_opencode_md_content() {
     let ctx = make_ctx(home);
     OpenCodeIntegration.install(&ctx).unwrap();
 
-    let content = std::fs::read_to_string(config_dir.join("OPENCODE.md")).unwrap();
+    let content = std::fs::read_to_string(config_dir.join("AGENTS.md")).unwrap();
     assert!(
         content.contains("My Custom Rules"),
         "existing content should be preserved"
@@ -270,12 +270,12 @@ fn test_uninstall_removes_opencode_md_rules() {
 
     OpenCodeIntegration.uninstall(&ctx).unwrap();
 
-    // OPENCODE.md had only tokensave rules, should be removed
+    // AGENTS.md had only tokensave rules, should be removed
     if prompt_path.exists() {
         let content = std::fs::read_to_string(&prompt_path).unwrap();
         assert!(
             !content.contains("Prefer tokensave MCP tools"),
-            "OPENCODE.md should not contain tokensave rules after uninstall"
+            "AGENTS.md should not contain tokensave rules after uninstall"
         );
     }
 }
@@ -285,11 +285,11 @@ fn test_uninstall_preserves_other_opencode_md_content() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
-    // Create OPENCODE.md with pre-existing content
+    // Create AGENTS.md with pre-existing content
     let config_dir = home.join(".config/opencode");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
-        config_dir.join("OPENCODE.md"),
+        config_dir.join("AGENTS.md"),
         "## My Custom Rules\n\nAlways use TypeScript.\n",
     )
     .unwrap();
@@ -298,8 +298,8 @@ fn test_uninstall_preserves_other_opencode_md_content() {
     OpenCodeIntegration.install(&ctx).unwrap();
     OpenCodeIntegration.uninstall(&ctx).unwrap();
 
-    let prompt_path = config_dir.join("OPENCODE.md");
-    assert!(prompt_path.exists(), "OPENCODE.md should still exist");
+    let prompt_path = config_dir.join("AGENTS.md");
+    assert!(prompt_path.exists(), "AGENTS.md should still exist");
     let content = std::fs::read_to_string(&prompt_path).unwrap();
     assert!(
         content.contains("My Custom Rules"),
@@ -412,7 +412,7 @@ fn test_healthcheck_detects_missing_serve_arg() {
     )
     .unwrap();
 
-    // Also create OPENCODE.md so the prompt check passes
+    // Also create AGENTS.md so the prompt check passes
     let prompt_path = opencode_prompt_path(home);
     std::fs::write(
         &prompt_path,
@@ -439,7 +439,7 @@ fn test_healthcheck_detects_missing_opencode_md() {
     let ctx = make_ctx(home);
     OpenCodeIntegration.install(&ctx).unwrap();
 
-    // Delete OPENCODE.md
+    // Delete AGENTS.md
     let prompt_path = opencode_prompt_path(home);
     std::fs::remove_file(&prompt_path).unwrap();
 
@@ -451,7 +451,7 @@ fn test_healthcheck_detects_missing_opencode_md() {
     OpenCodeIntegration.healthcheck(&mut dc, &hctx);
     assert!(
         dc.warnings > 0,
-        "healthcheck should warn about missing OPENCODE.md"
+        "healthcheck should warn about missing AGENTS.md"
     );
 }
 
@@ -462,7 +462,7 @@ fn test_healthcheck_detects_missing_tokensave_rules_in_opencode_md() {
     let ctx = make_ctx(home);
     OpenCodeIntegration.install(&ctx).unwrap();
 
-    // Overwrite OPENCODE.md without any mention of tokensave
+    // Overwrite AGENTS.md without any mention of tokensave
     let prompt_path = opencode_prompt_path(home);
     std::fs::write(
         &prompt_path,
@@ -478,7 +478,7 @@ fn test_healthcheck_detects_missing_tokensave_rules_in_opencode_md() {
     OpenCodeIntegration.healthcheck(&mut dc, &hctx);
     assert!(
         dc.issues > 0,
-        "healthcheck should detect missing tokensave rules in OPENCODE.md"
+        "healthcheck should detect missing tokensave rules in AGENTS.md"
     );
 }
 

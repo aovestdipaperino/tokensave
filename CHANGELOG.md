@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- use OpenCode correct global rules file path (`AGENTS.md` instead of `OPENCODE.md`)
 
 ## [6.1.1] - 2026-05-26
 
