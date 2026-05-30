@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.2] - 2026-05-30
+
+### Added
+- **Svelte extractor (`.svelte`).** Locates all `<script>` blocks (instance and `<script module>` / `<script context="module">`), blanks out template markup, and delegates to the TypeScript extractor. Symbols, interfaces, exported functions, and `$props`/`$derived` rune declarations are indexed with correct line numbers in the original file. Closes #93.
+- **Astro extractor (`.astro`).** Parses the `---` TypeScript frontmatter block at the top of the file. Imports, interfaces, exported functions, and top-level `const`/`let` declarations are indexed; the HTML template body below the closing `---` is ignored. Closes #93.
+
 ### Fixed
-- use OpenCode correct global rules file path (`AGENTS.md` instead of `OPENCODE.md`)
+- use OpenCode correct global rules file path (`AGENTS.md` instead of `OPENCODE.md`) (thanks @davidefossacecchi, #92)
 
 ## [6.1.1] - 2026-05-26
 

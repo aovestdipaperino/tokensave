@@ -1,4 +1,5 @@
 // Lite — always available (no cfg needed)
+mod astro_extractor;
 mod c_extractor;
 mod cpp_extractor;
 mod csharp_extractor;
@@ -8,6 +9,7 @@ mod kotlin_extractor;
 mod python_extractor;
 mod rust_extractor;
 mod scala_extractor;
+mod svelte_extractor;
 mod swift_extractor;
 mod typescript_extractor;
 
@@ -96,6 +98,7 @@ mod wgsl_extractor;
 mod zig_extractor;
 
 // Lite — always available (no cfg needed)
+pub use astro_extractor::AstroExtractor;
 pub use c_extractor::CExtractor;
 pub use cpp_extractor::CppExtractor;
 pub use csharp_extractor::CSharpExtractor;
@@ -105,6 +108,7 @@ pub use kotlin_extractor::KotlinExtractor;
 pub use python_extractor::PythonExtractor;
 pub use rust_extractor::RustExtractor;
 pub use scala_extractor::ScalaExtractor;
+pub use svelte_extractor::SvelteExtractor;
 pub use swift_extractor::SwiftExtractor;
 pub use typescript_extractor::TypeScriptExtractor;
 
@@ -232,6 +236,8 @@ impl LanguageRegistry {
             Box::new(CSharpExtractor),
             Box::new(KotlinExtractor),
             Box::new(SwiftExtractor),
+            Box::new(SvelteExtractor),
+            Box::new(AstroExtractor),
         ];
 
         // Medium

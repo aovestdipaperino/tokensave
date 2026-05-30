@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::cloud::{self, InstallMethod};
 use crate::errors::{Result, TokenSaveError};
+use crate::user_config::UserConfig;
 
 const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
 
@@ -485,6 +486,26 @@ fn preflight_asset_check(version: &str, is_beta: bool) -> Result<String> {
     fetch_asset_url(&tag, &expected)
 }
 
+/// Record the *currently running* binary's version in user config just before
+/// the binary is replaced. The new binary reads this on startup as
+/// `previous_version` and decides whether reinstall is required for the
+/// transition (e.g. minor/major bumps re-register agents to pick up new MCP
+/// tools or hook changes; patch bumps just update the field).
+fn record_previous_version() {
+    let current = env!("CARGO_PKG_VERSION");
+    let mut cfg = UserConfig::load();
+    if cfg.previous_version == current {
+        return;
+    }
+    cfg.previous_version = current.to_string();
+    if !cfg.save() {
+        eprintln!(
+            "  \x1b[33mwarning:\x1b[0m could not record previous version; \
+             run `tokensave reinstall` manually if new tools aren't registered"
+        );
+    }
+}
+
 fn perform_upgrade(version: &str, asset_url: &str, method: &InstallMethod) -> Result<()> {
     let bin_name = if cfg!(windows) {
         "tokensave.exe"
@@ -532,6 +553,7 @@ fn run_brew_upgrade(current: &str) -> Result<String> {
         .map_err(io_err("failed to run Homebrew upgrade"))?;
 
     if status.success() {
+        record_previous_version();
         Ok(current.to_string())
     } else {
         Err(TokenSaveError::Config {
@@ -580,6 +602,7 @@ pub fn run_upgrade() -> Result<String> {
     let asset_url = preflight_asset_check(latest, is_beta)?;
 
     perform_upgrade(latest, &asset_url, &method)?;
+    record_previous_version();
     eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
     Ok(latest.to_string())
 }
@@ -630,6 +653,7 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     let asset_url = preflight_asset_check(&latest, target_is_beta)?;
 
     perform_upgrade(&latest, &asset_url, &method)?;
+    record_previous_version();
     eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
     Ok(latest)
 }
