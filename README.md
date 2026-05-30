@@ -70,7 +70,7 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **76 MCP Tools** | **52 Languages** | **14 Agent Integrations** |
+| **70+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
 | From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 42 more including WGSL/HLSL/Metal shaders and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
 | Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | On-demand staleness check on every MCP call (30 s cooldown) plus catch-up sync when the server connects. Multi-agent work is expected to use git worktrees — each agent gets its own checkout and the index diverges are merged by git, not by a file watcher. |
@@ -99,9 +99,9 @@ scoop install tokensave
 **Cargo (any platform):**
 
 ```bash
-cargo install tokensave                          # full (52 languages, default)
-cargo install tokensave --features medium        # medium (23 languages)
-cargo install tokensave --no-default-features    # lite (14 languages, smallest binary)
+cargo install tokensave                          # full (50+ languages, default)
+cargo install tokensave --features medium        # medium tier
+cargo install tokensave --no-default-features    # lite (smallest binary)
 ```
 
 **Prebuilt binaries (Linux, Windows, macOS):**
@@ -354,9 +354,9 @@ Different from the criterion bench above: criterion measures per-iteration laten
 
 ---
 
-## 76 MCP Tools
+## 70+ MCP Tools
 
-The server exposes 76 tools (75 when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+The server exposes more than 70 tools (one fewer when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Discovery
 
@@ -614,7 +614,7 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 
 | Layer | What it does | Why it matters |
 |-------|-------------|----------------|
-| **MCP server** | Exposes 76 `tokensave_*` tools to Claude | Claude can query the graph directly |
+| **MCP server** | Exposes 70+ `tokensave_*` tools to Claude | Claude can query the graph directly |
 | **CLAUDE.md rules** | Tells Claude to prefer tokensave over agents/file reads | Prevents the model from falling back to expensive patterns |
 | **PreToolUse hook** | Native Rust hook blocks Explore agents | Catches cases where the model ignores the CLAUDE.md rules |
 | **UserPromptSubmit hook** | Runs at prompt submission | Lifecycle tracking for token accounting |
@@ -641,11 +641,11 @@ The model pricing refresh fetches a public JSON file from GitHub (`raw.githubuse
 
 ---
 
-## 52 Languages
+## 50+ Languages
 
-tokensave supports 52 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it. Markdown headers are extracted as `Module` nodes with hierarchical `Contains` edges so document structure participates in graph queries alongside source code.
+tokensave supports more than 50 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it. Markdown headers are extracted as `Module` nodes with hierarchical `Contains` edges so document structure participates in graph queries alongside source code.
 
-### Lite (14 languages) -- `--no-default-features`
+### Lite -- `--no-default-features`
 
 Always compiled. The smallest binary for the most popular languages, plus Svelte and Astro (script-block extraction via the TypeScript extractor, no extra grammar dependency).
 
@@ -666,7 +666,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Svelte | `.svelte` |
 | Astro | `.astro` |
 
-### Medium (Lite + 9 = 23 languages) -- `--features medium`
+### Medium (Lite + 9 more) -- `--features medium`
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
@@ -680,7 +680,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Nix | `.nix` | `lang-nix` |
 | VB.NET | `.vb` | `lang-vbnet` |
 
-### Full (Medium + 29 = 52 languages) -- default
+### Full (Medium + everything else) -- default
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
@@ -732,9 +732,9 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 |---|---|---|
 | **Runtime** | Native binary (Rust) | Node.js 18+ |
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
-| **Languages** | 52 (3 tiers: lite/medium/full) | 19+ |
-| **MCP tools** | 76 | 9 |
-| **Agent integrations** | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
+| **Languages** | 50+ (3 tiers: lite/medium/full) | 19+ |
+| **MCP tools** | 70+ | 9 |
+| **Agent integrations** | 12+ (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
 | **Index freshness** | On-demand staleness check on every MCP call; catch-up sync on connect; multi-agent work expected to use git worktrees | Native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW, 2 s debounce); catch-up sync on connect |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
@@ -771,15 +771,15 @@ Several tools reduce token usage for AI coding agents. Here's why tokensave stan
 
 ### Single native binary, zero dependencies
 
-Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 34 tree-sitter grammars bundled. Nothing else to install.
+Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 50+ tree-sitter grammars bundled. Nothing else to install.
 
 ### Deepest code intelligence
 
-tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 76 specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
+tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 70+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
 
 ### Broadest agent support
 
-14 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
+More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 
@@ -871,9 +871,9 @@ This project is a Rust port of the original [CodeGraph](https://github.com/colby
 ## Building
 
 ```bash
-cargo build --release                          # full (52 languages, default)
-cargo build --release --features medium        # medium (23 languages)
-cargo build --release --no-default-features    # lite (14 languages)
+cargo build --release                          # full (50+ languages, default)
+cargo build --release --features medium        # medium tier
+cargo build --release --no-default-features    # lite (smallest binary)
 
 cargo test                                     # run all tests (requires full)
 cargo check --no-default-features              # verify lite compiles

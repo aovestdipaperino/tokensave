@@ -8,7 +8,7 @@ Dual-Graph (also known as GrapeRoot, repository: [kunal12203/Codex-CLI-Compact](
 
 ### 1. Architecture & Design Philosophy
 
-**tokensave** is a queryable code intelligence engine. It builds a symbol-level graph (functions, structs, fields, call edges, type hierarchies, complexity metrics) in a libSQL database, then exposes 76 specialized MCP tools that let the AI ask precise, targeted questions. The AI drives the exploration -- it decides what to query and when.
+**tokensave** is a queryable code intelligence engine. It builds a symbol-level graph (functions, structs, fields, call edges, type hierarchies, complexity metrics) in a libSQL database, then exposes more than 70 specialized MCP tools that let the AI ask precise, targeted questions. The AI drives the exploration -- it decides what to query and when.
 
 **Dual-Graph** is a context prefill layer. It scans the codebase into a file/symbol/import graph stored in JSON files, then intercepts prompts and pre-loads ranked files before the AI sees them. The AI is mostly passive -- it receives pre-selected context and works with it. It also exposes a few MCP tools for deeper exploration when needed.
 
@@ -34,7 +34,7 @@ The JSON storage choice is significant. JSON doesn't support indexed queries, FT
 
 ### 3. MCP Tool Surface Area
 
-**tokensave (76 tools, representative sample below):**
+**tokensave (70+ tools, representative sample below):**
 
 | Category | Tools |
 |---|---|
@@ -69,7 +69,7 @@ tokensave has ~7x more tools, and critically, they are specialized. "What breaks
 
 | | **tokensave** | **Dual-Graph** |
 |---|---|---|
-| Count | 52 | 11 |
+| Count | 50+ | 11 |
 | Tier system | 3 tiers (lite/medium/full) for binary size control | No |
 | Deep extractors | Nix (derivation fields, flake schema), Protobuf (message/service/rpc), COBOL, Fortran, legacy BASIC variants | Standard extraction only |
 | Extraction depth | Functions, classes, methods, fields, imports, call sites, type relations, complexity, docstrings, annotations | Files, symbols, imports |
@@ -134,7 +134,7 @@ Both are reasonably private. Dual-Graph sends a persistent install ID (even if r
 | Roo Code | Yes | No |
 | Zed | Yes | No |
 
-tokensave supports 14 agents vs Dual-Graph's 6. tokensave's Claude Code integration goes deeper -- it installs PreToolUse hooks that actively block wasteful Explore agents, plus UserPromptSubmit and Stop hooks for lifecycle tracking.
+tokensave supports more than a dozen agents vs Dual-Graph's 6. tokensave's Claude Code integration goes deeper -- it installs PreToolUse hooks that actively block wasteful Explore agents, plus UserPromptSubmit and Stop hooks for lifecycle tracking.
 
 ---
 
@@ -164,7 +164,7 @@ Dual-Graph's localhost:8899 web dashboard shows estimated session cost in dollar
 
 #### Passive context injection
 
-Dual-Graph intercepts prompts and pre-loads ranked files before the AI sees them. The AI doesn't need to learn any new tools or change its behavior -- it just receives better context. This works well with less capable models that struggle to drive a large tool surface effectively. tokensave's 76 specialized tools are powerful but require the AI to know when and how to use each one. On smaller or less instruction-following models, passive prefill can outperform active querying.
+Dual-Graph intercepts prompts and pre-loads ranked files before the AI sees them. The AI doesn't need to learn any new tools or change its behavior -- it just receives better context. This works well with less capable models that struggle to drive a large tool surface effectively. tokensave's 70+ specialized tools are powerful but require the AI to know when and how to use each one. On smaller or less instruction-following models, passive prefill can outperform active querying.
 
 #### Pre-query token estimation
 
@@ -182,7 +182,7 @@ Dual-Graph exposes environment variables (`DG_HARD_MAX_READ_CHARS`, `DG_TURN_REA
 
 ### 11. Where tokensave Is Ahead
 
-tokensave's advantages are covered in detail in sections 2-9 above. The short version: 76 vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 52 vs 11 languages, libSQL vs JSON storage, on-demand freshness with catch-up sync on connect, optional multi-branch indexing, 14 vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
+tokensave's advantages are covered in detail in sections 2-9 above. The short version: 70+ vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 50+ vs 11 languages, libSQL vs JSON storage, on-demand freshness with catch-up sync on connect, 12+ vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
 
 ---
 
@@ -211,9 +211,9 @@ tokensave started as a Rust port of CodeGraph and shares the core idea: parse a 
 |---|---|---|
 | Runtime | Native binary (Rust) | Node.js 18+ |
 | Install | `brew install`, `cargo install`, `scoop install`, prebuilt binaries | `npx @colbymchenry/codegraph` |
-| Languages | 52 (3 tiers: lite/medium/full; includes Svelte + Astro) | 19+ (including Svelte) |
-| MCP tools | 76 | 9 |
-| Agent integrations | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
+| Languages | 50+ (3 tiers: lite/medium/full; includes Svelte + Astro) | 19+ (including Svelte) |
+| MCP tools | 70+ | 9 |
+| Agent integrations | 12+ (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
 | Index freshness | On-demand staleness check per MCP call + catch-up sync on connect | Native OS-level file watcher (2 s debounce) + catch-up sync on connect |
 | Multi-branch indexing | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | Complexity metrics | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
@@ -285,12 +285,12 @@ The list is long enough that a table is more useful than prose:
 | Safety metrics | unsafe blocks, unchecked calls, assertions per function | -- |
 | Port tracking | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `simplify_scan`, `test_map`, `type_hierarchy` | -- |
-| Agent support | 14 agents with trait-based, per-agent config formats | Claude Code only |
+| Agent support | 12+ agents with trait-based, per-agent config formats | Claude Code only |
 | Self-upgrade | `tokensave upgrade` with stable + beta channels | `npm update` |
 | Index freshness | On-demand staleness check per call + catch-up sync on connect | Native file watcher |
 | Multi-branch indexing | Per-branch DBs, cross-branch diff/search | No |
 | Annotation extraction | 13 languages | No |
-| Languages | 52 (3 tiers) | 19+ (single build) |
+| Languages | 50+ (3 tiers) | 19+ (single build) |
 | Indexing speed | ~1.2s / 1,782 files | ~4s / 1,782 files |
 | Binary size | ~25 MB | ~80 MB |
 | Test coverage | 84% (v3.4.0), 1,000+ tests | Minimal |
@@ -346,7 +346,7 @@ Both tools are local-only with no cloud dependency. code-review-graph's `watch` 
 
 ### 2. MCP Tool Comparison
 
-**tokensave (76 tools) vs code-review-graph (22 tools):**
+**tokensave (70+ tools) vs code-review-graph (22 tools):**
 
 | Category | **tokensave** | **code-review-graph** |
 |---|---|---|
@@ -416,7 +416,7 @@ code-review-graph publishes impact accuracy metrics (average F1 0.54, precision 
 
 | Area | tokensave | code-review-graph |
 |---|---|---|
-| Languages | 52 (3 tiers) | 19 + notebooks |
+| Languages | 50+ (3 tiers) | 19 + notebooks |
 | Language depth | Deep extractors (Nix derivation fields, Protobuf schema, COBOL, Fortran, legacy BASIC) | Standard tree-sitter extraction |
 | Code quality suite | `complexity`, `coupling`, `god_class`, `inheritance_depth`, `doc_coverage`, `recursion`, `unused_imports`, `dead_code`, `simplify_scan` | `find_large_functions_tool` only |
 | Type system | `type_hierarchy`, `inheritance_depth` | -- |
@@ -424,7 +424,7 @@ code-review-graph publishes impact accuracy metrics (average F1 0.54, precision 
 | Porting tools | `port_status`, `port_order` | -- |
 | Workflow context | `commit_context`, `pr_context`, `diff_context`, `changelog`, `test_map` | `detect_changes_tool` |
 | Index freshness | On-demand staleness check per call + catch-up sync on connect | Foreground `watch` only |
-| Agent support | 14 agents (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe; lacks Windsurf, Continue) | 8 platforms (adds Windsurf, Continue; lacks Gemini, Copilot, Cline, Roo Code, Kilo, Kimi, Vibe) |
+| Agent support | 12+ agents (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe; lacks Windsurf, Continue) | 8 platforms (adds Windsurf, Continue; lacks Gemini, Copilot, Cline, Roo Code, Kilo, Kimi, Vibe) |
 | Annotation extraction | 13 languages | -- |
 | Token tracking | Per-call metrics, session counter, live TUI monitor, worldwide counter | -- |
 | MCP resources | 4 (status, files, overview, branches) | -- |
@@ -488,9 +488,9 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 
 | | **tokensave** | **OpenWolf** |
 |---|---|---|
-| Core mechanism | Semantic code graph queried via 76 MCP tools | 6 lifecycle hooks intercepting file reads/writes |
+| Core mechanism | Semantic code graph queried via 70+ MCP tools | 6 lifecycle hooks intercepting file reads/writes |
 | Code understanding | Symbol-level (functions, call graphs, type hierarchies) | File-level (path, description, size estimate) |
-| Languages | 52 with deep extraction | Language-agnostic (file-level only) |
+| Languages | 50+ with deep extraction | Language-agnostic (file-level only) |
 | Token tracking | Per-call metrics, session counter, live TUI monitor | Lifetime ledger with read/write counts, hit/miss rates, repeated-read blocking |
 | Redundancy prevention | Not addressed (the AI decides what to re-read) | Warns and blocks repeated file reads (~71% blocked) |
 | Correction memory | No | `cerebrum.md` carries forward mistakes, preferences, and do-not-repeat rules across sessions |
@@ -498,8 +498,8 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 | Action logging | `tokensave monitor` TUI shows tool calls | `memory.md` -- chronological log with token estimates |
 | Design QC | No | Auto-captures dev server screenshots for visual review |
 | Framework knowledge | No | Curated prompts for 12 UI frameworks with migration support |
-| MCP tools | 76 specialized tools | 0 (hook-based, no MCP) |
-| Agent support | 14 agents | Claude Code only |
+| MCP tools | 70+ specialized tools | 0 (hook-based, no MCP) |
+| Agent support | 12+ agents | Claude Code only |
 | Implementation | Rust, single binary | Node.js 20+, optional PM2 and puppeteer-core |
 | License | MIT | AGPL-3.0 |
 | Privacy | 100% local (optional anonymous counter upload) | 100% local |
@@ -546,9 +546,9 @@ OpenWolf has no code understanding. It knows files exist and how big they are, b
 | Refactoring support | `rename_preview`, `similar` | No |
 | Git-aware context | `commit_context`, `pr_context`, `diff_context` | No |
 | Multi-branch indexing | Optional per-branch DBs with cross-branch diff | No |
-| Language-specific extraction | 52 languages with deep tree-sitter parsing | Language-agnostic file listing |
-| MCP tools | 76 | 0 |
-| Agent support | 14 agents | Claude Code only |
+| Language-specific extraction | 50+ languages with deep tree-sitter parsing | Language-agnostic file listing |
+| MCP tools | 70+ | 0 |
+| Agent support | 12+ agents | Claude Code only |
 | Background process | None — on-demand staleness check while agent is attached | PM2 (optional) |
 | Dependencies | None (single Rust binary) | Node.js 20+, optional PM2, optional puppeteer-core |
 

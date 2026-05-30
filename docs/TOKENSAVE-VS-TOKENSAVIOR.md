@@ -8,7 +8,7 @@ results from a synthetic indexer benchmark and a 96-task agent benchmark
 |---|---|---|
 | **Implementation** | Rust + SQLite + tree-sitter | Python + in-memory dict |
 | **Languages indexed** | 46 via tree-sitter grammars (Rust, Python, Go, TS/JS, Java, Kotlin, Scala, C#, Swift, C/C++, Ruby, PHP, Dart, Lua, Perl, Bash, Pascal, COBOL, Fortran, …) | 7 via regex annotators (Python, TS/JS, Rust, Go, C, C#) + 8 config formats (TOML/JSON/YAML/XML/INI/HCL/env/Dockerfile) |
-| **MCP tools exposed** | 75 (76 w/ ast-grep) | 68 (`full`), 15 (`optimized` default) |
+| **MCP tools exposed** | 70+ (one fewer without `ast-grep`) | 68 (`full`), 15 (`optimized` default) |
 | **Branch-aware indexing** | yes — per-branch DB, `tokensave branch …` | no |
 | **Index freshness** | on-demand staleness check per MCP call + catch-up sync on connect | no |
 | **Health analytics** | 11 dedicated tools (complexity, hotspots, dead-code, redundancy, doc-coverage, coupling, dsm, gini, …) | 2 (dead-code, complexity) |

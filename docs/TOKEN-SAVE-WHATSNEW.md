@@ -2,7 +2,7 @@
 
 [Illustration: generate a landscape oriented image of a glowing semantic knowledge graph floating above a laptop screen, with nodes and edges made of light connecting code symbols, a small orange crab perched on the laptop corner observing the graph, dark workspace background with subtle warm lighting, photographic style with shallow depth of field]
 
-TokenSave reached 1.0.0 on March 24, 2026. It could index Rust projects, serve a handful of MCP tools over stdio, and save Claude Code from burning tokens on redundant file scans. Useful, but narrow. A few months and ninety-plus releases later, it speaks 52 programming languages, keeps its index fresh on demand with no background process, installs itself into fourteen different AI coding agents, maintains optional per-branch code graphs, tracks token savings down to the individual tool call, and edits files through atomic, anchor-based primitives. All in a single ~25 MB binary with zero runtime dependencies.
+TokenSave reached 1.0.0 on March 24, 2026. It could index Rust projects, serve a handful of MCP tools over stdio, and save Claude Code from burning tokens on redundant file scans. Useful, but narrow. A few months and ninety-plus releases later, it speaks more than fifty programming languages, keeps its index fresh on demand with no background process, installs itself into more than a dozen different AI coding agents, maintains optional per-branch code graphs, tracks token savings down to the individual tool call, and edits files through atomic, anchor-based primitives. All in a single ~25 MB binary with zero runtime dependencies.
 
 This is the story of how it got there. Not a changelog transcription, but the arc of decisions, the problems that surfaced, and the features they demanded.
 
@@ -281,9 +281,9 @@ Each tool has ideas worth learning from. CodeGraph's `codegraph_explore` tool, w
 
 The language coverage is broad — the functional family (Haskell, Elixir, OCaml, F#, Clojure, Erlang), the shader languages (GLSL, WGSL, HLSL, Metal), R, SQL, Julia, and most recently Svelte and Astro have all landed — but not complete. Vue single-file components, Solidity, and HCL/Terraform are plausible next targets. The feature-flag system makes adding them straightforward without bloating the default binary.
 
-The agent ecosystem keeps growing too. Every month brings a new AI coding tool with its own configuration format. The trait-based architecture handles this well, but the real challenge is keeping fourteen integration paths tested and working across three operating systems.
+The agent ecosystem keeps growing too. Every month brings a new AI coding tool with its own configuration format. The trait-based architecture handles this well, but the real challenge is keeping more than a dozen integration paths tested and working across three operating systems.
 
-TokenSave started as a way to make Claude Code stop reading the same files over and over. It's become something broader: a semantic index that any AI coding agent can query, refreshing its index on demand, understanding fifty-two languages across optional per-branch databases, tracking its own impact down to the individual tool call, and shipping as a single native binary that upgrades itself. The core insight hasn't changed. Give the AI a graph instead of making it grep. Everything else followed from that.
+TokenSave started as a way to make Claude Code stop reading the same files over and over. It's become something broader: a semantic index that any AI coding agent can query, refreshing its index on demand, understanding more than fifty languages across optional per-branch databases, tracking its own impact down to the individual tool call, and shipping as a single native binary that upgrades itself. The core insight hasn't changed. Give the AI a graph instead of making it grep. Everything else followed from that.
 
 ---
 

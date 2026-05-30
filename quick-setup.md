@@ -66,7 +66,7 @@ Once configured, Claude has access to these tools:
 | `tokensave_god_class` | Find classes with the most members |
 | `tokensave_coupling` | Rank files by fan-in/fan-out coupling |
 
-Plus 60 more — see [README.md](README.md) for the full list of 76 tools.
+Plus dozens more — see [README.md](README.md) for the full list of 70+ tools.
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 
