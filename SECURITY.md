@@ -26,14 +26,16 @@ When a vulnerability is found, the fix is shipped as a new release — there are
 
 ### What tokensave stores
 
-tokensave builds a **local** code graph stored in a SQLite database (`.tokensave/tokensave.db`) inside your project directory. The database contains:
+tokensave builds a **local** code graph stored in a SQLite (libSQL) database (`.tokensave/tokensave.db`) inside your project directory. The database contains:
 
 - Symbol names, signatures, and docstrings
 - File paths, sizes, and content hashes
 - Call relationships and dependency edges
 - FTS5 search index
+- Cross-session memory (recorded decisions and code-area notes)
+- A response cache for `tokensave_read` (`read_cache` table): the rendered output served to the agent, stored as a BLOB keyed by file path, mode, and arguments. For full/line-range reads this rendered output contains source text. Rows are freshness-gated by file mtime and swept after a period of inactivity.
 
-It does **not** store raw source code. The database is local-only — there is no cloud sync, remote database, or server-side storage.
+Aside from the `read_cache`, the graph itself does **not** persist raw source code — it stores structural metadata only. The database is local-only — there is no cloud sync, remote database, or server-side storage.
 
 A second database (`~/.tokensave/global.db`) tracks which projects have been indexed, aggregate token-saved counts, and cost accounting data parsed from Claude Code session transcripts. It contains directory paths, counters, per-turn cost/token/category records, and JSONL parse offsets. No source code or conversation content is stored.
 
@@ -56,43 +58,63 @@ All best-effort network calls use short timeouts (1-5 seconds) and never block t
 
 tokensave does not require, store, or transmit any credentials, API keys, tokens, or passwords. All external API calls target public, unauthenticated endpoints.
 
-### MCP server (read-only)
+### MCP server tools
 
-All 37 MCP tools are **read-only** analysis and query operations (marked `readOnlyHint: true`). The MCP server cannot:
+The MCP server exposes **76 tools** (75 when the optional `ast-grep` binary is not on `PATH`). The large majority are **read-only** analysis and query operations marked `readOnlyHint: true`. A small set mutate local state and are marked `readOnlyHint: false`:
 
-- Modify, create, or delete files
-- Execute shell commands or user-supplied code
-- Access the network on behalf of the AI agent
+**File-editing tools** (modify source files in your project):
+
+- `tokensave_str_replace`, `tokensave_multi_str_replace` — anchored string replacement
+- `tokensave_insert_at`, `tokensave_insert_at_symbol` — anchored insertion
+- `tokensave_replace_symbol` — replace a symbol's body
+- `tokensave_ast_grep_rewrite` — structural rewrite via the external `ast-grep` binary
+
+**Local-state tools** (write only inside `.tokensave/`, never your source):
+
+- `tokensave_session_start`, `tokensave_session_end` — health-metric baselines
+- `tokensave_record_decision`, `tokensave_record_code_area` — cross-session memory
+
+**Test execution:**
+
+- `tokensave_run_affected_tests` — compiles and runs the project's own test suite via a `cargo` subprocess (bounded by a configurable wall-clock timeout, default 300 s, and a per-invocation test cap)
+
+The edit tools target a single file with a unique anchor and re-index in place. They never run shell commands you didn't supply, and the server still **cannot** access the network on behalf of the AI agent. Every editing and state-mutating tool is single-file or single-record scoped — there is no bulk-delete or recursive-write primitive.
+
+> Note: file edits are applied by the agent on your behalf through your agent's own tool-approval flow. Treat tokensave's edit tools with the same caution as your agent's built-in file-write tools.
 
 ### Self-update integrity
 
 `tokensave upgrade` downloads pre-built binaries from [GitHub Releases](https://github.com/aovestdipaperino/tokensave/releases). The upgrade process:
 
-- Stops the daemon before replacing the binary
 - Downloads from the same release channel (stable/beta) currently installed
-- Restarts the daemon after a successful upgrade
+- Replaces the running binary in place via `self-replace`
+- Re-registers agent integrations on the next launch when the version bump is minor or major
 
-**Limitation:** Release artifacts are not currently signed with a cryptographic signature. The integrity guarantee relies on HTTPS transport security and GitHub's release infrastructure.
+**macOS / Linux:** Release artifacts are not cryptographically signed. The integrity guarantee relies on HTTPS transport security and GitHub's release infrastructure.
 
-### Daemon privileges
+**Windows:** Authenticode code signing via the [SignPath.io Foundation](https://signpath.io/foundation) program is being rolled out so Windows binaries are signed as part of the release workflow (addresses the Smart App Control block reported in #79). Until that lands in a published release, Windows binaries remain unsigned.
 
-The background daemon (`tokensave daemon`) runs with **standard user privileges**. It only watches project directories for file changes and triggers incremental syncs.
+### No background daemon
 
-On Windows, installing the daemon as an autostart service requires a one-time UAC elevation prompt. The elevated operation is limited to service registration — the daemon itself runs as the current user.
+tokensave runs **no background daemon, system service, or autostart process**. The standalone `tokensave daemon` command and its launchd/systemd/Windows-Service autostart were removed in 6.0.0. Index freshness is maintained entirely on demand: an on-demand staleness check on each MCP tool call (30-second cooldown) plus a catch-up sync when the MCP server connects. The server lives only for the lifetime of the attached agent and runs with **standard user privileges** — it never requests elevation.
+
+### Subprocess-isolated extraction
+
+Tree-sitter grammars are compiled C/C++ and can crash the process in ways Rust cannot catch. Each file is parsed inside a short-lived worker subprocess (the hidden `extract-worker` subcommand). The worker authenticates against its parent with a 256-bit per-spawn token supplied via the `TOKENSAVE_WORKER_TOKEN` environment variable; a user invoking `tokensave extract-worker` directly fails immediately. Opt out with `TOKENSAVE_DISABLE_SUBPROCESS=1`.
 
 ### Unsafe code
 
-The codebase contains minimal `unsafe` blocks, limited to Windows API calls for:
+The codebase contains minimal `unsafe`, used in two cross-platform places:
 
-- Checking whether the process is running elevated (`OpenProcessToken`, `GetTokenInformation`)
-- Launching an elevated process for service installation (`ShellExecuteExW`)
+- **Memory-mapped monitor ring buffer** (`src/monitor.rs`) — `memmap2` maps `~/.tokensave/monitor.mmap`, the shared buffer the `tokensave monitor` TUI reads
+- **Tree-sitter FFI** (`src/extraction/ts_provider.rs`) — constructing the bundled WGSL grammar from its raw C entry point
 
-No unsafe code is used on macOS or Linux.
+The Windows-elevation `unsafe` documented in earlier versions was removed alongside the daemon in 6.0.0.
 
 ## Best Practices
 
 - Add `.tokensave/` to your `.gitignore` to avoid committing the local database.
-- If your project contains sensitive code, be aware that the database stores symbol names and signatures (though not source code).
+- If your project contains sensitive code, be aware that the database stores symbol names and signatures, and the `read_cache` table can hold rendered source text from `tokensave_read` responses. Adding `.tokensave/` to `.gitignore` keeps both out of version control.
 - Keep tokensave updated (`tokensave upgrade`) to receive security fixes.
 - Review the [CHANGELOG](CHANGELOG.md) before upgrading to understand what changed.
 
@@ -102,4 +124,5 @@ The following are **not** security issues:
 
 - The aggregate token counter sending a count to the public Cloudflare Worker endpoint (this is documented behavior and contains no identifying information beyond an approximate country derived from IP by Cloudflare)
 - The database containing symbol names or file paths from your project (this is core functionality)
-- The daemon running in the background after explicit opt-in (`tokensave daemon --enable-autostart`)
+- The MCP edit tools modifying files (this is opt-in functionality your AI agent invokes through its own tool-approval flow)
+- `tokensave_run_affected_tests` compiling and running your project's own test suite (this is the tool's documented purpose)
