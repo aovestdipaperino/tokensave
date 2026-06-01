@@ -28,12 +28,12 @@ jobs:
             bottle_tag: arm64_sonoma
             archive: tar.gz
           - name: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bottle_tag: x86_64_linux
             archive: tar.gz
           - name: aarch64-linux
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
           - name: x86_64-windows
