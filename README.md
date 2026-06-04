@@ -890,6 +890,10 @@ cargo clippy --all
  </picture>
 </a>
 
+## Acknowledgments
+
+Windows builds are code-signed with a free Authenticode certificate generously provided by [SignPath.io](https://signpath.io), with a certificate issued by the [SignPath Foundation](https://signpath.org).
+
 ## License
 
 MIT License -- see [LICENSE](LICENSE) for details.
