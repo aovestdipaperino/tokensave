@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.3] - 2026-06-04
+
+### Fixed
+- **Write/exec MCP tools no longer advertise `readOnlyHint: true` (#94).** `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` mutate source files or run a `cargo test` subprocess, but were annotated read-only via the shared `def()` helper — so harnesses that auto-approve read-only tools could edit files or compile and execute project code without prompting. They now use a new `def_rw()` helper that stamps `readOnlyHint: false`, matching the other edit tools. A regression test asserts every write/exec tool is non-read-only.
+
 ## [6.1.2] - 2026-05-30
 
 ### Added
@@ -1368,3 +1373,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 - Configuration module with glob-based file filtering
 - Core types and error handling scaffold
 [6.1.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.1.1
+[--help]: https://github.com/aovestdipaperino/tokensave/releases/tag/v--help
