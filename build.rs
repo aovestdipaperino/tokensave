@@ -21,4 +21,16 @@ fn main() {
         println!("cargo::rerun-if-changed=vendor/tree-sitter-wgsl/src/parser.c");
         println!("cargo::rerun-if-changed=vendor/tree-sitter-wgsl/src/scanner.c");
     }
+
+    // Vendored ActionScript grammar (tree-sitter-actionscript, jcs090218).
+    // parser.c only — the grammar has no external scanner.
+    if std::env::var("CARGO_FEATURE_LANG_ACTIONSCRIPT").is_ok() {
+        let as_dir = Path::new("vendor/tree-sitter-actionscript/src");
+        cc::Build::new()
+            .include(as_dir)
+            .file(as_dir.join("parser.c"))
+            .warnings(false)
+            .compile("tree_sitter_actionscript");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-actionscript/src/parser.c");
+    }
 }

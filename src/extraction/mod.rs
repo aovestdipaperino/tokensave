@@ -38,6 +38,8 @@ mod ruby_extractor;
 mod vbnet_extractor;
 
 // Full
+#[cfg(feature = "lang-actionscript")]
+mod actionscript_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
 #[cfg(feature = "lang-clojure")]
@@ -133,6 +135,8 @@ pub use ruby_extractor::RubyExtractor;
 pub use vbnet_extractor::VbNetExtractor;
 
 // Full
+#[cfg(feature = "lang-actionscript")]
+pub use actionscript_extractor::ActionScriptExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
 #[cfg(feature = "lang-clojure")]
@@ -261,6 +265,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(VbNetExtractor));
 
         // Full
+        #[cfg(feature = "lang-actionscript")]
+        extractors.push(Box::new(ActionScriptExtractor));
         #[cfg(feature = "lang-lua")]
         extractors.push(Box::new(LuaExtractor));
         #[cfg(feature = "lang-zig")]
