@@ -133,6 +133,8 @@ tokensave install --agent opencode        # OpenCode
 tokensave install --agent roo-code        # Roo Code
 tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed
+tokensave install --git-hook yes           # auto-install the global post-commit hook (no prompt)
+tokensave install --git-hook no            # skip the post-commit hook (no prompt)
 ```
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
