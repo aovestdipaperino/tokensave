@@ -963,20 +963,13 @@ pub(crate) enum HookAction {
 /// when the file does not exist or could not be read). The caller
 /// handles all I/O.
 pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>) -> HookAction {
-    if let Some(contents) = hook_contents {
-        if contents.contains(HOOK_MARKER) {
-            return HookAction::AlreadyInstalled;
-        }
+    if hook_contents.is_some_and(|c| c.contains(HOOK_MARKER)) {
+        return HookAction::AlreadyInstalled;
     }
 
     match mode {
-        GitHookMode::Default => {
-            if atty_stdin() {
-                HookAction::Prompt
-            } else {
-                HookAction::Skip
-            }
-        }
+        GitHookMode::Default if atty_stdin() => HookAction::Prompt,
+        GitHookMode::Default => HookAction::Skip,
         GitHookMode::Yes => HookAction::Install,
         GitHookMode::No => HookAction::Skip,
     }
@@ -1428,10 +1421,7 @@ mod git_hook_tests {
 
     #[test]
     fn decide_hook_action_no_skips_even_when_file_missing() {
-        assert_eq!(
-            decide_hook_action(GitHookMode::No, None),
-            HookAction::Skip
-        );
+        assert_eq!(decide_hook_action(GitHookMode::No, None), HookAction::Skip);
     }
 
     #[test]
