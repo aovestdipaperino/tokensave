@@ -27,6 +27,26 @@ fn def(name: &str, title: &str, description: &str, input_schema: Value) -> ToolD
     }
 }
 
+/// Write/exec annotations: tools that mutate files or run subprocesses.
+fn read_write(title: &str) -> Value {
+    json!({
+        "readOnlyHint": false,
+        "title": title
+    })
+}
+
+/// Build a `ToolDefinition` for a tool that writes files or executes
+/// subprocesses (`readOnlyHint: false`, no `_meta`).
+fn def_rw(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+        annotations: Some(read_write(title)),
+        meta: None,
+    }
+}
+
 /// Build a `ToolDefinition` with `readOnlyHint` AND `anthropic/alwaysLoad`.
 fn def_always_load(
     name: &str,
@@ -1475,7 +1495,7 @@ fn def_diagnose() -> ToolDefinition {
 }
 
 fn def_run_affected_tests() -> ToolDefinition {
-    def(
+    def_rw(
         "tokensave_run_affected_tests",
         "Run Affected Tests",
         "Run `cargo test` for tests that cover the symbols in `changed_paths` \
@@ -2060,7 +2080,7 @@ fn def_file_dependents() -> ToolDefinition {
 }
 
 fn def_replace_symbol() -> ToolDefinition {
-    def(
+    def_rw(
         "tokensave_replace_symbol",
         "Replace Symbol Source",
         "Replace the full source of a named symbol (function, method, struct, \
@@ -2112,7 +2132,7 @@ fn def_find_exact_symbol() -> ToolDefinition {
 }
 
 fn def_insert_at_symbol() -> ToolDefinition {
-    def(
+    def_rw(
         "tokensave_insert_at_symbol",
         "Insert Near Symbol",
         "Insert content immediately before or after a named symbol's source \

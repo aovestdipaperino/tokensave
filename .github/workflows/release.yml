@@ -67,14 +67,48 @@ jobs:
           tar czf ../../../tokensave-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
           cd ../../..
 
-      - name: Package binary (windows)
-        if: matrix.archive == 'zip'
+      - name: Upload binary archive (unix)
+        if: matrix.archive == 'tar.gz' && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+
+      # --- Windows: Authenticode signing via SignPath ---
+      # The unsigned .exe is uploaded as a workflow artifact (upload-artifact wraps the
+      # single file in a ZIP), submitted to SignPath, and the signed .exe is repackaged
+      # into the release zip. Signing only runs for real releases, not workflow_dispatch.
+
+      - name: Upload unsigned binary for signing
+        if: matrix.archive == 'zip' && github.event_name == 'release'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokensave-windows-unsigned
+          path: target/${{ matrix.target }}/release/tokensave.exe
+          if-no-files-found: error
+
+      - name: Submit signing request to SignPath
+        if: matrix.archive == 'zip' && github.event_name == 'release'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: tokensave
+          # Test certificate while bootstrapping; switch to release-signing for production.
+          signing-policy-slug: test-signing
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Package signed binary (windows)
+        if: matrix.archive == 'zip' && github.event_name == 'release'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip
+          Compress-Archive -Path signed/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip -Force
 
-      - name: Upload binary archive
-        if: github.event_name == 'release'
+      - name: Upload signed binary archive
+        if: matrix.archive == 'zip' && github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

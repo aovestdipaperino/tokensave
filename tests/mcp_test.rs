@@ -105,6 +105,38 @@ fn test_tool_definitions_count() {
 }
 
 #[test]
+fn test_write_and_exec_tools_are_not_read_only() {
+    // Tools that mutate files or run subprocesses must advertise
+    // `readOnlyHint: false`, otherwise harnesses that auto-approve read-only
+    // tools will edit files / run `cargo test` without prompting. See #94.
+    let write_or_exec = [
+        "tokensave_str_replace",
+        "tokensave_multi_str_replace",
+        "tokensave_insert_at",
+        "tokensave_replace_symbol",
+        "tokensave_insert_at_symbol",
+        "tokensave_run_affected_tests",
+        "tokensave_ast_grep_rewrite",
+    ];
+    let tools = get_tool_definitions();
+    for name in write_or_exec {
+        let Some(tool) = tools.iter().find(|t| t.name == name) else {
+            // ast_grep_rewrite is registered only when ast-grep is on PATH.
+            continue;
+        };
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool '{name}' has no annotations"));
+        assert_eq!(
+            annotations["readOnlyHint"],
+            serde_json::Value::Bool(false),
+            "write/exec tool '{name}' must have readOnlyHint: false"
+        );
+    }
+}
+
+#[test]
 fn test_tool_definitions_have_input_schemas() {
     let tools = get_tool_definitions();
     for tool in &tools {
