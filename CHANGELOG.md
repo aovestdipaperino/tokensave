@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Grok Build (xAI) agent integration.** `tokensave install --agent grok` registers the MCP server in `~/.grok/config.toml` (under `[mcp_servers.tokensave]`) and appends prompt rules preferring the tokensave MCP tools (with guidance on graph queries, DB fallback, and issue reporting) to `~/.grok/AGENTS.md`. Full `uninstall` + `doctor` support. Updates docs and agent registry tests.
+
 ## [6.1.3] - 2026-06-04
 
 ### Fixed
