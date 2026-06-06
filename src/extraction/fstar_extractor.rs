@@ -1284,8 +1284,12 @@ fn blank_comments_and_strings(source: &str) -> String {
                     continue;
                 }
                 if c == '"' {
+                    // Preserve the quote characters (blank only the interior) so
+                    // a string-valued RHS like `let x = "y"` doesn't collapse to
+                    // a trailing `=` and look like an unterminated declaration
+                    // that swallows the following declaration.
                     st = St::Str;
-                    out.push(' ');
+                    out.push('"');
                     i += 1;
                     continue;
                 }
@@ -1334,7 +1338,7 @@ fn blank_comments_and_strings(source: &str) -> String {
                 }
                 if c == '"' {
                     st = St::Normal;
-                    out.push(' ');
+                    out.push('"');
                     i += 1;
                     continue;
                 }

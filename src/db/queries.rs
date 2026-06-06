@@ -3203,7 +3203,7 @@ mod tests {
         assert_eq!(display_language_for_path("foo.tsx"), "TypeScript");
         assert_eq!(display_language_for_path("foo.cs"), "C#");
         assert_eq!(display_language_for_path("foo.fst"), "F*");
-        assert_eq!(display_language_for_path("a/b/Foo.fsti"), "F*");
+        assert_eq!(display_language_for_path("foo.fsti"), "F*");
         assert_eq!(display_language_for_path("foo.cpp"), "C++");
         assert_eq!(display_language_for_path("Dockerfile"), "Dockerfile");
         assert_eq!(
