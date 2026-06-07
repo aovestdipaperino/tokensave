@@ -198,6 +198,7 @@ tokensave install --agent kilo        # Kilo CLI
 tokensave install --agent kiro        # AWS Kiro
 tokensave install --agent kimi        # Moonshot Kimi CLI
 tokensave install --agent vibe        # Mistral Vibe
+tokensave install --agent grok        # Grok Build (xAI)
 ```
 
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
