@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- F\* language support (`.fst` / `.fsti`).
+
 ## [6.1.3] - 2026-06-04
 
 ### Fixed
