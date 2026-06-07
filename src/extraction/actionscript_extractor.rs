@@ -81,7 +81,10 @@ impl ExtractionState {
 
     fn current_scope(&self) -> &Scope {
         // The File scope is always pushed first, so this never panics.
-        self.scope_stack.last().expect("scope stack underflow")
+        match self.scope_stack.last() {
+            Some(scope) => scope,
+            None => unreachable!("scope stack underflow"),
+        }
     }
 
     fn parent_node_id(&self) -> Option<&str> {
