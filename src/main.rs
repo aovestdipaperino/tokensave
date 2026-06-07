@@ -538,7 +538,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Tool { name, args } => {
             tool_command::run(name, args).await?;
         }
-        Commands::Install { agent } => {
+        Commands::Install { agent, git_hook } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -620,7 +620,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
             user_cfg.save();
 
-            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
+            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
         }
         Commands::Reinstall => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
@@ -1103,6 +1103,7 @@ mod startup_tests {
     fn explicit_agent_config_commands_skip_agent_install_maintenance() {
         assert!(should_skip_agent_install_maintenance(&Commands::Install {
             agent: Some("kiro".to_string()),
+            git_hook: tokensave::agents::GitHookMode::Default,
         }));
         assert!(should_skip_agent_install_maintenance(&Commands::Reinstall));
         assert!(should_skip_agent_install_maintenance(

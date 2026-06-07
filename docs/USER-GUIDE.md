@@ -201,6 +201,15 @@ tokensave install --agent vibe        # Mistral Vibe
 tokensave install --agent grok        # Grok Build (xAI)
 ```
 
+You can also pre-decide the global git `post-commit` hook prompt — useful in
+bash scripts and onboarding playbooks where a `read_line` would otherwise block:
+
+```bash
+tokensave install --git-hook yes   # install the hook without asking
+tokensave install --git-hook no    # skip the hook without asking
+tokensave install --git-hook default  # preserve the interactive prompt (default when flag is omitted)
+```
+
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
 
 Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, writes steering to
@@ -303,6 +312,8 @@ Run `tokensave sync` whenever you want. It's incremental and fast.
 ### Post-commit hook
 
 During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. The hook is a no-op in repos that don't have a `.tokensave/` directory.
+
+If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
 
 You can also set it up manually:
 

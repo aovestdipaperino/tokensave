@@ -24,6 +24,8 @@ pub mod zed;
 
 use std::path::{Path, PathBuf};
 
+use clap::ValueEnum;
+
 use crate::errors::Result;
 use crate::errors::TokenSaveError;
 use crate::mcp::tools::get_tool_definitions;
@@ -919,6 +921,20 @@ pub fn write_toml_file(path: &Path, value: &toml::Value) -> Result<()> {
 // Git post-commit hook
 // ---------------------------------------------------------------------------
 
+/// Whether `tokensave install` should install the global git `post-commit`
+/// hook, and if so, whether to ask the user interactively or act
+/// non-interactively. The `Default` variant preserves the previous
+/// behavior: prompt on a TTY, silently skip on a non-TTY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GitHookMode {
+    /// Preserve today's behavior — prompt on a TTY, silently skip otherwise.
+    Default,
+    /// Install the hook without asking, even on a TTY.
+    Yes,
+    /// Skip the hook install entirely, without asking.
+    No,
+}
+
 /// The marker comment used to identify tokensave's section in a hook script.
 const HOOK_MARKER: &str = "# tokensave: auto-sync";
 
@@ -931,11 +947,45 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
     )
 }
 
+/// Action decided by [`decide_hook_action`]: what the caller should do
+/// given the user-supplied mode and the current state of the global
+/// `post-commit` hook file.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HookAction {
+    /// Hook is already installed (marker present) — nothing to do. The
+    /// caller may still print an informational message.
+    AlreadyInstalled,
+    /// Skip the install entirely (mode `No`, or default-mode non-TTY).
+    Skip,
+    /// Show the interactive prompt and act on the answer.
+    Prompt,
+    /// Install the hook now (no prompt).
+    Install,
+}
+
+/// Pure decision: figure out what to do for the global post-commit hook
+/// given the requested mode and the hook file's current contents (`None`
+/// when the file does not exist or could not be read). The caller
+/// handles all I/O.
+pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>) -> HookAction {
+    if hook_contents.is_some_and(|c| c.contains(HOOK_MARKER)) {
+        return HookAction::AlreadyInstalled;
+    }
+
+    match mode {
+        GitHookMode::Default if atty_stdin() => HookAction::Prompt,
+        GitHookMode::Default => HookAction::Skip,
+        GitHookMode::Yes => HookAction::Install,
+        GitHookMode::No => HookAction::Skip,
+    }
+}
+
 /// If a global git `post-commit` hook is not already set up for tokensave,
 /// interactively asks the user whether to install one. Silently succeeds if
 /// the hook is already present, if stdin is not a terminal, or if the user
-/// declines.
-pub fn offer_git_post_commit_hook(tokensave_bin: &str) {
+/// declines. The `mode` argument lets the caller pre-decide the answer so
+/// scripted installs do not have to drive an interactive prompt.
+pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
     let Some(home) = home_dir() else { return };
 
     // Determine the global hooks directory by reading core.hooksPath from
@@ -949,33 +999,45 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str) {
 
     let hook_path = hooks_dir.join("post-commit");
 
-    // Check if already installed.
-    if hook_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&hook_path) {
-            if contents.contains(HOOK_MARKER) {
-                eprintln!("  Global git post-commit hook already contains tokensave, skipping");
-                return;
-            }
+    // Read existing contents once so the decision is pure and the
+    // install path can append without re-reading.
+    let existing_contents: Option<String> = if hook_path.exists() {
+        std::fs::read_to_string(&hook_path).ok()
+    } else {
+        None
+    };
+
+    match decide_hook_action(mode, existing_contents.as_deref()) {
+        HookAction::AlreadyInstalled => {
+            eprintln!("  Global git post-commit hook already contains tokensave, skipping");
+            return;
         }
+        HookAction::Skip => {
+            // Mode `No` (or default-mode non-TTY). Stay quiet — script
+            // callers asked for no output here.
+            return;
+        }
+        HookAction::Prompt => {}
+        HookAction::Install => {}
     }
 
-    // Only prompt on a real terminal.
-    if !atty_stdin() {
-        return;
-    }
+    // If we reach this point, we are either prompting (TTY, default
+    // mode) or installing unconditionally (mode `Yes`). For the
+    // prompting branch, ask and bail if the user declines.
+    if matches!(mode, GitHookMode::Default) {
+        eprintln!();
+        eprint!(
+            "Install a global git post-commit hook to auto-run \x1b[1mtokensave sync\x1b[0m after each commit? [y/N] "
+        );
 
-    eprintln!();
-    eprint!(
-        "Install a global git post-commit hook to auto-run \x1b[1mtokensave sync\x1b[0m after each commit? [y/N] "
-    );
-
-    let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err() {
-        return;
-    }
-    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
-        eprintln!("  Skipped git post-commit hook");
-        return;
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err() {
+            return;
+        }
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+            eprintln!("  Skipped git post-commit hook");
+            return;
+        }
     }
 
     // Create the hooks directory if needed.
@@ -1334,6 +1396,68 @@ mod git_hook_tests {
     fn expand_tilde_no_tilde() {
         let home = Path::new("/home/test");
         assert_eq!(expand_tilde("/abs/path", home), "/abs/path");
+    }
+
+    #[test]
+    fn decide_hook_action_yes_installs_when_file_missing() {
+        assert_eq!(
+            decide_hook_action(GitHookMode::Yes, None),
+            HookAction::Install
+        );
+    }
+
+    #[test]
+    fn decide_hook_action_yes_installs_when_file_exists_without_marker() {
+        let contents = "#!/bin/sh\necho hello\n";
+        assert_eq!(
+            decide_hook_action(GitHookMode::Yes, Some(contents)),
+            HookAction::Install
+        );
+    }
+
+    #[test]
+    fn decide_hook_action_yes_reports_already_installed_when_marker_present() {
+        let contents = "#!/bin/sh\n# tokensave: auto-sync\n/usr/bin/tokensave sync\n";
+        assert_eq!(
+            decide_hook_action(GitHookMode::Yes, Some(contents)),
+            HookAction::AlreadyInstalled
+        );
+    }
+
+    #[test]
+    fn decide_hook_action_no_skips_even_when_file_missing() {
+        assert_eq!(decide_hook_action(GitHookMode::No, None), HookAction::Skip);
+    }
+
+    #[test]
+    fn decide_hook_action_no_still_reports_already_installed() {
+        // The user explicitly opted out of changes, but we should still
+        // report that the hook is already in place rather than silently
+        // skipping. Caller prints the message.
+        let contents = "# tokensave: auto-sync\nfoo\n";
+        assert_eq!(
+            decide_hook_action(GitHookMode::No, Some(contents)),
+            HookAction::AlreadyInstalled
+        );
+    }
+
+    #[test]
+    fn decide_hook_action_default_skips_when_file_missing() {
+        // On a non-TTY the default mode silently skips. We cannot
+        // guarantee whether `atty_stdin()` is true or false in a test
+        // process, so assert that the result is one of the two valid
+        // outcomes.
+        let action = decide_hook_action(GitHookMode::Default, None);
+        assert!(matches!(action, HookAction::Skip | HookAction::Prompt));
+    }
+
+    #[test]
+    fn decide_hook_action_default_already_installed_wins_over_tty() {
+        let contents = "# tokensave: auto-sync\nfoo\n";
+        assert_eq!(
+            decide_hook_action(GitHookMode::Default, Some(contents)),
+            HookAction::AlreadyInstalled
+        );
     }
 
     /// Helper: parse from a string directly (avoids file I/O in tests).
