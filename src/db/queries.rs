@@ -2964,6 +2964,7 @@ fn display_language_for_path(path: &str) -> &'static str {
         "kt" | "kts" => "Kotlin",
         "scala" | "sc" => "Scala",
         "swift" => "Swift",
+        "as" => "ActionScript",
         "c" | "h" => "C",
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "C++",
         "cs" => "C#",
@@ -3205,6 +3206,7 @@ mod tests {
         assert_eq!(display_language_for_path("foo.fst"), "F*");
         assert_eq!(display_language_for_path("foo.fsti"), "F*");
         assert_eq!(display_language_for_path("foo.cpp"), "C++");
+        assert_eq!(display_language_for_path("com/example/Game.as"), "ActionScript");
         assert_eq!(display_language_for_path("Dockerfile"), "Dockerfile");
         assert_eq!(
             display_language_for_path("docker/Dockerfile.prod"),

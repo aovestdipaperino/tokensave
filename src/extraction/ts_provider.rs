@@ -21,6 +21,18 @@ mod wgsl_grammar {
     pub const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_wgsl) };
 }
 
+// Vendored ActionScript grammar (tree-sitter-actionscript, jcs090218),
+// compiled from vendor/tree-sitter-actionscript/src/ via build.rs.
+#[cfg(feature = "lang-actionscript")]
+mod actionscript_grammar {
+    use tree_sitter_language::LanguageFn;
+
+    unsafe extern "C" {
+        fn tree_sitter_actionscript() -> *const ();
+    }
+    pub const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_actionscript) };
+}
+
 /// Cached map of language key -> `Language` built once from the bundled crate.
 static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
     #[allow(unused_mut)]
@@ -31,6 +43,9 @@ static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
 
     #[cfg(feature = "lang-wgsl")]
     map.insert("wgsl", wgsl_grammar::LANGUAGE.into());
+
+    #[cfg(feature = "lang-actionscript")]
+    map.insert("actionscript", actionscript_grammar::LANGUAGE.into());
 
     // HLSL uses the newer LanguageFn API.
     #[cfg(feature = "lang-hlsl")]
@@ -77,6 +92,11 @@ mod tests {
         assert!(
             super::LANGUAGES.get("hlsl").is_some(),
             "hlsl grammar missing"
+        );
+        #[cfg(feature = "lang-actionscript")]
+        assert!(
+            super::LANGUAGES.get("actionscript").is_some(),
+            "actionscript grammar missing"
         );
         let missing: Vec<&str> = keys
             .iter()

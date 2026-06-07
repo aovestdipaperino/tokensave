@@ -687,6 +687,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
+| ActionScript | `.as` | `lang-actionscript` |
 | Lua | `.lua` | `lang-lua` |
 | Zig | `.zig` | `lang-zig` |
 | Objective-C | `.m`, `.mm` | `lang-objc` |
