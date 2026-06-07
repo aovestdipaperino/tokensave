@@ -346,6 +346,10 @@ mod tests {
             "tokensave_session_end",
             "tokensave_record_decision",
             "tokensave_record_code_area",
+            // Tools defined via `def_rw` (mutate files / run subprocesses).
+            "tokensave_replace_symbol",
+            "tokensave_insert_at_symbol",
+            "tokensave_run_affected_tests",
         ];
         for tool in &tools {
             let ann = tool

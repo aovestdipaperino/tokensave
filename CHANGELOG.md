@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.4] - 2026-06-07
+
 ### Added
-- **Grok Build (xAI) agent integration.** `tokensave install --agent grok` registers the MCP server in `~/.grok/config.toml` (under `[mcp_servers.tokensave]`) and appends prompt rules preferring the tokensave MCP tools (with guidance on graph queries, DB fallback, and issue reporting) to `~/.grok/AGENTS.md`. Full `uninstall` + `doctor` support. Updates docs and agent registry tests.
-- F\* language support (`.fst` / `.fsti`).
+- **ActionScript (AS2/AS3) extractor (`.as`).** Tree-sitter grammar (vendored from jcs090218/tree-sitter-actionscript, compiled by `build.rs`) behind the `lang-actionscript` feature (Full tier). Extracts classes, interfaces, methods, constructors, fields/consts, and imports with `Contains`/`Extends`/`Implements`/`TypeOf`/`Calls` edges; targets AS2 (AVM1) as emitted by the JPEXS/FFDec decompiler and `package`-wrapped AS3 (thanks @tanguc, #97).
+- **Grok Build (xAI) agent integration.** `tokensave install --agent grok` registers the MCP server in `~/.grok/config.toml` (under `[mcp_servers.tokensave]`) and appends prompt rules preferring the tokensave MCP tools (with guidance on graph queries, DB fallback, and issue reporting) to `~/.grok/AGENTS.md`. Full `uninstall` + `doctor` support. Updates docs and agent registry tests (thanks @davidullo, #99).
+- **F\* proof-oriented language support (`.fst` / `.fsti`).** Extracts top-level definitions along with their pre/post-conditions (thanks @hacklex, #98).
+- **`tokensave install --git-hook <default|yes|no>` flag.** Lets scripted/CI installs pre-decide the global `post-commit` hook prompt instead of blocking on a TTY `read` (or silently skipping on a non-TTY). `default` preserves today's interactive behavior (thanks @Puppo, #96).
+
+### Fixed
+- **`test_tool_definitions_have_annotations` write/exec allowlist.** The regression test added in 6.1.3 asserted `readOnlyHint: true` for `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` — the very tools 6.1.3 switched to `readOnlyHint: false` — leaving the suite red on `master`. Added them to the allowlist.
 
 ## [6.1.3] - 2026-06-04
 
