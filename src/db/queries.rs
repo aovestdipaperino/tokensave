@@ -3206,7 +3206,10 @@ mod tests {
         assert_eq!(display_language_for_path("foo.fst"), "F*");
         assert_eq!(display_language_for_path("foo.fsti"), "F*");
         assert_eq!(display_language_for_path("foo.cpp"), "C++");
-        assert_eq!(display_language_for_path("com/example/Game.as"), "ActionScript");
+        assert_eq!(
+            display_language_for_path("com/example/Game.as"),
+            "ActionScript"
+        );
         assert_eq!(display_language_for_path("Dockerfile"), "Dockerfile");
         assert_eq!(
             display_language_for_path("docker/Dockerfile.prod"),

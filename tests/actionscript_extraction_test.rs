@@ -31,7 +31,11 @@ fn file_root_present() {
 #[test]
 fn class_extracted_with_short_name_and_dotted_qualified_name() {
     let r = extract_fixture();
-    let classes: Vec<_> = r.nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
+    let classes: Vec<_> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Class)
+        .collect();
     assert_eq!(
         classes.len(),
         1,
@@ -75,7 +79,11 @@ fn extends_and_implements_edges_recorded() {
 fn constructor_detected() {
     let r = extract_fixture();
     let ctors = names_of(&r, NodeKind::Constructor);
-    assert_eq!(ctors, vec!["Account".to_string()], "constructor = same name as class");
+    assert_eq!(
+        ctors,
+        vec!["Account".to_string()],
+        "constructor = same name as class"
+    );
 }
 
 #[test]
@@ -107,8 +115,14 @@ fn fields_extracted() {
 fn imports_become_use_nodes() {
     let r = extract_fixture();
     let uses = names_of(&r, NodeKind::Use);
-    assert!(uses.contains(&"Handler".to_string()), "import Handler: {uses:?}");
-    assert!(uses.contains(&"Logger".to_string()), "import Logger: {uses:?}");
+    assert!(
+        uses.contains(&"Handler".to_string()),
+        "import Handler: {uses:?}"
+    );
+    assert!(
+        uses.contains(&"Logger".to_string()),
+        "import Logger: {uses:?}"
+    );
 }
 
 #[test]
@@ -143,5 +157,8 @@ fn contains_edges_link_class_to_members() {
         .filter(|e| e.kind == EdgeKind::Contains && &e.source == class_id)
         .count();
     // 3 fields + constructor + 4 methods = 8 members.
-    assert!(contained >= 6, "expected class to contain members, got {contained}");
+    assert!(
+        contained >= 6,
+        "expected class to contain members, got {contained}"
+    );
 }
