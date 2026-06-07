@@ -169,7 +169,11 @@ fn classify_head(line: &str) -> Head {
     let mut saw_prefix = false;
     loop {
         if s.is_empty() {
-            return if saw_prefix { Head::AttrOnly } else { Head::NotDecl };
+            return if saw_prefix {
+                Head::AttrOnly
+            } else {
+                Head::NotDecl
+            };
         }
         // Attribute group: `[@@ ... ]` or `[@ ... ]` (single-line span only;
         // multi-line attributes continue on indented lines, which never reach
@@ -973,12 +977,7 @@ fn instance_class(rest: &str) -> Option<String> {
 /// no implementation). For everything else the signature is the text up to the
 /// definitional `=`, so a `let`-defined lemma keeps its `: Lemma (requires …)
 /// (ensures …)` but drops the proof term.
-fn build_signature(
-    blank_lines: &[&str],
-    start: usize,
-    end: usize,
-    kw: DeclKw,
-) -> Option<String> {
+fn build_signature(blank_lines: &[&str], start: usize, end: usize, kw: DeclKw) -> Option<String> {
     // Generous cap: real Lemma specs are well under this; guards against a
     // pathological run-on.
     const MAX: usize = 800;
@@ -1030,7 +1029,10 @@ fn find_def_eq_pos(blank_lines: &[&str], start: usize, end: usize) -> Option<(us
                 _ => {}
             }
             if depth == 0 && c == '=' {
-                let next = line[byte_off + c.len_utf8()..].chars().next().unwrap_or(' ');
+                let next = line[byte_off + c.len_utf8()..]
+                    .chars()
+                    .next()
+                    .unwrap_or(' ');
                 if !is_op_char(prev) && !is_op_char(next) {
                     return Some((line_idx, byte_off));
                 }
@@ -1314,7 +1316,11 @@ fn blank_comments_and_strings(source: &str) -> String {
                     continue;
                 }
                 if c == '*' && next == ')' {
-                    st = if depth == 1 { St::Normal } else { St::Block(depth - 1) };
+                    st = if depth == 1 {
+                        St::Normal
+                    } else {
+                        St::Block(depth - 1)
+                    };
                     out.push(' ');
                     out.push(' ');
                     i += 2;

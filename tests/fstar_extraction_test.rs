@@ -45,7 +45,12 @@ fn find_kind<'a>(result: &'a ExtractionResult, name: &str, kind: NodeKind) -> &'
         .nodes
         .iter()
         .find(|n| n.name == name && n.kind == kind)
-        .unwrap_or_else(|| panic!("{kind:?} {name} not found; have: {:?}", names_of_all(result)))
+        .unwrap_or_else(|| {
+            panic!(
+                "{kind:?} {name} not found; have: {:?}",
+                names_of_all(result)
+            )
+        })
 }
 
 fn sig(result: &ExtractionResult, name: &str) -> String {
@@ -141,14 +146,21 @@ fn type_like_sets_are_exact() {
     );
     assert_eq!(
         names_of(&r, NodeKind::Enum),
-        vec!["forest".to_string(), "shape".to_string(), "tree".to_string()]
+        vec![
+            "forest".to_string(),
+            "shape".to_string(),
+            "tree".to_string()
+        ]
     );
     assert_eq!(
         names_of(&r, NodeKind::TypeAlias),
         vec!["Id".to_string(), "predicate".to_string()]
     );
     assert_eq!(names_of(&r, NodeKind::Trait), vec!["addable".to_string()]);
-    assert_eq!(names_of(&r, NodeKind::Impl), vec!["addable_int".to_string()]);
+    assert_eq!(
+        names_of(&r, NodeKind::Impl),
+        vec!["addable_int".to_string()]
+    );
     assert_eq!(
         names_of(&r, NodeKind::Module),
         vec!["Sample.Comprehensive".to_string()]
@@ -195,7 +207,10 @@ fn inductive_type_is_enum_with_constructors() {
     let r = sample();
     assert_eq!(find(&r, "shape").kind, NodeKind::Enum);
     for v in ["Circle", "Rect", "Origin"] {
-        assert_eq!(find_kind(&r, v, NodeKind::EnumVariant).kind, NodeKind::EnumVariant);
+        assert_eq!(
+            find_kind(&r, v, NodeKind::EnumVariant).kind,
+            NodeKind::EnumVariant
+        );
         assert!(contains_edge(&r, "shape", v));
     }
 }
@@ -236,7 +251,11 @@ fn instance_is_impl_with_resolved_implements_edge() {
 fn definition_requiring_typeclass_binder() {
     let r = sample();
     assert_eq!(find(&r, "sum_with").kind, NodeKind::Function);
-    assert!(sig(&r, "sum_with").contains("{| d : addable a |}"), "{}", sig(&r, "sum_with"));
+    assert!(
+        sig(&r, "sum_with").contains("{| d : addable a |}"),
+        "{}",
+        sig(&r, "sum_with")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +400,10 @@ fn proof_body_with_calc_introduce_eliminate_has_no_phantom_nodes() {
     assert!(!funcs.contains(&"z".to_string()));
     assert!(!funcs.contains(&"w".to_string()));
     // Signature is the spec, not the proof term.
-    assert_eq!(sig(&r, "comm_proof"), "let comm_proof (x y : int) : Lemma (x + y == y + x)");
+    assert_eq!(
+        sig(&r, "comm_proof"),
+        "let comm_proof (x y : int) : Lemma (x + y == y + x)"
+    );
 }
 
 #[test]
@@ -389,7 +411,10 @@ fn local_let_in_and_inline_comment_inside_spec() {
     let s = sig(&sample(), "spec_let");
     assert!(s.contains("requires (let p = x > 0 in p)"), "{s}");
     assert!(s.contains("ensures x >= 0"), "{s}");
-    assert!(!s.contains("mismatched"), "comment leaked into signature: {s}");
+    assert!(
+        !s.contains("mismatched"),
+        "comment leaked into signature: {s}"
+    );
 }
 
 #[test]
@@ -407,12 +432,18 @@ fn monadic_let_in_body_is_not_a_top_level_decl() {
     let r = sample();
     let n = find(&r, "try_add");
     assert_eq!(n.kind, NodeKind::Function);
-    assert_eq!(sig(&r, "try_add"), "let try_add (a b : option int) : option int");
+    assert_eq!(
+        sig(&r, "try_add"),
+        "let try_add (a b : option int) : option int"
+    );
 }
 
 #[test]
 fn doc_comment_is_captured_as_docstring() {
-    let d = find(&sample(), "point").docstring.clone().unwrap_or_default();
+    let d = find(&sample(), "point")
+        .docstring
+        .clone()
+        .unwrap_or_default();
     assert!(d.contains("record type"), "docstring was: {d:?}");
 }
 
@@ -425,5 +456,8 @@ fn multiline_decl_span_covers_full_spec() {
     let r = sample();
     // `fact_pos` spans its keyword line through the multi-line spec/body.
     let n = find(&r, "fact_pos");
-    assert!(n.end_line > n.start_line, "span did not cover the spec/body");
+    assert!(
+        n.end_line > n.start_line,
+        "span did not cover the spec/body"
+    );
 }
