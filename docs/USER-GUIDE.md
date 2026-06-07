@@ -198,6 +198,7 @@ tokensave install --agent kilo        # Kilo CLI
 tokensave install --agent kiro        # AWS Kiro
 tokensave install --agent kimi        # Moonshot Kimi CLI
 tokensave install --agent vibe        # Mistral Vibe
+tokensave install --agent grok        # Grok Build (xAI)
 ```
 
 You can also pre-decide the global git `post-commit` hook prompt — useful in

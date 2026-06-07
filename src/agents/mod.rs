@@ -13,6 +13,7 @@ pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod gemini;
+pub mod grok;
 pub mod kilo;
 pub mod kimi;
 pub mod kiro;
@@ -36,6 +37,7 @@ pub use codex::CodexIntegration;
 pub use copilot::CopilotIntegration;
 pub use cursor::CursorIntegration;
 pub use gemini::GeminiIntegration;
+pub use grok::GrokIntegration;
 pub use kilo::KiloIntegration;
 pub use kimi::KimiIntegration;
 pub use kiro::KiroIntegration;
@@ -124,6 +126,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "kiro" => Ok(Box::new(KiroIntegration)),
         "kimi" => Ok(Box::new(KimiIntegration)),
         "vibe" => Ok(Box::new(VibeIntegration)),
+        "grok" => Ok(Box::new(GrokIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -150,6 +153,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(KiroIntegration),
         Box::new(KimiIntegration),
         Box::new(VibeIntegration),
+        Box::new(GrokIntegration),
     ]
 }
 
@@ -170,6 +174,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "kiro",
         "kimi",
         "vibe",
+        "grok",
     ]
 }
 
