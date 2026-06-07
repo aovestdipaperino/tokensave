@@ -711,6 +711,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Erlang | `.erl`, `.hrl` | `lang-erlang` |
 | Elixir | `.ex`, `.exs` | `lang-elixir` |
 | F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
+| F* | `.fst`, `.fsti` | `lang-fstar` |
 | Quint | `.qnt` | `lang-quint` |
 | TOML | `.toml` | `lang-toml` |
 | Lean | `.lean` | `lang-lean` |

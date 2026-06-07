@@ -2968,6 +2968,7 @@ fn display_language_for_path(path: &str) -> &'static str {
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "C++",
         "cs" => "C#",
         "fs" | "fsi" | "fsx" => "F#",
+        "fst" | "fsti" => "F*",
         "rb" => "Ruby",
         "php" => "PHP",
         "dart" => "Dart",
@@ -3201,6 +3202,8 @@ mod tests {
         assert_eq!(display_language_for_path("foo.pyi"), "Python");
         assert_eq!(display_language_for_path("foo.tsx"), "TypeScript");
         assert_eq!(display_language_for_path("foo.cs"), "C#");
+        assert_eq!(display_language_for_path("foo.fst"), "F*");
+        assert_eq!(display_language_for_path("foo.fsti"), "F*");
         assert_eq!(display_language_for_path("foo.cpp"), "C++");
         assert_eq!(display_language_for_path("Dockerfile"), "Dockerfile");
         assert_eq!(

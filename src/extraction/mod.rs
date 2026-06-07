@@ -54,6 +54,8 @@ mod erlang_extractor;
 mod fortran_extractor;
 #[cfg(feature = "lang-fsharp")]
 mod fsharp_extractor;
+#[cfg(feature = "lang-fstar")]
+mod fstar_extractor;
 #[cfg(feature = "lang-glsl")]
 mod glsl_extractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -149,6 +151,8 @@ pub use erlang_extractor::ErlangExtractor;
 pub use fortran_extractor::FortranExtractor;
 #[cfg(feature = "lang-fsharp")]
 pub use fsharp_extractor::FSharpExtractor;
+#[cfg(feature = "lang-fstar")]
+pub use fstar_extractor::FStarExtractor;
 #[cfg(feature = "lang-glsl")]
 pub use glsl_extractor::GlslExtractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -315,6 +319,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(ElixirExtractor));
         #[cfg(feature = "lang-fsharp")]
         extractors.push(Box::new(FSharpExtractor));
+        #[cfg(feature = "lang-fstar")]
+        extractors.push(Box::new(FStarExtractor));
         #[cfg(feature = "lang-lean")]
         extractors.push(Box::new(LeanExtractor));
         #[cfg(feature = "lang-toml")]
