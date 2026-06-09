@@ -1504,33 +1504,49 @@ fn def_annotations() -> ToolDefinition {
 fn def_dependencies() -> ToolDefinition {
     def(
         "tokensave_dependencies",
-        "Cargo Dependencies",
-        "Inspect declared dependencies in a Rust workspace (first iteration of \
-         #105). Reads `Cargo.toml` at the project root, resolves \
-         `[workspace] members = [\"crates/*\"]` globs, and surfaces deps from \
-         `[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` plus \
-         `[target.<cfg>.dependencies]`. Three modes:\n\
-         • zero input → workspace summary: members + every crate any member \
-         depends on (with the list of using members).\n\
-         • `crate: <name>` → list every member that depends on this crate, \
-         with kind/version/features/optional/local-path.\n\
-         • `member: <name>` → list every dependency declared by this member.\n\
-         Lockfile resolution and non-Rust ecosystems (package.json, \
-         pyproject.toml, go.mod, …) are deferred to follow-up iterations.",
+        "Package Dependencies",
+        "Inspect declared dependencies across all supported package ecosystems \
+         (#105). Auto-detects which manifest(s) live at the project root:\n\
+         • Rust — Cargo.toml (+ workspace members glob, [target.<cfg>] deps)\n\
+         • Node — package.json (+ npm/yarn/pnpm workspaces)\n\
+         • Python — pyproject.toml (PEP 621 + Poetry), requirements*.txt\n\
+         • Go — go.mod (require blocks, replace directives)\n\
+         • Java — pom.xml (+ <modules> + <dependencyManagement> BOMs)\n\
+         • .NET — *.csproj/*.fsproj/*.vbproj + Directory.Packages.props\n\
+         • PHP — composer.json (require, require-dev, replace, conflict)\n\
+         • Ruby — Gemfile (group :development / inline group hints)\n\n\
+         Three modes:\n\
+         • zero input → workspace summary: members + every package any member \
+         depends on (with the list of using members). Polyglot repos return \
+         one block per ecosystem.\n\
+         • `crate: <name>` (or `package: <name>`) → list every member that \
+         depends on this package, with kind/version/features/optional/local-path.\n\
+         • `member: <name>` → list every dependency declared by this member.\n\n\
+         Filter ecosystems with `ecosystem: rust|node|python|go|java|dotnet|php|ruby` \
+         or kinds with `kind: normal|dev|build|peer|optional|all`. Lockfile \
+         resolution (resolved vs. declared versions) remains deferred.",
         json!({
             "type": "object",
             "properties": {
                 "crate": {
                     "type": "string",
-                    "description": "Crate name to look up across the workspace (e.g. \"serde\", \"tokio\"). Mutually exclusive with `member`."
+                    "description": "Package/crate name to look up across the workspace (e.g. \"serde\", \"react\", \"requests\"). Aliased as `package`. Mutually exclusive with `member`."
+                },
+                "package": {
+                    "type": "string",
+                    "description": "Alias for `crate` — same semantics, more natural in non-Rust ecosystems."
                 },
                 "member": {
                     "type": "string",
-                    "description": "Workspace member to list deps for. Match by package name or by path (e.g. \"crates/foo\")."
+                    "description": "Workspace member to list deps for. Match by package name or by path."
                 },
                 "kind": {
                     "type": "string",
-                    "description": "Filter by kind: \"normal\" / \"dev\" / \"build\" / \"all\" (default \"all\")."
+                    "description": "Filter by kind: \"normal\" / \"dev\" / \"build\" / \"peer\" / \"optional\" / \"all\" (default \"all\")."
+                },
+                "ecosystem": {
+                    "type": "string",
+                    "description": "Restrict to one ecosystem: \"rust\" / \"node\" / \"python\" / \"go\" / \"java\" / \"dotnet\" / \"php\" / \"ruby\"."
                 }
             }
         }),
