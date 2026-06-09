@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [6.3.0] - 2026-06-09
+
+### Added
+- **`tokensave_dependencies`** — package-manifest introspection across **17 ecosystems** (#105, #106, #107). Auto-detects which manifest(s) live at the project root and serves a uniform shape; polyglot repos return one block per ecosystem. Supported: Rust (`Cargo.toml` + workspace globs + `[patch.*]`), Node (`package.json` + npm/yarn/pnpm workspaces + `overrides`/`resolutions`), Python (`pyproject.toml` PEP 621 + Poetry, `requirements*.txt`), Go (`go.mod` + `replace`), Java (`pom.xml` + `<modules>` + `<dependencyManagement>` BOMs), .NET (`*.csproj`/`*.fsproj`/`*.vbproj` + `Directory.Packages.props`), PHP (`composer.json`), Ruby (`Gemfile`), Swift (`Package.swift`), Elixir (`mix.exs`), Erlang (`rebar.config`), R (`DESCRIPTION`), Haskell (`*.cabal`), OCaml (`*.opam` + `dune-project`), Dart/Flutter (`pubspec.yaml`), Crystal (`shard.yml`), and Gradle (`build.gradle` via tree-sitter-groovy, `build.gradle.kts` via tree-sitter-kotlin, `gradle/libs.versions.toml` Version Catalogs with `version.ref` resolution, and `settings.gradle{,.kts}` multi-module discovery). Three modes: zero-input workspace summary (with `licenses` aggregate, `version_drift` array, per-member `members_detail`), `crate`/`package` lookup (with `resolved` versions when `include_lockfile: true`), and per-`member` listings. Opt-in lockfile resolution covers `Cargo.lock`, `package-lock.json`/`yarn.lock`/`pnpm-lock.yaml`, `poetry.lock`/`uv.lock`/`Pipfile.lock`, `go.sum`, `packages.lock.json`, `composer.lock`, `Gemfile.lock`, `pubspec.lock`, `shard.lock`. Workspace globs accept trailing `*`, intermediate `*`, recursive `**` (depth-bounded), and `!negation`.
+- **`tokensave_test_coverage`** — per-file/symbol/test-fn coverage rollup with transitive call expansion (#103). Three input modes: `file` returns per-symbol classification + tested/untested rollup, `symbol` returns the test functions that transitively reach it, `test_fn` returns the non-test symbols a test transitively exercises. Tests are identified by file-name convention (`tests/`, `*_test.*`, etc.) or `#[test]`-style annotations. Replaces the multi-step `test_risk` + raw-SQL workflow surfaced in the conversation audit.
+- **`tokensave_annotations`** — generic attribute/annotation/decorator introspection across all 31 languages (#104). Two modes: histogram (no `name`) returns top-K annotation names by usage count across the project or a path prefix; site mode (with `name`/`file`/`target_kind` filters) returns `(annotation, target)` rows joined via the existing `annotates` edge. Works wherever the extractor records annotation edges — Rust attributes (`#[derive]`, `#[cfg]`, `#[tokio::test]`), Python decorators, Java annotations, TS decorators, Dart annotations, etc.
+- **`PreToolUse` hook now redirects symbol-shaped `Grep`/`Bash` calls to tokensave MCP tools** (#102). Extended the existing `Agent`-only matcher to `Agent|Grep|Bash` so the hook intercepts grep/rg/ag invocations whose pattern matches `[A-Za-z_]\w*(::\w+)*` optionally joined by `|` / `\|` or wrapped in `\b…\b`, when the target is a code file/dir/`type` in a tokensave-indexed project. Block message names the right tokensave tool per pattern shape (`tokensave_search`, `tokensave_signature_search`, `tokensave_callers`). Auto-migrates older installs via `tokensave doctor --fix`. Safety guards: regex metachars pass through, `output_mode=files_with_matches`/`count` pass through, `git grep` passes through (history search), piped commands pass through, and `TOKENSAVE_DISABLE_GREP_HOOK=1` provides per-shell opt-out.
+
+### Changed
+- **New dependencies (both pure-rust, no transitive bloat):** `yaml-rust2 = "0.10"` for YAML-format manifests/lockfiles (pubspec.yaml, shard.yml, pnpm-lock.yaml); `dekobon-tree-sitter-groovy = "0.2"` for `build.gradle` parsing (tree-sitter-language 0.1 / tree-sitter 0.26 — matches existing deps).
+
 ## [6.2.0] - 2026-06-09
 
 ### Added
@@ -1394,3 +1406,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 - Core types and error handling scaffold
 [6.1.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.1.1
 [6.2.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.2.0
+[6.3.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.3.0
