@@ -98,8 +98,10 @@ pub fn log(
     }
     let lang = ts_provider::language(language_key);
 
-    let visits = walk_file_history(project_root, file, opts.max_commits)?;
-    let commits_walked = visits.len();
+    let walk_result = walk_file_history(project_root, file, opts.max_commits)?;
+    let commits_walked = walk_result.total_visited;
+    let visits = walk_result.visits;
+    let hit_max = walk_result.hit_max;
     let mut events: Vec<ChangeEvent> = Vec::new();
     let mut parse_failures: Vec<ParseFailure> = Vec::new();
     let mut skipped_large: Vec<String> = Vec::new();
@@ -235,7 +237,7 @@ pub fn log(
     // oldest-visited commit, check whether that commit introduced the file
     // (parent doesn't have it). If so, the file might have been renamed from
     // another file — probe the boundary commit's parent for a structural match.
-    if !found_introduction && commits_walked < opts.max_commits {
+    if !found_introduction && !hit_max {
         if let Some(oldest_visit) = visits.last() {
             if let Some(renamed) = probe_rename_at_boundary(
                 &repo,
@@ -282,7 +284,7 @@ pub fn log(
 
     let boundary_reason = if found_introduction {
         BoundaryReason::Introduced
-    } else if commits_walked >= opts.max_commits {
+    } else if hit_max {
         BoundaryReason::MaxCommitsReached
     } else if !events.is_empty() {
         // We exhausted history (no more parent commits) and the entity was
@@ -510,6 +512,18 @@ pub(crate) struct CommitVisit {
     pub blob_size: u64,
 }
 
+/// Result of walking a file's commit history.
+pub(crate) struct WalkResult {
+    /// Commits where the file's blob actually changed (yielded entries).
+    pub visits: Vec<CommitVisit>,
+    /// Total number of commits inspected (includes commits where the blob
+    /// was unchanged, i.e. `total_visited >= visits.len()`).
+    pub total_visited: usize,
+    /// `true` when the walk stopped because `max_commits` was reached rather
+    /// than because history was exhausted.
+    pub hit_max: bool,
+}
+
 /// Walk back from HEAD, returning only commits where the named file's blob
 /// changed (added, modified, or removed). Stops after `max_commits` total
 /// commits *visited* (not yielded). Reverse chronological order.
@@ -517,7 +531,7 @@ pub(crate) fn walk_file_history(
     project_root: &std::path::Path,
     file_path: &str,
     max_commits: usize,
-) -> Result<Vec<CommitVisit>, String> {
+) -> Result<WalkResult, String> {
     let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
     let head = repo
         .head()
@@ -577,7 +591,11 @@ pub(crate) fn walk_file_history(
         }
     }
 
-    Ok(visits)
+    // The loop exits either by exhausting parents (break) or by the
+    // `visited < max_commits` guard. The latter means we hit the cap.
+    let hit_max = visited == max_commits;
+
+    Ok(WalkResult { visits, total_visited: visited, hit_max })
 }
 
 fn commit_metadata(
@@ -856,6 +874,75 @@ mod tests {
     }
 
     #[test]
+    fn max_commits_boundary_classifies_correctly() {
+        use std::process::Command;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            Command::new("git").current_dir(root).args(args).status().unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "T"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        // 6 commits, all changing foo.rs
+        for i in 0..6 {
+            std::fs::write(
+                root.join("foo.rs"),
+                format!("pub fn add() -> i32 {{ {i} }}\n"),
+            )
+            .unwrap();
+            if i == 0 {
+                git(&["add", "foo.rs"]);
+            }
+            git(&["commit", "-q", "-am", &format!("c{i}")]);
+        }
+
+        let opts = BlameOptions {
+            max_commits: 3,
+            ..BlameOptions::default()
+        };
+        let source = std::fs::read_to_string(root.join("foo.rs")).unwrap();
+        let fp = compute_target_fingerprint(&source, "rust", 0, 0).expect("fp");
+        let result = log(root, "foo.rs", 0, 0, "rust", &fp, &opts).expect("log");
+        assert_eq!(result.commits_walked, 3);
+        assert_eq!(result.boundary_reason, BoundaryReason::MaxCommitsReached);
+    }
+
+    #[test]
+    fn blob_size_cap_records_skipped() {
+        use std::process::Command;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            Command::new("git").current_dir(root).args(args).status().unwrap();
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "T"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        // Write a large file (3 MB of comments + a tiny function)
+        let huge = format!(
+            "// {}\npub fn tiny() -> i32 {{ 1 }}\n",
+            "x".repeat(3 * 1024 * 1024)
+        );
+        std::fs::write(root.join("foo.rs"), &huge).unwrap();
+        git(&["add", "foo.rs"]);
+        git(&["commit", "-q", "-m", "huge"]);
+
+        let opts = BlameOptions {
+            max_blob_bytes: 1024, // tiny cap to force skip
+            ..BlameOptions::default()
+        };
+        let small_src = "pub fn tiny() -> i32 { 1 }\n";
+        let fp = compute_target_fingerprint(small_src, "rust", 0, 0).expect("fp");
+        let result = log(root, "foo.rs", 0, 0, "rust", &fp, &opts).expect("log");
+        assert_eq!(result.skipped_large.len(), 1);
+    }
+
+    #[test]
     fn walk_history_yields_commits_in_reverse_chrono_order() {
         use std::process::Command;
         let tmp = tempfile::TempDir::new().unwrap();
@@ -881,7 +968,8 @@ mod tests {
         std::fs::write(root.join("foo.rs"), "fn a() { let _ = 2; }\n").unwrap();
         run(&["commit", "-q", "-am", "c3"]);
 
-        let commits = walk_file_history(root, "foo.rs", 10).expect("walk");
+        let walk = walk_file_history(root, "foo.rs", 10).expect("walk");
+        let commits = &walk.visits;
         assert_eq!(commits.len(), 3, "expected 3 commits, got {commits:?}");
         // Reverse chrono: c3 first, c1 last.
         assert!(commits[0].summary.contains("c3"));
