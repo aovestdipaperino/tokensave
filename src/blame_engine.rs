@@ -527,6 +527,12 @@ pub(crate) struct WalkResult {
 /// Walk back from HEAD, returning only commits where the named file's blob
 /// changed (added, modified, or removed). Stops after `max_commits` total
 /// commits *visited* (not yielded). Reverse chronological order.
+///
+/// **First-parent only**: the walker follows only the first parent of each
+/// commit (equivalent to `git log --first-parent`). Commits reachable only
+/// via merge-branch sides are skipped. This keeps the walk fast and
+/// deterministic on mainline histories but means changes introduced
+/// exclusively on a feature branch before merge are not surfaced.
 pub(crate) fn walk_file_history(
     project_root: &std::path::Path,
     file_path: &str,
@@ -543,6 +549,7 @@ pub(crate) fn walk_file_history(
     let mut last_blob_id: Option<gix::ObjectId> = None;
     let mut visited = 0_usize;
     let mut current_id = head.detach();
+    let mut exhausted = false;
 
     while visited < max_commits {
         let commit = repo
@@ -585,15 +592,19 @@ pub(crate) fn walk_file_history(
 
         visited += 1;
         let parent_id = commit.parent_ids().next().map(gix::Id::detach);
-        match parent_id {
-            Some(pid) => current_id = pid,
-            None => break,
+        if let Some(pid) = parent_id {
+            current_id = pid;
+        } else {
+            exhausted = true;
+            break;
         }
     }
 
-    // The loop exits either by exhausting parents (break) or by the
-    // `visited < max_commits` guard. The latter means we hit the cap.
-    let hit_max = visited == max_commits;
+    // The loop exits either by exhausting parents (exhausted=true) or by the
+    // `visited < max_commits` guard. Only the latter means we truly hit the cap.
+    // When the repo has exactly `max_commits` commits the loop exits naturally
+    // via the None branch, so `visited == max_commits` alone is not sufficient.
+    let hit_max = !exhausted && visited == max_commits;
 
     Ok(WalkResult { visits, total_visited: visited, hit_max })
 }
@@ -646,29 +657,6 @@ fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let year = (y + i64::from(month <= 2)) as i32;
     (year, month, day, hour, min, sec)
-}
-
-/// Convenience wrapper: returns the most recent change event, or `None` if
-/// the entity was never mutated in tracked history.
-pub fn blame(
-    project_root: &Path,
-    file: &str,
-    start_line: u32,
-    end_line: u32,
-    language_key: &str,
-    target_fp: &Fingerprint,
-    opts: &BlameOptions,
-) -> Result<Option<ChangeEvent>, String> {
-    let result = log(
-        project_root,
-        file,
-        start_line,
-        end_line,
-        language_key,
-        target_fp,
-        opts,
-    )?;
-    Ok(result.events.into_iter().next_back())
 }
 
 /// Map a project-relative file path to the `ts_provider` language key.
@@ -747,6 +735,7 @@ fn lang_key_is_known(key: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -951,7 +940,7 @@ mod tests {
         // Bootstrap a tiny repo with three commits touching foo.rs.
         let run = |args: &[&str]| {
             let st = Command::new("git").current_dir(root).args(args).status().unwrap();
-            assert!(st.success(), "git {:?} failed", args);
+            assert!(st.success(), "git {args:?} failed");
         };
         run(&["init", "-q", "-b", "main"]);
         run(&["config", "user.email", "t@t"]);
