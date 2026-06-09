@@ -163,6 +163,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_find_exact_symbol(),
         def_blame(),
         def_log(),
+        def_diff(),
     ];
     if !ast_grep_available() {
         definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
@@ -2176,6 +2177,25 @@ fn def_log() -> ToolDefinition {
                 "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
             },
             "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_diff() -> ToolDefinition {
+    def(
+        "tokensave_diff",
+        "Unified Diff",
+        "Sem-style entity-level diff. With no args, diffs the working tree against HEAD. With \
+         `from` only, diffs HEAD against `from`. With `from` and `to`, diffs `to` against `from` \
+         (sem's `<old> <new>` order). With `path`, restricts to that file. Always returns a \
+         `{from, to, changes}` envelope.",
+        json!({
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Old ref (commit/branch/tag). Defaults to HEAD."},
+                "to":   {"type": "string", "description": "New ref. Defaults to working tree."},
+                "path": {"type": "string", "description": "Restrict to a single file path."}
+            }
         }),
     )
 }

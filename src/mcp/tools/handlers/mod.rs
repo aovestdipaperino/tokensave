@@ -134,6 +134,7 @@ pub async fn handle_tool_call(
         "tokensave_files" => info::handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => git::handle_affected(cg, args).await,
         "tokensave_dead_code" => analysis::handle_dead_code(cg, args, scope_prefix).await,
+        "tokensave_diff" => git::handle_diff(cg, args).await,
         "tokensave_diff_context" => git::handle_diff_context(cg, args).await,
         "tokensave_module_api" => analysis::handle_module_api(cg, args, scope_prefix).await,
         "tokensave_circular" => analysis::handle_circular(cg, args).await,
@@ -237,9 +238,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            78
+            79
         } else {
-            77
+            78
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -326,6 +327,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_find_exact_symbol"));
         assert!(tool_names.contains(&"tokensave_blame"));
         assert!(tool_names.contains(&"tokensave_log"));
+        assert!(tool_names.contains(&"tokensave_diff"));
     }
 
     #[test]
@@ -456,5 +458,11 @@ mod tests {
     fn test_require_node_id_missing() {
         let args = json!({"query": "something"});
         assert!(require_node_id(&args).is_err());
+    }
+
+    #[test]
+    fn diff_tool_is_registered() {
+        let tools = get_tool_definitions();
+        assert!(tools.iter().any(|t| t.name == "tokensave_diff"));
     }
 }

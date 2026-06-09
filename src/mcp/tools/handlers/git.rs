@@ -1127,6 +1127,65 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
     })
 }
 
+/// Handles `tokensave_diff` — orchestrates over `changelog`, `commit_context`,
+/// and `diff_context` based on arguments, returning a uniform envelope.
+pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args.get("path").and_then(|v| v.as_str()).map(str::to_string);
+    let from = args.get("from").and_then(|v| v.as_str()).map(str::to_string);
+    let to = args.get("to").and_then(|v| v.as_str()).map(str::to_string);
+
+    // Dispatch table:
+    //  - `path` set      → diff_context
+    //  - `from` + `to`   → changelog
+    //  - `from` only     → changelog with to=HEAD
+    //  - none of above   → commit_context (working tree vs HEAD)
+    let (delegated, payload): (String, Value) = if let Some(path) = &path {
+        let inner_args = json!({"files": [path]});
+        let inner = handle_diff_context(cg, inner_args).await?;
+        ("diff_context".to_string(), extract_value(&inner)?)
+    } else if let (Some(from), Some(to)) = (from.clone(), to.clone()) {
+        let inner_args = json!({"from_ref": from, "to_ref": to});
+        let inner = handle_changelog(cg, inner_args).await?;
+        ("changelog".to_string(), extract_value(&inner)?)
+    } else if let Some(from) = from.clone() {
+        let inner_args = json!({"from_ref": from, "to_ref": "HEAD"});
+        let inner = handle_changelog(cg, inner_args).await?;
+        ("changelog".to_string(), extract_value(&inner)?)
+    } else {
+        let inner = handle_commit_context(cg, json!({})).await?;
+        ("commit_context".to_string(), extract_value(&inner)?)
+    };
+
+    let envelope = json!({
+        "from": from.unwrap_or_else(|| "HEAD".to_string()),
+        "to": to.unwrap_or_else(|| "WORKING_TREE".to_string()),
+        "delegated_to": delegated,
+        "changes": payload,
+    });
+    let formatted = serde_json::to_string_pretty(&envelope).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: vec![],
+    })
+}
+
+/// Extract the inner JSON value from a `ToolResult`. Handlers wrap their
+/// payload in `{ content: [{ type: "text", text: "<json>" }] }`; we
+/// re-parse the text here so the envelope nests structured data, not a
+/// stringified blob.
+fn extract_value(tool_result: &ToolResult) -> Result<Value> {
+    let text = tool_result
+        .value
+        .pointer("/content/0/text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "delegated tool returned no text payload".to_string(),
+        })?;
+    serde_json::from_str(text).map_err(|e| TokenSaveError::Config {
+        message: format!("delegated tool returned non-JSON text: {e}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
