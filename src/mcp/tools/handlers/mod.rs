@@ -5,6 +5,7 @@
 //! formats the result.
 
 pub mod analysis;
+pub mod blame;
 pub mod edit;
 pub mod git;
 pub mod graph;
@@ -133,6 +134,7 @@ pub async fn handle_tool_call(
         "tokensave_files" => info::handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => git::handle_affected(cg, args).await,
         "tokensave_dead_code" => analysis::handle_dead_code(cg, args, scope_prefix).await,
+        "tokensave_diff" => git::handle_diff(cg, args).await,
         "tokensave_diff_context" => git::handle_diff_context(cg, args).await,
         "tokensave_module_api" => analysis::handle_module_api(cg, args, scope_prefix).await,
         "tokensave_circular" => analysis::handle_circular(cg, args).await,
@@ -142,6 +144,7 @@ pub async fn handle_tool_call(
         "tokensave_unused_imports" => analysis::handle_unused_imports(cg, args, scope_prefix).await,
         "tokensave_rank" => analysis::handle_rank(cg, args, scope_prefix).await,
         "tokensave_largest" => analysis::handle_largest(cg, args, scope_prefix).await,
+        "tokensave_log" => blame::handle_log(cg, args).await,
         "tokensave_coupling" => analysis::handle_coupling(cg, args, scope_prefix).await,
         "tokensave_inheritance_depth" => {
             analysis::handle_inheritance_depth(cg, args, scope_prefix).await
@@ -177,10 +180,11 @@ pub async fn handle_tool_call(
         "tokensave_test_risk" => health::handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_session_start" => health::handle_session_start(cg, args, scope_prefix).await,
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
+        "tokensave_blame" => blame::handle_blame(cg, args).await,
         "tokensave_body" => info::handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
-        "tokensave_outline" => info::handle_outline(cg, args).await,
+        "tokensave_entities" => info::handle_outline(cg, args).await,
         "tokensave_config" => info::handle_config(cg, &args),
         "tokensave_signature_search" => info::handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_implementations" => graph::handle_implementations(cg, args, scope_prefix).await,
@@ -234,9 +238,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            76
+            79
         } else {
-            75
+            78
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -308,7 +312,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_record_code_area"));
         assert!(tool_names.contains(&"tokensave_session_recall"));
         assert!(tool_names.contains(&"tokensave_read"));
-        assert!(tool_names.contains(&"tokensave_outline"));
+        assert!(tool_names.contains(&"tokensave_entities"));
+        assert!(!tool_names.contains(&"tokensave_outline"));
         assert!(tool_names.contains(&"tokensave_implementations"));
         assert!(tool_names.contains(&"tokensave_unsafe_patterns"));
         assert!(tool_names.contains(&"tokensave_diagnostics"));
@@ -321,6 +326,9 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_replace_symbol"));
         assert!(tool_names.contains(&"tokensave_insert_at_symbol"));
         assert!(tool_names.contains(&"tokensave_find_exact_symbol"));
+        assert!(tool_names.contains(&"tokensave_blame"));
+        assert!(tool_names.contains(&"tokensave_log"));
+        assert!(tool_names.contains(&"tokensave_diff"));
     }
 
     #[test]
@@ -451,5 +459,11 @@ mod tests {
     fn test_require_node_id_missing() {
         let args = json!({"query": "something"});
         assert!(require_node_id(&args).is_err());
+    }
+
+    #[test]
+    fn diff_tool_is_registered() {
+        let tools = get_tool_definitions();
+        assert!(tools.iter().any(|t| t.name == "tokensave_diff"));
     }
 }

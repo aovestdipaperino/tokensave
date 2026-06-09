@@ -97,9 +97,9 @@ fn test_tool_definitions_count() {
     // the external `ast-grep` binary is on PATH — hide-when-missing so
     // agents never receive a tool that will instantly fail.
     let expected = if tokensave::mcp::tools::ast_grep_available() {
-        76
+        79
     } else {
-        75
+        78
     };
     assert_eq!(tools.len(), expected);
 }
@@ -157,4 +157,19 @@ fn test_request_with_string_id() {
     let request: JsonRpcRequest = serde_json::from_value(msg).unwrap();
     assert_eq!(request.id, serde_json::Value::String("req-42".to_string()));
     assert_eq!(request.method, "ping");
+}
+
+#[test]
+fn test_blame_and_log_tools_registered() {
+    let tools = get_tool_definitions();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"tokensave_blame"));
+    assert!(names.contains(&"tokensave_log"));
+}
+
+#[test]
+fn diff_tool_appears_in_definitions() {
+    let tools = get_tool_definitions();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"tokensave_diff"));
 }

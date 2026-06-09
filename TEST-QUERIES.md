@@ -823,25 +823,25 @@ Expected: The second call returns `{"unchanged": true, "digest": ..., "mtime_ns"
 
 ---
 
-## tokensave_outline
+## tokensave_entities
 
 > Flat list of every top-level symbol in a file, with optional kind filter.
 
 Test default (all kinds):
 ```
-tokensave_outline(file="src/mcp/tools/handlers/info.rs")
+tokensave_entities(file="src/mcp/tools/handlers/info.rs")
 ```
 Expected: Returns `{file, symbol_count, symbols: [{kind, name, line, end_line, visibility}]}` sorted by line.
 
 Test kinds filter:
 ```
-tokensave_outline(file="src/mcp/tools/handlers/info.rs", kinds=["function"])
+tokensave_entities(file="src/mcp/tools/handlers/info.rs", kinds=["function"])
 ```
 Expected: Only function-kind entries. Filter is case-insensitive (`["FUNCTION"]` works the same).
 
 Unknown kind returns empty:
 ```
-tokensave_outline(file="src/mcp/tools/handlers/info.rs", kinds=["banana"])
+tokensave_entities(file="src/mcp/tools/handlers/info.rs", kinds=["banana"])
 ```
 Expected: `symbol_count: 0`.
 
@@ -1071,6 +1071,66 @@ Errors:
 ```
 tokensave_field_sites()                              # missing field → error
 ```
+
+---
+
+## tokensave_blame
+
+> Who last changed this function/method/struct? Returns the most recent commit that structurally changed the named symbol (ignores comment-only edits).
+
+Test by qualified name:
+```
+tokensave_blame(symbol="crate::blame_engine::log")
+```
+Expected: `{ symbol, file, lines, last_change: { commit, short_sha, author, email, date, summary }, boundary_reason, commits_walked }`.
+
+Test with file disambiguation:
+```
+tokensave_blame(symbol="handle_diff", file="src/mcp/tools/handlers/git.rs")
+```
+Expected: Same shape; `file` filters out same-named overloads in other paths.
+
+---
+
+## tokensave_log
+
+> Full git history of a single symbol. Returns every commit that structurally changed the named entity, oldest-first, tracking across cross-file renames.
+
+Test default:
+```
+tokensave_log(symbol="crate::blame_engine::log")
+```
+Expected: `{ symbol, file, lines, events: [ { commit, short_sha, author, email, date, summary, file_at_commit }, ... ], boundary_reason }`.
+
+Test with limit and walk cap:
+```
+tokensave_log(symbol="crate::blame_engine::log", limit=5, max_commits=100)
+```
+Expected: At most 5 events; walk visits at most 100 commits (`boundary_reason: "max_commits_reached"` if the cap was hit).
+
+---
+
+## tokensave_diff
+
+> Sem-style entity-level diff. Adapts to its arguments: no args = working tree vs HEAD; `from` only = HEAD vs `from`; `from` + `to` = `to` vs `from` (sem's `<old> <new>` order); `path` = restrict to that file.
+
+Test working tree:
+```
+tokensave_diff()
+```
+Expected: `{ from: "HEAD", to: "WORKING_TREE", delegated_to: "commit_context", changes: {...} }`.
+
+Test two refs:
+```
+tokensave_diff(from="main", to="HEAD")
+```
+Expected: `{ from: "main", to: "HEAD", delegated_to: "changelog", changes: {...} }`.
+
+Test path restriction:
+```
+tokensave_diff(path="src/blame_engine.rs")
+```
+Expected: `{ from: "HEAD", to: "WORKING_TREE", delegated_to: "diff_context", changes: {...} }`.
 
 ---
 

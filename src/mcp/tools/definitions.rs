@@ -148,7 +148,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_code_area(),
         def_session_recall(),
         def_read(),
-        def_outline(),
+        def_entities(),
         def_implementations(),
         def_unsafe_patterns(),
         def_diagnostics(),
@@ -161,6 +161,9 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_replace_symbol(),
         def_insert_at_symbol(),
         def_find_exact_symbol(),
+        def_blame(),
+        def_log(),
+        def_diff(),
     ];
     if !ast_grep_available() {
         definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
@@ -1950,10 +1953,10 @@ fn def_implementations() -> ToolDefinition {
     )
 }
 
-fn def_outline() -> ToolDefinition {
+fn def_entities() -> ToolDefinition {
     def(
-        "tokensave_outline",
-        "File Outline",
+        "tokensave_entities",
+        "Entities In File",
         "Flat list of every top-level symbol defined in a file (functions, structs, \
          enums, traits, classes, impls, etc.) — like a table of contents. Sorted by \
          line number; no code bodies. Optional 'kinds' filter narrows to specific \
@@ -2136,6 +2139,63 @@ fn def_insert_at_symbol() -> ToolDefinition {
                 }
             },
             "required": ["symbol", "content"]
+        }),
+    )
+}
+
+fn def_blame() -> ToolDefinition {
+    def(
+        "tokensave_blame",
+        "Symbol Blame",
+        "Per-symbol git blame: returns the most recent commit that structurally changed the \
+         named function/method/type. Tracks the symbol across edits and cross-file renames via \
+         tree-sitter structural fingerprints. Use `file` to disambiguate overloaded names.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Qualified name or bare identifier."},
+                "file":   {"type": "string", "description": "Optional project-relative path to disambiguate overloads."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_log() -> ToolDefinition {
+    def(
+        "tokensave_log",
+        "Symbol History",
+        "Per-symbol git log: every commit that structurally changed the named symbol, \
+         oldest-first. Tracks across edits and cross-file renames via structural fingerprints.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "file":   {"type": "string"},
+                "limit":  {"type": "integer", "description": "Cap on returned events. Default 20, max 1000."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_diff() -> ToolDefinition {
+    def(
+        "tokensave_diff",
+        "Unified Diff",
+        "Sem-style entity-level diff. With no args, diffs the working tree against HEAD. With \
+         `from` only, diffs HEAD against `from`. With `from` and `to`, diffs `to` against `from` \
+         (sem's `<old> <new>` order). With `path`, restricts to that file. Always returns a \
+         `{from, to, changes}` envelope.",
+        json!({
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Old ref (commit/branch/tag). Defaults to HEAD."},
+                "to":   {"type": "string", "description": "New ref. Defaults to working tree."},
+                "path": {"type": "string", "description": "Restrict to a single file path."}
+            }
         }),
     )
 }
