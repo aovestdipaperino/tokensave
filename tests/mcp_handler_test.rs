@@ -2695,6 +2695,100 @@ async fn test_test_risk() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_test_coverage
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_test_coverage_requires_exactly_one_input() {
+    let (cg, _dir) = setup_project().await;
+    // No input.
+    let result = handle_tool_call(&cg, "tokensave_test_coverage", json!({}), None, None).await;
+    let err = result.err().expect("should error with no input");
+    assert!(err.to_string().contains("exactly one"), "got: {err}");
+    // Two inputs.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_test_coverage",
+        json!({ "file": "src/lib.rs", "symbol": "foo" }),
+        None,
+        None,
+    )
+    .await;
+    let err = result.err().expect("should error with two inputs");
+    assert!(err.to_string().contains("exactly one"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_test_coverage_file_mode_returns_rollup() {
+    let (cg, _dir) = setup_project().await;
+    // Use the first source file from the fixture; just verify the shape.
+    let files = cg.get_all_files().await.unwrap();
+    let src = files
+        .iter()
+        .map(|fr| fr.path.clone())
+        .find(|p| p.ends_with(".rs") && !tokensave::tokensave::is_test_file(p))
+        .unwrap_or_else(|| "src/lib.rs".to_string());
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_test_coverage",
+        json!({ "file": src }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["mode"], "file");
+    assert!(parsed["summary"].is_object());
+    assert!(parsed["summary"]["total_prod_fns"].is_u64());
+    assert!(parsed["summary"]["tested"].is_u64());
+    assert!(parsed["summary"]["untested"].is_u64());
+    assert!(parsed["tested"].is_array());
+    assert!(parsed["untested"].is_array());
+}
+
+#[tokio::test]
+async fn test_test_coverage_unknown_symbol_errors() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_test_coverage",
+        json!({ "symbol": "definitely_not_a_real_symbol_xyz" }),
+        None,
+        None,
+    )
+    .await;
+    let err = result.err().expect("should error on unknown symbol");
+    assert!(err.to_string().contains("not found"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_test_coverage_clamps_max_depth() {
+    let (cg, _dir) = setup_project().await;
+    let files = cg.get_all_files().await.unwrap();
+    let src = files
+        .iter()
+        .map(|fr| fr.path.clone())
+        .find(|p| p.ends_with(".rs"))
+        .unwrap_or_else(|| "src/lib.rs".to_string());
+    // max_depth of 100 should clamp internally to 10; tool should not error.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_test_coverage",
+        json!({ "file": src, "max_depth": 100 }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["summary"]["max_depth"], 10);
+}
+
+// ---------------------------------------------------------------------------
 // Session start / end tests
 // ---------------------------------------------------------------------------
 

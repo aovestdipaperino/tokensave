@@ -153,6 +153,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_runtime(),
         def_dsm(),
         def_test_risk(),
+        def_test_coverage(),
         def_session_start(),
         def_session_end(),
         def_body(),
@@ -1493,6 +1494,49 @@ fn def_annotations() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of rows (default 50, max 500)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_test_coverage() -> ToolDefinition {
+    def(
+        "tokensave_test_coverage",
+        "Test Coverage",
+        "Per-symbol / per-file / per-test test-coverage rollup using \
+         transitive call edges. Three input modes (provide exactly one):\n\
+         • `file` — list every prod fn in the file with its tests + a \
+         tested/untested summary.\n\
+         • `symbol` — list every test that transitively reaches this symbol.\n\
+         • `test_fn` — list every non-test symbol this test transitively \
+         exercises.\n\
+         Edges are followed up to `max_depth` (default 5). A node counts as a \
+         test when it lives under a test-named path (`tests/`, `*_test.*`, \
+         `__tests__/`, `spec/`, etc.) or carries a `#[test]`-style annotation. \
+         Respects `/// skip-test-coverage` opt-out the same way `test_risk` does.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Source file path. Returns per-symbol coverage + file rollup."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Qualified or short name of a prod symbol. Returns the tests that reach it."
+                },
+                "test_fn": {
+                    "type": "string",
+                    "description": "Qualified or short name of a test function. Returns the prod symbols it transitively exercises."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum transitive call depth (default 5, clamped to [1, 10])."
+                },
+                "include_untested": {
+                    "type": "boolean",
+                    "description": "When `file` mode: include untested fns in the response (default true)."
                 }
             }
         }),

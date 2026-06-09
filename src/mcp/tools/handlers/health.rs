@@ -942,6 +942,256 @@ pub(super) async fn handle_test_map(
 }
 
 // ---------------------------------------------------------------------------
+// Test coverage handler — combines per-file rollup, reverse (symbol → tests),
+// and forward (test_fn → covered symbols) into one tool.
+// ---------------------------------------------------------------------------
+
+/// Decide whether a node looks like a test function — by source-file location
+/// or by carrying a `#[test]`-style annotation. Pure helper so the handler
+/// stays readable.
+fn classify_test_nodes(
+    candidates: &[String],
+    nodes_by_id: &HashMap<String, &crate::types::Node>,
+    test_annotated: &HashSet<String>,
+) -> HashSet<String> {
+    candidates
+        .iter()
+        .filter(|id| {
+            nodes_by_id
+                .get(id.as_str())
+                .is_some_and(|n| crate::tokensave::is_test_file(&n.file_path))
+                || test_annotated.contains(*id)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Handles `tokensave_test_coverage` tool calls.
+///
+/// Three input modes (provide exactly one):
+/// - `file`: per-symbol coverage status for a source file, with rollup.
+/// - `symbol`: list of test functions that transitively cover the symbol.
+/// - `test_fn`: list of source symbols a specific test transitively exercises.
+pub(super) async fn handle_test_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let file = args.get("file").and_then(|v| v.as_str());
+    let symbol = args.get("symbol").and_then(|v| v.as_str());
+    let test_fn = args.get("test_fn").and_then(|v| v.as_str());
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5usize, |n| n.clamp(1, 10) as usize);
+    let include_untested = args
+        .get("include_untested")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
+    match (file, symbol, test_fn) {
+        (Some(f), None, None) => coverage_for_file(cg, f, max_depth, include_untested).await,
+        (None, Some(s), None) => coverage_for_symbol(cg, s, max_depth).await,
+        (None, None, Some(t)) => coverage_for_test_fn(cg, t, max_depth).await,
+        _ => Err(TokenSaveError::Config {
+            message: "provide exactly one of: file, symbol, test_fn".to_string(),
+        }),
+    }
+}
+
+async fn coverage_for_file(
+    cg: &TokenSave,
+    file: &str,
+    max_depth: usize,
+    include_untested: bool,
+) -> Result<ToolResult> {
+    let nodes = cg.get_nodes_by_file(file).await?;
+    let mut tested: Vec<Value> = Vec::new();
+    let mut untested: Vec<Value> = Vec::new();
+    let mut test_only: u64 = 0;
+
+    let skip_ids = cg
+        .get_skip_test_coverage_node_ids()
+        .await
+        .unwrap_or_default();
+
+    for node in &nodes {
+        if !matches!(
+            node.kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+        ) {
+            continue;
+        }
+        if skip_ids.contains(&node.id) {
+            continue;
+        }
+
+        // A "test fn" lives in a test file or has a #[test]-style annotation.
+        let self_annotated = cg
+            .get_test_annotated_node_ids(std::slice::from_ref(&node.id))
+            .await
+            .unwrap_or_default();
+        if crate::tokensave::is_test_file(&node.file_path) || self_annotated.contains(&node.id) {
+            test_only += 1;
+            continue;
+        }
+
+        let callers = cg.get_callers(&node.id, max_depth).await.unwrap_or_default();
+        let caller_ids: Vec<String> = callers.iter().map(|(n, _)| n.id.clone()).collect();
+        let annotated = cg
+            .get_test_annotated_node_ids(&caller_ids)
+            .await
+            .unwrap_or_default();
+        let by_id: HashMap<String, &crate::types::Node> =
+            callers.iter().map(|(n, _)| (n.id.clone(), n)).collect();
+        let test_caller_ids = classify_test_nodes(&caller_ids, &by_id, &annotated);
+
+        if test_caller_ids.is_empty() {
+            if include_untested {
+                untested.push(json!({
+                    "id": node.id,
+                    "name": node.name,
+                    "file": node.file_path,
+                    "line": node.start_line,
+                }));
+            }
+        } else {
+            let test_list: Vec<Value> = test_caller_ids
+                .iter()
+                .filter_map(|tid| by_id.get(tid.as_str()))
+                .map(|n| {
+                    json!({
+                        "test_name": n.name,
+                        "test_file": n.file_path,
+                        "test_line": n.start_line,
+                    })
+                })
+                .collect();
+            tested.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "file": node.file_path,
+                "line": node.start_line,
+                "tested_by": test_list,
+            }));
+        }
+    }
+
+    let summary = json!({
+        "file": file,
+        "total_prod_fns": tested.len() + untested.len(),
+        "tested": tested.len(),
+        "untested": untested.len(),
+        "test_only_fns": test_only,
+        "max_depth": max_depth,
+    });
+    let output = json!({
+        "mode": "file",
+        "summary": summary,
+        "tested": tested,
+        "untested": untested,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files,
+    })
+}
+
+async fn coverage_for_symbol(cg: &TokenSave, symbol: &str, max_depth: usize) -> Result<ToolResult> {
+    let targets = cg.get_nodes_by_qualified_name(symbol).await?;
+    if targets.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: format!("symbol not found: {symbol}"),
+        });
+    }
+    let mut all_tests: Vec<Value> = Vec::new();
+    let mut touched: HashSet<String> = HashSet::new();
+    for n in &targets {
+        touched.insert(n.file_path.clone());
+        let callers = cg.get_callers(&n.id, max_depth).await.unwrap_or_default();
+        let caller_ids: Vec<String> = callers.iter().map(|(c, _)| c.id.clone()).collect();
+        let annotated = cg
+            .get_test_annotated_node_ids(&caller_ids)
+            .await
+            .unwrap_or_default();
+        let by_id: HashMap<String, &crate::types::Node> =
+            callers.iter().map(|(c, _)| (c.id.clone(), c)).collect();
+        let test_ids = classify_test_nodes(&caller_ids, &by_id, &annotated);
+        for tid in &test_ids {
+            if let Some(t) = by_id.get(tid.as_str()) {
+                touched.insert(t.file_path.clone());
+                all_tests.push(json!({
+                    "test_name": t.name,
+                    "test_file": t.file_path,
+                    "test_line": t.start_line,
+                    "covers": { "name": n.name, "file": n.file_path, "line": n.start_line },
+                }));
+            }
+        }
+    }
+    let output = json!({
+        "mode": "symbol",
+        "symbol": symbol,
+        "matched_nodes": targets.len(),
+        "test_count": all_tests.len(),
+        "tests": all_tests,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: touched.into_iter().collect(),
+    })
+}
+
+async fn coverage_for_test_fn(
+    cg: &TokenSave,
+    test_fn: &str,
+    max_depth: usize,
+) -> Result<ToolResult> {
+    let candidates = cg.get_nodes_by_qualified_name(test_fn).await?;
+    if candidates.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: format!("test_fn not found: {test_fn}"),
+        });
+    }
+    let mut covered: Vec<Value> = Vec::new();
+    let mut touched: HashSet<String> = HashSet::new();
+    for n in &candidates {
+        touched.insert(n.file_path.clone());
+        let callees = cg.get_callees(&n.id, max_depth).await.unwrap_or_default();
+        for (callee, _) in callees {
+            // Only count prod symbols — skip anything that itself looks like a test.
+            if crate::tokensave::is_test_file(&callee.file_path) {
+                continue;
+            }
+            let self_annot = cg
+                .get_test_annotated_node_ids(std::slice::from_ref(&callee.id))
+                .await
+                .unwrap_or_default();
+            if self_annot.contains(&callee.id) {
+                continue;
+            }
+            touched.insert(callee.file_path.clone());
+            covered.push(json!({
+                "name": callee.name,
+                "kind": callee.kind.as_str(),
+                "file": callee.file_path,
+                "line": callee.start_line,
+            }));
+        }
+    }
+    let output = json!({
+        "mode": "test_fn",
+        "test_fn": test_fn,
+        "covered_count": covered.len(),
+        "covered_symbols": covered,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: touched.into_iter().collect(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Session start / end handlers
 // ---------------------------------------------------------------------------
 
