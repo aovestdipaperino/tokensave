@@ -7,12 +7,36 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use tree_sitter::Language;
 
+// tree-sitter-wgsl 0.0.6 was built against tree-sitter 0.20, whose Language
+// type is not assignment-compatible with 0.26. Re-declare the raw C symbol so
+// we can construct a LanguageFn with the correct pointer type directly.
+#[cfg(feature = "lang-wgsl")]
+mod wgsl_grammar {
+    use tree_sitter_language::LanguageFn;
+
+    // Grammar compiled from vendor/tree-sitter-wgsl/src/ via build.rs.
+    unsafe extern "C" {
+        fn tree_sitter_wgsl() -> *const ();
+    }
+    pub const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_wgsl) };
+}
+
 /// Cached map of language key -> `Language` built once from the bundled crate.
 static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
-    tokensave_large_treesitters::all_languages()
+    #[allow(unused_mut)]
+    let mut map: HashMap<&'static str, Language> = tokensave_large_treesitters::all_languages()
         .into_iter()
         .map(|(name, lang_fn)| (name, lang_fn.into()))
-        .collect()
+        .collect();
+
+    #[cfg(feature = "lang-wgsl")]
+    map.insert("wgsl", wgsl_grammar::LANGUAGE.into());
+
+    // HLSL uses the newer LanguageFn API.
+    #[cfg(feature = "lang-hlsl")]
+    map.insert("hlsl", tree_sitter_hlsl::LANGUAGE_HLSL.into());
+
+    map
 });
 
 /// Returns the `tree_sitter::Language` for the given extractor language key.
@@ -42,6 +66,18 @@ mod tests {
             "protobuf", "python", "qbasic", "quint", "r", "ruby", "rust", "scala", "sql",
             "swift", "toml", "tsx", "typescript", "vbnet", "zig",
         ];
+        // Keys provided by optional direct deps — checked separately so the test
+        // is skipped when the feature is not enabled.
+        #[cfg(feature = "lang-wgsl")]
+        assert!(
+            super::LANGUAGES.get("wgsl").is_some(),
+            "wgsl grammar missing"
+        );
+        #[cfg(feature = "lang-hlsl")]
+        assert!(
+            super::LANGUAGES.get("hlsl").is_some(),
+            "hlsl grammar missing"
+        );
         let missing: Vec<&str> = keys
             .iter()
             .copied()

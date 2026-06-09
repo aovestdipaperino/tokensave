@@ -31,7 +31,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-quint", "lang-toml", "lang-lean"]
+full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-quint", "lang-toml", "lang-lean"]
 
 # Language features (all grammars provided by tokensave-large-treesitters)
 lang-dart = []
@@ -55,6 +55,9 @@ lang-gwbasic = []
 lang-qbasic = []
 lang-dockerfile = []
 lang-glsl = []
+lang-wgsl = []
+lang-hlsl = ["dep:tree-sitter-hlsl"]
+lang-metal = []
 lang-markdown = []
 lang-r = []
 lang-sql = []
@@ -80,6 +83,7 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
+tree-sitter-language = "0.1"
 tokensave-large-treesitters = { version = "0.5.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
 # Force tree-sitter-dart 0.2 — 0.1 fails to wrap top-level declarations
 # in `top_level_variable_declaration` / `function_declaration` nodes,
@@ -115,6 +119,7 @@ memmap2 = "0.9"
 crossterm = "0.28"
 fs2 = "0.4"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+tree-sitter-hlsl = { version = "0.2.0", optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"
@@ -126,6 +131,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [build-dependencies]
 logo-art = "0.2"
+cc = "1"
 
 [dev-dependencies]
 tempfile = "3"
