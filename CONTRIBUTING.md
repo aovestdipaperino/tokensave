@@ -24,7 +24,6 @@ src/
   context/       Context builder for AI-ready output
   resolution/    Cross-file reference resolution
   sync.rs        Incremental sync engine
-  daemon.rs      Background daemon
   main.rs        CLI entry point
 tests/           Integration tests (one per module/language)
 tests/fixtures/  Sample source files for extraction tests

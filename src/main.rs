@@ -158,16 +158,36 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::agents::claude::check_install_stale();
     }
 
-    // Silent reinstall: if the running version is newer than the one that last
-    // installed agents, re-run the install for every tracked agent so that
-    // permissions, hooks, and MCP config stay in sync with the new binary.
+    // Silent reinstall: re-run install for every tracked agent so permissions,
+    // hooks, and MCP config stay in sync with the new binary.
+    //
+    // Two signals can trigger this:
+    //   (a) `previous_version` (set by `tokensave upgrade` / `channel switch`
+    //       just before replacing the binary) differs from the running version
+    //       AND the transition is a minor/major bump. Patch bumps are no-ops:
+    //       we just advance `previous_version` and skip reinstall.
+    //   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
+    //       the running version is newer than `last_installed_version`.
     if !skip_agent_install_maintenance {
         let running = env!("CARGO_PKG_VERSION");
-        if !user_config.installed_agents.is_empty()
-            && !running.is_empty()
+        let previous_version = if user_config.previous_version.is_empty() {
+            "6.0.0".to_string()
+        } else {
+            user_config.previous_version.clone()
+        };
+        let upgrade_detected = previous_version != running;
+        let transition_needs_reinstall = upgrade_detected
+            && (tokensave::cloud::is_newer_minor_version(&previous_version, running)
+                || tokensave::cloud::is_newer_minor_version(running, &previous_version));
+        let external_upgrade_needs_reinstall = !upgrade_detected
             && (user_config.last_installed_version.is_empty()
-                || tokensave::cloud::is_newer_version(&user_config.last_installed_version, running))
-        {
+                || tokensave::cloud::is_newer_version(
+                    &user_config.last_installed_version,
+                    running,
+                ));
+        let needs_reinstall = transition_needs_reinstall || external_upgrade_needs_reinstall;
+
+        if !user_config.installed_agents.is_empty() && !running.is_empty() && needs_reinstall {
             if let (Some(home), Some(bin)) = (
                 tokensave::agents::home_dir(),
                 tokensave::agents::which_tokensave(),
@@ -187,9 +207,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 if all_ok {
                     user_config.last_installed_version = running.to_string();
+                    user_config.previous_version = running.to_string();
                     user_config.save();
                 }
             }
+        } else if upgrade_detected {
+            // Patch-only bump (or nothing to reinstall) — advance the marker
+            // so we don't keep re-checking on every subsequent startup.
+            user_config.previous_version = running.to_string();
+            user_config.save();
         }
     }
 
@@ -512,7 +538,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Tool { name, args } => {
             tool_command::run(name, args).await?;
         }
-        Commands::Install { agent } => {
+        Commands::Install { agent, git_hook } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -594,7 +620,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
             user_cfg.save();
 
-            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
+            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
         }
         Commands::Reinstall => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
@@ -1077,6 +1103,7 @@ mod startup_tests {
     fn explicit_agent_config_commands_skip_agent_install_maintenance() {
         assert!(should_skip_agent_install_maintenance(&Commands::Install {
             agent: Some("kiro".to_string()),
+            git_hook: tokensave::agents::GitHookMode::Default,
         }));
         assert!(should_skip_agent_install_maintenance(&Commands::Reinstall));
         assert!(should_skip_agent_install_maintenance(

@@ -1,4 +1,5 @@
 // Lite — always available (no cfg needed)
+mod astro_extractor;
 mod c_extractor;
 mod cpp_extractor;
 mod csharp_extractor;
@@ -8,6 +9,7 @@ mod kotlin_extractor;
 mod python_extractor;
 mod rust_extractor;
 mod scala_extractor;
+mod svelte_extractor;
 mod swift_extractor;
 mod typescript_extractor;
 
@@ -36,6 +38,8 @@ mod ruby_extractor;
 mod vbnet_extractor;
 
 // Full
+#[cfg(feature = "lang-actionscript")]
+mod actionscript_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
 #[cfg(feature = "lang-clojure")]
@@ -52,6 +56,8 @@ mod erlang_extractor;
 mod fortran_extractor;
 #[cfg(feature = "lang-fsharp")]
 mod fsharp_extractor;
+#[cfg(feature = "lang-fstar")]
+mod fstar_extractor;
 #[cfg(feature = "lang-glsl")]
 mod glsl_extractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -96,6 +102,7 @@ mod wgsl_extractor;
 mod zig_extractor;
 
 // Lite — always available (no cfg needed)
+pub use astro_extractor::AstroExtractor;
 pub use c_extractor::CExtractor;
 pub use cpp_extractor::CppExtractor;
 pub use csharp_extractor::CSharpExtractor;
@@ -105,6 +112,7 @@ pub use kotlin_extractor::KotlinExtractor;
 pub use python_extractor::PythonExtractor;
 pub use rust_extractor::RustExtractor;
 pub use scala_extractor::ScalaExtractor;
+pub use svelte_extractor::SvelteExtractor;
 pub use swift_extractor::SwiftExtractor;
 pub use typescript_extractor::TypeScriptExtractor;
 
@@ -129,6 +137,8 @@ pub use ruby_extractor::RubyExtractor;
 pub use vbnet_extractor::VbNetExtractor;
 
 // Full
+#[cfg(feature = "lang-actionscript")]
+pub use actionscript_extractor::ActionScriptExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
 #[cfg(feature = "lang-clojure")]
@@ -145,6 +155,8 @@ pub use erlang_extractor::ErlangExtractor;
 pub use fortran_extractor::FortranExtractor;
 #[cfg(feature = "lang-fsharp")]
 pub use fsharp_extractor::FSharpExtractor;
+#[cfg(feature = "lang-fstar")]
+pub use fstar_extractor::FStarExtractor;
 #[cfg(feature = "lang-glsl")]
 pub use glsl_extractor::GlslExtractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -232,6 +244,8 @@ impl LanguageRegistry {
             Box::new(CSharpExtractor),
             Box::new(KotlinExtractor),
             Box::new(SwiftExtractor),
+            Box::new(SvelteExtractor),
+            Box::new(AstroExtractor),
         ];
 
         // Medium
@@ -255,6 +269,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(VbNetExtractor));
 
         // Full
+        #[cfg(feature = "lang-actionscript")]
+        extractors.push(Box::new(ActionScriptExtractor));
         #[cfg(feature = "lang-lua")]
         extractors.push(Box::new(LuaExtractor));
         #[cfg(feature = "lang-zig")]
@@ -309,6 +325,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(ElixirExtractor));
         #[cfg(feature = "lang-fsharp")]
         extractors.push(Box::new(FSharpExtractor));
+        #[cfg(feature = "lang-fstar")]
+        extractors.push(Box::new(FStarExtractor));
         #[cfg(feature = "lang-lean")]
         extractors.push(Box::new(LeanExtractor));
         #[cfg(feature = "lang-toml")]

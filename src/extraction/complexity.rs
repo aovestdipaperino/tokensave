@@ -1177,3 +1177,35 @@ pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     assertion_names: &["Assert", "assertEqual", "assertTrue", "assertFalse"],
     macro_invocation_types: &[],
 };
+
+/// ActionScript 2/3 (tree-sitter-actionscript grammar).
+pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &[
+        "if_statement",
+        "switch_case",
+        "switch_default",
+        "ternary_expression",
+        "catch_clause",
+    ],
+    loop_types: &[
+        "for_statement",
+        "for_in_statement",
+        "for_each_in_statement",
+        "while_statement",
+        "do_statement",
+    ],
+    return_types: &[
+        "return_statement",
+        "break_statement",
+        "continue_statement",
+        "throw_statement",
+    ],
+    nesting_types: &["statement_block"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call_expression"],
+    call_method_field: "function",
+    assertion_names: &["assert", "assertEquals", "assertTrue", "assertFalse"],
+    macro_invocation_types: &[],
+};

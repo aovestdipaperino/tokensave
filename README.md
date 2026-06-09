@@ -70,10 +70,10 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **48 MCP Tools** | **34 Languages** | **14 Agent Integrations** |
-| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, and 26 more, including Markdown header extraction. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe. |
+| **70+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
+| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 42 more including WGSL/HLSL/Metal shaders and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
-| Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | Embedded file watcher (when MCP server is running) syncs the index automatically. Multi-agent safe via per-project sync lock. |
+| Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | On-demand staleness check on every MCP call (30 s cooldown) plus catch-up sync when the server connects. Multi-agent work is expected to use git worktrees — each agent gets its own checkout and the index diverges are merged by git, not by a file watcher. |
 | **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
 | A native crash in any tree-sitter grammar (abort, segfault, anything) kills only the worker; the pool respawns it and sync continues. Sync never dies on a malformed file. | Composite health score (0-10000), Gini inequality, file-DAG depth, design-structure matrix, risk-weighted test gaps, and session deltas. | Edit files without regex or shell-quoting hazards: unique-anchor `str_replace`, atomic multi-replace, AST-rewrite, anchored insert. Auto re-indexes after writes. |
 
@@ -99,9 +99,9 @@ scoop install tokensave
 **Cargo (any platform):**
 
 ```bash
-cargo install tokensave                          # full (34 languages, default)
-cargo install tokensave --features medium        # medium (20 languages)
-cargo install tokensave --no-default-features    # lite (11 languages, smallest binary)
+cargo install tokensave                          # full (50+ languages, default)
+cargo install tokensave --features medium        # medium tier
+cargo install tokensave --no-default-features    # lite (smallest binary)
 ```
 
 **Prebuilt binaries (Linux, Windows, macOS):**
@@ -133,6 +133,9 @@ tokensave install --agent opencode        # OpenCode
 tokensave install --agent roo-code        # Roo Code
 tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed
+tokensave install --agent grok            # Grok Build (xAI)
+tokensave install --git-hook yes           # auto-install the global post-commit hook (no prompt)
+tokensave install --git-hook no            # skip the post-commit hook (no prompt)
 ```
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
@@ -354,9 +357,9 @@ Different from the criterion bench above: criterion measures per-iteration laten
 
 ---
 
-## 48 MCP Tools
+## 70+ MCP Tools
 
-The discovery and analysis tools are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+The server exposes more than 70 tools (one fewer when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Discovery
 
@@ -516,26 +519,17 @@ All tokensave users contribute to an anonymous aggregate counter. `tokensave sta
 
 ---
 
-## Embedded File Watcher
+## Index Freshness
 
-When the tokensave MCP server is running (i.e. an agent is attached), it
-watches the project directory for file changes and automatically runs
-incremental syncs. The watcher lives for the lifetime of the MCP process —
-no separate daemon, no PID files, no system-service installation required.
+tokensave keeps the graph up to date without a background daemon or an OS-level file watcher.
 
-Multiple agents on the same project coordinate via a per-project sync lock:
-only one sync runs at a time, and the others read the resulting fresh DB on
-their next query.
+**On-demand staleness check.** Every MCP tool call checks whether any indexed files have been modified since the last sync. If stale files are found, they are re-extracted before the tool response is returned. A 30-second cooldown prevents back-to-back calls from re-walking the tree on every keystroke.
 
-Configure the debounce window in `~/.tokensave/config.toml`:
+**Catch-up sync on connect.** When the MCP server starts, it immediately runs a non-blocking catch-up sync that picks up any changes made while no agent was attached — a `git pull`, an IDE edit, a build step — so the very first tool call of a session sees a fresh index.
 
-```toml
-watcher_debounce = "2s"
-```
+**Multi-agent work and git worktrees.** When multiple agents work on the same project concurrently, the strong assumption is that each agent operates in its own git worktree. Worktrees are independent filesystem checkouts of the same repository: agent A and agent B each have their own copy of every file, so they never overwrite each other's in-flight edits. tokensave automatically detects when a query comes from a worktree nested inside the main checkout and serves results from the correct branch graph. Changes accumulate independently and are eventually reconciled via git merge or rebase — the same process used for any other parallel development. This design avoids the complexity and failure modes of cross-agent locking over a shared mutable directory.
 
-**CLI-only workflows:** If you run `tokensave` commands without an attached
-agent, the watcher is not running. Install a git post-commit hook to keep
-your index fresh between commits:
+**CLI-only workflows.** If you run `tokensave` commands without an attached agent (no MCP server), the staleness check is not running between commands. Install a git post-commit hook to keep the index fresh automatically after every commit:
 
 ```bash
 cp scripts/post-commit .git/hooks/post-commit
@@ -544,23 +538,15 @@ chmod +x .git/hooks/post-commit
 
 ### Upgrading from 5.x
 
-The standalone `tokensave daemon` command and its launchd/systemd/Windows
-Service autostart support were removed in 6.0.0. If you had a daemon
-autostart installed under 5.x, remove it manually.
+The standalone `tokensave daemon` command and its launchd/systemd/Windows Service autostart were removed in 6.0.0. The embedded OS-level file watcher that replaced the daemon was itself removed in 6.1.0 (it caused runaway CPU and memory on large monorepos with deep `node_modules` or `target` trees). The on-demand staleness model above is the current design.
 
-If you don't remember the exact service/plist name, list them first:
-
-- macOS: `launchctl list | grep tokensave`
-- Linux: `systemctl --user list-units | grep tokensave`
-- Windows: `sc.exe query state= all | findstr -i tokensave`
-
-Then remove the entry matching your install:
+If you still have a daemon autostart from 5.x, remove it:
 
 - macOS: `launchctl unload ~/Library/LaunchAgents/com.tokensave.daemon.plist && rm ~/Library/LaunchAgents/com.tokensave.daemon.plist`
 - Linux: `systemctl --user disable --now tokensave-daemon && rm ~/.config/systemd/user/tokensave-daemon.service`
 - Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
 
-Once your agent is attached, the embedded watcher takes over automatically.
+If you don't recall the exact name: `launchctl list | grep tokensave` / `systemctl --user list-units | grep tokensave` / `sc.exe query state= all | findstr -i tokensave`.
 
 ---
 
@@ -631,7 +617,7 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 
 | Layer | What it does | Why it matters |
 |-------|-------------|----------------|
-| **MCP server** | Exposes 48 `tokensave_*` tools to Claude | Claude can query the graph directly |
+| **MCP server** | Exposes 70+ `tokensave_*` tools to Claude | Claude can query the graph directly |
 | **CLAUDE.md rules** | Tells Claude to prefer tokensave over agents/file reads | Prevents the model from falling back to expensive patterns |
 | **PreToolUse hook** | Native Rust hook blocks Explore agents | Catches cases where the model ignores the CLAUDE.md rules |
 | **UserPromptSubmit hook** | Runs at prompt submission | Lifecycle tracking for token accounting |
@@ -658,13 +644,13 @@ The model pricing refresh fetches a public JSON file from GitHub (`raw.githubuse
 
 ---
 
-## 34 Languages
+## 50+ Languages
 
-tokensave supports 34 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it. As of v4.1.8, Markdown headers are also extracted (in the full tier) as `Module` nodes with hierarchical `Contains` edges, so document structure participates in graph queries alongside source code.
+tokensave supports more than 50 programming languages organized into three tiers controlled by Cargo feature flags. Each tier includes all languages from the tier below it. Markdown headers are extracted as `Module` nodes with hierarchical `Contains` edges so document structure participates in graph queries alongside source code.
 
-### Lite (11 languages) -- `--no-default-features`
+### Lite -- `--no-default-features`
 
-Always compiled. The smallest binary for the most popular languages.
+Always compiled. The smallest binary for the most popular languages, plus Svelte and Astro (script-block extraction via the TypeScript extractor, no extra grammar dependency).
 
 | Language | Extensions |
 |----------|-----------|
@@ -680,8 +666,10 @@ Always compiled. The smallest binary for the most popular languages.
 | Kotlin | `.kt`, `.kts` |
 | C# | `.cs` |
 | Swift | `.swift` |
+| Svelte | `.svelte` |
+| Astro | `.astro` |
 
-### Medium (Lite + 9 = 20 languages) -- `--features medium`
+### Medium (Lite + 9 more) -- `--features medium`
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
@@ -695,10 +683,11 @@ Always compiled. The smallest binary for the most popular languages.
 | Nix | `.nix` | `lang-nix` |
 | VB.NET | `.vb` | `lang-vbnet` |
 
-### Full (Medium + 14 = 34 languages) -- default
+### Full (Medium + everything else) -- default
 
 | Language | Extensions | Feature flag |
 |----------|-----------|-------------|
+| ActionScript | `.as` | `lang-actionscript` |
 | Lua | `.lua` | `lang-lua` |
 | Zig | `.zig` | `lang-zig` |
 | Objective-C | `.m`, `.mm` | `lang-objc` |
@@ -712,7 +701,23 @@ Always compiled. The smallest binary for the most popular languages.
 | QuickBASIC 4.5 | `.bi`, `.bm` | `lang-qbasic` |
 | Dockerfile | `Dockerfile`, `.dockerfile` | `lang-dockerfile` |
 | GLSL | `.glsl`, `.vert`, `.frag`, `.comp` | `lang-glsl` |
+| WGSL | `.wgsl` | `lang-wgsl` |
+| HLSL | `.hlsl`, `.fx` | `lang-hlsl` |
+| Metal | `.metal` | `lang-metal` |
 | Markdown | `.md`, `.markdown` | `lang-markdown` |
+| R | `.r`, `.R` | `lang-r` |
+| SQL | `.sql` | `lang-sql` |
+| Julia | `.jl` | `lang-julia` |
+| Haskell | `.hs`, `.lhs` | `lang-haskell` |
+| OCaml | `.ml`, `.mli` | `lang-ocaml` |
+| Clojure | `.clj`, `.cljs`, `.cljc` | `lang-clojure` |
+| Erlang | `.erl`, `.hrl` | `lang-erlang` |
+| Elixir | `.ex`, `.exs` | `lang-elixir` |
+| F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
+| F* | `.fst`, `.fsti` | `lang-fstar` |
+| Quint | `.qnt` | `lang-quint` |
+| TOML | `.toml` | `lang-toml` |
+| Lean | `.lean` | `lang-lean` |
 
 Individual languages can also be cherry-picked without a full tier:
 
@@ -732,10 +737,10 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 |---|---|---|
 | **Runtime** | Native binary (Rust) | Node.js 18+ |
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
-| **Languages** | 34 (3 tiers: lite/medium/full) | 19+ |
-| **MCP tools** | 48 | 9 |
-| **Agent integrations** | 14 (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe) | 1 (Claude Code) |
-| **Embedded file watcher** | Yes (in MCP process, multi-agent safe) | No (hook-based sync only) |
+| **Languages** | 50+ (3 tiers: lite/medium/full) | 19+ |
+| **MCP tools** | 70+ | 9 |
+| **Agent integrations** | 12+ (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe, Grok) | 1 (Claude Code) |
+| **Index freshness** | On-demand staleness check on every MCP call; catch-up sync on connect; multi-agent work expected to use git worktrees | Native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW, 2 s debounce); catch-up sync on connect |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
@@ -759,7 +764,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
 | **Binary size** | ~25 MB (all grammars bundled) | ~80 MB (node_modules + WASM) |
 
-CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. tokensave extends the concept with deeper analysis, more agents, background sync, multi-branch support, and a native binary with no runtime dependencies.
+CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. tokensave extends the concept with deeper analysis, more agents, multi-branch support, and a native binary with no runtime dependencies.
 
 For detailed comparisons against CodeGraph, Dual-Graph (GrapeRoot), code-review-graph, and OpenWolf, see [docs/COMPARABLE-TOOLS.md](docs/COMPARABLE-TOOLS.md).
 
@@ -771,15 +776,15 @@ Several tools reduce token usage for AI coding agents. Here's why tokensave stan
 
 ### Single native binary, zero dependencies
 
-Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 34 tree-sitter grammars bundled. Nothing else to install.
+Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 50+ tree-sitter grammars bundled. Nothing else to install.
 
 ### Deepest code intelligence
 
-tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 48 specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
+tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 70+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
 
 ### Broadest agent support
 
-14 AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
+More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 
@@ -834,7 +839,7 @@ Large projects take longer on the first full index.
 
 - Subsequent runs use incremental sync and are much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
-- The embedded MCP watcher handles sync automatically while agents are connected
+- Staleness is checked automatically on every MCP tool call while an agent is connected
 
 ### Disabling tokensave for specific projects
 
@@ -871,9 +876,9 @@ This project is a Rust port of the original [CodeGraph](https://github.com/colby
 ## Building
 
 ```bash
-cargo build --release                          # full (34 languages, default)
-cargo build --release --features medium        # medium (20 languages)
-cargo build --release --no-default-features    # lite (11 languages)
+cargo build --release                          # full (50+ languages, default)
+cargo build --release --features medium        # medium tier
+cargo build --release --no-default-features    # lite (smallest binary)
 
 cargo test                                     # run all tests (requires full)
 cargo check --no-default-features              # verify lite compiles
@@ -889,6 +894,10 @@ cargo clippy --all
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
  </picture>
 </a>
+
+## Acknowledgments
+
+Windows builds are code-signed with a free Authenticode certificate generously provided by [SignPath.io](https://signpath.io), with a certificate issued by the [SignPath Foundation](https://signpath.org).
 
 ## License
 

@@ -3,7 +3,7 @@
 //!
 //! Handles registration of the tokensave MCP server in `OpenCode`'s config
 //! file (`$HOME/.config/opencode/opencode.json` or `$XDG_CONFIG_HOME/opencode/opencode.json`),
-//! and prompt rules via `OPENCODE.md`. `OpenCode` has no hook system or
+//! and prompt rules via `$HOME/.config/opencode/AGENTS.md`. `OpenCode` has no hook system or
 //! declarative tool permissions — it uses interactive runtime approval.
 
 use std::io::Write;
@@ -101,9 +101,9 @@ fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     home.join(".config/opencode/opencode.json")
 }
 
-/// Returns the path to the global OPENCODE.md prompt file.
+/// Returns the path to the global AGENTS.md prompt file.
 fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
-    let modern = home.join(".config/opencode/OPENCODE.md");
+    let modern = home.join(".config/opencode/AGENTS.md");
     if modern.exists() || home.join(".config/opencode").exists() {
         return modern;
     }
@@ -112,11 +112,11 @@ fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
         if xdg_path.starts_with(home) {
             let xdg_dir = xdg_path.join("opencode");
             if xdg_dir.exists() {
-                return xdg_dir.join("OPENCODE.md");
+                return xdg_dir.join("AGENTS.md");
             }
         }
     }
-    home.join("OPENCODE.md")
+    home.join("AGENTS.md")
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append prompt rules to OPENCODE.md (idempotent).
+/// Append prompt rules to AGENTS.md (idempotent).
 fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
     let marker = "## Prefer tokensave MCP tools";
     let existing = if prompt_path.exists() {
@@ -162,7 +162,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!("  OPENCODE.md already contains tokensave rules, skipping");
+        eprintln!("  AGENTS.md already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
@@ -170,7 +170,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         .append(true)
         .open(prompt_path)
         .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open OPENCODE.md: {e}"),
+            message: format!("failed to open AGENTS.md: {e}"),
         })?;
     write!(
         f,
@@ -241,7 +241,7 @@ fn uninstall_mcp_server(config_path: &Path) {
     }
 }
 
-/// Remove tokensave rules from OPENCODE.md.
+/// Remove tokensave rules from AGENTS.md.
 fn uninstall_prompt_rules(prompt_path: &Path) {
     if !prompt_path.exists() {
         return;
@@ -250,7 +250,7 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  OPENCODE.md does not contain tokensave rules, skipping");
+        eprintln!("  AGENTS.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -322,7 +322,7 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check OPENCODE.md contains tokensave rules.
+/// Check AGENTS.md contains tokensave rules.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     let prompt_path = opencode_prompt_path(home);
     if prompt_path.exists() {
@@ -330,13 +330,11 @@ fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
             .unwrap_or_default()
             .contains("tokensave");
         if has_rules {
-            dc.pass("OPENCODE.md contains tokensave rules");
+            dc.pass("AGENTS.md contains tokensave rules");
         } else {
-            dc.fail(
-                "OPENCODE.md missing tokensave rules — run `tokensave install --agent opencode`",
-            );
+            dc.fail("AGENTS.md missing tokensave rules — run `tokensave install --agent opencode`");
         }
     } else {
-        dc.warn("OPENCODE.md does not exist");
+        dc.warn("AGENTS.md does not exist");
     }
 }

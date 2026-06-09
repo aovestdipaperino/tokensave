@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-
 ## [6.2.0] - 2026-06-09
 
 ### Added
@@ -16,6 +15,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Renamed `tokensave_outline` → `tokensave_entities`** to match sem terminology. The handler is unchanged; only the public MCP tool name (and CLI subcommand) is renamed. (#100)
+
+## [6.1.4] - 2026-06-07
+
+### Added
+- **ActionScript (AS2/AS3) extractor (`.as`).** Tree-sitter grammar (vendored from jcs090218/tree-sitter-actionscript, compiled by `build.rs`) behind the `lang-actionscript` feature (Full tier). Extracts classes, interfaces, methods, constructors, fields/consts, and imports with `Contains`/`Extends`/`Implements`/`TypeOf`/`Calls` edges; targets AS2 (AVM1) as emitted by the JPEXS/FFDec decompiler and `package`-wrapped AS3 (thanks @tanguc, #97).
+- **Grok Build (xAI) agent integration.** `tokensave install --agent grok` registers the MCP server in `~/.grok/config.toml` (under `[mcp_servers.tokensave]`) and appends prompt rules preferring the tokensave MCP tools (with guidance on graph queries, DB fallback, and issue reporting) to `~/.grok/AGENTS.md`. Full `uninstall` + `doctor` support. Updates docs and agent registry tests (thanks @davidullo, #99).
+- **F\* proof-oriented language support (`.fst` / `.fsti`).** Extracts top-level definitions along with their pre/post-conditions (thanks @hacklex, #98).
+- **`tokensave install --git-hook <default|yes|no>` flag.** Lets scripted/CI installs pre-decide the global `post-commit` hook prompt instead of blocking on a TTY `read` (or silently skipping on a non-TTY). `default` preserves today's interactive behavior (thanks @Puppo, #96).
+
+### Fixed
+- **`test_tool_definitions_have_annotations` write/exec allowlist.** The regression test added in 6.1.3 asserted `readOnlyHint: true` for `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` — the very tools 6.1.3 switched to `readOnlyHint: false` — leaving the suite red on `master`. Added them to the allowlist.
+
+## [6.1.3] - 2026-06-04
+
+### Fixed
+- **Write/exec MCP tools no longer advertise `readOnlyHint: true` (#94).** `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` mutate source files or run a `cargo test` subprocess, but were annotated read-only via the shared `def()` helper — so harnesses that auto-approve read-only tools could edit files or compile and execute project code without prompting. They now use a new `def_rw()` helper that stamps `readOnlyHint: false`, matching the other edit tools. A regression test asserts every write/exec tool is non-read-only.
+
+## [6.1.2] - 2026-05-30
+
+### Added
+- **Svelte extractor (`.svelte`).** Locates all `<script>` blocks (instance and `<script module>` / `<script context="module">`), blanks out template markup, and delegates to the TypeScript extractor. Symbols, interfaces, exported functions, and `$props`/`$derived` rune declarations are indexed with correct line numbers in the original file. Closes #93.
+- **Astro extractor (`.astro`).** Parses the `---` TypeScript frontmatter block at the top of the file. Imports, interfaces, exported functions, and top-level `const`/`let` declarations are indexed; the HTML template body below the closing `---` is ignored. Closes #93.
+
+### Fixed
+- use OpenCode correct global rules file path (`AGENTS.md` instead of `OPENCODE.md`) (thanks @davidefossacecchi, #92)
 
 ## [6.1.1] - 2026-05-26
 

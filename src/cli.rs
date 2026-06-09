@@ -4,6 +4,13 @@ fn agent_value_parser() -> PossibleValuesParser {
     PossibleValuesParser::new(tokensave::agents::available_integrations())
 }
 
+/// Whether `tokensave install` should offer to install the global git
+/// `post-commit` hook, and if so, whether to ask interactively or act
+/// non-interactively. Re-exported from `tokensave::agents::GitHookMode`
+/// so the enum lives in one place and both the CLI parser and the
+/// install dispatch see the same definition.
+pub use tokensave::agents::GitHookMode;
+
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
 #[command(
@@ -85,6 +92,12 @@ pub enum Commands {
         /// Agent to configure (auto-detects if omitted)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
+        /// Whether to install a global git `post-commit` hook that runs
+        /// `tokensave sync` after each commit. `default` preserves the
+        /// interactive prompt (or silent skip on non-TTY). `yes` installs
+        /// the hook without asking; `no` skips it without asking.
+        #[arg(long, value_enum, default_value_t = GitHookMode::Default)]
+        git_hook: GitHookMode,
     },
     /// Refresh settings for all already-installed agents
     Reinstall,

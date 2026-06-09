@@ -71,6 +71,15 @@ pub struct UserConfig {
     #[serde(default)]
     pub last_installed_version: String,
 
+    /// Version of the *previously running* tokensave binary, recorded by
+    /// `tokensave upgrade` / `channel switch` just before the binary is
+    /// replaced. The *new* binary reads this on startup and decides whether
+    /// reinstall is required for the transition (patch-only bumps are
+    /// no-ops; minor/major bumps re-register agents). Always updated to the
+    /// running version after the decision is made.
+    #[serde(default)]
+    pub previous_version: String,
+
     /// Per-file extraction timeout in seconds. The worker is killed and
     /// the file is recorded in `SyncResult.skipped_paths` if a single
     /// file's extraction takes longer. Bounds the worst case from any
@@ -109,6 +118,7 @@ impl Default for UserConfig {
             last_flags_fetch_at: 0,
             last_pricing_fetch_at: 0,
             last_installed_version: String::new(),
+            previous_version: String::new(),
             extraction_timeout_secs: default_extraction_timeout_secs(),
         }
     }
