@@ -689,6 +689,9 @@ pub fn ts_lang_key_from_path(path: &str) -> Option<&'static str> {
         "nix" => "nix",
         "zig" => "zig",
         "proto" => "protobuf",
+        "wgsl" => "wgsl",
+        "hlsl" | "fx" => "hlsl",
+        "metal" => "cpp",
         _ => return None,
     })
 }
@@ -731,7 +734,8 @@ fn lang_key_is_known(key: &str) -> bool {
             | "pascal" | "perl" | "php" | "powershell" | "protobuf" | "python"
             | "qbasic" | "quint" | "r" | "ruby" | "rust" | "scala" | "sql"
             | "swift" | "toml" | "tsx" | "typescript" | "vbnet" | "zig"
-    )
+    ) || (cfg!(feature = "lang-wgsl") && key == "wgsl")
+        || (cfg!(feature = "lang-hlsl") && key == "hlsl")
 }
 
 #[cfg(test)]
