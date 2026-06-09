@@ -16,6 +16,7 @@ mod dotnet;
 mod elixir;
 mod erlang;
 mod go;
+mod gradle;
 mod haskell;
 mod java;
 mod lockfiles;
@@ -67,6 +68,7 @@ const ECOSYSTEMS: &[EcosystemEntry] = &[
     ("ocaml", ocaml::detect, ocaml::parse),
     ("dart", dart::detect, dart::parse),
     ("crystal", crystal::detect, crystal::parse),
+    ("gradle", gradle::detect, gradle::parse),
 ];
 
 /// Handles `tokensave_dependencies` tool calls.

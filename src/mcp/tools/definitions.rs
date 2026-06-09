@@ -1522,7 +1522,10 @@ fn def_dependencies() -> ToolDefinition {
          • Haskell — *.cabal\n\
          • OCaml — *.opam (+ dune-project fallback)\n\
          • Dart/Flutter — pubspec.yaml + pubspec.lock\n\
-         • Crystal — shard.yml + shard.lock\n\n\
+         • Crystal — shard.yml + shard.lock\n\
+         • Gradle — build.gradle (Groovy), build.gradle.kts (Kotlin), \
+         gradle/libs.versions.toml (Version Catalog), settings.gradle{,.kts} \
+         for multi-module discovery\n\n\
          Three modes:\n\
          • zero input → workspace summary: members + every package any member \
          depends on, plus `licenses` aggregate, `version_drift` array (crates \
@@ -1531,7 +1534,7 @@ fn def_dependencies() -> ToolDefinition {
          • `crate: <name>` (or `package: <name>`) → list every member that \
          depends on this package, with kind/version/resolved/features/optional/local-path.\n\
          • `member: <name>` → list every dependency declared by this member.\n\n\
-         Filters: `ecosystem: rust|node|python|go|java|dotnet|php|ruby|swift|elixir|erlang|r|haskell|ocaml|dart|crystal`, \
+         Filters: `ecosystem: rust|node|python|go|java|dotnet|php|ruby|swift|elixir|erlang|r|haskell|ocaml|dart|crystal|gradle`, \
          `kind: normal|dev|build|peer|optional|all`. Set `include_lockfile: true` \
          to stamp resolved versions from the per-ecosystem lockfile. Workspace \
          globs support `crates/*`, `packages/*/foo`, `**`, and `!negation`.",

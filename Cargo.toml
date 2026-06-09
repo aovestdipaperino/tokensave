@@ -95,6 +95,7 @@ tokensave-large-treesitters = { version = "0.5.0", git = "https://github.com/aov
 # pick up 0.2 via SemVer; pulling it directly here forces the lock file
 # to resolve to 0.2 for the whole workspace.
 tree-sitter-dart = "0.2"
+dekobon-tree-sitter-groovy = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
