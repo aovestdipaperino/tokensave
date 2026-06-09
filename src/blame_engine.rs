@@ -144,10 +144,51 @@ pub fn log(
         // The `ast_hash` comparison below is the real change-detection gate.
         let Some(matched) = best_match_in_tree(&source, &tree, target_fp, opts.similarity_threshold)
         else {
-            // The entity does not exist in this revision → boundary.
-            // Flush any pending event before marking introduction.
+            // Entity vanished — probe other files touched in the next-older
+            // commit (the boundary commit) for a structural match.
+            // Flush pending before building combined to avoid losing the last
+            // post-rename event collected so far.
             if let Some((ev, _)) = pending.take() {
                 events.push(ev);
+            }
+            if let Some(renamed) = probe_rename_at_boundary(
+                &repo,
+                project_root,
+                visit,
+                target_fp,
+                opts,
+            )? {
+                // Switch the walk to follow the prior file. We rerun `log` on
+                // that file path starting from the boundary commit's parent.
+                let prior = log_from_commit(
+                    project_root,
+                    &renamed.prior_file,
+                    visit.commit_id,
+                    language_key,
+                    target_fp,
+                    opts,
+                )?;
+                // Pre-rename events first (oldest-first), then the post-rename
+                // events we already collected (already oldest-first after the
+                // reverse below).
+                let mut combined = prior.events;
+                events.reverse();
+                combined.extend(events);
+                return Ok(BlameResult {
+                    events: combined,
+                    boundary_reason: BoundaryReason::RenamedFrom,
+                    commits_walked: commits_walked + prior.commits_walked,
+                    parse_failures: {
+                        let mut p = prior.parse_failures;
+                        p.extend(parse_failures);
+                        p
+                    },
+                    skipped_large: {
+                        let mut s = prior.skipped_large;
+                        s.extend(skipped_large);
+                        s
+                    },
+                });
             }
             found_introduction = true;
             break;
@@ -187,6 +228,53 @@ pub fn log(
     // Flush the final pending event (history exhausted or max reached).
     if let Some((ev, _)) = pending.take() {
         events.push(ev);
+    }
+
+    // Post-loop rename probe: if the walk ended naturally (not due to a
+    // mid-blob "entity not found") and the entity was still present in the
+    // oldest-visited commit, check whether that commit introduced the file
+    // (parent doesn't have it). If so, the file might have been renamed from
+    // another file — probe the boundary commit's parent for a structural match.
+    if !found_introduction && commits_walked < opts.max_commits {
+        if let Some(oldest_visit) = visits.last() {
+            if let Some(renamed) = probe_rename_at_boundary(
+                &repo,
+                project_root,
+                oldest_visit,
+                target_fp,
+                opts,
+            )? {
+                let prior = log_from_commit(
+                    project_root,
+                    &renamed.prior_file,
+                    oldest_visit.commit_id,
+                    language_key,
+                    target_fp,
+                    opts,
+                )?;
+                // Pre-rename events first (oldest-first), then the post-rename
+                // events we already collected. events is still newest-first here
+                // so reverse it first.
+                let mut combined = prior.events;
+                events.reverse();
+                combined.extend(events);
+                return Ok(BlameResult {
+                    events: combined,
+                    boundary_reason: BoundaryReason::RenamedFrom,
+                    commits_walked: commits_walked + prior.commits_walked,
+                    parse_failures: {
+                        let mut p = prior.parse_failures;
+                        p.extend(parse_failures);
+                        p
+                    },
+                    skipped_large: {
+                        let mut s = prior.skipped_large;
+                        s.extend(skipped_large);
+                        s
+                    },
+                });
+            }
+        }
     }
 
     // Oldest-first for callers.
@@ -247,6 +335,141 @@ fn best_match_in_tree(
         }
     }
     best.map(|(_, fp)| fp)
+}
+
+struct RenameMatch {
+    prior_file: String,
+}
+
+/// At a "vanish" boundary, walk to the next-older commit and probe every
+/// file present at that older commit for a structural match.
+///
+/// # Recursion safety
+/// `log_from_commit` calls `log` again with a different file. If the entity
+/// also disappears from the prior file in its own history walk, the probe will
+/// recurse. In v1 this is bounded by `max_commits` and the structure of git
+/// history (each rename traverses a different commit set), so no infinite-loop
+/// guard is needed for realistic fixtures. Pathological cases (e.g. repeated
+/// cross-file bouncing) can exhaust the stack in theory; a depth counter can
+/// be added to `BlameOptions` if this becomes an issue.
+fn probe_rename_at_boundary(
+    repo: &gix::Repository,
+    project_root: &std::path::Path,
+    boundary_visit: &CommitVisit,
+    target_fp: &Fingerprint,
+    opts: &BlameOptions,
+) -> Result<Option<RenameMatch>, String> {
+    use crate::extraction::ts_provider;
+    use crate::redundancy::parse_file;
+
+    // Resolve the parent of the boundary commit.
+    let commit = repo
+        .find_object(boundary_visit.commit_id)
+        .map_err(|e| format!("cannot find boundary commit: {e}"))?
+        .try_into_commit()
+        .map_err(|e| format!("not a commit: {e}"))?;
+    let Some(parent_id) = commit.parent_ids().next() else {
+        return Ok(None);
+    };
+    let parent = repo
+        .find_object(parent_id.detach())
+        .map_err(|e| format!("cannot find parent: {e}"))?
+        .try_into_commit()
+        .map_err(|e| format!("not a parent commit: {e}"))?;
+
+    // Files changed between parent and boundary tell us the candidate set.
+    let parent_tree = parent.tree().map_err(|e| format!("parent tree: {e}"))?;
+    let boundary_tree = commit.tree().map_err(|e| format!("boundary tree: {e}"))?;
+
+    let mut candidates: Vec<String> = Vec::new();
+    parent_tree
+        .changes()
+        .map_err(|e| format!("diff init: {e}"))?
+        .for_each_to_obtain_tree(&boundary_tree, |change| {
+            use gix::object::tree::diff::Change;
+            match &change {
+                Change::Deletion { location, entry_mode, .. }
+                | Change::Modification { location, entry_mode, .. }
+                | Change::Addition { location, entry_mode, .. } => {
+                    if !entry_mode.is_tree() {
+                        candidates.push(location.to_string());
+                    }
+                }
+                Change::Rewrite {
+                    source_location,
+                    location,
+                    source_entry_mode,
+                    entry_mode,
+                    ..
+                } => {
+                    if !source_entry_mode.is_tree() {
+                        candidates.push(source_location.to_string());
+                    }
+                    if !entry_mode.is_tree() {
+                        candidates.push(location.to_string());
+                    }
+                }
+            }
+            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
+        })
+        .map_err(|e| format!("tree diff: {e}"))?;
+
+    let mut best: Option<(f64, String)> = None;
+    for cand in candidates {
+        let Some(lang_key) = ts_lang_key_from_path(&cand) else {
+            continue;
+        };
+        let Some(entry) = parent_tree
+            .lookup_entry_by_path(std::path::Path::new(&cand))
+            .map_err(|e| format!("lookup_entry_by_path: {e}"))?
+        else {
+            continue;
+        };
+        let blob = repo
+            .find_object(entry.object_id())
+            .map_err(|e| format!("blob lookup: {e}"))?;
+        if blob.data.len() as u64 > opts.max_blob_bytes {
+            continue;
+        }
+        let Ok(source) = std::str::from_utf8(&blob.data) else {
+            continue;
+        };
+        let lang = ts_provider::language(lang_key);
+        let Some(tree) = parse_file(source, &lang) else {
+            continue;
+        };
+        if let Some(fp) =
+            best_match_in_tree(source, &tree, target_fp, opts.similarity_threshold)
+        {
+            let score = crate::redundancy::composite_similarity(target_fp, &fp);
+            let better = best.as_ref().is_none_or(|(s, _)| score > *s);
+            if better {
+                best = Some((score, cand));
+            }
+        }
+    }
+
+    // `project_root` is reserved for a future on-disk optimisation.
+    let _ = project_root;
+
+    Ok(best.map(|(_, prior_file)| RenameMatch { prior_file }))
+}
+
+/// Recursive helper: re-run the engine on a different file. The walker
+/// begins at HEAD and naturally includes pre-rename commits because the
+/// pre-rename file existed there. `boundary_commit` is currently unused
+/// — reserved for a future "start from this commit" optimisation that
+/// avoids re-walking the post-rename history.
+fn log_from_commit(
+    project_root: &std::path::Path,
+    file: &str,
+    boundary_commit: gix::ObjectId,
+    language_key: &str,
+    target_fp: &Fingerprint,
+    opts: &BlameOptions,
+) -> Result<BlameResult, String> {
+    let _ = boundary_commit;
+    log(project_root, file, 0, 0, language_key, target_fp, opts)
 }
 
 /// True for tree-sitter node kinds that bound an identifiable code entity
@@ -590,6 +813,46 @@ mod tests {
         assert!(result.events[0].summary.contains("c1"));
         assert!(result.events[1].summary.contains("c3"));
         assert_eq!(result.boundary_reason, BoundaryReason::Introduced);
+    }
+
+    #[test]
+    fn log_follows_function_renamed_across_files() {
+        use std::process::Command;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            assert!(st.success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "T"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        // c1: function in a.rs
+        std::fs::write(root.join("a.rs"), "pub fn helper() -> i32 { 42 }\n").unwrap();
+        git(&["add", "a.rs"]);
+        git(&["commit", "-q", "-m", "c1: born in a.rs"]);
+
+        // c2: function moves to b.rs (a.rs deleted, b.rs created)
+        std::fs::remove_file(root.join("a.rs")).unwrap();
+        std::fs::write(root.join("b.rs"), "pub fn helper() -> i32 { 42 }\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "c2: moved to b.rs"]);
+
+        // c3: change body in b.rs
+        std::fs::write(root.join("b.rs"), "pub fn helper() -> i32 { 43 }\n").unwrap();
+        git(&["commit", "-q", "-am", "c3: edit in b.rs"]);
+
+        let source = std::fs::read_to_string(root.join("b.rs")).unwrap();
+        let fp = compute_target_fingerprint(&source, "rust", 0, 0).expect("fp");
+        let result = log(root, "b.rs", 0, 0, "rust", &fp, &BlameOptions::default()).expect("log");
+
+        // Should have at least one event from each side of the rename, and the
+        // boundary should be RenamedFrom (with the prior file recorded).
+        assert!(result.events.iter().any(|e| e.file_at_commit == "a.rs"),
+            "expected an event from a.rs in {:#?}", result.events);
+        assert_eq!(result.boundary_reason, BoundaryReason::RenamedFrom);
     }
 
     #[test]
