@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`tokensave_blame` and `tokensave_log`** — per-symbol git blame and history. Walks history via `gix`, parses each historical blob with tree-sitter, and matches the target symbol across commits via structural fingerprints. Tracks cross-file renames via a probe at the boundary. (#100)
+- **`tokensave_diff`** — sem-style unified diff that orchestrates `changelog`, `commit_context`, and `diff_context` behind a single `{ from, to, changes }` envelope. (#100)
+
+### Changed
+- **Renamed `tokensave_outline` → `tokensave_entities`** to match sem terminology. The handler is unchanged; only the public MCP tool name (and CLI subcommand) is renamed. This is a breaking change for any caller using the old name. (#100)
 
 ## [6.1.1] - 2026-05-26
 
