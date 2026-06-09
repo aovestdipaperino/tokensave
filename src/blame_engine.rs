@@ -85,6 +85,144 @@ pub fn log(
     Err("not yet implemented".to_string())
 }
 
+/// One commit that touched the watched file.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // used in Task 4+
+pub(crate) struct CommitVisit {
+    pub commit_id: gix::ObjectId,
+    pub short_sha: String,
+    pub author: String,
+    pub email: String,
+    pub date_rfc3339: String,
+    pub summary: String,
+    pub blob_id: gix::ObjectId,
+    pub blob_size: u64,
+}
+
+/// Walk back from HEAD, returning only commits where the named file's blob
+/// changed (added, modified, or removed). Stops after `max_commits` total
+/// commits *visited* (not yielded). Reverse chronological order.
+#[allow(dead_code)] // used in Task 4+
+pub(crate) fn walk_file_history(
+    project_root: &std::path::Path,
+    file_path: &str,
+    max_commits: usize,
+) -> Result<Vec<CommitVisit>, String> {
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+    let head = repo
+        .head()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+        .into_peeled_id()
+        .map_err(|e| format!("cannot peel HEAD: {e}"))?;
+
+    let mut visits = Vec::new();
+    let mut last_blob_id: Option<gix::ObjectId> = None;
+    let mut visited = 0_usize;
+    let mut current_id = head.detach();
+
+    while visited < max_commits {
+        let commit = repo
+            .find_object(current_id)
+            .map_err(|e| format!("cannot find commit object: {e}"))?
+            .try_into_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+
+        let tree = commit
+            .tree()
+            .map_err(|e| format!("cannot read tree for commit {current_id}: {e}"))?;
+        let entry = tree
+            .lookup_entry_by_path(std::path::Path::new(file_path))
+            .map_err(|e| format!("lookup_entry_by_path failed: {e}"))?;
+
+        // If the file existed in this commit AND its blob differs from the
+        // newer-side blob we last recorded, yield this commit.
+        if let Some(entry) = entry {
+            let blob_id = entry.object_id();
+            let differs = last_blob_id != Some(blob_id);
+            if differs {
+                let blob = repo
+                    .find_object(blob_id)
+                    .map_err(|e| format!("cannot find blob: {e}"))?;
+                let blob_size = blob.data.len() as u64;
+                let (author, email, date, summary) = commit_metadata(&commit)?;
+                visits.push(CommitVisit {
+                    commit_id: current_id,
+                    short_sha: format!("{current_id:.7}"),
+                    author,
+                    email,
+                    date_rfc3339: date,
+                    summary,
+                    blob_id,
+                    blob_size,
+                });
+                last_blob_id = Some(blob_id);
+            }
+        }
+
+        visited += 1;
+        let parent_id = commit.parent_ids().next().map(gix::Id::detach);
+        match parent_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+
+    Ok(visits)
+}
+
+#[allow(dead_code)] // used in Task 4+
+fn commit_metadata(
+    commit: &gix::Commit<'_>,
+) -> Result<(String, String, String, String), String> {
+    let author_sig = commit
+        .author()
+        .map_err(|e| format!("cannot decode author: {e}"))?;
+    let author = author_sig.name.to_string();
+    let email = author_sig.email.to_string();
+    let secs = author_sig.seconds();
+    let date = format_rfc3339(secs);
+    let message = commit
+        .message_raw()
+        .map_err(|e| format!("cannot read commit message: {e}"))?;
+    let summary = std::str::from_utf8(message.as_ref())
+        .unwrap_or("")
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    Ok((author, email, date, summary))
+}
+
+#[allow(dead_code)] // used in Task 4+
+fn format_rfc3339(unix_secs: i64) -> String {
+    // gix doesn't ship a time formatter; format manually as UTC.
+    let (yr, mo, dy, hr, mn, sc) = ymd_hms_from_unix(unix_secs);
+    format!("{yr:04}-{mo:02}-{dy:02}T{hr:02}:{mn:02}:{sc:02}Z")
+}
+
+#[allow(clippy::many_single_char_names)] // algorithm variables match the reference
+#[allow(dead_code)] // used in Task 4+
+fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
+    // Howard Hinnant's `civil_from_days`, simplified for UTC.
+    let day_sec = ts.rem_euclid(86_400);
+    ts = ts.div_euclid(86_400);
+    let hour = (day_sec / 3600) as u32;
+    let min = ((day_sec % 3600) / 60) as u32;
+    let sec = (day_sec % 60) as u32;
+
+    let z = ts + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = (y + i64::from(month <= 2)) as i32;
+    (year, month, day, hour, min, sec)
+}
+
 /// Convenience wrapper: returns the most recent change event, or `None` if
 /// the entity was never mutated in tracked history.
 pub fn blame(
@@ -219,5 +357,38 @@ mod tests {
     fn compute_target_fingerprint_returns_none_for_unknown_lang() {
         let source = "anything";
         assert!(compute_target_fingerprint(source, "no_such_lang_key", 0, 0).is_none());
+    }
+
+    #[test]
+    fn walk_history_yields_commits_in_reverse_chrono_order() {
+        use std::process::Command;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Bootstrap a tiny repo with three commits touching foo.rs.
+        let run = |args: &[&str]| {
+            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            assert!(st.success(), "git {:?} failed", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "T"]);
+        run(&["config", "commit.gpgsign", "false"]);
+
+        std::fs::write(root.join("foo.rs"), "fn a() {}\n").unwrap();
+        run(&["add", "foo.rs"]);
+        run(&["commit", "-q", "-m", "c1"]);
+
+        std::fs::write(root.join("foo.rs"), "fn a() { let _ = 1; }\n").unwrap();
+        run(&["commit", "-q", "-am", "c2"]);
+
+        std::fs::write(root.join("foo.rs"), "fn a() { let _ = 2; }\n").unwrap();
+        run(&["commit", "-q", "-am", "c3"]);
+
+        let commits = walk_file_history(root, "foo.rs", 10).expect("walk");
+        assert_eq!(commits.len(), 3, "expected 3 commits, got {commits:?}");
+        // Reverse chrono: c3 first, c1 last.
+        assert!(commits[0].summary.contains("c3"));
+        assert!(commits[2].summary.contains("c1"));
     }
 }
