@@ -163,6 +163,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_impls(),
         def_diagnose(),
         def_derives(),
+        def_annotations(),
         def_run_affected_tests(),
         def_record_decision(),
         def_record_code_area(),
@@ -1456,6 +1457,42 @@ fn def_derives() -> ToolDefinition {
                 "node_id": {
                     "type": "string",
                     "description": "Optional: look up the type by node ID instead."
+                }
+            }
+        }),
+    )
+}
+
+fn def_annotations() -> ToolDefinition {
+    def(
+        "tokensave_annotations",
+        "Annotations & Attributes",
+        "Inspect attributes / annotations / decorators across the project — \
+         Rust `#[cfg(test)]`, Python `@pytest.fixture`, Java `@Override`, TS \
+         decorators, etc. Two modes: histogram (no `name`) returns top-K \
+         annotation names with usage counts; site mode (with `name`, `file`, \
+         or `target_kind`) returns the specific `(annotation, target)` pairs. \
+         Backed by the language-neutral `annotation_usage` node + `annotates` \
+         edge already in the graph — works wherever the extractor records \
+         attribute edges.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Annotation/attribute/decorator name (e.g. \"test\", \"derive\", \"cfg\", \"pytest.fixture\"). Omit for histogram mode."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Restrict to target nodes whose file_path starts with this prefix (file or directory)."
+                },
+                "target_kind": {
+                    "type": "string",
+                    "description": "Filter by what the annotation attaches to: \"function\", \"method\", \"struct\", \"enum\", \"trait\", \"module\", \"impl\", etc."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of rows (default 50, max 500)."
                 }
             }
         }),

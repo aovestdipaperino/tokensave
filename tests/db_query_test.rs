@@ -2481,3 +2481,136 @@ async fn test_get_files_with_test_annotations() {
     assert!(result.contains("src/lib.rs"));
     assert!(!result.contains("src/other.rs"));
 }
+
+fn make_annotation(id: &str, name: &str, file: &str) -> Node {
+    let mut n = sample_node(id, name, file);
+    n.kind = NodeKind::AnnotationUsage;
+    n
+}
+
+#[tokio::test]
+async fn test_get_annotation_histogram_groups_and_counts() {
+    let (db, _dir) = setup_db().await;
+    let target1 = sample_node("t1", "fn1", "src/a.rs");
+    let target2 = sample_node("t2", "fn2", "src/a.rs");
+    let target3 = sample_node("t3", "fn3", "src/b.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "test", "src/a.rs");
+    let a3 = make_annotation("a3", "cfg", "src/b.rs");
+    db.insert_nodes(&[target1, target2, target3, a1, a2, a3])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+        sample_edge("a3", "t3", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let hist = db
+        .get_annotation_histogram(None)
+        .await
+        .expect("histogram query failed");
+    // Expect [("test", 2), ("cfg", 1)] sorted by count desc.
+    assert_eq!(hist[0], ("test".to_string(), 2));
+    assert_eq!(hist[1], ("cfg".to_string(), 1));
+}
+
+#[tokio::test]
+async fn test_get_annotation_histogram_filters_by_path_prefix() {
+    let (db, _dir) = setup_db().await;
+    let t1 = sample_node("t1", "fn1", "src/a.rs");
+    let t2 = sample_node("t2", "fn2", "src/b.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "test", "src/b.rs");
+    db.insert_nodes(&[t1, t2, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let hist = db
+        .get_annotation_histogram(Some("src/a.rs"))
+        .await
+        .expect("histogram failed");
+    assert_eq!(hist, vec![("test".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_joins_via_annotates_edge() {
+    let (db, _dir) = setup_db().await;
+    let target = sample_node("t1", "my_fn", "src/lib.rs");
+    let annot = make_annotation("a1", "tokio::test", "src/lib.rs");
+    db.insert_nodes(&[target, annot])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[sample_edge("a1", "t1", EdgeKind::Annotates)])
+        .await
+        .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(Some("tokio::test"), None, None, 10)
+        .await
+        .expect("sites query failed");
+    assert_eq!(sites.len(), 1);
+    let s = &sites[0];
+    assert_eq!(s["annotation"], "tokio::test");
+    assert_eq!(s["target"]["name"], "my_fn");
+    assert_eq!(s["target"]["file"], "src/lib.rs");
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_filters_target_kind() {
+    let (db, _dir) = setup_db().await;
+    let fn_target = sample_node("fn1", "the_fn", "src/lib.rs");
+    let mut struct_target = sample_node("st1", "TheStruct", "src/lib.rs");
+    struct_target.kind = NodeKind::Struct;
+    let a1 = make_annotation("a1", "derive", "src/lib.rs");
+    let a2 = make_annotation("a2", "derive", "src/lib.rs");
+    db.insert_nodes(&[fn_target, struct_target, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "fn1", EdgeKind::Annotates),
+        sample_edge("a2", "st1", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(Some("derive"), None, Some("struct"), 10)
+        .await
+        .expect("sites failed");
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0]["target"]["kind"], "struct");
+    assert_eq!(sites[0]["target"]["name"], "TheStruct");
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_no_name_returns_all() {
+    let (db, _dir) = setup_db().await;
+    let t1 = sample_node("t1", "fn1", "src/a.rs");
+    let t2 = sample_node("t2", "fn2", "src/a.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "cfg", "src/a.rs");
+    db.insert_nodes(&[t1, t2, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(None, Some("src/a.rs"), None, 10)
+        .await
+        .expect("sites failed");
+    assert_eq!(sites.len(), 2);
+}

@@ -1073,6 +1073,79 @@ pub(super) async fn handle_derives(cg: &TokenSave, args: Value) -> Result<ToolRe
     })
 }
 
+/// Handles `tokensave_annotations` tool calls.
+///
+/// Two modes:
+/// - **Histogram** (no `name`, no `target_kind`): top annotation names by
+///   usage count across the project (or under `file` prefix).
+/// - **Sites**: rows of `{annotation, target}` joined via the `annotates`
+///   edge, filtered by `name` / `file` / `target_kind`.
+pub(super) async fn handle_annotations(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let name = args.get("name").and_then(|v| v.as_str());
+    let file = args.get("file").and_then(|v| v.as_str());
+    let target_kind = args.get("target_kind").and_then(|v| v.as_str());
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50usize, |n| n.min(500) as usize);
+
+    // Histogram mode: no name, no target_kind filter — return aggregate counts.
+    let want_histogram = name.is_none() && target_kind.is_none();
+
+    if want_histogram {
+        let hist = cg.get_annotation_histogram(file).await?;
+        let total: u64 = hist.iter().map(|(_, n)| *n).sum();
+        let rows: Vec<Value> = hist
+            .into_iter()
+            .take(limit)
+            .map(|(n, c)| json!({ "annotation": n, "count": c }))
+            .collect();
+        let output = json!({
+            "mode": "histogram",
+            "total_usages": total,
+            "scope": file.unwrap_or(""),
+            "annotations": rows,
+        });
+        let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+            touched_files: Vec::new(),
+        });
+    }
+
+    let sites = cg
+        .get_annotation_sites(name, file, target_kind, limit)
+        .await?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut touched_files: Vec<String> = Vec::new();
+    for v in &sites {
+        if let Some(fp) = v
+            .get("target")
+            .and_then(|t| t.get("file"))
+            .and_then(|f| f.as_str())
+        {
+            if seen.insert(fp.to_string()) {
+                touched_files.push(fp.to_string());
+            }
+        }
+    }
+    let output = json!({
+        "mode": "sites",
+        "filter": {
+            "name": name.unwrap_or(""),
+            "file": file.unwrap_or(""),
+            "target_kind": target_kind.unwrap_or(""),
+        },
+        "count": sites.len(),
+        "sites": sites,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files,
+    })
+}
+
 /// Approximate token cost of expanding a node's body and its full file.
 ///
 /// `body` uses ~20 tokens/line (≈80 chars/line at 4 chars/token), tuned for

@@ -2199,6 +2199,29 @@ impl TokenSave {
         self.db.get_files_with_test_annotations().await
     }
 
+    /// Histogram of annotation usages across the project (or under
+    /// `path_prefix`), sorted descending by count.
+    pub async fn get_annotation_histogram(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, u64)>> {
+        self.db.get_annotation_histogram(path_prefix).await
+    }
+
+    /// Annotation→target sites with optional filters. See
+    /// [`crate::db::TokenSaveDb::get_annotation_sites`] for filter semantics.
+    pub async fn get_annotation_sites(
+        &self,
+        name: Option<&str>,
+        path_prefix: Option<&str>,
+        target_kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.db
+            .get_annotation_sites(name, path_prefix, target_kind, limit)
+            .await
+    }
+
     /// Returns all node IDs marked with `/// skip-test-coverage`.
     pub async fn get_skip_test_coverage_node_ids(&self) -> Result<HashSet<String>> {
         self.db.get_skip_test_coverage_node_ids().await

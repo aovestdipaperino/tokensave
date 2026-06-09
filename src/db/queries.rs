@@ -1043,6 +1043,142 @@ impl Database {
         Ok(result)
     }
 
+    /// Histogram of annotation / attribute / decorator usages across the
+    /// project. Each row is `(annotation_name, count)` sorted descending by
+    /// count. Optional `path_prefix` restricts to nodes whose `file_path`
+    /// starts with that string.
+    ///
+    /// "Annotation" here is the language-neutral term for Rust attributes
+    /// (`#[derive(...)]`, `#[cfg(test)]`), Python decorators (`@pytest.fixture`),
+    /// Java annotations (`@Override`), TS decorators, etc. — anything the
+    /// extractors store as a `NodeKind::AnnotationUsage` node.
+    pub async fn get_annotation_histogram(
+        &self,
+        path_prefix: Option<&str>,
+    ) -> Result<Vec<(String, u64)>> {
+        let (sql, args) = if let Some(prefix) = path_prefix {
+            (
+                "SELECT name, COUNT(*) AS n \
+                 FROM nodes \
+                 WHERE kind = 'annotation_usage' AND file_path LIKE ?1 \
+                 GROUP BY name ORDER BY n DESC, name ASC".to_string(),
+                libsql::params_from_iter(vec![libsql::Value::Text(format!("{prefix}%"))]),
+            )
+        } else {
+            (
+                "SELECT name, COUNT(*) AS n \
+                 FROM nodes \
+                 WHERE kind = 'annotation_usage' \
+                 GROUP BY name ORDER BY n DESC, name ASC".to_string(),
+                libsql::params_from_iter(Vec::<libsql::Value>::new()),
+            )
+        };
+        let mut rows = self
+            .conn()
+            .query(&sql, args)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query annotation histogram: {e}"),
+                operation: "get_annotation_histogram".to_string(),
+            })?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read annotation row: {e}"),
+            operation: "get_annotation_histogram".to_string(),
+        })? {
+            let name: String = row.get(0).unwrap_or_default();
+            let count: i64 = row.get(1).unwrap_or(0);
+            if !name.is_empty() {
+                out.push((name, count.max(0) as u64));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Sites where annotations attach to targets, returned as JSON rows for
+    /// MCP-tool consumption. Filters:
+    ///
+    /// - `name`: annotation name (`"test"`, `"derive"`, `"cfg"`, etc.). When
+    ///   `None`, returns sites for *all* annotations — useful with `path_prefix`
+    ///   to enumerate every annotation in a sub-tree.
+    /// - `path_prefix`: restrict to target nodes whose `file_path` starts with
+    ///   this string.
+    /// - `target_kind`: restrict to targets of this kind
+    ///   (`"function"`, `"method"`, `"struct"`, `"module"`, …).
+    /// - `limit`: cap the number of rows returned (callers typically pass
+    ///   50–200 to keep MCP payloads bounded).
+    pub async fn get_annotation_sites(
+        &self,
+        name: Option<&str>,
+        path_prefix: Option<&str>,
+        target_kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut sql = String::from(
+            "SELECT a.name AS annotation, a.file_path AS a_file, a.start_line AS a_line, \
+                    t.id AS target_id, t.name AS target_name, t.kind AS target_kind, \
+                    t.file_path AS target_file, t.start_line AS target_line, t.qualified_name AS target_qname \
+             FROM edges e \
+             JOIN nodes a ON e.source = a.id \
+             JOIN nodes t ON e.target = t.id \
+             WHERE a.kind = 'annotation_usage' AND e.kind = 'annotates'",
+        );
+        let mut params: Vec<libsql::Value> = Vec::new();
+        if let Some(n) = name {
+            params.push(libsql::Value::Text(n.to_string()));
+            sql.push_str(&format!(" AND a.name = ?{}", params.len()));
+        }
+        if let Some(prefix) = path_prefix {
+            params.push(libsql::Value::Text(format!("{prefix}%")));
+            sql.push_str(&format!(" AND t.file_path LIKE ?{}", params.len()));
+        }
+        if let Some(k) = target_kind {
+            params.push(libsql::Value::Text(k.to_string()));
+            sql.push_str(&format!(" AND t.kind = ?{}", params.len()));
+        }
+        sql.push_str(" ORDER BY a.name ASC, t.file_path ASC, t.start_line ASC");
+        params.push(libsql::Value::Integer(limit as i64));
+        sql.push_str(&format!(" LIMIT ?{}", params.len()));
+
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(params))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query annotation sites: {e}"),
+                operation: "get_annotation_sites".to_string(),
+            })?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read annotation site row: {e}"),
+            operation: "get_annotation_sites".to_string(),
+        })? {
+            let annotation: String = row.get(0).unwrap_or_default();
+            let a_file: String = row.get(1).unwrap_or_default();
+            let a_line: i64 = row.get(2).unwrap_or(0);
+            let target_id: String = row.get(3).unwrap_or_default();
+            let target_name: String = row.get(4).unwrap_or_default();
+            let target_kind: String = row.get(5).unwrap_or_default();
+            let target_file: String = row.get(6).unwrap_or_default();
+            let target_line: i64 = row.get(7).unwrap_or(0);
+            let target_qname: String = row.get(8).unwrap_or_default();
+            out.push(serde_json::json!({
+                "annotation": annotation,
+                "annotation_file": a_file,
+                "annotation_line": a_line,
+                "target": {
+                    "id": target_id,
+                    "name": target_name,
+                    "kind": target_kind,
+                    "file": target_file,
+                    "line": target_line,
+                    "qualified_name": target_qname,
+                },
+            }));
+        }
+        Ok(out)
+    }
+
     /// Returns all file paths that contain at least one node annotated with
     /// `#[test]` (useful for detecting inline test modules in source files).
     pub async fn get_files_with_test_annotations(&self) -> Result<HashSet<String>> {
