@@ -83,7 +83,7 @@ fn test_install_creates_settings_with_hook() {
         .expect("PreToolUse should be an array");
 
     let tokensave_hook = hooks.iter().find(|h| {
-        h.get("matcher").and_then(|m| m.as_str()) == Some("Agent")
+        h.get("matcher").and_then(|m| m.as_str()) == Some("Agent|Grep|Bash")
             && h.get("hooks")
                 .and_then(|a| a.as_array())
                 .map(|arr| {
@@ -98,7 +98,7 @@ fn test_install_creates_settings_with_hook() {
     });
     assert!(
         tokensave_hook.is_some(),
-        "PreToolUse should contain a hook with matcher=Agent and command containing tokensave"
+        "PreToolUse should contain a hook with matcher=Agent|Grep|Bash and command containing tokensave"
     );
 
     // Verify the hook command format (issue #81: modern args[] shape).
@@ -306,15 +306,18 @@ fn test_install_preserves_existing_settings() {
     let settings = read_json(&claude_dir.join("settings.json"));
     let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
 
-    // Should have both the existing Bash hook and the new Agent hook
+    // Should have both the existing Bash hook and the new tokensave hook
     let has_bash = hooks
         .iter()
         .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Bash"));
-    let has_agent = hooks
+    let has_tokensave = hooks
         .iter()
-        .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Agent"));
+        .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Agent|Grep|Bash"));
     assert!(has_bash, "existing Bash hook should be preserved");
-    assert!(has_agent, "new Agent hook should be added");
+    assert!(
+        has_tokensave,
+        "new tokensave PreToolUse hook should be added with matcher=Agent|Grep|Bash"
+    );
 }
 
 #[test]

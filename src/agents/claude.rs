@@ -163,7 +163,7 @@ fn install_hook_inner(settings: &mut serde_json::Value, tokensave_bin: &str, qui
         "PreToolUse",
         tokensave_bin,
         "hook-pre-tool-use",
-        Some("Agent"),
+        expected_hook_matcher("PreToolUse"),
         quiet,
     );
     install_single_hook(
@@ -807,6 +807,32 @@ fn expected_hook_subcommand(event: &str) -> &'static str {
     }
 }
 
+/// Expected hook matcher for each event, or `None` when the event is unmatched.
+///
+/// `PreToolUse` runs for `Agent`, `Grep`, and `Bash` — the latter two redirect
+/// symbol-shaped greps to `tokensave_search` / `tokensave_signature_search` /
+/// `tokensave_callers`.
+fn expected_hook_matcher(event: &str) -> Option<&'static str> {
+    match event {
+        "PreToolUse" => Some("Agent|Grep|Bash"),
+        _ => None,
+    }
+}
+
+/// Find the matcher string currently installed on a tokensave hook entry.
+/// Returns `None` if the hook isn't installed or has no matcher field.
+fn find_tokensave_hook_matcher(settings: &serde_json::Value, event: &str) -> Option<String> {
+    let arr = settings["hooks"][event].as_array()?;
+    arr.iter().find_map(|wrapper| {
+        let cmd = wrapper.get("hooks")?.as_array()?.first()?;
+        cmd.get("command").and_then(|c| c.as_str())?.contains("tokensave").then_some(())?;
+        wrapper
+            .get("matcher")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    })
+}
+
 /// Check all tokensave hooks in settings.
 fn doctor_check_hook(dc: &mut DoctorCounters, settings: &serde_json::Value) {
     for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
@@ -834,6 +860,18 @@ fn doctor_check_single_hook(dc: &mut DoctorCounters, settings: &serde_json::Valu
             "{event} hook has wrong subcommand: \"{sub}\" (expected \"{expected_sub}\")"
         ));
         return;
+    }
+
+    if let Some(expected_matcher) = expected_hook_matcher(event) {
+        let actual = find_tokensave_hook_matcher(settings, event);
+        if actual.as_deref() != Some(expected_matcher) {
+            dc.fail(&format!(
+                "{event} hook has stale matcher: {:?} (expected \"{expected_matcher}\") — \
+                 will be auto-repaired so the redirect catches Grep and Bash too",
+                actual.unwrap_or_default()
+            ));
+            return;
+        }
     }
 
     dc.pass(&format!("{event} hook installed"));
@@ -865,17 +903,22 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
 
     for event in &["PreToolUse", "UserPromptSubmit", "Stop"] {
         let expected_sub = expected_hook_subcommand(event);
+        let expected_matcher = expected_hook_matcher(event);
 
         let current = find_tokensave_hook(&settings, event);
+        let matcher_ok = expected_matcher.is_none_or(|m| {
+            find_tokensave_hook_matcher(&settings, event).as_deref() == Some(m)
+        });
         let correct = current
             .as_ref()
-            .is_some_and(|(_, s, legacy)| !*legacy && s == expected_sub);
+            .is_some_and(|(_, s, legacy)| !*legacy && s == expected_sub)
+            && matcher_ok;
         if correct {
             continue;
         }
 
         let bin = match &current {
-            // Modern shape with wrong subcommand: keep user's bin path.
+            // Modern shape with wrong subcommand or stale matcher: keep user's bin path.
             Some((b, _, false)) => Some(b.clone()),
             // Legacy shape or missing: only repair if we know our own path.
             _ => current_exe.clone(),
@@ -887,12 +930,7 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
         if current.is_some() {
             uninstall_single_hook(&mut settings, event);
         }
-        let matcher = if *event == "PreToolUse" {
-            Some("Agent")
-        } else {
-            None
-        };
-        install_single_hook(&mut settings, event, &bin, expected_sub, matcher, true);
+        install_single_hook(&mut settings, event, &bin, expected_sub, expected_matcher, true);
         repaired = true;
     }
 
@@ -1261,7 +1299,7 @@ mod tests {
         json!({
             "hooks": {
                 "PreToolUse": [{
-                    "matcher": "Agent",
+                    "matcher": "Agent|Grep|Bash",
                     "hooks": [{ "type": "command", "command": bin, "args": ["hook-pre-tool-use"] }]
                 }],
                 "UserPromptSubmit": [{
@@ -1283,7 +1321,7 @@ mod tests {
         json!({
             "hooks": {
                 "PreToolUse": [{
-                    "matcher": "Agent",
+                    "matcher": "Agent|Grep|Bash",
                     "hooks": [{ "type": "command", "command": format!("{bin} hook-pre-tool-use") }]
                 }],
                 "UserPromptSubmit": [{
@@ -1801,7 +1839,7 @@ mod tests {
         let settings = json!({
             "hooks": {
                 "PreToolUse": [{
-                    "matcher": "Agent",
+                    "matcher": "Agent|Grep|Bash",
                     "hooks": [{
                         "type": "command",
                         "command": "/usr/bin/tokensave",
@@ -1861,6 +1899,60 @@ mod tests {
         assert_eq!(
             after, pretty,
             "should not modify file when all hooks present"
+        );
+    }
+
+    #[test]
+    fn doctor_fix_upgrades_stale_pretool_matcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        // Old-shape: matcher is just "Agent" (pre-Grep/Bash redirect).
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Agent",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["hook-pre-tool-use"],
+                    }]
+                }],
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["hook-prompt-submit"],
+                    }]
+                }],
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/usr/bin/tokensave",
+                        "args": ["hook-stop"],
+                    }]
+                }]
+            }
+        });
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let mut dc = DoctorCounters::new();
+        doctor_fix_hooks(&mut dc, &settings_path, &settings);
+
+        let fixed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(
+            fixed["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+            Some("Agent|Grep|Bash"),
+            "stale Agent-only matcher must be upgraded to Agent|Grep|Bash"
+        );
+        // Bin path preserved across the matcher repair.
+        assert_eq!(
+            fixed["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str(),
+            Some("/usr/bin/tokensave")
         );
     }
 }
