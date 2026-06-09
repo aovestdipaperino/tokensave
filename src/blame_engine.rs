@@ -142,6 +142,47 @@ pub fn ts_lang_key_from_path(path: &str) -> Option<&'static str> {
     })
 }
 
+/// Parse `source` with the given language key, find the node enclosing the
+/// 0-indexed line range, and compute its `Fingerprint`.
+///
+/// Returns `None` if the language key is unknown to `ts_provider`, parsing
+/// fails, or no node matches the line range.
+pub fn compute_target_fingerprint(
+    source: &str,
+    language_key: &str,
+    start_line: u32,
+    end_line: u32,
+) -> Option<Fingerprint> {
+    use crate::extraction::ts_provider;
+    use crate::redundancy::{compute_fingerprint, find_node_at_lines, parse_file};
+
+    // `ts_provider::language` panics on unknown keys, so guard first.
+    if !lang_key_is_known(language_key) {
+        return None;
+    }
+    let lang = ts_provider::language(language_key);
+    let tree = parse_file(source, &lang)?;
+    let node = find_node_at_lines(&tree, start_line, end_line)?;
+    Some(compute_fingerprint(source, node))
+}
+
+/// Returns true when `key` is registered in `ts_provider::LANGUAGES`.
+///
+/// `ts_provider::language` panics on unknown keys; this helper lets the
+/// engine reject them gracefully.
+fn lang_key_is_known(key: &str) -> bool {
+    matches!(
+        key,
+        "bash" | "batch" | "c" | "c_sharp" | "clojure" | "cobol" | "cpp" | "dart"
+            | "dockerfile" | "elixir" | "erlang" | "fortran" | "fsharp" | "glsl"
+            | "go" | "gwbasic" | "haskell" | "java" | "javascript" | "julia"
+            | "kotlin" | "lean" | "lua" | "msbasic2" | "nix" | "objc" | "ocaml"
+            | "pascal" | "perl" | "php" | "powershell" | "protobuf" | "python"
+            | "qbasic" | "quint" | "r" | "ruby" | "rust" | "scala" | "sql"
+            | "swift" | "toml" | "tsx" | "typescript" | "vbnet" | "zig"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +203,21 @@ mod tests {
         assert_eq!(opts.max_commits, 500);
         assert!((opts.similarity_threshold - 0.85).abs() < f64::EPSILON);
         assert_eq!(opts.max_blob_bytes, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn compute_target_fingerprint_from_rust_source() {
+        let source = "pub fn add(a: i32, b: i32) -> i32 { a + b }\n";
+        let fp = compute_target_fingerprint(source, "rust", 0, 0)
+            .expect("rust language must be available");
+        // Body has tokens; fingerprint non-empty
+        assert!(fp.body_tokens > 0);
+        assert!(!fp.ast_hash.is_empty());
+    }
+
+    #[test]
+    fn compute_target_fingerprint_returns_none_for_unknown_lang() {
+        let source = "anything";
+        assert!(compute_target_fingerprint(source, "no_such_lang_key", 0, 0).is_none());
     }
 }
