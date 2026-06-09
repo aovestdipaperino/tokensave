@@ -148,7 +148,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_code_area(),
         def_session_recall(),
         def_read(),
-        def_outline(),
+        def_entities(),
         def_implementations(),
         def_unsafe_patterns(),
         def_diagnostics(),
@@ -1953,10 +1953,10 @@ fn def_implementations() -> ToolDefinition {
     )
 }
 
-fn def_outline() -> ToolDefinition {
+fn def_entities() -> ToolDefinition {
     def(
-        "tokensave_outline",
-        "File Outline",
+        "tokensave_entities",
+        "Entities In File",
         "Flat list of every top-level symbol defined in a file (functions, structs, \
          enums, traits, classes, impls, etc.) — like a table of contents. Sorted by \
          line number; no code bodies. Optional 'kinds' filter narrows to specific \

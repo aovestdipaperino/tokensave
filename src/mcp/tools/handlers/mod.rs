@@ -184,7 +184,7 @@ pub async fn handle_tool_call(
         "tokensave_body" => info::handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
-        "tokensave_outline" => info::handle_outline(cg, args).await,
+        "tokensave_entities" => info::handle_outline(cg, args).await,
         "tokensave_config" => info::handle_config(cg, &args),
         "tokensave_signature_search" => info::handle_signature_search(cg, args, scope_prefix).await,
         "tokensave_implementations" => graph::handle_implementations(cg, args, scope_prefix).await,
@@ -312,7 +312,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_record_code_area"));
         assert!(tool_names.contains(&"tokensave_session_recall"));
         assert!(tool_names.contains(&"tokensave_read"));
-        assert!(tool_names.contains(&"tokensave_outline"));
+        assert!(tool_names.contains(&"tokensave_entities"));
+        assert!(!tool_names.contains(&"tokensave_outline"));
         assert!(tool_names.contains(&"tokensave_implementations"));
         assert!(tool_names.contains(&"tokensave_unsafe_patterns"));
         assert!(tool_names.contains(&"tokensave_diagnostics"));

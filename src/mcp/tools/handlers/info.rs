@@ -1387,7 +1387,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     })
 }
 
-/// Handles `tokensave_outline` — flat symbol map for a file with optional
+/// Handles `tokensave_entities` — flat symbol map for a file with optional
 /// `kinds` filter.
 pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     use crate::context::read_modes::render_map;
