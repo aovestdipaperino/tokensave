@@ -6,6 +6,7 @@
 
 pub mod analysis;
 pub mod blame;
+pub mod dependencies;
 pub mod edit;
 pub mod git;
 pub mod graph;
@@ -179,6 +180,7 @@ pub async fn handle_tool_call(
         "tokensave_dsm" => health::handle_dsm(cg, args, scope_prefix).await,
         "tokensave_test_risk" => health::handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_test_coverage" => health::handle_test_coverage(cg, args).await,
+        "tokensave_dependencies" => dependencies::handle_dependencies(cg, args).await,
         "tokensave_session_start" => health::handle_session_start(cg, args, scope_prefix).await,
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
         "tokensave_blame" => blame::handle_blame(cg, args).await,
@@ -240,9 +242,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            81
+            82
         } else {
-            80
+            81
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -308,6 +310,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_dsm"));
         assert!(tool_names.contains(&"tokensave_test_risk"));
         assert!(tool_names.contains(&"tokensave_test_coverage"));
+        assert!(tool_names.contains(&"tokensave_dependencies"));
         assert!(tool_names.contains(&"tokensave_session_start"));
         assert!(tool_names.contains(&"tokensave_session_end"));
         assert!(tool_names.contains(&"tokensave_body"));

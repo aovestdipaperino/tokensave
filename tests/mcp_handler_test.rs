@@ -2789,6 +2789,119 @@ async fn test_test_coverage_clamps_max_depth() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_dependencies
+// ---------------------------------------------------------------------------
+
+fn write_test_cargo_toml(project: &std::path::Path) {
+    fs::write(
+        project.join("Cargo.toml"),
+        r#"[package]
+name = "test_fixture"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+
+[dev-dependencies]
+tempfile = "3"
+"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_dependencies_workspace_summary() {
+    let (cg, dir) = setup_project().await;
+    write_test_cargo_toml(dir.path());
+    let result = handle_tool_call(&cg, "tokensave_dependencies", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["mode"], "workspace");
+    assert!(parsed["members"].is_array());
+    let members: Vec<&str> = parsed["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(members.contains(&"test_fixture"));
+    let crates = parsed["crates"].as_array().unwrap();
+    assert!(crates
+        .iter()
+        .any(|c| c["crate"] == "serde"));
+}
+
+#[tokio::test]
+async fn test_dependencies_unknown_member_reports_available() {
+    let (cg, dir) = setup_project().await;
+    write_test_cargo_toml(dir.path());
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dependencies",
+        json!({ "member": "no_such_member_xyz" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["mode"], "member");
+    assert!(parsed["error"].as_str().unwrap().contains("no_such_member_xyz"));
+    assert!(parsed["available_members"].is_array());
+}
+
+#[tokio::test]
+async fn test_dependencies_kind_filter() {
+    let (cg, dir) = setup_project().await;
+    write_test_cargo_toml(dir.path());
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dependencies",
+        json!({ "kind": "dev" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["kind_filter"], "dev");
+    let crates = parsed["crates"].as_array().unwrap();
+    let names: Vec<&str> = crates
+        .iter()
+        .map(|c| c["crate"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"tempfile"), "dev dep should be present");
+    assert!(!names.contains(&"serde"), "normal dep should be filtered out");
+}
+
+#[tokio::test]
+async fn test_dependencies_crate_lookup() {
+    let (cg, dir) = setup_project().await;
+    write_test_cargo_toml(dir.path());
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dependencies",
+        json!({ "crate": "serde" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["mode"], "crate");
+    assert_eq!(parsed["crate"], "serde");
+    let usages = parsed["usages"].as_array().unwrap();
+    assert_eq!(usages.len(), 1);
+    assert_eq!(usages[0]["member"], "test_fixture");
+    assert_eq!(usages[0]["version"], "1.0");
+}
+
+// ---------------------------------------------------------------------------
 // Session start / end tests
 // ---------------------------------------------------------------------------
 

@@ -154,6 +154,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_dsm(),
         def_test_risk(),
         def_test_coverage(),
+        def_dependencies(),
         def_session_start(),
         def_session_end(),
         def_body(),
@@ -1494,6 +1495,42 @@ fn def_annotations() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of rows (default 50, max 500)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_dependencies() -> ToolDefinition {
+    def(
+        "tokensave_dependencies",
+        "Cargo Dependencies",
+        "Inspect declared dependencies in a Rust workspace (first iteration of \
+         #105). Reads `Cargo.toml` at the project root, resolves \
+         `[workspace] members = [\"crates/*\"]` globs, and surfaces deps from \
+         `[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` plus \
+         `[target.<cfg>.dependencies]`. Three modes:\n\
+         • zero input → workspace summary: members + every crate any member \
+         depends on (with the list of using members).\n\
+         • `crate: <name>` → list every member that depends on this crate, \
+         with kind/version/features/optional/local-path.\n\
+         • `member: <name>` → list every dependency declared by this member.\n\
+         Lockfile resolution and non-Rust ecosystems (package.json, \
+         pyproject.toml, go.mod, …) are deferred to follow-up iterations.",
+        json!({
+            "type": "object",
+            "properties": {
+                "crate": {
+                    "type": "string",
+                    "description": "Crate name to look up across the workspace (e.g. \"serde\", \"tokio\"). Mutually exclusive with `member`."
+                },
+                "member": {
+                    "type": "string",
+                    "description": "Workspace member to list deps for. Match by package name or by path (e.g. \"crates/foo\")."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Filter by kind: \"normal\" / \"dev\" / \"build\" / \"all\" (default \"all\")."
                 }
             }
         }),
