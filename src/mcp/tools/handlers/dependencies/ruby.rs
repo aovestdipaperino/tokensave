@@ -69,6 +69,7 @@ pub fn parse(root: &Path) -> Result<Workspace> {
         name: root
             .file_name()
             .map_or_else(|| "ruby-app".to_string(), |s| s.to_string_lossy().into_owned()),
+        license: None,
         deps,
     };
 
@@ -107,6 +108,7 @@ fn parse_gem_line(line: &str, scope: Option<DepKind>) -> Option<Dep> {
 
     Some(Dep {
         name,
+        resolved: None,
         version,
         features: Vec::new(),
         optional: matches!(kind, DepKind::Optional),

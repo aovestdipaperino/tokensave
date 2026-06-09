@@ -10,15 +10,25 @@
 //!   monorepo), letting callers slice with the `ecosystem` argument.
 
 mod common;
+mod crystal;
+mod dart;
 mod dotnet;
+mod elixir;
+mod erlang;
 mod go;
+mod haskell;
 mod java;
+mod lockfiles;
 mod node;
+mod ocaml;
 mod php;
 mod python;
+mod r_lang;
 mod ruby;
 mod rust;
+mod swift;
 mod xml_util;
+mod yaml_util;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -49,6 +59,14 @@ const ECOSYSTEMS: &[EcosystemEntry] = &[
     ("dotnet", dotnet::detect, dotnet::parse),
     ("php", php::detect, php::parse),
     ("ruby", ruby::detect, ruby::parse),
+    ("swift", swift::detect, swift::parse),
+    ("elixir", elixir::detect, elixir::parse),
+    ("erlang", erlang::detect, erlang::parse),
+    ("r", r_lang::detect, r_lang::parse),
+    ("haskell", haskell::detect, haskell::parse),
+    ("ocaml", ocaml::detect, ocaml::parse),
+    ("dart", dart::detect, dart::parse),
+    ("crystal", crystal::detect, crystal::parse),
 ];
 
 /// Handles `tokensave_dependencies` tool calls.
@@ -73,8 +91,17 @@ pub(super) async fn handle_dependencies(cg: &TokenSave, args: Value) -> Result<T
         })
         .unwrap_or("all");
     let ecosystem_filter = args.get("ecosystem").and_then(|v| v.as_str());
+    let include_lockfile = args
+        .get("include_lockfile")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
 
-    let workspaces = detect_workspaces(cg.project_root(), ecosystem_filter)?;
+    let mut workspaces = detect_workspaces(cg.project_root(), ecosystem_filter)?;
+    if include_lockfile {
+        for ws in &mut workspaces {
+            lockfiles::apply_to_workspace(ws);
+        }
+    }
     if workspaces.is_empty() {
         return Err(TokenSaveError::Config {
             message: format!(
@@ -132,22 +159,32 @@ fn render_summary(workspaces: &[Workspace], kind_filter: &str) -> ToolResult {
         Value::Null
     };
 
+    let flat = workspaces.len() == 1;
+    let flat_get = |field: &str| -> Value {
+        if !flat {
+            return Value::Null;
+        }
+        single.get(field).cloned().unwrap_or(Value::Null)
+    };
     let output = json!({
         "mode": "workspace",
         "kind_filter": kind_filter,
         "detected_ecosystems": detected_names,
         "total_members": total_members,
         // Convenience flat fields for the common single-ecosystem case.
-        "ecosystem": (workspaces.len() == 1).then(|| workspaces[0].ecosystem),
-        "members": (workspaces.len() == 1).then(|| {
+        "ecosystem": flat.then(|| workspaces[0].ecosystem),
+        "members": flat.then(|| {
             workspaces[0]
                 .members
                 .iter()
                 .map(|m| m.name.clone())
                 .collect::<Vec<_>>()
         }),
-        "crates": (workspaces.len() == 1).then(|| single.get("crates").cloned().unwrap_or(Value::Null)),
-        "patches": (workspaces.len() == 1).then(|| single.get("patches").cloned().unwrap_or(Value::Null)),
+        "members_detail": flat_get("members_detail"),
+        "licenses": flat_get("licenses"),
+        "crates": flat_get("crates"),
+        "version_drift": flat_get("version_drift"),
+        "patches": flat_get("patches"),
         // Always include the polyglot breakdown.
         "ecosystems": ecosystems,
     });
@@ -159,37 +196,100 @@ fn render_summary(workspaces: &[Workspace], kind_filter: &str) -> ToolResult {
     }
 }
 
+/// Map keyed by version-string → list of (member name, resolved version).
+type VersionToMembers = BTreeMap<String, Vec<(String, Option<String>)>>;
+
 fn ecosystem_summary(ws: &Workspace, kind_filter: &str) -> Value {
-    let mut all_crates: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut by_crate: BTreeMap<String, VersionToMembers> = BTreeMap::new();
     for m in &ws.members {
         for d in &m.deps {
-            if d.kind.passes(kind_filter) {
-                all_crates
-                    .entry(d.name.clone())
-                    .or_default()
-                    .insert(m.name.clone());
+            if !d.kind.passes(kind_filter) {
+                continue;
             }
+            // Outer map: crate → version → list of (member, resolved).
+            let v_key = d.version.clone().unwrap_or_else(|| "*".to_string());
+            by_crate
+                .entry(d.name.clone())
+                .or_default()
+                .entry(v_key)
+                .or_default()
+                .push((m.name.clone(), d.resolved.clone()));
         }
     }
-    let crate_rows: Vec<Value> = all_crates
-        .into_iter()
-        .map(|(name, members)| {
-            json!({
+
+    let mut crate_rows: Vec<Value> = Vec::new();
+    let mut drift_rows: Vec<Value> = Vec::new();
+    for (name, versions) in &by_crate {
+        let mut used_in: BTreeSet<String> = BTreeSet::new();
+        for members in versions.values() {
+            for (m_name, _) in members {
+                used_in.insert(m_name.clone());
+            }
+        }
+        crate_rows.push(json!({
+            "crate": name,
+            "used_in": used_in.into_iter().collect::<Vec<_>>(),
+        }));
+        // Drift = same crate declared at >1 distinct version range across members.
+        if versions.len() > 1 {
+            let by_version: Vec<Value> = versions
+                .iter()
+                .map(|(v, mems)| {
+                    json!({
+                        "version": v,
+                        "members": mems.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            drift_rows.push(json!({
                 "crate": name,
-                "used_in": members.into_iter().collect::<Vec<_>>(),
+                "version_count": versions.len() as u64,
+                "by_version": by_version,
+            }));
+        }
+    }
+
+    let member_rows: Vec<Value> = ws
+        .members
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name,
+                "path": m.path,
+                "license": m.license,
             })
         })
         .collect();
-    let member_names: Vec<&str> = ws.members.iter().map(|m| m.name.as_str()).collect();
+    let licenses_summary: Vec<Value> = collect_license_summary(&ws.members);
     let patch_rows: Vec<Value> = ws.patches.iter().map(patch_to_json).collect();
+
+    let member_names: Vec<&str> = ws.members.iter().map(|m| m.name.as_str()).collect();
     json!({
         "ecosystem": ws.ecosystem,
         "root": ws.root.display().to_string(),
         "member_count": ws.members.len() as u64,
         "members": member_names,
+        "members_detail": member_rows,
+        "licenses": licenses_summary,
         "crates": crate_rows,
+        "version_drift": drift_rows,
         "patches": patch_rows,
     })
+}
+
+/// Aggregate distinct license strings across members with a count of how
+/// many members declare each. Members without a `license` field are bucketed
+/// under `"<unknown>"`.
+fn collect_license_summary(members: &[crate::mcp::tools::handlers::dependencies::common::Member]) -> Vec<Value> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for m in members {
+        let key = m.license.clone().unwrap_or_else(|| "<unknown>".to_string());
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(license, count)| json!({ "license": license, "count": count }))
+        .collect()
 }
 
 fn render_member(workspaces: &[Workspace], name: &str, kind_filter: &str) -> ToolResult {
@@ -278,6 +378,7 @@ fn render_crate(workspaces: &[Workspace], name: &str, kind_filter: &str) -> Tool
                     "path": m.path,
                     "kind": d.kind.as_str(),
                     "version": d.version,
+                    "resolved": d.resolved,
                     "features": d.features,
                     "optional": d.optional,
                     "local_path": d.local_path,

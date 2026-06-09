@@ -1506,25 +1506,35 @@ fn def_dependencies() -> ToolDefinition {
         "tokensave_dependencies",
         "Package Dependencies",
         "Inspect declared dependencies across all supported package ecosystems \
-         (#105). Auto-detects which manifest(s) live at the project root:\n\
-         • Rust — Cargo.toml (+ workspace members glob, [target.<cfg>] deps)\n\
-         • Node — package.json (+ npm/yarn/pnpm workspaces)\n\
-         • Python — pyproject.toml (PEP 621 + Poetry), requirements*.txt\n\
-         • Go — go.mod (require blocks, replace directives)\n\
+         (#105, #106). Auto-detects which manifest(s) live at the project root:\n\
+         • Rust — Cargo.toml (+ workspace members glob, [target.<cfg>] deps, [patch.*]) + Cargo.lock\n\
+         • Node — package.json (+ npm/yarn/pnpm workspaces) + package-lock.json / yarn.lock / pnpm-lock.yaml\n\
+         • Python — pyproject.toml (PEP 621 + Poetry), requirements*.txt + poetry.lock / uv.lock / Pipfile.lock\n\
+         • Go — go.mod (require blocks, replace directives) + go.sum\n\
          • Java — pom.xml (+ <modules> + <dependencyManagement> BOMs)\n\
-         • .NET — *.csproj/*.fsproj/*.vbproj + Directory.Packages.props\n\
-         • PHP — composer.json (require, require-dev, replace, conflict)\n\
-         • Ruby — Gemfile (group :development / inline group hints)\n\n\
+         • .NET — *.csproj/*.fsproj/*.vbproj + Directory.Packages.props + packages.lock.json\n\
+         • PHP — composer.json + composer.lock\n\
+         • Ruby — Gemfile + Gemfile.lock\n\
+         • Swift — Package.swift\n\
+         • Elixir — mix.exs\n\
+         • Erlang — rebar.config\n\
+         • R — DESCRIPTION\n\
+         • Haskell — *.cabal\n\
+         • OCaml — *.opam (+ dune-project fallback)\n\
+         • Dart/Flutter — pubspec.yaml + pubspec.lock\n\
+         • Crystal — shard.yml + shard.lock\n\n\
          Three modes:\n\
          • zero input → workspace summary: members + every package any member \
-         depends on (with the list of using members). Polyglot repos return \
-         one block per ecosystem.\n\
+         depends on, plus `licenses` aggregate, `version_drift` array (crates \
+         pinned at different versions across members), and `members_detail` \
+         with per-member license. Polyglot repos return one block per ecosystem.\n\
          • `crate: <name>` (or `package: <name>`) → list every member that \
-         depends on this package, with kind/version/features/optional/local-path.\n\
+         depends on this package, with kind/version/resolved/features/optional/local-path.\n\
          • `member: <name>` → list every dependency declared by this member.\n\n\
-         Filter ecosystems with `ecosystem: rust|node|python|go|java|dotnet|php|ruby` \
-         or kinds with `kind: normal|dev|build|peer|optional|all`. Lockfile \
-         resolution (resolved vs. declared versions) remains deferred.",
+         Filters: `ecosystem: rust|node|python|go|java|dotnet|php|ruby|swift|elixir|erlang|r|haskell|ocaml|dart|crystal`, \
+         `kind: normal|dev|build|peer|optional|all`. Set `include_lockfile: true` \
+         to stamp resolved versions from the per-ecosystem lockfile. Workspace \
+         globs support `crates/*`, `packages/*/foo`, `**`, and `!negation`.",
         json!({
             "type": "object",
             "properties": {
@@ -1547,6 +1557,10 @@ fn def_dependencies() -> ToolDefinition {
                 "ecosystem": {
                     "type": "string",
                     "description": "Restrict to one ecosystem: \"rust\" / \"node\" / \"python\" / \"go\" / \"java\" / \"dotnet\" / \"php\" / \"ruby\"."
+                },
+                "include_lockfile": {
+                    "type": "boolean",
+                    "description": "When true, read the per-ecosystem lockfile (Cargo.lock, package-lock.json/yarn.lock, poetry.lock/uv.lock/Pipfile.lock, go.sum, packages.lock.json, composer.lock, Gemfile.lock) and add `resolved` versions alongside declared `version` ranges. Default false."
                 }
             }
         }),

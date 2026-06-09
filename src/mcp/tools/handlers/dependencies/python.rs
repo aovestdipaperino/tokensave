@@ -89,6 +89,34 @@ fn parse_pyproject(root: &Path) -> Option<Member> {
         .unwrap_or("pyproject")
         .to_string();
 
+    // PEP 621 license: either `license = "MIT"` or `license = { text = "..." }`
+    // or `license = { file = "LICENSE" }`. Poetry uses `[tool.poetry] license`.
+    let license = doc
+        .get("project")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("license"))
+        .and_then(|v| match v {
+            toml::Value::String(s) => Some(s.clone()),
+            toml::Value::Table(t) => t
+                .get("text")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    t.get("file")
+                        .and_then(|x| x.as_str())
+                        .map(|p| format!("file:{p}"))
+                }),
+            _ => None,
+        })
+        .or_else(|| {
+            doc.get("tool")
+                .and_then(|v| v.get("poetry"))
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("license"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+
     let mut deps: Vec<Dep> = Vec::new();
 
     // PEP 621: [project.dependencies] is a list of PEP 508 strings.
@@ -172,6 +200,7 @@ fn parse_pyproject(root: &Path) -> Option<Member> {
     Some(Member {
         path: "pyproject.toml".to_string(),
         name: project_name,
+        license,
         deps,
     })
 }
@@ -180,6 +209,7 @@ fn poetry_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
     match value {
         toml::Value::String(s) => Dep {
             name: name.to_string(),
+            resolved: None,
             version: Some(s.clone()),
             features: Vec::new(),
             optional: matches!(kind, DepKind::Optional),
@@ -210,6 +240,7 @@ fn poetry_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
                 .unwrap_or_default();
             Dep {
                 name: name.to_string(),
+                resolved: None,
                 version,
                 features: extras,
                 optional,
@@ -219,6 +250,7 @@ fn poetry_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
         }
         _ => Dep {
             name: name.to_string(),
+            resolved: None,
             version: None,
             features: Vec::new(),
             optional: false,
@@ -266,6 +298,7 @@ fn pep508_to_dep(spec: &str, kind: DepKind) -> Dep {
 
     Dep {
         name,
+        resolved: None,
         version,
         features,
         optional: matches!(kind, DepKind::Optional),
@@ -297,6 +330,7 @@ fn parse_requirements(root: &Path, filename: &str) -> Option<Member> {
     Some(Member {
         path: filename.to_string(),
         name: filename.to_string(),
+        license: None,
         deps,
     })
 }

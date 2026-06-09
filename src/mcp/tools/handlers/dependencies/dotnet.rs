@@ -84,6 +84,7 @@ fn parse_project_file(root: &Path, filename: &str) -> Option<Member> {
         // `kind = Other("project-ref")` for visibility.
         deps.push(Dep {
             name: name.to_string(),
+            resolved: None,
             version,
             features: Vec::new(),
             optional: false,
@@ -95,6 +96,7 @@ fn parse_project_file(root: &Path, filename: &str) -> Option<Member> {
         if let Some(include) = attr_value(el, "Include") {
             deps.push(Dep {
                 name: include.to_string(),
+                resolved: None,
                 version: None,
                 features: Vec::new(),
                 optional: false,
@@ -109,6 +111,7 @@ fn parse_project_file(root: &Path, filename: &str) -> Option<Member> {
         name: filename
             .rsplit_once('.')
             .map_or_else(|| filename.to_string(), |(stem, _)| stem.to_string()),
+        license: None,
         deps,
     })
 }

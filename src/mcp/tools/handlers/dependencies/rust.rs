@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::common::{Dep, DepKind, Member, Patch, Workspace};
+use super::common::{expand_workspace_globs, Dep, DepKind, Member, Patch, Workspace};
 
 const ECOSYSTEM: &str = "rust";
 
@@ -33,15 +33,28 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     }
 
     if let Some(ws) = workspace_table {
-        if let Some(arr) = ws.get("members").and_then(|v| v.as_array()) {
-            for entry in arr {
-                if let Some(pattern) = entry.as_str() {
-                    for member_path in expand_member_pattern(root, pattern) {
-                        if let Some(m) = read_member(root, &member_path) {
-                            members.push(m);
-                        }
-                    }
-                }
+        let raw_patterns: Vec<String> = ws
+            .get("members")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let excludes: Vec<String> = ws
+            .get("exclude")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| format!("!{s}")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let combined: Vec<String> = raw_patterns.into_iter().chain(excludes).collect();
+        for member_path in expand_workspace_globs(root, &combined, "Cargo.toml") {
+            if let Some(m) = read_member(root, &member_path) {
+                members.push(m);
             }
         }
     }
@@ -56,35 +69,6 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     })
 }
 
-/// Expand `members = ["crates/*"]`-style globs. Only the trailing `*`
-/// pattern is supported — anything else is taken literally.
-fn expand_member_pattern(root: &Path, pattern: &str) -> Vec<String> {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        let dir = root.join(prefix);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-        let mut out: Vec<String> = entries
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| {
-                let rel = format!(
-                    "{}/{}",
-                    prefix,
-                    e.file_name().to_string_lossy().into_owned()
-                );
-                e.path().join("Cargo.toml").exists().then_some(rel)
-            })
-            .collect();
-        out.sort();
-        return out;
-    }
-    if pattern.contains('*') {
-        return Vec::new();
-    }
-    vec![pattern.to_string()]
-}
-
 fn read_member(root: &Path, rel: &str) -> Option<Member> {
     let manifest = root.join(rel).join("Cargo.toml");
     let raw = std::fs::read_to_string(&manifest).ok()?;
@@ -95,10 +79,20 @@ fn read_member(root: &Path, rel: &str) -> Option<Member> {
 fn member_from_doc(rel: &str, doc: &toml::Value) -> Option<Member> {
     let pkg = doc.get("package").and_then(|v| v.as_table())?;
     let pkg_name = pkg.get("name").and_then(|v| v.as_str())?.to_string();
+    let license = pkg
+        .get("license")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            pkg.get("license-file")
+                .and_then(|v| v.as_str())
+                .map(|p| format!("file:{p}"))
+        });
     let deps = collect_deps_from_doc(doc);
     Some(Member {
         path: rel.to_string(),
         name: pkg_name,
+        license,
         deps,
     })
 }
@@ -141,6 +135,7 @@ fn parse_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
     match value {
         toml::Value::String(v) => Dep {
             name: name.to_string(),
+            resolved: None,
             version: Some(v.clone()),
             features: Vec::new(),
             optional: false,
@@ -171,6 +166,7 @@ fn parse_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
                 .map(str::to_string);
             Dep {
                 name: name.to_string(),
+                resolved: None,
                 version,
                 features,
                 optional,
@@ -180,6 +176,7 @@ fn parse_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
         }
         _ => Dep {
             name: name.to_string(),
+            resolved: None,
             version: None,
             features: Vec::new(),
             optional: false,

@@ -2879,6 +2879,85 @@ async fn test_dependencies_kind_filter() {
 }
 
 #[tokio::test]
+async fn test_dependencies_surfaces_license_and_drift() {
+    let (cg, dir) = setup_project().await;
+    // Write a workspace with two members declaring `serde` at DIFFERENT
+    // versions — that's drift the tool should report.
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("crates/alpha")).unwrap();
+    fs::create_dir_all(dir.path().join("crates/beta")).unwrap();
+    fs::write(
+        dir.path().join("crates/alpha/Cargo.toml"),
+        "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\n\n[dependencies]\nserde = \"1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("crates/beta/Cargo.toml"),
+        "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nlicense = \"Apache-2.0\"\n\n[dependencies]\nserde = \"2.0\"\n",
+    )
+    .unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_dependencies", json!({}), None, None)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(extract_text(&result.value)).unwrap();
+
+    // License summary
+    let licenses = parsed["licenses"].as_array().unwrap();
+    let names: Vec<&str> = licenses
+        .iter()
+        .map(|v| v["license"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"MIT"));
+    assert!(names.contains(&"Apache-2.0"));
+
+    // Per-member detail carries the license too.
+    let detail = parsed["members_detail"].as_array().unwrap();
+    let alpha = detail.iter().find(|m| m["name"] == "alpha").unwrap();
+    assert_eq!(alpha["license"], "MIT");
+
+    // Version drift detected for `serde`.
+    let drift = parsed["version_drift"].as_array().unwrap();
+    let serde_drift = drift.iter().find(|d| d["crate"] == "serde").unwrap();
+    assert_eq!(serde_drift["version_count"], 2);
+}
+
+#[tokio::test]
+async fn test_dependencies_include_lockfile_stamps_resolved() {
+    let (cg, dir) = setup_project().await;
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\n\n[dependencies]\nserde = \"1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Cargo.lock"),
+        "[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\n",
+    )
+    .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_dependencies",
+        json!({ "crate": "serde", "include_lockfile": true }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(extract_text(&result.value)).unwrap();
+    let usages = parsed["usages"].as_array().unwrap();
+    assert_eq!(usages[0]["version"], "1.0");
+    assert_eq!(usages[0]["resolved"], "1.0.219");
+}
+
+#[tokio::test]
 async fn test_dependencies_crate_lookup() {
     let (cg, dir) = setup_project().await;
     write_test_cargo_toml(dir.path());

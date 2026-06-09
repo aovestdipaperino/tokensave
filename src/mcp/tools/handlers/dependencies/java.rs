@@ -92,6 +92,7 @@ fn parse_pom(raw: &str, path: &str, name: &str) -> Member {
             };
             deps.push(Dep {
                 name: display,
+                resolved: None,
                 version,
                 features: Vec::new(),
                 optional,
@@ -103,6 +104,7 @@ fn parse_pom(raw: &str, path: &str, name: &str) -> Member {
     Member {
         path: path.to_string(),
         name: name.to_string(),
+        license: None,
         deps,
     }
 }

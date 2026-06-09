@@ -30,6 +30,7 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     let member = Member {
         path: "go.mod".to_string(),
         name: module,
+        license: None,
         deps,
     };
 
@@ -97,6 +98,7 @@ fn parse_require_line(content: &str, raw_line: &str) -> Option<Dep> {
     }
     Some(Dep {
         name,
+        resolved: None,
         version: Some(version),
         features,
         optional: false,

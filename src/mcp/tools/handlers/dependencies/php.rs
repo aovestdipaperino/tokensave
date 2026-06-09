@@ -27,6 +27,16 @@ pub fn parse(root: &Path) -> Result<Workspace> {
         .and_then(|v| v.as_str())
         .unwrap_or("composer-package")
         .to_string();
+    // Composer license is `string` or `string[]`. Join arrays with " OR " so
+    // the same field is always a single line.
+    let license = match doc.get("license") {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Array(arr)) => {
+            let parts: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            (!parts.is_empty()).then(|| parts.join(" OR "))
+        }
+        _ => None,
+    };
 
     let mut deps = Vec::new();
     for (field, kind) in [("require", DepKind::Normal), ("require-dev", DepKind::Dev)] {
@@ -41,6 +51,7 @@ pub fn parse(root: &Path) -> Result<Workspace> {
             let version = value.as_str().map(str::to_string);
             deps.push(Dep {
                 name: name.clone(),
+                resolved: None,
                 version,
                 features: Vec::new(),
                 optional: false,
@@ -73,6 +84,7 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     let member = Member {
         path: "composer.json".to_string(),
         name: pkg_name,
+        license,
         deps,
     };
     Ok(Workspace {

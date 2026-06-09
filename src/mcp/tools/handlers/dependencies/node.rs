@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::common::{Dep, DepKind, Member, Patch, Workspace};
+use super::common::{expand_workspace_globs, Dep, DepKind, Member, Patch, Workspace};
 
 const ECOSYSTEM: &str = "node";
 
@@ -45,11 +45,9 @@ pub fn parse(root: &Path) -> Result<Workspace> {
         _ => Vec::new(),
     };
 
-    for pattern in &ws_patterns {
-        for member_path in expand_workspace_pattern(root, pattern) {
-            if let Some(m) = read_member(root, &member_path) {
-                members.push(m);
-            }
+    for member_path in expand_workspace_globs(root, &ws_patterns, "package.json") {
+        if let Some(m) = read_member(root, &member_path) {
+            members.push(m);
         }
     }
 
@@ -79,33 +77,6 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     })
 }
 
-fn expand_workspace_pattern(root: &Path, pattern: &str) -> Vec<String> {
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        let dir = root.join(prefix);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-        let mut out: Vec<String> = entries
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| {
-                let rel = format!(
-                    "{}/{}",
-                    prefix,
-                    e.file_name().to_string_lossy().into_owned()
-                );
-                e.path().join("package.json").exists().then_some(rel)
-            })
-            .collect();
-        out.sort();
-        return out;
-    }
-    if pattern.contains('*') {
-        return Vec::new();
-    }
-    vec![pattern.to_string()]
-}
-
 fn read_member(root: &Path, rel: &str) -> Option<Member> {
     let manifest = root.join(rel).join("package.json");
     let raw = std::fs::read_to_string(&manifest).ok()?;
@@ -119,10 +90,23 @@ fn member_from_doc(rel: &str, doc: &serde_json::Value) -> Member {
         .and_then(|v| v.as_str())
         .unwrap_or(rel)
         .to_string();
+    let license = doc
+        .get("license")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            // Older convention: `"licenses": [{"type": "MIT", ...}]`.
+            doc.get("licenses")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|first| first.get("type").and_then(|v| v.as_str()))
+                .map(str::to_string)
+        });
     let deps = collect_deps_from_doc(doc);
     Member {
         path: rel.to_string(),
         name: pkg_name,
+        license,
         deps,
     }
 }
@@ -159,6 +143,7 @@ fn parse_dep(name: &str, value: &serde_json::Value, kind: DepKind) -> Dep {
     });
     Dep {
         name: name.to_string(),
+        resolved: None,
         version: version_str,
         features: Vec::new(),
         optional: matches!(kind, DepKind::Optional),
