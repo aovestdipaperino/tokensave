@@ -46,7 +46,15 @@ impl Default for BlameOptions {
     fn default() -> Self {
         Self {
             max_commits: 500,
-            similarity_threshold: 0.85,
+            // Identity threshold for matching the target entity across
+            // commits. This is NOT the "did the body change" gate — that
+            // job is done by ast_hash inequality elsewhere. The threshold
+            // exists only to filter out unrelated entities in the same
+            // file. Heavy body rewrites drop composite_similarity into
+            // the 0.2-0.4 range, so 0.1 is the v1 default to keep
+            // tracking through rewrites; we can tighten it later if
+            // false-positive tracking becomes an issue.
+            similarity_threshold: 0.1,
             max_blob_bytes: 2 * 1024 * 1024,
         }
     }
@@ -134,7 +142,7 @@ pub fn log(
         // For identity-tracking across commits we use a very permissive
         // lower bound (0.1) rather than the clone-detection threshold.
         // The `ast_hash` comparison below is the real change-detection gate.
-        let Some(matched) = best_match_in_tree(&source, &tree, target_fp, 0.1)
+        let Some(matched) = best_match_in_tree(&source, &tree, target_fp, opts.similarity_threshold)
         else {
             // The entity does not exist in this revision → boundary.
             // Flush any pending event before marking introduction.
@@ -515,7 +523,7 @@ mod tests {
     fn default_options_match_spec() {
         let opts = BlameOptions::default();
         assert_eq!(opts.max_commits, 500);
-        assert!((opts.similarity_threshold - 0.85).abs() < f64::EPSILON);
+        assert!((opts.similarity_threshold - 0.1).abs() < f64::EPSILON);
         assert_eq!(opts.max_blob_bytes, 2 * 1024 * 1024);
     }
 
