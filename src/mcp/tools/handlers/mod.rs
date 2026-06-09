@@ -5,6 +5,7 @@
 //! formats the result.
 
 pub mod analysis;
+pub mod blame;
 pub mod edit;
 pub mod git;
 pub mod graph;
@@ -142,6 +143,7 @@ pub async fn handle_tool_call(
         "tokensave_unused_imports" => analysis::handle_unused_imports(cg, args, scope_prefix).await,
         "tokensave_rank" => analysis::handle_rank(cg, args, scope_prefix).await,
         "tokensave_largest" => analysis::handle_largest(cg, args, scope_prefix).await,
+        "tokensave_log" => blame::handle_log(cg, args).await,
         "tokensave_coupling" => analysis::handle_coupling(cg, args, scope_prefix).await,
         "tokensave_inheritance_depth" => {
             analysis::handle_inheritance_depth(cg, args, scope_prefix).await
@@ -177,6 +179,7 @@ pub async fn handle_tool_call(
         "tokensave_test_risk" => health::handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_session_start" => health::handle_session_start(cg, args, scope_prefix).await,
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
+        "tokensave_blame" => blame::handle_blame(cg, args).await,
         "tokensave_body" => info::handle_body(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
@@ -234,9 +237,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            76
+            78
         } else {
-            75
+            77
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -321,6 +324,8 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_replace_symbol"));
         assert!(tool_names.contains(&"tokensave_insert_at_symbol"));
         assert!(tool_names.contains(&"tokensave_find_exact_symbol"));
+        assert!(tool_names.contains(&"tokensave_blame"));
+        assert!(tool_names.contains(&"tokensave_log"));
     }
 
     #[test]

@@ -161,6 +161,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_replace_symbol(),
         def_insert_at_symbol(),
         def_find_exact_symbol(),
+        def_blame(),
+        def_log(),
     ];
     if !ast_grep_available() {
         definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
@@ -2136,6 +2138,44 @@ fn def_insert_at_symbol() -> ToolDefinition {
                 }
             },
             "required": ["symbol", "content"]
+        }),
+    )
+}
+
+fn def_blame() -> ToolDefinition {
+    def(
+        "tokensave_blame",
+        "Symbol Blame",
+        "Per-symbol git blame: returns the most recent commit that structurally changed the \
+         named function/method/type. Tracks the symbol across edits and cross-file renames via \
+         tree-sitter structural fingerprints. Use `file` to disambiguate overloaded names.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Qualified name or bare identifier."},
+                "file":   {"type": "string", "description": "Optional project-relative path to disambiguate overloads."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_log() -> ToolDefinition {
+    def(
+        "tokensave_log",
+        "Symbol History",
+        "Per-symbol git log: every commit that structurally changed the named symbol, \
+         oldest-first. Tracks across edits and cross-file renames via structural fingerprints.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "file":   {"type": "string"},
+                "limit":  {"type": "integer", "description": "Cap on returned events. Default 20, max 1000."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
         }),
     )
 }
