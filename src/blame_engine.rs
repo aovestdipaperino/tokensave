@@ -74,20 +74,200 @@ pub struct ParseFailure {
 /// `start_line` and `end_line` are **0-indexed** (matching `Node` row
 /// semantics).
 pub fn log(
-    _project_root: &Path,
-    _file: &str,
+    project_root: &Path,
+    file: &str,
     _start_line: u32,
     _end_line: u32,
-    _language_key: &str,
-    _target_fp: &Fingerprint,
-    _opts: &BlameOptions,
+    language_key: &str,
+    target_fp: &Fingerprint,
+    opts: &BlameOptions,
 ) -> Result<BlameResult, String> {
-    Err("not yet implemented".to_string())
+    use crate::extraction::ts_provider;
+    use crate::redundancy::parse_file;
+
+    if !lang_key_is_known(language_key) {
+        return Err(format!("unknown language key '{language_key}'"));
+    }
+    let lang = ts_provider::language(language_key);
+
+    let visits = walk_file_history(project_root, file, opts.max_commits)?;
+    let commits_walked = visits.len();
+    let mut events: Vec<ChangeEvent> = Vec::new();
+    let mut parse_failures: Vec<ParseFailure> = Vec::new();
+    let mut skipped_large: Vec<String> = Vec::new();
+    // `pending` holds the oldest-so-far commit for the current ast_hash run.
+    // We flush it when the hash changes or when we reach a boundary.
+    let mut pending: Option<(ChangeEvent, String)> = None;
+    let mut found_introduction = false;
+
+    let repo = gix::open(project_root).map_err(|e| format!("gix open: {e}"))?;
+
+    // visits are newest-first. We want to emit one event per distinct
+    // ast_hash run, attributed to the OLDEST commit in that run (the
+    // commit that first introduced that body). To achieve this we keep a
+    // `pending` slot and update it as we walk into older commits with the
+    // same hash.
+    for visit in &visits {
+        if visit.blob_size > opts.max_blob_bytes {
+            skipped_large.push(visit.short_sha.clone());
+            continue;
+        }
+        let blob = repo
+            .find_object(visit.blob_id)
+            .map_err(|e| format!("cannot read blob {}: {e}", visit.short_sha))?;
+        let source = if let Ok(s) = std::str::from_utf8(&blob.data) {
+            s.to_string()
+        } else {
+            parse_failures.push(ParseFailure {
+                commit: visit.short_sha.clone(),
+                error: "blob is not valid UTF-8".to_string(),
+            });
+            continue;
+        };
+        let Some(tree) = parse_file(&source, &lang) else {
+            parse_failures.push(ParseFailure {
+                commit: visit.short_sha.clone(),
+                error: "tree-sitter parse failed".to_string(),
+            });
+            continue;
+        };
+        // For identity-tracking across commits we use a very permissive
+        // lower bound (0.1) rather than the clone-detection threshold.
+        // The `ast_hash` comparison below is the real change-detection gate.
+        let Some(matched) = best_match_in_tree(&source, &tree, target_fp, 0.1)
+        else {
+            // The entity does not exist in this revision → boundary.
+            // Flush any pending event before marking introduction.
+            if let Some((ev, _)) = pending.take() {
+                events.push(ev);
+            }
+            found_introduction = true;
+            break;
+        };
+
+        let ev = ChangeEvent {
+            commit: visit.commit_id.to_string(),
+            short_sha: visit.short_sha.clone(),
+            author: visit.author.clone(),
+            email: visit.email.clone(),
+            date: visit.date_rfc3339.clone(),
+            summary: visit.summary.clone(),
+            file_at_commit: file.to_string(),
+        };
+
+        match pending.take() {
+            None => {
+                // First match: start a new pending run.
+                pending = Some((ev, matched.ast_hash));
+            }
+            Some((prev_ev, prev_hash)) => {
+                if prev_hash == matched.ast_hash {
+                    // Same hash as the previous (newer) commit — update the
+                    // pending event to point to this older commit (we want
+                    // to attribute the run to its oldest commit).
+                    pending = Some((ev, matched.ast_hash));
+                } else {
+                    // Hash changed: flush the previous run's event and start
+                    // a new pending run for this commit's hash.
+                    events.push(prev_ev);
+                    pending = Some((ev, matched.ast_hash));
+                }
+            }
+        }
+    }
+
+    // Flush the final pending event (history exhausted or max reached).
+    if let Some((ev, _)) = pending.take() {
+        events.push(ev);
+    }
+
+    // Oldest-first for callers.
+    events.reverse();
+
+    let boundary_reason = if found_introduction {
+        BoundaryReason::Introduced
+    } else if commits_walked >= opts.max_commits {
+        BoundaryReason::MaxCommitsReached
+    } else if !events.is_empty() {
+        // We exhausted history (no more parent commits) and the entity was
+        // still present in the oldest commit → that commit introduced it.
+        BoundaryReason::Introduced
+    } else {
+        BoundaryReason::HistoryExhausted
+    };
+
+    Ok(BlameResult {
+        events,
+        boundary_reason,
+        commits_walked,
+        parse_failures,
+        skipped_large,
+    })
+}
+
+/// Walk every node in `tree`, fingerprint each function-like body, and
+/// return the best-matching fingerprint (above `threshold`) against `target`.
+fn best_match_in_tree(
+    source: &str,
+    tree: &tree_sitter::Tree,
+    target: &Fingerprint,
+    threshold: f64,
+) -> Option<Fingerprint> {
+    use crate::redundancy::composite_similarity;
+
+    let mut best: Option<(f64, Fingerprint)> = None;
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if is_entity_node(n.kind()) {
+            let fp = crate::redundancy::compute_fingerprint(source, n);
+            let score = composite_similarity(target, &fp);
+            if score >= threshold {
+                let better = best.as_ref().is_none_or(|(s, _)| score > *s);
+                if better {
+                    best = Some((score, fp));
+                }
+            }
+        }
+        let mut cursor = n.walk();
+        if cursor.goto_first_child() {
+            loop {
+                stack.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+    best.map(|(_, fp)| fp)
+}
+
+/// True for tree-sitter node kinds that bound an identifiable code entity
+/// (function, method, class, struct, etc.) across the supported languages.
+/// This list is intentionally permissive — extra kinds just add work to
+/// the fingerprint loop; missing kinds cause false "not found" boundaries.
+fn is_entity_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_item"
+            | "function_declaration"
+            | "function_definition"
+            | "method_declaration"
+            | "method_definition"
+            | "function"
+            | "method"
+            | "impl_item"
+            | "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "class_declaration"
+            | "class_definition"
+            | "interface_declaration"
+            | "type_alias_declaration"
+    )
 }
 
 /// One commit that touched the watched file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // used in Task 4+
 pub(crate) struct CommitVisit {
     pub commit_id: gix::ObjectId,
     pub short_sha: String,
@@ -102,7 +282,6 @@ pub(crate) struct CommitVisit {
 /// Walk back from HEAD, returning only commits where the named file's blob
 /// changed (added, modified, or removed). Stops after `max_commits` total
 /// commits *visited* (not yielded). Reverse chronological order.
-#[allow(dead_code)] // used in Task 4+
 pub(crate) fn walk_file_history(
     project_root: &std::path::Path,
     file_path: &str,
@@ -170,7 +349,6 @@ pub(crate) fn walk_file_history(
     Ok(visits)
 }
 
-#[allow(dead_code)] // used in Task 4+
 fn commit_metadata(
     commit: &gix::Commit<'_>,
 ) -> Result<(String, String, String, String), String> {
@@ -193,7 +371,6 @@ fn commit_metadata(
     Ok((author, email, date, summary))
 }
 
-#[allow(dead_code)] // used in Task 4+
 fn format_rfc3339(unix_secs: i64) -> String {
     // gix doesn't ship a time formatter; format manually as UTC.
     let (yr, mo, dy, hr, mn, sc) = ymd_hms_from_unix(unix_secs);
@@ -201,7 +378,6 @@ fn format_rfc3339(unix_secs: i64) -> String {
 }
 
 #[allow(clippy::many_single_char_names)] // algorithm variables match the reference
-#[allow(dead_code)] // used in Task 4+
 fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
     // Howard Hinnant's `civil_from_days`, simplified for UTC.
     let day_sec = ts.rem_euclid(86_400);
@@ -357,6 +533,55 @@ mod tests {
     fn compute_target_fingerprint_returns_none_for_unknown_lang() {
         let source = "anything";
         assert!(compute_target_fingerprint(source, "no_such_lang_key", 0, 0).is_none());
+    }
+
+    #[test]
+    fn log_returns_events_when_function_body_changes() {
+        use std::process::Command;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            assert!(st.success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "T"]);
+        git(&["config", "commit.gpgsign", "false"]);
+
+        // c1: original body
+        std::fs::write(root.join("foo.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        git(&["add", "foo.rs"]);
+        git(&["commit", "-q", "-m", "c1: initial"]);
+
+        // c2: change comment only — should NOT yield an event (fingerprint unchanged)
+        std::fs::write(
+            root.join("foo.rs"),
+            "// trivial helper\npub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        git(&["commit", "-q", "-am", "c2: comment"]);
+
+        // c3: real mutation
+        std::fs::write(
+            root.join("foo.rs"),
+            "// trivial helper\npub fn add(a: i32, b: i32) -> i32 { let s = a + b; s }\n",
+        )
+        .unwrap();
+        git(&["commit", "-q", "-am", "c3: rebody"]);
+
+        let source = std::fs::read_to_string(root.join("foo.rs")).unwrap();
+        // c3 leaves the `pub fn add` body starting on line 2 (0-indexed: 1).
+        let fp = compute_target_fingerprint(&source, "rust", 1, 1).expect("fp");
+        let result = log(root, "foo.rs", 1, 1, "rust", &fp, &BlameOptions::default()).expect("log");
+
+        // Expect two distinct mutation events (c1 introduction + c3 rebody).
+        // c2 (comment-only) should be filtered because the fingerprint matches c3.
+        assert_eq!(result.events.len(), 2, "got: {:#?}", result.events);
+        // Oldest first
+        assert!(result.events[0].summary.contains("c1"));
+        assert!(result.events[1].summary.contains("c3"));
+        assert_eq!(result.boundary_reason, BoundaryReason::Introduced);
     }
 
     #[test]
