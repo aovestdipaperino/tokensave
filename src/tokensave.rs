@@ -962,6 +962,19 @@ impl TokenSave {
         // canonical form is forward-slash (#87).
         let file_paths = normalize_rel_paths(file_paths);
 
+        // Files deleted from disk produce no extraction, so the replace-on-
+        // reindex path below would never drop their rows — prune them here,
+        // mirroring the removal branch of the full sync (#108).
+        let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
+        for path in file_paths {
+            if project_root.join(&path).exists() {
+                existing.push(path);
+            } else {
+                self.db.delete_file(&path).await?;
+            }
+        }
+        let file_paths = existing;
+
         // Read and hash the files
         let mut hash_map: HashMap<String, String> = HashMap::new();
         let mut stat_map: HashMap<String, (i64, u64)> = HashMap::new();

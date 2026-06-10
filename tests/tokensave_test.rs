@@ -372,6 +372,63 @@ async fn sync_if_stale_silent_does_not_create_duplicate_row_for_backslash_path()
     );
 }
 
+#[tokio::test]
+async fn sync_if_stale_prunes_deleted_files() {
+    let (cg, dir) = setup().await;
+
+    // Sanity: utils.rs is indexed with nodes before deletion.
+    let nodes = cg.get_all_nodes().await.unwrap();
+    assert!(
+        nodes.iter().any(|n| n.file_path == "src/utils.rs"),
+        "setup should index src/utils.rs nodes"
+    );
+
+    fs::remove_file(dir.path().join("src/utils.rs")).unwrap();
+
+    let still_stale = cg
+        .sync_if_stale(&["src/utils.rs".to_string()])
+        .await
+        .unwrap();
+    assert!(
+        !still_stale,
+        "sync_if_stale should report the deleted file as reconciled"
+    );
+
+    // Pre-fix (#108): the file row, its nodes, and their edges survived
+    // deletion as orphans because sync_single_files had no removal branch.
+    let files = cg.get_all_files().await.unwrap();
+    assert!(
+        !files.iter().any(|f| f.path == "src/utils.rs"),
+        "deleted file must be pruned from the files table, got {files:?}"
+    );
+    let nodes = cg.get_all_nodes().await.unwrap();
+    assert!(
+        !nodes.iter().any(|n| n.file_path == "src/utils.rs"),
+        "deleted file's symbols must be pruned from the graph"
+    );
+}
+
+#[tokio::test]
+async fn sync_if_stale_silent_prunes_deleted_files() {
+    let (cg, dir) = setup().await;
+    fs::remove_file(dir.path().join("src/utils.rs")).unwrap();
+
+    cg.sync_if_stale_silent(&["src/utils.rs".to_string()])
+        .await
+        .unwrap();
+
+    let files = cg.get_all_files().await.unwrap();
+    assert!(
+        !files.iter().any(|f| f.path == "src/utils.rs"),
+        "deleted file must be pruned from the files table, got {files:?}"
+    );
+    let nodes = cg.get_all_nodes().await.unwrap();
+    assert!(
+        !nodes.iter().any(|n| n.file_path == "src/utils.rs"),
+        "deleted file's symbols must be pruned from the graph"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // get_tokens_saved / set_tokens_saved — round-trip
 // ---------------------------------------------------------------------------
