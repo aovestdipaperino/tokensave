@@ -17,6 +17,26 @@ use super::{
     effective_path, filter_by_scope, require_node_id, truncate_response, unique_file_paths,
 };
 
+/// Errors when `node_id` matches no node in the graph.
+///
+/// Traversal queries return an empty result set for an unknown ID, which is
+/// indistinguishable from a valid "no callers/callees found" — so a typo'd ID
+/// or a symbol *name* passed where an ID is expected (the #109 CLI nit:
+/// `tokensave tool callers Helper`) read like clean answers. Fail loudly and
+/// point at the name-based lookups instead.
+async fn ensure_node_exists(cg: &TokenSave, node_id: &str) -> Result<()> {
+    if cg.get_node(node_id).await?.is_none() {
+        return Err(TokenSaveError::Config {
+            message: format!(
+                "node not found: '{node_id}'. `node_id` expects a graph node ID \
+                 (e.g. from tokensave_search results); to look up by symbol name \
+                 use tokensave_callers_for or tokensave_search."
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Handles `tokensave_search` tool calls.
 pub(super) async fn handle_search(
     cg: &TokenSave,
@@ -249,6 +269,7 @@ pub(super) async fn handle_context(
 /// Handles `tokensave_callers` tool calls.
 pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;
+    ensure_node_exists(cg, node_id).await?;
 
     let max_depth = args
         .get("max_depth")
@@ -294,6 +315,7 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
 /// Dispatch resolution skipped when `resolve_dispatch=false` is passed.
 pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;
+    ensure_node_exists(cg, node_id).await?;
 
     let max_depth = args
         .get("max_depth")

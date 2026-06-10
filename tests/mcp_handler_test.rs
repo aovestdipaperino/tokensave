@@ -157,6 +157,30 @@ async fn test_callers() {
     assert!(!text.is_empty());
 }
 
+#[tokio::test]
+async fn test_callers_nonexistent_node_id_errors() {
+    let (cg, _dir) = setup_project().await;
+    // Passing a symbol *name* where a node ID is expected (the #109 CLI nit:
+    // `tokensave tool callers Helper`) must error, not return an empty list
+    // that reads like a valid "no callers found".
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": "helper"}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("expected an error for a nonexistent node_id")
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("node not found"),
+        "expected a node-not-found error, got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4. tokensave_callees
 // ---------------------------------------------------------------------------
@@ -176,6 +200,27 @@ async fn test_callees() {
     .unwrap();
     let text = extract_text(&result.value);
     assert!(!text.is_empty());
+}
+
+#[tokio::test]
+async fn test_callees_nonexistent_node_id_errors() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callees",
+        json!({"node_id": "helper"}),
+        None,
+        None,
+    )
+    .await;
+    let Err(err) = result else {
+        panic!("expected an error for a nonexistent node_id")
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("node not found"),
+        "expected a node-not-found error, got: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
