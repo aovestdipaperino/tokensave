@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [6.3.1] - 2026-06-10
+
+### Fixed
+- **Incremental sync now prunes deleted files** (#108). The single-file sync path behind `sync_if_stale[_silent]` — used by the MCP startup catch-up and the 30 s lazy watcher — only re-extracted the given paths, so a file deleted from disk kept its file row, symbols, and edges as orphans: phantom results in `hotspots`/`rank`/`search` and an inflated `file_count`, while `last_sync_at` kept advancing. Deleted paths are now cascade-deleted, mirroring the full-sync removal branch.
+- **Go extractor resolves cross-package calls** (#109). Selector callees (`b.Helper`, `s.Get`) were emitted verbatim and never matched a node name, so imported functions and methods on imported types produced no `calls` edge — leaving `callers`/`callees`/`impact` blind across package boundaries and flooding `dead_code` with false positives. The extractor now also emits the bare last segment (same approach as the Rust dot-call fix, #74).
+- **`callers`/`callees` error on unknown `node_id`** (#109). A nonexistent node ID (e.g. a symbol name passed positionally: `tokensave tool callers Helper`) silently returned `[]`, indistinguishable from a valid "no callers found". Both handlers now fail with a `node not found` error pointing at `tokensave_callers_for`/`tokensave_search` for name-based lookups.
+
 ## [6.3.0] - 2026-06-09
 
 ### Added
@@ -1407,3 +1414,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.1.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.1.1
 [6.2.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.2.0
 [6.3.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.3.0
+[6.3.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.3.1
