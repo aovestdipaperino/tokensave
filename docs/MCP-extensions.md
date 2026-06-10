@@ -26,7 +26,7 @@ proposal already covers the symbol-skeleton case and is reinforced by the new ev
 
 ---
 
-## `tokensave_field_sites`
+## `tokensave_field_sites` ✅ implemented
 
 **Trigger:** Evolving a struct field — adding `last_sync_duration_ms` to `GraphStats` required
 finding every place `last_sync_at` was *written* across the codebase. After `tokensave_search`
@@ -50,7 +50,7 @@ is the exact blast radius. Currently requires multi-file grep + manual triage.
 
 ---
 
-## `tokensave_implementations`
+## `tokensave_implementations` ✅ implemented
 
 **Trigger:** Adding 9 new language extractors required understanding the existing extractor
 interface. Multiple `grep -r "fn extensions"` and `grep -r "fn language_name"` passes were made
@@ -74,7 +74,7 @@ implementor to an interface. Currently answered by grepping for each method name
 
 ---
 
-## `tokensave_constructors`
+## `tokensave_constructors` ✅ implemented
 
 **Trigger:** Adding a required field `last_sync_duration_ms` to `GraphStats` required finding
 every struct literal `GraphStats { ... }` to add the new field. `tokensave_callers` doesn't cover
@@ -97,7 +97,7 @@ for languages without exhaustive struct checking.
 
 ---
 
-## `tokensave_outline`
+## `tokensave_outline` ✅ implemented
 
 **Trigger:** In quality-improvement sessions, the common opening move was
 `wc -l src/main.rs && grep -n "^pub fn\|^pub struct\|^pub enum\|^impl"` — a "get bearings"
@@ -148,7 +148,7 @@ inherited or unfamiliar codebases where the feature may not use the obvious iden
 
 ---
 
-## `tokensave_diagnostics`
+## `tokensave_diagnostics` ✅ implemented
 
 **Trigger:** `cargo check`, `cargo test`, `cargo clippy`, and `cargo build` were invoked
 **777 times** across all scanned conversations, with single sessions hitting 100+. Each
@@ -180,7 +180,7 @@ incremental checks during refactor cycles.
 
 ---
 
-## `tokensave_unsafe_patterns`
+## `tokensave_unsafe_patterns` ✅ implemented
 
 **Trigger:** Security and quality-review conversations repeatedly grep for
 `panic!`, `unwrap()`, `expect(`, `todo!()`, `unimplemented!()`, and `unsafe` blocks.
@@ -207,7 +207,7 @@ Pairs with `tokensave_test_risk` for "what risky paths aren't tested?"
 
 ---
 
-## `tokensave_signature_search`
+## `tokensave_signature_search` ✅ implemented
 
 **Trigger:** Refactor questions of the form "find all functions returning
 `Result<_, MyError>`", "find all `impl Display for ...`", "find every async function
@@ -282,7 +282,7 @@ investment but turns "I need to read a dep's source" into a single graph query.
 
 ---
 
-## `tokensave_config`
+## `tokensave_config` ✅ implemented
 
 **Trigger:** This repo (and most others) sees frequent greps over `Cargo.toml`,
 `.github/workflows/*.yml`, `tsconfig.json`, `pyproject.toml`, `package.json` during

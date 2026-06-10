@@ -70,7 +70,7 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 |---|---|---|
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
-| **70+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
+| **80+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
 | From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 42 more including WGSL/HLSL/Metal shaders and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
 | Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | On-demand staleness check on every MCP call (30 s cooldown) plus catch-up sync when the server connects. Multi-agent work is expected to use git worktrees — each agent gets its own checkout and the index diverges are merged by git, not by a file watcher. |
@@ -169,7 +169,7 @@ This creates a `.tokensave/` directory with the knowledge graph database. Initia
 
 #### PreToolUse hook
 
-The hook runs `tokensave hook-pre-tool-use` -- a native Rust command (no bash or jq required). It intercepts Agent tool calls and blocks Explore agents, redirecting Claude to use tokensave MCP tools instead.
+The hook runs `tokensave hook-pre-tool-use` -- a native Rust command (no bash or jq required). It intercepts Agent, Grep, and Bash tool calls: Explore agents are blocked outright, and symbol-shaped grep/rg/ag invocations (plain identifiers, alternations, `\b`-wrapped names) are redirected to the matching tokensave MCP tool. Regex patterns, file-discovery modes, `git grep`, and piped commands pass through untouched; set `TOKENSAVE_DISABLE_GREP_HOOK=1` to opt out per shell.
 
 #### CLAUDE.md rules
 
@@ -357,9 +357,9 @@ Different from the criterion bench above: criterion measures per-iteration laten
 
 ---
 
-## 70+ MCP Tools
+## 80+ MCP Tools
 
-The server exposes more than 70 tools (one fewer when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
+The server exposes more than 80 tools (one fewer when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
 ### Discovery
 
@@ -371,6 +371,8 @@ The server exposes more than 70 tools (one fewer when the optional `ast-grep` bi
 | `tokensave_files` | List indexed project files with filtering |
 | `tokensave_module_api` | Public API surface of a file or directory |
 | `tokensave_similar` | Find symbols with similar names |
+| `tokensave_annotations` | Attribute/annotation/decorator introspection -- histogram of all annotations or per-site listings with target filters |
+| `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
 ### Call Graph & Impact
@@ -440,6 +442,7 @@ Four writer tools that let agents modify files without regex or shell-quoting ha
 | `tokensave_pr_context` | Semantic diff between git refs for pull request descriptions |
 | `tokensave_changelog` | Semantic diff between two git refs |
 | `tokensave_test_map` | Source-to-test mapping at the symbol level, with uncovered symbol detection |
+| `tokensave_test_coverage` | Per-file/symbol/test-fn coverage rollup with transitive call-edge expansion |
 
 ### Type System
 
@@ -617,7 +620,7 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 
 | Layer | What it does | Why it matters |
 |-------|-------------|----------------|
-| **MCP server** | Exposes 70+ `tokensave_*` tools to Claude | Claude can query the graph directly |
+| **MCP server** | Exposes 80+ `tokensave_*` tools to Claude | Claude can query the graph directly |
 | **CLAUDE.md rules** | Tells Claude to prefer tokensave over agents/file reads | Prevents the model from falling back to expensive patterns |
 | **PreToolUse hook** | Native Rust hook blocks Explore agents | Catches cases where the model ignores the CLAUDE.md rules |
 | **UserPromptSubmit hook** | Runs at prompt submission | Lifecycle tracking for token accounting |
@@ -738,7 +741,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Runtime** | Native binary (Rust) | Node.js 18+ |
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
 | **Languages** | 50+ (3 tiers: lite/medium/full) | 19+ |
-| **MCP tools** | 70+ | 9 |
+| **MCP tools** | 80+ | 9 |
 | **Agent integrations** | 12+ (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe, Grok) | 1 (Claude Code) |
 | **Index freshness** | On-demand staleness check on every MCP call; catch-up sync on connect; multi-agent work expected to use git worktrees | Native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW, 2 s debounce); catch-up sync on connect |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
@@ -780,7 +783,7 @@ Every alternative requires a runtime: Python, Node.js, or both. tokensave ships 
 
 ### Deepest code intelligence
 
-tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 70+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
+tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 80+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
 
 ### Broadest agent support
 

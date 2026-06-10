@@ -444,6 +444,66 @@ Expected: Same structure but for a single symbol. If it's not a function/method,
 
 ---
 
+## tokensave_test_coverage
+
+> What's the test coverage rollup for `src/sync.rs`?
+
+Test by file:
+```
+tokensave_test_coverage(file="src/sync.rs")
+```
+Expected: `mode: "file"` with a `summary` (total_prod_fns, tested, untested, test_only_fns) plus `tested`/`untested` symbol lists.
+
+Test by symbol:
+```
+tokensave_test_coverage(symbol="content_hash")
+```
+Expected: the test functions that transitively reach the symbol (depth capped by `max_depth`, default 5).
+
+Test by test function:
+```
+tokensave_test_coverage(test_fn="test_find_stale_files")
+```
+Expected: the non-test symbols the test transitively exercises.
+
+---
+
+## tokensave_annotations
+
+> Which annotations are most used in this project?
+
+Histogram mode (no name):
+```
+tokensave_annotations(limit=10)
+```
+Expected: top annotation names by usage count (e.g. `test`, `tokio::test`, `cfg`, `derive`).
+
+Site mode:
+```
+tokensave_annotations(name="tokio::test", target_kind="function")
+```
+Expected: `(annotation, target)` rows with file/line for each site.
+
+---
+
+## tokensave_dependencies
+
+> What does this project depend on?
+
+Workspace summary (no args):
+```
+tokensave_dependencies()
+```
+Expected: detected ecosystem(s), member list, dependency counts, `licenses` aggregate, `version_drift` array.
+
+Package lookup:
+```
+tokensave_dependencies(crate="serde", include_lockfile=true)
+```
+Expected: declared version per member plus the `resolved` version from the lockfile.
+
+---
+
 ## tokensave_type_hierarchy
 
 > Show the full type hierarchy for a trait. Search for the trait first, then use its node ID.

@@ -38,7 +38,7 @@ catches function/class declarations and import sites cleanly but
 won't resolve, for example, which `impl` block a Rust method
 belongs to or which interface a TS class implements.
 
-**tokensave** parses **46 languages** through tree-sitter grammars —
+**tokensave** parses **more than 50 languages** through tree-sitter grammars —
 Rust, Python, Go, TypeScript / TSX / JavaScript, Java, Kotlin, Scala,
 C#, Swift, C, C++, Objective-C, Ruby, PHP, Dart, Lua, Perl, Bash,
 Pascal, COBOL, Fortran, OCaml, Haskell, Elixir, Erlang, Clojure, Julia,

@@ -182,7 +182,7 @@ Dual-Graph exposes environment variables (`DG_HARD_MAX_READ_CHARS`, `DG_TURN_REA
 
 ### 11. Where tokensave Is Ahead
 
-tokensave's advantages are covered in detail in sections 2-9 above. The short version: 70+ vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 50+ vs 11 languages, libSQL vs JSON storage, on-demand freshness with catch-up sync on connect, 12+ vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
+tokensave's advantages are covered in detail in sections 2-9 above. The short version: 80+ vs 5 MCP tools, symbol-level vs file-level granularity, full call graphs and impact analysis, 50+ vs 11 languages, libSQL vs JSON storage, on-demand freshness with catch-up sync on connect, 12+ vs 6 agent integrations, MIT-licensed Rust vs proprietary Python core, zero runtime dependencies, and per-call token savings reporting.
 
 ---
 
@@ -346,7 +346,7 @@ Both tools are local-only with no cloud dependency. code-review-graph's `watch` 
 
 ### 2. MCP Tool Comparison
 
-**tokensave (70+ tools) vs code-review-graph (22 tools):**
+**tokensave (80+ tools) vs code-review-graph (22 tools):**
 
 | Category | **tokensave** | **code-review-graph** |
 |---|---|---|

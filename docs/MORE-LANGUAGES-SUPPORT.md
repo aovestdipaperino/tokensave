@@ -1,12 +1,12 @@
 # Future Language Support
 
-## Currently Supported (32 languages)
+## Currently Supported (50+ languages)
 
 | Tier | Languages |
 |------|-----------|
-| **Lite** (always compiled) | Rust, Go, Java, Scala, TypeScript/JavaScript/TSX/JSX, Python, C, C++, Kotlin, C#, Swift |
+| **Lite** (always compiled) | Rust, Go, Java, Scala, TypeScript/JavaScript/TSX/JSX, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro |
 | **Medium** (feature flags) | Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET |
-| **Full** (feature flags) | Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic, GLSL |
+| **Full** (feature flags) | ActionScript, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic, QuickBASIC, Dockerfile, GLSL, WGSL, HLSL, Metal, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean |
 
 ## How to add a language
 
@@ -39,6 +39,8 @@ pub trait LanguageExtractor: Send + Sync {
 
 ## Proposed languages by tier
 
+> Many earlier proposals have since shipped (Svelte, Astro, Elixir, Haskell, OCaml, Erlang, R, Julia, Clojure, Dockerfile, SQL, TOML, Markdown, WGSL — plus HLSL, Metal, F#, F*, Quint, Lean, and ActionScript which were never listed here). The tables below list what remains open.
+
 Languages are tiered by a combination of: popularity (TIOBE, Stack Overflow, GitHub usage), relevance to tokensave's target users (professional developers using AI coding tools), and implementation complexity.
 
 ### High Priority — Web Frameworks
@@ -49,9 +51,7 @@ in exploration agents because of their component/template structure.
 
 | Language | Extensions | Grammar crate | Complexity | Notes |
 |----------|-----------|---------------|------------|-------|
-| **Svelte** | `.svelte` | `tree-sitter-svelte-ng` (1.0.2) | Medium-high | Component files with embedded `<script>` (JS/TS). Need to delegate script block to TS extractor. Extract: components, props, reactive declarations, imports, event handlers. |
 | **Vue** | `.vue` | `tree-sitter-vue3` (0.0.4) | Medium-high | Same embedded-language challenge as Svelte: `<script>`, `<template>`, `<style>` blocks. Delegate `<script setup>` to TS extractor. Extract: components, props, emits, composables. |
-| **Astro** | `.astro` | `tree-sitter-astro-next` (0.1.1) | Medium | Frontmatter (JS/TS) + template. Simpler than Svelte/Vue — frontmatter is a clean JS block. |
 
 **Shared challenge:** All three are "embedded language" formats. The tree-sitter
 grammar gives you the document structure, but the `<script>` content needs the
@@ -65,13 +65,6 @@ Popular languages with clear structural semantics and active tree-sitter grammar
 
 | Language | Extensions | Grammar crate | Complexity | Notes |
 |----------|-----------|---------------|------------|-------|
-| **Elixir** | `.ex`, `.exs` | `tree-sitter-elixir` (0.3.5) | Medium | Modules, functions, macros, `use`/`import`, pattern matching, GenServer callbacks. Rich graph potential. |
-| **Haskell** | `.hs` | `tree-sitter-haskell` (0.23.1) | Medium-high | Modules, functions, type classes, instances, imports, data types. Type class hierarchy → `implements` edges. |
-| **OCaml** | `.ml`, `.mli` | `tree-sitter-ocaml` (0.24.2) | Medium | Modules, functors, signatures, `let` bindings, `open`. Module system maps well to graph. |
-| **Erlang** | `.erl`, `.hrl` | `tree-sitter-erlang` (0.15.0) | Medium | Modules, functions, exports, behaviour callbacks. Pairs with Elixir for BEAM ecosystem. |
-| **R** | `.r`, `.R` | `tree-sitter-r` (1.2.0) | Low-medium | Functions, assignments, library/require calls. Less structural than OOP languages. |
-| **Julia** | `.jl` | `tree-sitter-julia` (0.23.1) | Medium | Modules, functions, macros, struct types, abstract types, `using`/`import`. Multiple dispatch complicates call edges. |
-| **Clojure** | `.clj`, `.cljs`, `.cljc` | `tree-sitter-clojure` (0.1.0) | Medium | Namespaces, `defn`, `defmacro`, `defprotocol`, `defrecord`, `require`/`use`. S-expression parsing is straightforward but symbol extraction needs semantic awareness. |
 
 ### Medium Priority — Infrastructure & Config
 
@@ -81,10 +74,8 @@ structural complexity but high value for DevOps-focused users.
 | Language | Extensions | Grammar crate | Complexity | Notes |
 |----------|-----------|---------------|------------|-------|
 | **HCL/Terraform** | `.tf`, `.hcl` | `tree-sitter-hcl` (1.1.0) | Low-medium | Resources, data sources, modules, variables, outputs, locals. Graph edges from module refs and resource dependencies. |
-| **Dockerfile** | `Dockerfile`, `*.dockerfile` | `tree-sitter-dockerfile` (0.2.0) | Low | FROM, RUN, COPY, EXPOSE stages. Minimal graph structure but useful for dependency tracking. |
 | **Makefile** | `Makefile`, `*.mk` | `tree-sitter-make` (1.1.1) | Low | Targets, dependencies, variables. Target→dependency edges. |
 | **CMake** | `CMakeLists.txt`, `*.cmake` | `tree-sitter-cmake` (0.7.1) | Low | Functions, macros, targets, `add_subdirectory`. |
-| **SQL** | `.sql` | `tree-sitter-sql` (0.0.2) | Medium | Tables, views, functions, procedures, triggers. FK→table edges. Grammar is v0.0.2 — may be immature. |
 | **GraphQL** | `.graphql`, `.gql` | `tree-sitter-graphql` (0.1.0) | Low | Types, queries, mutations, subscriptions, fragments. Clean schema graph. |
 
 ### Medium Priority — Emerging / Niche
@@ -109,10 +100,8 @@ Limited structural graph value but sometimes requested.
 |----------|-----------|---------------|------------|-------|
 | **Liquid** | `.liquid` | No crate (vendor from GitHub) | Low-medium | Blocks, includes, assigns, filters. Template language — limited function-level structure. Would need vendored C grammar from [tree-sitter-liquid](https://github.com/nicklockwood/tree-sitter-liquid). |
 | **YAML** | `.yml`, `.yaml` | `tree-sitter-yaml` (0.7.2) | Low | Keys, anchors, aliases. Minimal graph value but useful for config file parsing. |
-| **TOML** | `.toml` | `tree-sitter-toml` (0.20.0) | Low | Tables, keys, arrays. Same as YAML — config parsing. |
 | **CSS/SCSS** | `.css`, `.scss` | `tree-sitter-css` (0.25.0) | Low | Selectors, rules, variables, mixins (SCSS). Limited graph edges. |
 | **HTML** | `.html` | `tree-sitter-html` (0.23.2) | Low | Elements, attributes, component references. Mostly useful as an inner parser for Svelte/Vue/Astro. |
-| **Markdown** | `.md` | `tree-sitter-grammars/tree-sitter-markdown` (block + inline) | Very low | Headings, links, code blocks. Near-zero graph value — only useful for doc cross-references. YAML/TOML frontmatter is parsed as opaque metadata. |
 
 ### Shader Languages
 
@@ -120,7 +109,6 @@ Very niche but occasionally requested by game/graphics developers.
 
 | Language | Extensions | Grammar crate | Complexity | Notes |
 |----------|-----------|---------------|------------|-------|
-| **WGSL** | `.wgsl` | `tree-sitter-wgsl` (0.0.6) | Low-medium | Functions, structs, bindings. WebGPU shader language. |
 | ~~**GLSL**~~ | | | | **Implemented** — see Full tier above. |
 
 ---

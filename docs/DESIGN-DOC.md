@@ -288,25 +288,30 @@ tool.
 
 ### Tool Categories
 
-The 37 MCP tools fall into several categories:
+The 80+ MCP tools fall into several categories (representative, not exhaustive —
+see the README tool tables or `tokensave tool` for the full list):
 
 | Category        | Tools                                                    |
 |-----------------|----------------------------------------------------------|
-| Search          | search, context, node, files, diff_context               |
+| Search          | search, context, node, files, diff_context, annotations  |
 | Navigation      | callers, callees, impact, affected                       |
 | Analysis        | complexity, dead_code, god_class, circular, coupling     |
 | Metrics         | rank, hotspots, largest, distribution, inheritance_depth |
 | Quality         | doc_coverage, unused_imports, recursion                  |
+| Health          | health, gini, dsm, dependency_depth, test_risk           |
 | Refactoring     | rename_preview, similar, module_api                      |
+| Edit primitives | str_replace, multi_str_replace, insert_at                |
 | Git/CI          | changelog, commit_context, pr_context                    |
-| Quality Scan    | simplify_scan, test_map, type_hierarchy                  |
+| Testing         | simplify_scan, test_map, test_coverage, type_hierarchy   |
+| Dependencies    | dependencies                                             |
 | Porting         | port_status, port_order                                  |
-| Branching       | branch_search, branch_diff                               |
+| Branching       | branch_search, branch_diff, branch_list                  |
+| Sessions        | session_start, session_end, record_decision              |
 | Status          | status                                                   |
 
-Each tool is defined in `mcp/tools.rs` with a JSON Schema for its parameters.
-`handle_tool_call` deserializes the arguments, calls the appropriate `TokenSave`
-method, and formats the result.
+Each tool is defined in `src/mcp/tools/definitions.rs` with a JSON Schema for its
+parameters. `handle_tool_call` (in `src/mcp/tools/handlers/`) deserializes the
+arguments, calls the appropriate `TokenSave` method, and formats the result.
 
 ## Agent Integration
 

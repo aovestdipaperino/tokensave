@@ -53,8 +53,8 @@ cargo install tokensave
 If you only work with a subset of languages, you can install a smaller binary:
 
 ```bash
-cargo install tokensave --features medium        # 20 languages
-cargo install tokensave --no-default-features    # 11 languages (lite)
+cargo install tokensave --features medium        # lite + 9 more languages
+cargo install tokensave --no-default-features    # lite tier only
 ```
 
 **Prebuilt binaries:**
@@ -100,7 +100,7 @@ In short:
 
 ### Incremental syncs
 
-After the initial full index, every subsequent `tokensave sync` is incremental. It detects which files changed since the last sync (via content hashing) and only re-indexes those files. On a typical commit-sized change, this takes under a second.
+After the initial full index, every subsequent `tokensave sync` is incremental. It detects which files changed since the last sync (via content hashing) and only re-indexes those files; files deleted from disk are pruned from the graph along with their symbols and edges. On a typical commit-sized change, this takes under a second.
 
 ### Force re-index
 
@@ -177,7 +177,7 @@ Tokensave works as an MCP (Model Context Protocol) server. AI coding agents conn
 tokensave install
 ```
 
-This is the default. It registers the MCP server in `~/.claude/settings.json`, grants tool permissions so Claude doesn't have to ask you every time, installs a `PreToolUse` hook that redirects Claude away from spawning expensive Explore agents, and adds prompt rules to `~/.claude/CLAUDE.md` that tell Claude to prefer tokensave tools.
+This is the default. It registers the MCP server in `~/.claude/settings.json`, grants tool permissions so Claude doesn't have to ask you every time, installs a `PreToolUse` hook that redirects Claude away from spawning expensive Explore agents and away from symbol-shaped grep/rg searches that a tokensave tool answers more cheaply, and adds prompt rules to `~/.claude/CLAUDE.md` that tell Claude to prefer tokensave tools.
 
 ### Other agents
 
@@ -451,7 +451,7 @@ tokensave affected src/lib.rs --quiet            # just file paths, no decoratio
 
 ## MCP Tools for AI Agents
 
-When running as an MCP server, tokensave exposes 41 tools that AI agents can call. Here's what they do, grouped by purpose.
+When running as an MCP server, tokensave exposes more than 80 tools that AI agents can call. The most commonly used are grouped below by purpose; run `tokensave tool` for the complete list with one-line descriptions.
 
 ### Core exploration
 
@@ -462,6 +462,8 @@ When running as an MCP server, tokensave exposes 41 tools that AI agents can cal
 | `tokensave_node` | Get full details for a specific symbol: source code, location, complexity metrics, and relationships. |
 | `tokensave_files` | List indexed files, optionally filtered by directory or glob pattern. |
 | `tokensave_status` | Index statistics: file counts, symbol counts, language distribution, and tokens saved. |
+| `tokensave_annotations` | Attribute/annotation/decorator introspection: histogram of all annotations in the project, or per-site listings filtered by name, file, or target kind. |
+| `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems: workspace summary with license surface and version drift, per-package lookup, and per-member listings. |
 
 ### Navigating relationships
 
@@ -534,6 +536,7 @@ Marked functions are excluded from `tokensave_test_risk` coverage calculations, 
 | `tokensave_commit_context` | Semantic summary of uncommitted changes, useful for drafting commit messages. |
 | `tokensave_pr_context` | Semantic diff between git refs for pull request descriptions. |
 | `tokensave_test_map` | Source-to-test mapping at the symbol level, with uncovered symbol detection. |
+| `tokensave_test_coverage` | Per-file/symbol/test-fn coverage rollup with transitive call-edge expansion: which tests cover a symbol, what a test exercises, or a whole-file tested/untested summary. |
 
 ### Porting tools
 
@@ -555,25 +558,25 @@ Discovery and analysis tools are read-only and safe to call in parallel. Session
 
 ## Supported Languages
 
-Tokensave supports 31 languages, organized into three tiers. Each tier includes all the languages from the tier below it.
+Tokensave supports more than 50 languages, organized into three tiers. Each tier includes all the languages from the tier below it. See the README for the full table with file extensions and feature flags.
 
-### Lite (11 languages)
+### Lite
 
-Always compiled. The smallest binary for the most popular languages.
+Always compiled. The smallest binary for the most popular languages, plus Svelte and Astro (script-block extraction via the TypeScript extractor).
 
-Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, C#, Swift
+Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro
 
-### Medium (Lite + 9 = 20 languages)
+### Medium (Lite + 9)
 
 Adds scripting, config, and additional systems languages.
 
 Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET
 
-### Full (Medium + 11 = 31 languages)
+### Full (Medium + everything else, the default)
 
-Everything, including legacy and niche languages.
+Everything: legacy, niche, shader, and document languages.
 
-Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, QuickBASIC 4.5
+ActionScript, Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, QuickBASIC 4.5, Dockerfile, GLSL, WGSL, HLSL, Metal, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean
 
 ### Mixing individual languages
 
