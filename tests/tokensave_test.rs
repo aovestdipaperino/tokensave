@@ -430,6 +430,85 @@ async fn sync_if_stale_silent_prunes_deleted_files() {
 }
 
 // ---------------------------------------------------------------------------
+// Go cross-package call resolution (#109)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn go_cross_package_calls_produce_edges() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("a")).unwrap();
+    fs::create_dir_all(project.join("b")).unwrap();
+
+    fs::write(project.join("go.mod"), "module example.com/repro\n\ngo 1.22\n").unwrap();
+    fs::write(
+        project.join("b/b.go"),
+        r#"package b
+
+type Store struct{}
+
+func (s *Store) Get(id int) int { return id }
+
+func Helper(x int) int {
+	return inc(x)
+}
+
+func inc(x int) int { return x + 1 }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("a/a.go"),
+        r#"package a
+
+import "example.com/repro/b"
+
+func UseStore(s *b.Store) int {
+	return s.Get(42)
+}
+
+func UseFunc() int {
+	return b.Helper(7)
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let edges = cg.get_all_edges().await.unwrap();
+    let name_of = |id: &str| {
+        nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map_or("?", |n| n.name.as_str())
+    };
+    let call_pairs: Vec<(String, String)> = edges
+        .iter()
+        .filter(|e| e.kind == tokensave::types::EdgeKind::Calls)
+        .map(|e| (name_of(&e.source).to_string(), name_of(&e.target).to_string()))
+        .collect();
+
+    // Same-package call — worked before #109.
+    assert!(
+        call_pairs.contains(&("Helper".to_string(), "inc".to_string())),
+        "expected same-package Helper -> inc edge, got: {call_pairs:?}"
+    );
+    // Cross-package function call b.Helper(7).
+    assert!(
+        call_pairs.contains(&("UseFunc".to_string(), "Helper".to_string())),
+        "expected cross-package UseFunc -> Helper edge, got: {call_pairs:?}"
+    );
+    // Cross-package method call s.Get(42) on an imported type.
+    assert!(
+        call_pairs.contains(&("UseStore".to_string(), "Get".to_string())),
+        "expected cross-package UseStore -> Get edge, got: {call_pairs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // get_tokens_saved / set_tokens_saved — round-trip
 // ---------------------------------------------------------------------------
 

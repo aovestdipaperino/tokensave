@@ -1143,6 +1143,24 @@ impl GoExtractor {
                         let callee = child.named_child(0);
                         if let Some(callee) = callee {
                             let callee_name = state.node_text(callee);
+                            // For selector calls (`pkg.Func()`, `recv.Method()`),
+                            // also emit the bare last segment — the qualifier is a
+                            // package alias or receiver variable that never matches
+                            // a node name, so cross-package calls would otherwise
+                            // produce no edge (#109; same as the Rust dot-call
+                            // fix for #74).
+                            if let Some(bare_name) = callee_name.rsplit('.').next() {
+                                if bare_name != callee_name {
+                                    state.unresolved_refs.push(UnresolvedRef {
+                                        from_node_id: fn_node_id.to_string(),
+                                        reference_name: bare_name.to_string(),
+                                        reference_kind: EdgeKind::Calls,
+                                        line: child.start_position().row as u32,
+                                        column: child.start_position().column as u32,
+                                        file_path: state.file_path.clone(),
+                                    });
+                                }
+                            }
                             state.unresolved_refs.push(UnresolvedRef {
                                 from_node_id: fn_node_id.to_string(),
                                 reference_name: callee_name,

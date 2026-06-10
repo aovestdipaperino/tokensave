@@ -244,6 +244,44 @@ func main() {
 }
 
 #[test]
+fn test_go_selector_calls_emit_bare_name_refs() {
+    // Cross-package calls (#109): `b.Helper(7)` and `s.Get(42)` produce
+    // selector callees ("b.Helper", "s.Get") that never match a node name.
+    // Like the Rust dot-call fix (#74), the extractor must also emit the
+    // bare last segment so the resolver can match the definition.
+    let source = r#"package a
+
+import "example.com/repro/b"
+
+func UseStore(s *b.Store) int {
+	return s.Get(42)
+}
+
+func UseFunc() int {
+	return b.Helper(7)
+}
+"#;
+    let extractor = GoExtractor;
+    let result = extractor.extract("a/a.go", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let ref_names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+
+    assert!(
+        ref_names.contains(&"Helper"),
+        "expected bare 'Helper' ref from b.Helper(), got: {ref_names:?}"
+    );
+    assert!(
+        ref_names.contains(&"Get"),
+        "expected bare 'Get' ref from s.Get(), got: {ref_names:?}"
+    );
+}
+
+#[test]
 fn test_go_extract_type_alias() {
     let source = r#"package main
 
