@@ -825,7 +825,10 @@ fn find_tokensave_hook_matcher(settings: &serde_json::Value, event: &str) -> Opt
     let arr = settings["hooks"][event].as_array()?;
     arr.iter().find_map(|wrapper| {
         let cmd = wrapper.get("hooks")?.as_array()?.first()?;
-        cmd.get("command").and_then(|c| c.as_str())?.contains("tokensave").then_some(())?;
+        cmd.get("command")
+            .and_then(|c| c.as_str())?
+            .contains("tokensave")
+            .then_some(())?;
         wrapper
             .get("matcher")
             .and_then(|v| v.as_str())
@@ -906,9 +909,8 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
         let expected_matcher = expected_hook_matcher(event);
 
         let current = find_tokensave_hook(&settings, event);
-        let matcher_ok = expected_matcher.is_none_or(|m| {
-            find_tokensave_hook_matcher(&settings, event).as_deref() == Some(m)
-        });
+        let matcher_ok = expected_matcher
+            .is_none_or(|m| find_tokensave_hook_matcher(&settings, event).as_deref() == Some(m));
         let correct = current
             .as_ref()
             .is_some_and(|(_, s, legacy)| !*legacy && s == expected_sub)
@@ -930,7 +932,14 @@ fn doctor_fix_hooks(dc: &mut DoctorCounters, settings_path: &Path, settings: &se
         if current.is_some() {
             uninstall_single_hook(&mut settings, event);
         }
-        install_single_hook(&mut settings, event, &bin, expected_sub, expected_matcher, true);
+        install_single_hook(
+            &mut settings,
+            event,
+            &bin,
+            expected_sub,
+            expected_matcher,
+            true,
+        );
         repaired = true;
     }
 

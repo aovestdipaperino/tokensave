@@ -1130,8 +1130,14 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
 /// Handles `tokensave_diff` — orchestrates over `changelog`, `commit_context`,
 /// and `diff_context` based on arguments, returning a uniform envelope.
 pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let path = args.get("path").and_then(|v| v.as_str()).map(str::to_string);
-    let from = args.get("from").and_then(|v| v.as_str()).map(str::to_string);
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let from = args
+        .get("from")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let to = args.get("to").and_then(|v| v.as_str()).map(str::to_string);
 
     // Dispatch table:

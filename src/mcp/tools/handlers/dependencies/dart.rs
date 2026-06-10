@@ -41,8 +41,7 @@ pub fn parse(root: &Path) -> Result<Workspace> {
                 continue;
             }
             // Bare scalar `flutter: any` etc. (rare but valid SDK constraint).
-            if matches!(dep_name.as_str(), "flutter" | "dart") && yaml_to_string(value).is_some()
-            {
+            if matches!(dep_name.as_str(), "flutter" | "dart") && yaml_to_string(value).is_some() {
                 continue;
             }
             deps.push(build_dep(&dep_name, value, kind));
@@ -146,7 +145,10 @@ mod tests {
         let ws = parse(dir.path()).unwrap();
         let m = &ws.members[0];
         assert_eq!(m.name, "my_app");
-        assert!(m.deps.iter().any(|d| d.name == "http" && d.version.as_deref() == Some("^1.2.0")));
+        assert!(m
+            .deps
+            .iter()
+            .any(|d| d.name == "http" && d.version.as_deref() == Some("^1.2.0")));
         assert!(m.deps.iter().any(|d| d.name == "provider"));
         // SDK markers are filtered out.
         assert!(!m.deps.iter().any(|d| d.name == "flutter"));
@@ -172,7 +174,11 @@ mod tests {
         .unwrap();
         let mut ws = parse(dir.path()).unwrap();
         apply_lockfile(&mut ws);
-        let http = ws.members[0].deps.iter().find(|d| d.name == "http").unwrap();
+        let http = ws.members[0]
+            .deps
+            .iter()
+            .find(|d| d.name == "http")
+            .unwrap();
         assert_eq!(http.resolved.as_deref(), Some("1.2.1"));
     }
 }

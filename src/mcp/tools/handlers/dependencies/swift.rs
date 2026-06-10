@@ -70,8 +70,7 @@ fn extract_dependencies(raw: &str) -> Vec<Dep> {
 /// Given the contents of `.package( ... )`, pull out URL/name and version.
 fn parse_package_call(body: &str) -> Option<Dep> {
     // Identify the dep name: either url's last path component or `name:` arg.
-    let url = extract_string_arg(body, "url:")
-        .or_else(|| extract_string_arg(body, "path:"));
+    let url = extract_string_arg(body, "url:").or_else(|| extract_string_arg(body, "path:"));
     let name_arg = extract_string_arg(body, "name:");
 
     let name = name_arg

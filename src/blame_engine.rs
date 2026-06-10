@@ -144,7 +144,8 @@ pub fn log(
         // For identity-tracking across commits we use a very permissive
         // lower bound (0.1) rather than the clone-detection threshold.
         // The `ast_hash` comparison below is the real change-detection gate.
-        let Some(matched) = best_match_in_tree(&source, &tree, target_fp, opts.similarity_threshold)
+        let Some(matched) =
+            best_match_in_tree(&source, &tree, target_fp, opts.similarity_threshold)
         else {
             // Entity vanished — probe other files touched in the next-older
             // commit (the boundary commit) for a structural match.
@@ -153,13 +154,9 @@ pub fn log(
             if let Some((ev, _)) = pending.take() {
                 events.push(ev);
             }
-            if let Some(renamed) = probe_rename_at_boundary(
-                &repo,
-                project_root,
-                visit,
-                target_fp,
-                opts,
-            )? {
+            if let Some(renamed) =
+                probe_rename_at_boundary(&repo, project_root, visit, target_fp, opts)?
+            {
                 // Switch the walk to follow the prior file. We rerun `log` on
                 // that file path starting from the boundary commit's parent.
                 let prior = log_from_commit(
@@ -239,13 +236,9 @@ pub fn log(
     // another file — probe the boundary commit's parent for a structural match.
     if !found_introduction && !hit_max {
         if let Some(oldest_visit) = visits.last() {
-            if let Some(renamed) = probe_rename_at_boundary(
-                &repo,
-                project_root,
-                oldest_visit,
-                target_fp,
-                opts,
-            )? {
+            if let Some(renamed) =
+                probe_rename_at_boundary(&repo, project_root, oldest_visit, target_fp, opts)?
+            {
                 let prior = log_from_commit(
                     project_root,
                     &renamed.prior_file,
@@ -390,9 +383,21 @@ fn probe_rename_at_boundary(
         .for_each_to_obtain_tree(&boundary_tree, |change| {
             use gix::object::tree::diff::Change;
             match &change {
-                Change::Deletion { location, entry_mode, .. }
-                | Change::Modification { location, entry_mode, .. }
-                | Change::Addition { location, entry_mode, .. } => {
+                Change::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Modification {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
                     if !entry_mode.is_tree() {
                         candidates.push(location.to_string());
                     }
@@ -440,9 +445,7 @@ fn probe_rename_at_boundary(
         let Some(tree) = parse_file(source, &lang) else {
             continue;
         };
-        if let Some(fp) =
-            best_match_in_tree(source, &tree, target_fp, opts.similarity_threshold)
-        {
+        if let Some(fp) = best_match_in_tree(source, &tree, target_fp, opts.similarity_threshold) {
             let score = crate::redundancy::composite_similarity(target_fp, &fp);
             let better = best.as_ref().is_none_or(|(s, _)| score > *s);
             if better {
@@ -606,12 +609,14 @@ pub(crate) fn walk_file_history(
     // via the None branch, so `visited == max_commits` alone is not sufficient.
     let hit_max = !exhausted && visited == max_commits;
 
-    Ok(WalkResult { visits, total_visited: visited, hit_max })
+    Ok(WalkResult {
+        visits,
+        total_visited: visited,
+        hit_max,
+    })
 }
 
-fn commit_metadata(
-    commit: &gix::Commit<'_>,
-) -> Result<(String, String, String, String), String> {
+fn commit_metadata(commit: &gix::Commit<'_>) -> Result<(String, String, String, String), String> {
     let author_sig = commit
         .author()
         .map_err(|e| format!("cannot decode author: {e}"))?;
@@ -727,13 +732,52 @@ pub fn compute_target_fingerprint(
 fn lang_key_is_known(key: &str) -> bool {
     matches!(
         key,
-        "bash" | "batch" | "c" | "c_sharp" | "clojure" | "cobol" | "cpp" | "dart"
-            | "dockerfile" | "elixir" | "erlang" | "fortran" | "fsharp" | "glsl"
-            | "go" | "gwbasic" | "haskell" | "java" | "javascript" | "julia"
-            | "kotlin" | "lean" | "lua" | "msbasic2" | "nix" | "objc" | "ocaml"
-            | "pascal" | "perl" | "php" | "powershell" | "protobuf" | "python"
-            | "qbasic" | "quint" | "r" | "ruby" | "rust" | "scala" | "sql"
-            | "swift" | "toml" | "tsx" | "typescript" | "vbnet" | "zig"
+        "bash"
+            | "batch"
+            | "c"
+            | "c_sharp"
+            | "clojure"
+            | "cobol"
+            | "cpp"
+            | "dart"
+            | "dockerfile"
+            | "elixir"
+            | "erlang"
+            | "fortran"
+            | "fsharp"
+            | "glsl"
+            | "go"
+            | "gwbasic"
+            | "haskell"
+            | "java"
+            | "javascript"
+            | "julia"
+            | "kotlin"
+            | "lean"
+            | "lua"
+            | "msbasic2"
+            | "nix"
+            | "objc"
+            | "ocaml"
+            | "pascal"
+            | "perl"
+            | "php"
+            | "powershell"
+            | "protobuf"
+            | "python"
+            | "qbasic"
+            | "quint"
+            | "r"
+            | "ruby"
+            | "rust"
+            | "scala"
+            | "sql"
+            | "swift"
+            | "toml"
+            | "tsx"
+            | "typescript"
+            | "vbnet"
+            | "zig"
     ) || (cfg!(feature = "lang-wgsl") && key == "wgsl")
         || (cfg!(feature = "lang-hlsl") && key == "hlsl")
 }
@@ -783,7 +827,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let git = |args: &[&str]| {
-            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            let st = Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap();
             assert!(st.success());
         };
         git(&["init", "-q", "-b", "main"]);
@@ -792,7 +840,11 @@ mod tests {
         git(&["config", "commit.gpgsign", "false"]);
 
         // c1: original body
-        std::fs::write(root.join("foo.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        std::fs::write(
+            root.join("foo.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
         git(&["add", "foo.rs"]);
         git(&["commit", "-q", "-m", "c1: initial"]);
 
@@ -832,7 +884,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let git = |args: &[&str]| {
-            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            let st = Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap();
             assert!(st.success());
         };
         git(&["init", "-q", "-b", "main"]);
@@ -861,8 +917,11 @@ mod tests {
 
         // Should have at least one event from each side of the rename, and the
         // boundary should be RenamedFrom (with the prior file recorded).
-        assert!(result.events.iter().any(|e| e.file_at_commit == "a.rs"),
-            "expected an event from a.rs in {:#?}", result.events);
+        assert!(
+            result.events.iter().any(|e| e.file_at_commit == "a.rs"),
+            "expected an event from a.rs in {:#?}",
+            result.events
+        );
         assert_eq!(result.boundary_reason, BoundaryReason::RenamedFrom);
     }
 
@@ -872,7 +931,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let git = |args: &[&str]| {
-            Command::new("git").current_dir(root).args(args).status().unwrap();
+            Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap();
         };
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@t"]);
@@ -909,7 +972,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let git = |args: &[&str]| {
-            Command::new("git").current_dir(root).args(args).status().unwrap();
+            Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap();
         };
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@t"]);
@@ -943,7 +1010,11 @@ mod tests {
 
         // Bootstrap a tiny repo with three commits touching foo.rs.
         let run = |args: &[&str]| {
-            let st = Command::new("git").current_dir(root).args(args).status().unwrap();
+            let st = Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap();
             assert!(st.success(), "git {args:?} failed");
         };
         run(&["init", "-q", "-b", "main"]);

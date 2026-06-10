@@ -12,18 +12,25 @@ use crate::tokensave::TokenSave;
 async fn resolve_target(
     cg: &TokenSave,
     args: &Value,
-) -> Result<(crate::types::Node, crate::redundancy::Fingerprint, &'static str)> {
-    let symbol = args
-        .get("symbol")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: symbol".to_string(),
-        })?;
+) -> Result<(
+    crate::types::Node,
+    crate::redundancy::Fingerprint,
+    &'static str,
+)> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
     let file_filter = args.get("file").and_then(|v| v.as_str());
 
     let candidates = cg.get_nodes_by_qualified_name(symbol).await?;
     let candidates: Vec<_> = match file_filter {
-        Some(f) => candidates.into_iter().filter(|n| n.file_path == f).collect(),
+        Some(f) => candidates
+            .into_iter()
+            .filter(|n| n.file_path == f)
+            .collect(),
         None => candidates,
     };
 
@@ -38,7 +45,14 @@ async fn resolve_target(
         let listing: Vec<String> = candidates
             .iter()
             .take(5)
-            .map(|n| format!("  - {}:{} ({})", n.file_path, n.start_line + 1, n.kind.as_str()))
+            .map(|n| {
+                format!(
+                    "  - {}:{} ({})",
+                    n.file_path,
+                    n.start_line + 1,
+                    n.kind.as_str()
+                )
+            })
             .collect();
         return Err(TokenSaveError::Config {
             message: format!(
@@ -67,18 +81,16 @@ async fn resolve_target(
     let source = crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
         message: format!("cannot read {}: {e}", node.file_path),
     })?;
-    let fp = blame_engine::compute_target_fingerprint(
-        &source,
-        lang_key,
-        node.start_line,
-        node.end_line,
-    )
-    .ok_or_else(|| TokenSaveError::Config {
-        message: format!(
-            "could not compute fingerprint for '{}' at {}:{}",
-            node.qualified_name, node.file_path, node.start_line + 1
-        ),
-    })?;
+    let fp =
+        blame_engine::compute_target_fingerprint(&source, lang_key, node.start_line, node.end_line)
+            .ok_or_else(|| TokenSaveError::Config {
+                message: format!(
+                    "could not compute fingerprint for '{}' at {}:{}",
+                    node.qualified_name,
+                    node.file_path,
+                    node.start_line + 1
+                ),
+            })?;
 
     Ok((node, fp, lang_key))
 }

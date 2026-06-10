@@ -39,7 +39,9 @@ pub fn parse(root: &Path) -> Result<Workspace> {
             .filter_map(std::result::Result::ok)
             .filter_map(|e| {
                 let s = e.file_name().to_string_lossy().into_owned();
-                let ok = PROJECT_EXTS.iter().any(|ext| s.ends_with(&format!(".{ext}")));
+                let ok = PROJECT_EXTS
+                    .iter()
+                    .any(|ext| s.ends_with(&format!(".{ext}")));
                 ok.then_some(s)
             })
             .collect();

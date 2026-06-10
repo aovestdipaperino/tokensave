@@ -8,10 +8,7 @@ use yaml_rust2::{Yaml, YamlLoader};
 /// `None` — callers fall back to returning empty dep lists when the file is
 /// unreadable.
 pub fn parse_root(raw: &str) -> Option<Yaml> {
-    YamlLoader::load_from_str(raw)
-        .ok()?
-        .into_iter()
-        .next()
+    YamlLoader::load_from_str(raw).ok()?.into_iter().next()
 }
 
 /// Read the scalar value of `node[key]` as a string. Numbers and booleans are
@@ -42,21 +39,17 @@ pub fn yaml_to_string(node: &Yaml) -> Option<String> {
 
 /// Iterate the entries of a hash node, returning `(key, value)` pairs where
 /// the key is a string. Non-string keys are skipped.
-pub fn hash_entries<'a>(
-    node: &'a Yaml,
-) -> impl Iterator<Item = (String, &'a Yaml)> + 'a {
-    node.as_hash()
-        .into_iter()
-        .flat_map(|m| {
-            m.iter().filter_map(|(k, v)| {
-                let key = match k {
-                    Yaml::String(s) => Some(s.clone()),
-                    Yaml::Integer(i) => Some(i.to_string()),
-                    _ => None,
-                };
-                key.map(|k| (k, v))
-            })
+pub fn hash_entries<'a>(node: &'a Yaml) -> impl Iterator<Item = (String, &'a Yaml)> + 'a {
+    node.as_hash().into_iter().flat_map(|m| {
+        m.iter().filter_map(|(k, v)| {
+            let key = match k {
+                Yaml::String(s) => Some(s.clone()),
+                Yaml::Integer(i) => Some(i.to_string()),
+                _ => None,
+            };
+            key.map(|k| (k, v))
         })
+    })
 }
 
 #[cfg(test)]

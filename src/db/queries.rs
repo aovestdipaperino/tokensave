@@ -1061,7 +1061,8 @@ impl Database {
                 "SELECT name, COUNT(*) AS n \
                  FROM nodes \
                  WHERE kind = 'annotation_usage' AND file_path LIKE ?1 \
-                 GROUP BY name ORDER BY n DESC, name ASC".to_string(),
+                 GROUP BY name ORDER BY n DESC, name ASC"
+                    .to_string(),
                 libsql::params_from_iter(vec![libsql::Value::Text(format!("{prefix}%"))]),
             )
         } else {
@@ -1069,18 +1070,19 @@ impl Database {
                 "SELECT name, COUNT(*) AS n \
                  FROM nodes \
                  WHERE kind = 'annotation_usage' \
-                 GROUP BY name ORDER BY n DESC, name ASC".to_string(),
+                 GROUP BY name ORDER BY n DESC, name ASC"
+                    .to_string(),
                 libsql::params_from_iter(Vec::<libsql::Value>::new()),
             )
         };
-        let mut rows = self
-            .conn()
-            .query(&sql, args)
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query annotation histogram: {e}"),
-                operation: "get_annotation_histogram".to_string(),
-            })?;
+        let mut rows =
+            self.conn()
+                .query(&sql, args)
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query annotation histogram: {e}"),
+                    operation: "get_annotation_histogram".to_string(),
+                })?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read annotation row: {e}"),

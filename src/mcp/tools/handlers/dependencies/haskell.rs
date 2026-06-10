@@ -123,12 +123,7 @@ fn parse_dep_spec(spec: &str, kind: DepKind) -> Option<Dep> {
     let (name, version) = if let Some(i) = spec.find('(') {
         (
             spec[..i].trim().to_string(),
-            Some(
-                spec[i + 1..]
-                    .trim_end_matches(')')
-                    .trim()
-                    .to_string(),
-            ),
+            Some(spec[i + 1..].trim_end_matches(')').trim().to_string()),
         )
     } else {
         let mut idx = spec.len();

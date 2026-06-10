@@ -277,7 +277,9 @@ fn apply_dotnet_lock(ws: &mut Workspace) {
             };
             for (name, info) in obj {
                 if let Some(v) = info.get("resolved").and_then(|v| v.as_str()) {
-                    versions.entry(name.clone()).or_insert_with(|| v.to_string());
+                    versions
+                        .entry(name.clone())
+                        .or_insert_with(|| v.to_string());
                 }
             }
         }
@@ -528,14 +530,8 @@ github.com/spf13/cobra v1.8.0/go.mod h1:bar
         .unwrap();
         let mut ws = fixture("php", dir.path(), &["symfony/console", "phpunit/phpunit"]);
         apply_to_workspace(&mut ws);
-        assert_eq!(
-            ws.members[0].deps[0].resolved.as_deref(),
-            Some("v7.1.0")
-        );
-        assert_eq!(
-            ws.members[0].deps[1].resolved.as_deref(),
-            Some("10.5.0")
-        );
+        assert_eq!(ws.members[0].deps[0].resolved.as_deref(), Some("v7.1.0"));
+        assert_eq!(ws.members[0].deps[1].resolved.as_deref(), Some("10.5.0"));
     }
 
     #[test]
@@ -580,10 +576,7 @@ DEPENDENCIES
         .unwrap();
         let mut ws = fixture("dotnet", dir.path(), &["Newtonsoft.Json"]);
         apply_to_workspace(&mut ws);
-        assert_eq!(
-            ws.members[0].deps[0].resolved.as_deref(),
-            Some("13.0.3")
-        );
+        assert_eq!(ws.members[0].deps[0].resolved.as_deref(), Some("13.0.3"));
     }
 
     #[test]

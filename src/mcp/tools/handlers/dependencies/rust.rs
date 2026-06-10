@@ -160,10 +160,7 @@ fn parse_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
                 .get("optional")
                 .and_then(toml::Value::as_bool)
                 .unwrap_or(false);
-            let path = t
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let path = t.get("path").and_then(|v| v.as_str()).map(str::to_string);
             Dep {
                 name: name.to_string(),
                 resolved: None,

@@ -1032,7 +1032,10 @@ async fn coverage_for_file(
             continue;
         }
 
-        let callers = cg.get_callers(&node.id, max_depth).await.unwrap_or_default();
+        let callers = cg
+            .get_callers(&node.id, max_depth)
+            .await
+            .unwrap_or_default();
         let caller_ids: Vec<String> = callers.iter().map(|(n, _)| n.id.clone()).collect();
         let annotated = cg
             .get_test_annotated_node_ids(&caller_ids)

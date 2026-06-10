@@ -440,7 +440,11 @@ async fn go_cross_package_calls_produce_edges() {
     fs::create_dir_all(project.join("a")).unwrap();
     fs::create_dir_all(project.join("b")).unwrap();
 
-    fs::write(project.join("go.mod"), "module example.com/repro\n\ngo 1.22\n").unwrap();
+    fs::write(
+        project.join("go.mod"),
+        "module example.com/repro\n\ngo 1.22\n",
+    )
+    .unwrap();
     fs::write(
         project.join("b/b.go"),
         r#"package b
@@ -488,7 +492,12 @@ func UseFunc() int {
     let call_pairs: Vec<(String, String)> = edges
         .iter()
         .filter(|e| e.kind == tokensave::types::EdgeKind::Calls)
-        .map(|e| (name_of(&e.source).to_string(), name_of(&e.target).to_string()))
+        .map(|e| {
+            (
+                name_of(&e.source).to_string(),
+                name_of(&e.target).to_string(),
+            )
+        })
         .collect();
 
     // Same-package call — worked before #109.

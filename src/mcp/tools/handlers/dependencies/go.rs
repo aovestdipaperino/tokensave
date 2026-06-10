@@ -22,8 +22,10 @@ pub fn parse(root: &Path) -> Result<Workspace> {
         message: format!("failed to read {}: {e}", manifest.display()),
     })?;
 
-    let module = extract_module(&raw)
-        .unwrap_or_else(|| root.file_name().map_or_else(|| ".".into(), |s| s.to_string_lossy().to_string()));
+    let module = extract_module(&raw).unwrap_or_else(|| {
+        root.file_name()
+            .map_or_else(|| ".".into(), |s| s.to_string_lossy().to_string())
+    });
     let deps = collect_requires(&raw);
     let patches = collect_replaces(&raw);
 
@@ -46,7 +48,12 @@ fn extract_module(src: &str) -> Option<String> {
     for line in src.lines() {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("module ") {
-            return Some(rest.split_whitespace().next()?.trim_matches('"').to_string());
+            return Some(
+                rest.split_whitespace()
+                    .next()?
+                    .trim_matches('"')
+                    .to_string(),
+            );
         }
     }
     None
@@ -194,9 +201,17 @@ require (
         assert_eq!(ws.ecosystem, "go");
         let m = &ws.members[0];
         assert_eq!(m.name, "github.com/foo/bar");
-        let cobra = m.deps.iter().find(|d| d.name == "github.com/spf13/cobra").unwrap();
+        let cobra = m
+            .deps
+            .iter()
+            .find(|d| d.name == "github.com/spf13/cobra")
+            .unwrap();
         assert_eq!(cobra.version.as_deref(), Some("v1.8.0"));
-        let logrus = m.deps.iter().find(|d| d.name == "github.com/sirupsen/logrus").unwrap();
+        let logrus = m
+            .deps
+            .iter()
+            .find(|d| d.name == "github.com/sirupsen/logrus")
+            .unwrap();
         assert!(logrus.features.contains(&"indirect".to_string()));
     }
 

@@ -107,7 +107,8 @@ fn parse_opam_depends(raw: &str) -> Vec<Dep> {
             };
             let constraint = body[cstart..cstart + rel_end].to_string();
             i = cstart + rel_end + 1;
-            let kind = if constraint.contains("with-test") || constraint.contains("with-dev-setup") {
+            let kind = if constraint.contains("with-test") || constraint.contains("with-dev-setup")
+            {
                 DepKind::Dev
             } else {
                 DepKind::Normal

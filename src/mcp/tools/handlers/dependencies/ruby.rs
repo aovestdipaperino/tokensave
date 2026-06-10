@@ -39,9 +39,8 @@ pub fn parse(root: &Path) -> Result<Workspace> {
 
         // `group :development do` opens a scope; `end` closes it.
         if let Some(rest) = line.strip_prefix("group ") {
-            let is_devlike = rest.contains(":development")
-                || rest.contains(":dev")
-                || rest.contains(":test");
+            let is_devlike =
+                rest.contains(":development") || rest.contains(":dev") || rest.contains(":test");
             let kind = if is_devlike {
                 DepKind::Dev
             } else if rest.contains(":production") {
@@ -63,12 +62,14 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     }
 
     let member = Member {
-        path: manifest
-            .file_name()
-            .map_or_else(|| "Gemfile".to_string(), |s| s.to_string_lossy().into_owned()),
-        name: root
-            .file_name()
-            .map_or_else(|| "ruby-app".to_string(), |s| s.to_string_lossy().into_owned()),
+        path: manifest.file_name().map_or_else(
+            || "Gemfile".to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        ),
+        name: root.file_name().map_or_else(
+            || "ruby-app".to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        ),
         license: None,
         deps,
     };

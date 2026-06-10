@@ -24,9 +24,10 @@ pub fn parse(root: &Path) -> Result<Workspace> {
     let mut deps = collect_section_deps(&raw, "deps", DepKind::Normal);
     deps.extend(collect_section_deps(&raw, "profiles", DepKind::Dev));
 
-    let app_name = root
-        .file_name()
-        .map_or_else(|| "rebar-app".to_string(), |n| n.to_string_lossy().into_owned());
+    let app_name = root.file_name().map_or_else(
+        || "rebar-app".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
 
     Ok(Workspace {
         ecosystem: ECOSYSTEM,

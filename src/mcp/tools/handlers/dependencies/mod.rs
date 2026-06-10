@@ -85,12 +85,7 @@ pub(super) async fn handle_dependencies(cg: &TokenSave, args: Value) -> Result<T
     let kind_filter = args
         .get("kind")
         .and_then(|v| v.as_str())
-        .filter(|s| {
-            matches!(
-                *s,
-                "normal" | "dev" | "build" | "peer" | "optional" | "all"
-            )
-        })
+        .filter(|s| matches!(*s, "normal" | "dev" | "build" | "peer" | "optional" | "all"))
         .unwrap_or("all");
     let ecosystem_filter = args.get("ecosystem").and_then(|v| v.as_str());
     let include_lockfile = args
@@ -282,7 +277,9 @@ fn ecosystem_summary(ws: &Workspace, kind_filter: &str) -> Value {
 /// Aggregate distinct license strings across members with a count of how
 /// many members declare each. Members without a `license` field are bucketed
 /// under `"<unknown>"`.
-fn collect_license_summary(members: &[crate::mcp::tools::handlers::dependencies::common::Member]) -> Vec<Value> {
+fn collect_license_summary(
+    members: &[crate::mcp::tools::handlers::dependencies::common::Member],
+) -> Vec<Value> {
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for m in members {
         let key = m.license.clone().unwrap_or_else(|| "<unknown>".to_string());

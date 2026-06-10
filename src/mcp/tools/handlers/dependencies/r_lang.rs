@@ -95,10 +95,7 @@ fn parse_dep_spec(spec: &str, kind: DepKind) -> Option<Dep> {
     let (name, version) = match spec.find('(') {
         Some(i) => {
             let n = spec[..i].trim().to_string();
-            let v = spec[i + 1..]
-                .trim_end_matches(')')
-                .trim()
-                .to_string();
+            let v = spec[i + 1..].trim_end_matches(')').trim().to_string();
             let v_opt = (!v.is_empty()).then_some(v);
             (n, v_opt)
         }
@@ -148,7 +145,10 @@ Suggests:
         let ws = parse(dir.path()).unwrap();
         let m = &ws.members[0];
         assert_eq!(m.name, "mypkg");
-        assert!(m.deps.iter().any(|d| d.name == "dplyr" && d.kind == DepKind::Normal));
+        assert!(m
+            .deps
+            .iter()
+            .any(|d| d.name == "dplyr" && d.kind == DepKind::Normal));
         assert!(m.deps.iter().any(|d| d.name == "rlang"));
         assert!(m
             .deps

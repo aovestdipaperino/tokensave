@@ -358,7 +358,10 @@ fn test_bash_blocks_rg_on_src_dir() {
 fn test_bash_blocks_grep_rn_recursive() {
     let input = r#"{"command": "grep -rn handle_request /Users/me/proj/src/"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
-    assert!(is_blocked(&result), "grep -rn callers search should redirect");
+    assert!(
+        is_blocked(&result),
+        "grep -rn callers search should redirect"
+    );
 }
 
 #[test]

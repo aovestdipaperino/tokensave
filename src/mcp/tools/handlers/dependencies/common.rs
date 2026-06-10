@@ -229,7 +229,14 @@ fn recurse_double_star(
 ) {
     // Try matching the remaining pattern at the current level.
     let pseudo_parts: Vec<&str> = remaining.to_vec();
-    walk_pattern(root, &pseudo_parts, 0, accumulated.to_string(), manifest, out);
+    walk_pattern(
+        root,
+        &pseudo_parts,
+        0,
+        accumulated.to_string(),
+        manifest,
+        out,
+    );
     if depth >= 4 {
         return;
     }
@@ -243,7 +250,10 @@ fn recurse_double_star(
         }
         let child = e.file_name().to_string_lossy().into_owned();
         // Skip common nuisance dirs.
-        if matches!(child.as_str(), "node_modules" | "target" | ".git" | ".tokensave") {
+        if matches!(
+            child.as_str(),
+            "node_modules" | "target" | ".git" | ".tokensave"
+        ) {
             continue;
         }
         let next = if accumulated.is_empty() {
@@ -276,11 +286,7 @@ mod tests {
         write(dir.path(), "crates/a/Cargo.toml");
         write(dir.path(), "crates/b/Cargo.toml");
         write(dir.path(), "crates/c/not-cargo.toml");
-        let mut out = expand_workspace_globs(
-            dir.path(),
-            &["crates/*".to_string()],
-            "Cargo.toml",
-        );
+        let mut out = expand_workspace_globs(dir.path(), &["crates/*".to_string()], "Cargo.toml");
         out.sort();
         assert_eq!(out, vec!["crates/a", "crates/b"]);
     }
@@ -318,11 +324,7 @@ mod tests {
         write(dir.path(), "a/Cargo.toml");
         write(dir.path(), "nested/b/Cargo.toml");
         write(dir.path(), "deep/very/c/Cargo.toml");
-        let out = expand_workspace_globs(
-            dir.path(),
-            &["**".to_string()],
-            "Cargo.toml",
-        );
+        let out = expand_workspace_globs(dir.path(), &["**".to_string()], "Cargo.toml");
         // Order is sorted; root itself is "" which won't show up because
         // the recursion starts with empty `accumulated` only at depth 0.
         assert!(out.contains(&"a".to_string()));

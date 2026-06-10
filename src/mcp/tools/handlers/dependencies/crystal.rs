@@ -37,7 +37,9 @@ pub fn parse(root: &Path) -> Result<Workspace> {
             let source = ["github", "gitlab", "git", "bitbucket"]
                 .iter()
                 .find_map(|key| as_string(value, key).map(|v| (key, v)));
-            let final_version = version.clone().or_else(|| source.map(|(k, v)| format!("{k}:{v}")));
+            let final_version = version
+                .clone()
+                .or_else(|| source.map(|(k, v)| format!("{k}:{v}")));
             let local_path = as_string(value, "path");
             deps.push(Dep {
                 name: dep_name,
@@ -132,7 +134,11 @@ mod tests {
         .unwrap();
         let mut ws = parse(dir.path()).unwrap();
         apply_lockfile(&mut ws);
-        let kemal = ws.members[0].deps.iter().find(|d| d.name == "kemal").unwrap();
+        let kemal = ws.members[0]
+            .deps
+            .iter()
+            .find(|d| d.name == "kemal")
+            .unwrap();
         assert_eq!(kemal.resolved.as_deref(), Some("1.4.0"));
     }
 }

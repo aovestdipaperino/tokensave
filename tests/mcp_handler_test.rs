@@ -2873,9 +2873,7 @@ async fn test_dependencies_workspace_summary() {
         .collect();
     assert!(members.contains(&"test_fixture"));
     let crates = parsed["crates"].as_array().unwrap();
-    assert!(crates
-        .iter()
-        .any(|c| c["crate"] == "serde"));
+    assert!(crates.iter().any(|c| c["crate"] == "serde"));
 }
 
 #[tokio::test]
@@ -2894,7 +2892,10 @@ async fn test_dependencies_unknown_member_reports_available() {
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(parsed["mode"], "member");
-    assert!(parsed["error"].as_str().unwrap().contains("no_such_member_xyz"));
+    assert!(parsed["error"]
+        .as_str()
+        .unwrap()
+        .contains("no_such_member_xyz"));
     assert!(parsed["available_members"].is_array());
 }
 
@@ -2920,7 +2921,10 @@ async fn test_dependencies_kind_filter() {
         .map(|c| c["crate"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"tempfile"), "dev dep should be present");
-    assert!(!names.contains(&"serde"), "normal dep should be filtered out");
+    assert!(
+        !names.contains(&"serde"),
+        "normal dep should be filtered out"
+    );
 }
 
 #[tokio::test]
@@ -2949,8 +2953,7 @@ async fn test_dependencies_surfaces_license_and_drift() {
     let result = handle_tool_call(&cg, "tokensave_dependencies", json!({}), None, None)
         .await
         .unwrap();
-    let parsed: serde_json::Value =
-        serde_json::from_str(extract_text(&result.value)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(extract_text(&result.value)).unwrap();
 
     // License summary
     let licenses = parsed["licenses"].as_array().unwrap();
@@ -2995,8 +2998,7 @@ async fn test_dependencies_include_lockfile_stamps_resolved() {
     )
     .await
     .unwrap();
-    let parsed: serde_json::Value =
-        serde_json::from_str(extract_text(&result.value)).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(extract_text(&result.value)).unwrap();
     let usages = parsed["usages"].as_array().unwrap();
     assert_eq!(usages[0]["version"], "1.0");
     assert_eq!(usages[0]["resolved"], "1.0.219");

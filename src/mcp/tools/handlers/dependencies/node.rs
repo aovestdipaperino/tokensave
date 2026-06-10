@@ -53,7 +53,10 @@ pub fn parse(root: &Path) -> Result<Workspace> {
 
     // `overrides` / `resolutions` act as ecosystem-specific "patches".
     let mut patches: Vec<Patch> = Vec::new();
-    for (field, source) in [("overrides", "npm-overrides"), ("resolutions", "yarn-resolutions")] {
+    for (field, source) in [
+        ("overrides", "npm-overrides"),
+        ("resolutions", "yarn-resolutions"),
+    ] {
         if let Some(obj) = doc.get(field).and_then(|v| v.as_object()) {
             for (name, body) in obj {
                 let replacement = match body {
@@ -185,8 +188,14 @@ mod tests {
         assert_eq!(ws.ecosystem, "node");
         let m = &ws.members[0];
         assert_eq!(m.name, "my-app");
-        assert!(m.deps.iter().any(|d| d.name == "react" && d.kind == DepKind::Normal));
-        assert!(m.deps.iter().any(|d| d.name == "typescript" && d.kind == DepKind::Dev));
+        assert!(m
+            .deps
+            .iter()
+            .any(|d| d.name == "react" && d.kind == DepKind::Normal));
+        assert!(m
+            .deps
+            .iter()
+            .any(|d| d.name == "typescript" && d.kind == DepKind::Dev));
         assert!(m
             .deps
             .iter()

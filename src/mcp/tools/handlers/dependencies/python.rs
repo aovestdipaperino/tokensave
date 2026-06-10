@@ -225,10 +225,7 @@ fn poetry_dep(name: &str, value: &toml::Value, kind: DepKind) -> Dep {
                 .get("optional")
                 .and_then(toml::Value::as_bool)
                 .unwrap_or(matches!(kind, DepKind::Optional));
-            let path = t
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let path = t.get("path").and_then(|v| v.as_str()).map(str::to_string);
             let extras = t
                 .get("extras")
                 .and_then(|v| v.as_array())
@@ -444,7 +441,10 @@ flask  # web framework
 
     #[test]
     fn pep508_parses_extras_and_version() {
-        let d = pep508_to_dep("requests[security] >= 2.31 ; python_version >= '3.7'", DepKind::Normal);
+        let d = pep508_to_dep(
+            "requests[security] >= 2.31 ; python_version >= '3.7'",
+            DepKind::Normal,
+        );
         assert_eq!(d.name, "requests");
         assert_eq!(d.features, vec!["security".to_string()]);
         assert!(d.version.unwrap().contains("2.31"));

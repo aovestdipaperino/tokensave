@@ -63,7 +63,7 @@ fn extract_dep_tuples(raw: &str) -> Vec<Dep> {
     let mut pos = 0;
     while let Some(idx) = raw[pos..].find("{:") {
         let start = pos + idx + 1; // skip past `{`
-        // Walk to matching close brace.
+                                   // Walk to matching close brace.
         let inner = &raw[start..];
         let Some(end) = find_matching_brace(inner) else {
             break;

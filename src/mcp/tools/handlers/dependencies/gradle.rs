@@ -111,11 +111,17 @@ fn parse_build_file(_root: &Path, module_dir: &Path, rel: &str) -> Option<Member
 
     Some(Member {
         path: rel.to_string(),
-        name: rel.trim_start_matches('.').trim_start_matches('/').to_string().is_empty()
-            .then(|| module_dir.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "root".to_string()))
-            .unwrap_or_else(|| rel.to_string()),
+        name: if rel
+            .trim_start_matches('.')
+            .trim_start_matches('/')
+            .is_empty()
+        {
+            module_dir
+                .file_name()
+                .map_or_else(|| "root".to_string(), |s| s.to_string_lossy().into_owned())
+        } else {
+            rel.to_string()
+        },
         license: None,
         deps,
     })
@@ -443,7 +449,7 @@ fn resolve_catalog_version(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;
@@ -516,7 +522,8 @@ dependencies {
         assert!(m
             .deps
             .iter()
-            .any(|d| d.name == "com.google.guava:guava" && d.version.as_deref() == Some("33.0.0-jre")));
+            .any(|d| d.name == "com.google.guava:guava"
+                && d.version.as_deref() == Some("33.0.0-jre")));
         let junit = m
             .deps
             .iter()
@@ -587,8 +594,16 @@ include(":lib")
 include(":app")
 "#,
         );
-        write(dir.path(), "lib/build.gradle.kts", "dependencies { implementation(\"a:b:1.0\") }\n");
-        write(dir.path(), "app/build.gradle.kts", "dependencies { implementation(\"c:d:2.0\") }\n");
+        write(
+            dir.path(),
+            "lib/build.gradle.kts",
+            "dependencies { implementation(\"a:b:1.0\") }\n",
+        );
+        write(
+            dir.path(),
+            "app/build.gradle.kts",
+            "dependencies { implementation(\"c:d:2.0\") }\n",
+        );
         let ws = parse(dir.path()).unwrap();
         let paths: Vec<&str> = ws.members.iter().map(|m| m.path.as_str()).collect();
         assert!(paths.contains(&"lib"));
