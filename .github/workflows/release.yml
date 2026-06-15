@@ -42,7 +42,7 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -84,7 +84,7 @@ jobs:
       - name: Upload unsigned binary for signing
         if: matrix.archive == 'zip' && github.event_name == 'release'
         id: upload-unsigned
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tokensave-windows-unsigned
           path: target/${{ matrix.target }}/release/tokensave.exe
@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload artifact id for signing job
         if: matrix.archive == 'zip' && github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-unsigned-artifact-id
           path: unsigned-artifact-id.txt
@@ -117,7 +117,7 @@ jobs:
 
       - name: Upload bottle artifact
         if: matrix.bottle_tag && github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bottle-${{ matrix.bottle_tag }}
           path: "tokensave-*.bottle.tar.gz"
@@ -132,7 +132,7 @@ jobs:
       actions: read     # let the SignPath action read the unsigned artifact
     steps:
       - name: Download unsigned artifact id
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windows-unsigned-artifact-id
 
@@ -175,7 +175,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Get version
         id: version
@@ -184,7 +184,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download bottle artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: bottles
           merge-multiple: true
@@ -265,7 +265,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
