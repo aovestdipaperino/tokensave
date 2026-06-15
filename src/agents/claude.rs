@@ -1071,12 +1071,12 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
 
     let mcp_json_path = project_path.join(".mcp.json");
     if mcp_json_path.exists() {
-        local_cleaned |= doctor_clean_local_mcp_json(dc, &mcp_json_path);
+        local_cleaned |= doctor_check_local_mcp_json(dc, &mcp_json_path);
     }
 
     let local_settings_path = project_path.join(".claude").join("settings.local.json");
     if local_settings_path.exists() {
-        local_cleaned |= doctor_clean_local_settings(dc, project_path, &local_settings_path);
+        local_cleaned |= doctor_check_local_settings(dc, &local_settings_path);
     }
 
     if !local_cleaned && !mcp_json_path.exists() && !local_settings_path.exists() {
@@ -1089,7 +1089,7 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
 /// Report a local .mcp.json that registers tokensave. With --local now a
 /// supported install mode, this is a valid state — never remove it. Returns
 /// true if a tokensave entry was found (so the caller can adjust messaging).
-fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) -> bool {
+fn doctor_check_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(mcp_json_path) else {
         return false;
     };
@@ -1109,11 +1109,7 @@ fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) ->
 
 /// Report a local settings.local.json that references tokensave. Valid under
 /// --local; never removed by doctor. Returns true if tokensave was found.
-fn doctor_clean_local_settings(
-    dc: &mut DoctorCounters,
-    _project_path: &Path,
-    local_settings_path: &Path,
-) -> bool {
+fn doctor_check_local_settings(dc: &mut DoctorCounters, local_settings_path: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(local_settings_path) else {
         return false;
     };
