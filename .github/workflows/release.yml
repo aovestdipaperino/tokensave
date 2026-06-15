@@ -74,10 +74,12 @@ jobs:
         shell: bash
         run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
 
-      # --- Windows: Authenticode signing via SignPath ---
-      # The unsigned .exe is uploaded as a workflow artifact (upload-artifact wraps the
-      # single file in a ZIP), submitted to SignPath, and the signed .exe is repackaged
-      # into the release zip. Signing only runs for real releases, not workflow_dispatch.
+      # --- Windows: Authenticode signing via SignPath (build half) ---
+      # Production signing uses a SignPath Foundation certificate, which requires manual
+      # approval in the SignPath UI, so signing is split out into the sign-windows job.
+      # Here we only upload the unsigned .exe (upload-artifact wraps the single file in a
+      # ZIP) and record its artifact id so the signing job can submit it. This frees the
+      # Windows runner immediately instead of blocking it while a human approves.
 
       - name: Upload unsigned binary for signing
         if: matrix.archive == 'zip' && github.event_name == 'release'
@@ -88,31 +90,18 @@ jobs:
           path: target/${{ matrix.target }}/release/tokensave.exe
           if-no-files-found: error
 
-      - name: Submit signing request to SignPath
+      - name: Record unsigned artifact id
         if: matrix.archive == 'zip' && github.event_name == 'release'
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: tokensave
-          # Test certificate while bootstrapping; switch to release-signing for production.
-          signing-policy-slug: test-signing
-          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: signed
-
-      - name: Package signed binary (windows)
-        if: matrix.archive == 'zip' && github.event_name == 'release'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path signed/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip -Force
-
-      - name: Upload signed binary archive
-        if: matrix.archive == 'zip' && github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+        run: echo "${{ steps.upload-unsigned.outputs.artifact-id }}" > unsigned-artifact-id.txt
+
+      - name: Upload artifact id for signing job
+        if: matrix.archive == 'zip' && github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-artifact-id
+          path: unsigned-artifact-id.txt
+          if-no-files-found: error
 
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
@@ -132,6 +121,52 @@ jobs:
         with:
           name: bottle-${{ matrix.bottle_tag }}
           path: "tokensave-*.bottle.tar.gz"
+
+  sign-windows:
+    name: Sign Windows binary
+    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # upload the signed zip to the release
+      actions: read     # let the SignPath action read the unsigned artifact
+    steps:
+      - name: Download unsigned artifact id
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-unsigned-artifact-id
+
+      - name: Read unsigned artifact id
+        id: meta
+        run: echo "artifact-id=$(cat unsigned-artifact-id.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Submit signing request to SignPath (waits for manual approval)
+        # Production signing uses a SignPath Foundation certificate, which requires a
+        # human to approve the request in the SignPath UI. This step submits the request
+        # and blocks until it is approved + signed (or the timeout below elapses), then
+        # downloads the signed .exe into ./signed. If approval is slow and this times
+        # out, re-run this job — it submits a fresh request.
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: tokensave
+          # Production Foundation-cert policy (SignPath UI: Org > Projects > tokensave > Signing Policies).
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.meta.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Package signed binary
+        run: |
+          cd signed
+          zip "../tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" tokensave.exe
+
+      - name: Upload signed binary archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" --clobber
 
   update-homebrew:
     name: Update Homebrew tap
@@ -241,7 +276,8 @@ jobs:
   update-scoop:
     name: Update Scoop bucket
     if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
-    needs: build
+    # Depends on sign-windows: it downloads the signed Windows zip from the release to hash it.
+    needs: sign-windows
     runs-on: ubuntu-latest
     steps:
       - name: Get release info
