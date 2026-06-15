@@ -13,6 +13,10 @@ pub const CONFIG_FILENAME: &str = "config.json";
 /// Name of the hidden directory used to store `TokenSave` metadata.
 pub const TOKENSAVE_DIR: &str = ".tokensave";
 
+/// Name of the project-level query-ignore file stored inside the
+/// `.tokensave` directory. See [`load_query_ignore`].
+pub const QUERYIGNORE_FILENAME: &str = "queryignore";
+
 /// Configuration for a `TokenSave` project.
 ///
 /// Controls which files are indexed, size limits, and feature toggles.
@@ -329,10 +333,119 @@ pub fn is_excluded(file_path: &str, config: &TokenSaveConfig) -> bool {
     false
 }
 
+/// A single project-level query-ignore pattern.
+///
+/// Two flavours are supported:
+/// - **Glob** — when the raw pattern contains a `*`, it is compiled with the
+///   `glob` crate (the same engine used by the indexing `exclude`/`include`
+///   patterns) so segments like `tests/*` or `**/generated/**` work.
+/// - **Substring** — any other pattern matches when it appears anywhere in the
+///   normalized `file_path` (gitignore-like "name fragment" matching).
+///
+/// Patterns are matched against node `file_path` values, which are stored
+/// relative to the project root and normalized to use `/` separators.
+#[derive(Debug, Clone)]
+enum IgnoreRule {
+    Glob(Pattern),
+    Substring(String),
+}
+
+impl IgnoreRule {
+    fn matches(&self, path: &str) -> bool {
+        match self {
+            IgnoreRule::Glob(pattern) => pattern.matches_with(
+                path,
+                glob::MatchOptions {
+                    case_sensitive: true,
+                    require_literal_separator: false,
+                    require_literal_leading_dot: false,
+                },
+            ),
+            IgnoreRule::Substring(needle) => path.contains(needle),
+        }
+    }
+}
+
+/// Project-level set of query-time ignore patterns.
+///
+/// This is the persistent, implicit counterpart to a per-call path exclusion:
+/// once configured in `.tokensave/queryignore`, matching results are dropped
+/// from `tokensave_search` and `tokensave_context` without the caller having
+/// to pass a filter on every request.
+#[derive(Debug, Clone, Default)]
+pub struct QueryIgnore {
+    rules: Vec<IgnoreRule>,
+}
+
+impl QueryIgnore {
+    /// Parses query-ignore patterns from raw file contents.
+    ///
+    /// One pattern per line. Blank lines and lines whose first non-whitespace
+    /// character is `#` are ignored. Surrounding whitespace is trimmed. A
+    /// pattern containing `*` is treated as a glob; everything else is a
+    /// substring match. Invalid globs are silently skipped.
+    pub fn parse(contents: &str) -> Self {
+        let mut rules = Vec::new();
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let normalized = trimmed.replace('\\', "/");
+            if normalized.contains('*') {
+                if let Ok(pattern) = Pattern::new(&normalized) {
+                    rules.push(IgnoreRule::Glob(pattern));
+                }
+            } else {
+                rules.push(IgnoreRule::Substring(normalized));
+            }
+        }
+        QueryIgnore { rules }
+    }
+
+    /// Returns `true` when no patterns are configured (the common case).
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Returns `true` if `file_path` matches any configured ignore pattern.
+    /// `file_path` is normalized to `/` separators before matching.
+    pub fn is_ignored(&self, file_path: &str) -> bool {
+        if self.rules.is_empty() {
+            return false;
+        }
+        let normalized = file_path.replace('\\', "/");
+        self.rules.iter().any(|rule| rule.matches(&normalized))
+    }
+}
+
+/// Loads the project-level query-ignore patterns from
+/// `<project_root>/.tokensave/queryignore`.
+///
+/// Returns an empty [`QueryIgnore`] (matching nothing) when the file is absent
+/// or unreadable, so callers can apply it unconditionally with zero behavior
+/// change for projects that have not opted in.
+///
+/// Unlike `config.exclude`, these patterns are applied at QUERY time only and
+/// do not affect indexing — a path excluded here is still in the graph, it is
+/// merely hidden from `tokensave_search` / `tokensave_context` results. This
+/// complements `.gitignore` handling (`config.git_ignore`), which controls
+/// what gets indexed in the first place.
+pub fn load_query_ignore(project_root: &Path) -> QueryIgnore {
+    let path = get_tokensave_dir(project_root).join(QUERYIGNORE_FILENAME);
+    match fs::read_to_string(&path) {
+        Ok(contents) => QueryIgnore::parse(&contents),
+        Err(_) => QueryIgnore::default(),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{is_excluded, is_excluded_dir, is_ignored_by_git, is_included, TokenSaveConfig};
+    use super::{
+        is_excluded, is_excluded_dir, is_ignored_by_git, is_included, load_query_ignore,
+        QueryIgnore, TokenSaveConfig,
+    };
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -438,5 +551,67 @@ mod tests {
         let ignored = is_ignored_by_git(&repo, Some(&git_config));
 
         assert_eq!(ignored, Some(true));
+    }
+
+    #[test]
+    fn test_query_ignore_substring_match() {
+        let qi = QueryIgnore::parse("generated\n");
+        assert!(qi.is_ignored("src/generated/api.rs"));
+        assert!(qi.is_ignored("generated.rs"));
+        assert!(!qi.is_ignored("src/main.rs"));
+    }
+
+    #[test]
+    fn test_query_ignore_glob_match() {
+        let qi = QueryIgnore::parse("tests/*\n**/proto/**\n");
+        assert!(qi.is_ignored("tests/foo.rs"));
+        // `*` does not require a literal separator, so a nested path matches too.
+        assert!(qi.is_ignored("tests/sub/bar.rs"));
+        assert!(qi.is_ignored("crate/proto/messages.rs"));
+        assert!(!qi.is_ignored("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_query_ignore_skips_comments_and_blanks() {
+        let qi = QueryIgnore::parse("# a comment\n\n   \n  vendor  \n");
+        assert!(qi.is_ignored("third_party/vendor/lib.rs"));
+        assert!(!qi.is_ignored("src/main.rs"));
+    }
+
+    #[test]
+    fn test_query_ignore_empty_matches_nothing() {
+        let qi = QueryIgnore::default();
+        assert!(qi.is_empty());
+        assert!(!qi.is_ignored("anything/at/all.rs"));
+        let parsed = QueryIgnore::parse("# only comments\n\n");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_query_ignore_normalizes_separators() {
+        let qi = QueryIgnore::parse("src/gen\n");
+        // file_path with backslashes (Windows-style) should still match.
+        assert!(qi.is_ignored("src\\gen\\out.rs"));
+    }
+
+    #[test]
+    fn test_load_query_ignore_absent_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let qi = load_query_ignore(dir.path());
+        assert!(qi.is_empty());
+    }
+
+    #[test]
+    fn test_load_query_ignore_reads_file() {
+        let dir = TempDir::new().unwrap();
+        let ts_dir = dir.path().join(".tokensave");
+        fs::create_dir_all(&ts_dir).unwrap();
+        fs::write(ts_dir.join("queryignore"), "generated\ntests/*\n").unwrap();
+
+        let qi = load_query_ignore(dir.path());
+        assert!(!qi.is_empty());
+        assert!(qi.is_ignored("src/generated/x.rs"));
+        assert!(qi.is_ignored("tests/foo.rs"));
+        assert!(!qi.is_ignored("src/main.rs"));
     }
 }

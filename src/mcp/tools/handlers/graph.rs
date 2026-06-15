@@ -68,7 +68,7 @@ pub(super) async fn handle_search(
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
 
-    let results = if path_include.is_empty() && path_exclude.is_empty() {
+    let mut results = if path_include.is_empty() && path_exclude.is_empty() {
         let results = cg.search(query, limit).await?;
         filter_by_scope(results, scope_prefix, |r| &r.node.file_path)
     } else {
@@ -82,6 +82,12 @@ pub(super) async fn handle_search(
         results.truncate(limit);
         results
     };
+
+    // Project-level query-ignore: drop results matching .tokensave/queryignore.
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+    if !query_ignore.is_empty() {
+        results.retain(|r| !query_ignore.is_ignored(&r.node.file_path));
+    }
 
     let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
 
@@ -273,6 +279,10 @@ pub(super) async fn handle_context(
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
 
+    // Project-level query-ignore: applied to entry-point candidates inside
+    // build_context (mirrors how path_prefix is threaded through options).
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+
     let options = BuildContextOptions {
         max_nodes,
         max_code_blocks,
@@ -284,6 +294,7 @@ pub(super) async fn handle_context(
         path_prefix,
         path_include,
         path_exclude,
+        query_ignore,
         ..Default::default()
     };
 

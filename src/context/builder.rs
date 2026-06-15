@@ -272,6 +272,12 @@ impl<'a> ContextBuilder<'a> {
             });
         }
 
+        // --- queryignore filter: drop entry points whose path matches a
+        // project-level query-ignore pattern (.tokensave/queryignore) ---
+        if !options.query_ignore.is_empty() {
+            candidates.retain(|sr| !options.query_ignore.is_ignored(&sr.node.file_path));
+        }
+
         // --- Re-rank with structural signals (kind, visibility, path) ---
         rerank_candidates(&mut candidates);
 

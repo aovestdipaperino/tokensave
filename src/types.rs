@@ -534,6 +534,12 @@ pub struct BuildContextOptions {
     /// dropped (backslashes normalized to `/`). Takes precedence over
     /// `path_include`.
     pub path_exclude: Vec<String>,
+    /// Project-level query-time ignore patterns (from `.tokensave/queryignore`).
+    /// Entry-point candidates whose `file_path` matches any pattern are
+    /// dropped before ranking. Not serialized — it is recomputed per query
+    /// from the project root, never round-tripped through config snapshots.
+    #[serde(skip)]
+    pub query_ignore: crate::config::QueryIgnore,
 }
 
 impl Default for BuildContextOptions {
@@ -554,6 +560,7 @@ impl Default for BuildContextOptions {
             path_prefix: None,
             path_include: Vec::new(),
             path_exclude: Vec::new(),
+            query_ignore: crate::config::QueryIgnore::default(),
         }
     }
 }
