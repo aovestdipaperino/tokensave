@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [6.3.3] - 2026-06-15
+
+### Added
+- **Query filtering & ranking for noisy repos (#112).** Four improvements that make `tokensave_search` / `tokensave_context` usable in repos that mix application code with vendored/generated trees:
+  - **`path_include` / `path_exclude`** params on `tokensave_search` and `tokensave_context` — restrict results to / away from file-path substrings (e.g. `path_exclude: ["node_modules", "dist", "venv"]`). Exclude takes precedence; absent params are a no-op (#113).
+  - **`literal: true`** mode on `tokensave_search` — exact-substring search over source text (for runtime error strings like `provider destroyed`), returning `{file, line, text, enclosing}` locations instead of ranked symbols (#114).
+  - **App-dir ranking** — results under `src`/`app`/`lib` are boosted and vendor/generated trees (`node_modules`, `dist`, `build`, `target`, `venv`, `.venv`, `site-packages`, `vendor`, `__pycache__`, `.next`, `out`) penalized by default. Re-orders only; never drops results (#115).
+  - **`.tokensave/queryignore`** — a project-level, gitignore-like file applied at query time to suppress known-noise paths from `tokensave_search` / `tokensave_context` results (paths stay indexed and reachable via direct lookups) (#116).
+
 ## [6.3.2] - 2026-06-15
 
 ### Added
