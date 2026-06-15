@@ -26,8 +26,12 @@ impl AgentIntegration for CursorIntegration {
         "cursor"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = ctx.home.join(".cursor/mcp.json");
+        let mcp_path = ctx.base_dir().join(".cursor/mcp.json");
 
         if let Some(parent) = mcp_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -62,7 +66,7 @@ impl AgentIntegration for CursorIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = ctx.home.join(".cursor/mcp.json");
+        let mcp_path = ctx.base_dir().join(".cursor/mcp.json");
         uninstall_mcp_server(&mcp_path);
 
         eprintln!();

@@ -76,3 +76,24 @@ fn doctor_preserves_valid_local_mcp_json() {
         "doctor must NOT delete a valid local .mcp.json"
     );
 }
+
+#[test]
+fn cursor_local_writes_project_mcp_only() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+    };
+    get_integration("cursor").unwrap().install(&ctx).unwrap();
+    let mcp = read_json(&proj.path().join(".cursor/mcp.json"));
+    assert!(mcp["mcpServers"]["tokensave"].is_object());
+    assert!(
+        !home.path().join(".cursor/mcp.json").exists(),
+        "must not write global cursor config"
+    );
+}
