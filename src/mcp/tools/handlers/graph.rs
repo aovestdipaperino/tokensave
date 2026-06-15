@@ -14,7 +14,8 @@ use crate::types::{BuildContextOptions, EdgeKind, NodeKind, Visibility};
 
 use super::super::ToolResult;
 use super::{
-    effective_path, filter_by_scope, require_node_id, truncate_response, unique_file_paths,
+    effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
+    truncate_response, unique_file_paths,
 };
 
 /// Errors when `node_id` matches no node in the graph.
@@ -55,8 +56,38 @@ pub(super) async fn handle_search(
         .and_then(serde_json::Value::as_u64)
         .map_or(10, |v| v.min(500) as usize);
 
-    let results = cg.search(query, limit).await?;
-    let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
+    let literal = args
+        .get("literal")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if literal {
+        return handle_literal_search(cg, query, limit, scope_prefix).await;
+    }
+
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
+    let mut results = if path_include.is_empty() && path_exclude.is_empty() {
+        let results = cg.search(query, limit).await?;
+        filter_by_scope(results, scope_prefix, |r| &r.node.file_path)
+    } else {
+        // Path filters drop candidates after the ranked search, so fetch a
+        // larger set first to keep `limit` satisfiable post-filter.
+        let candidate_limit = limit.saturating_mul(5).max(50);
+        let results = cg.search(query, candidate_limit).await?;
+        let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
+        let mut results =
+            filter_by_path_lists(results, &path_include, &path_exclude, |r| &r.node.file_path);
+        results.truncate(limit);
+        results
+    };
+
+    // Project-level query-ignore: drop results matching .tokensave/queryignore.
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+    if !query_ignore.is_empty() {
+        results.retain(|r| !query_ignore.is_ignored(&r.node.file_path));
+    }
 
     let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
 
@@ -76,6 +107,101 @@ pub(super) async fn handle_search(
         .collect();
 
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Upper bound on the size of a single source file scanned in literal mode.
+/// Files larger than this are skipped defensively — they are almost always
+/// generated/vendored blobs, and reading them would blow the scan's latency
+/// budget for no useful runtime-error-string hit.
+const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Literal (exact-substring, case-sensitive) search over the source text of the
+/// project's indexed files.
+///
+/// Unlike the FTS/semantic path, this finds strings that live *inside* function
+/// bodies — e.g. a runtime error message like `provider destroyed` — which are
+/// never present in symbol names or signatures. Each match is reported as a
+/// `{ file, line, text, enclosing, enclosing_id }` location. Scanning is
+/// deterministic (files sorted by path) and stops as soon as `limit` matches
+/// are collected.
+async fn handle_literal_search(
+    cg: &TokenSave,
+    query: &str,
+    limit: usize,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    if query.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: "literal search requires a non-empty query".to_string(),
+        });
+    }
+
+    let project_root = cg.project_root();
+    let mut files = cg.get_all_files().await?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    'outer: for file in &files {
+        // Respect the same scope prefix the non-literal path uses.
+        if let Some(prefix) = scope_prefix {
+            if !file.path.starts_with(prefix) {
+                continue;
+            }
+        }
+        // Skip oversized/binary-likely files defensively.
+        if file.size > LITERAL_SCAN_MAX_FILE_BYTES {
+            continue;
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            if !line.contains(query) {
+                continue;
+            }
+            let line_no = (idx as u32) + 1;
+            // Innermost node whose [start_line, end_line] covers the match.
+            let enclosing = nodes
+                .iter()
+                .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
+
+            matches.push(json!({
+                "file": file.path,
+                "line": line_no,
+                "text": line.trim(),
+                "enclosing": enclosing.map(|n| n.name.clone()),
+                "enclosing_id": enclosing.map(|n| n.id.clone()),
+            }));
+            if !touched.contains(&file.path) {
+                touched.push(file.path.clone());
+            }
+            if matches.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+
+    let touched_files = unique_file_paths(touched.iter().map(String::as_str));
+    let payload = json!({
+        "literal": true,
+        "query": query,
+        "count": matches.len(),
+        "matches": matches,
+    });
+    let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&output) }]
@@ -150,6 +276,13 @@ pub(super) async fn handle_context(
 
     let path_prefix = effective_path(&args, scope_prefix).map(String::from);
 
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
+    // Project-level query-ignore: applied to entry-point candidates inside
+    // build_context (mirrors how path_prefix is threaded through options).
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+
     let options = BuildContextOptions {
         max_nodes,
         max_code_blocks,
@@ -159,6 +292,9 @@ pub(super) async fn handle_context(
         merge_adjacent,
         max_per_file,
         path_prefix,
+        path_include,
+        path_exclude,
+        query_ignore,
         ..Default::default()
     };
 

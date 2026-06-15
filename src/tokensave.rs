@@ -2086,6 +2086,13 @@ impl TokenSave {
                 if !trimmed_query.is_empty() && r.node.name == trimmed_query {
                     r.score += 10.0;
                 }
+                // Path-based ranking: surface first-party application code
+                // (src/, app/, lib/) ahead of equally-relevant matches buried
+                // in vendor / generated trees (node_modules, dist, target, …).
+                // Proportional, not a filter — a strong match in node_modules
+                // still appears, just lower. Shared with context ranking so the
+                // heuristics live in one place.
+                r.score *= crate::context::ranking::path_rank_multiplier(&r.node.file_path);
                 r
             })
             .collect();

@@ -233,6 +233,20 @@ fn def_search() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols. Case-sensitive. Default false."
                 }
             },
             "required": ["query"]
@@ -286,6 +300,16 @@ fn def_context() -> ToolDefinition {
                 "max_per_file": {
                     "type": "number",
                     "description": "Maximum symbols from a single file in results. Prevents one large file from dominating (default: max_nodes/3, minimum 3)"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             },
             "required": ["task"]

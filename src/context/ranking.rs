@@ -68,6 +68,65 @@ pub fn path_boost(file_path: &str) -> f64 {
     1.0
 }
 
+/// Path segments of generated / vendored / dependency trees that almost
+/// never contain the application code a user is searching for. Matched as
+/// `/segment/` (or as a leading `segment/`) against the `/`-normalized path.
+const VENDOR_PATH_SEGMENTS: &[&str] = &[
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    "venv",
+    ".venv",
+    "site-packages",
+    "vendor",
+    "__pycache__",
+    ".next",
+    "out",
+];
+
+/// Path segments of typical application source directories. A match gives a
+/// modest boost so first-party code surfaces ahead of equally-relevant code
+/// living elsewhere.
+const APP_PATH_SEGMENTS: &[&str] = &["src", "app", "lib"];
+
+/// Returns `true` if `normalized` (a `/`-separated path) contains `segment`
+/// as a full path component (`a/segment/b`, `segment/b`, or exactly `segment`).
+fn has_path_segment(normalized: &str, segment: &str) -> bool {
+    normalized.split('/').any(|c| c == segment)
+}
+
+/// Path-based ranking multiplier applied during both search and context
+/// re-ranking. Returns a factor relative to a neutral baseline of `1.0`:
+///
+/// * `< 1.0` for nodes living under a known vendor / generated tree
+///   (`node_modules`, `dist`, `target`, `venv`, …) so dependency or build
+///   output sinks below first-party code.
+/// * `> 1.0` for nodes under a typical app source dir (`src/`, `app/`,
+///   `lib/`) so application code surfaces first by default.
+/// * exactly `1.0` for everything else (neutral).
+///
+/// The effect is proportional, not a filter: a strong exact-name match in
+/// `node_modules` can still appear, just ranked lower. Vendor classification
+/// wins over app classification when a path matches both (e.g. a `src` dir
+/// nested inside `node_modules`).
+pub fn path_rank_multiplier(file_path: &str) -> f64 {
+    let normalized = file_path.replace('\\', "/");
+    if VENDOR_PATH_SEGMENTS
+        .iter()
+        .any(|seg| has_path_segment(&normalized, seg))
+    {
+        return 0.4;
+    }
+    if APP_PATH_SEGMENTS
+        .iter()
+        .any(|seg| has_path_segment(&normalized, seg))
+    {
+        return 1.25;
+    }
+    1.0
+}
+
 /// Applies a log-scale connectivity boost based on incoming call counts.
 /// `call_counts` maps `node_id` → incoming "calls" edge count.
 pub fn apply_connectivity_boost<S: std::hash::BuildHasher>(
@@ -92,7 +151,8 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
     for candidate in candidates.iter_mut() {
         let boost = kind_boost(&candidate.node.kind)
             * visibility_boost(&candidate.node.visibility)
-            * path_boost(&candidate.node.file_path);
+            * path_boost(&candidate.node.file_path)
+            * path_rank_multiplier(&candidate.node.file_path);
         candidate.score *= boost;
     }
     candidates.sort_by(|a, b| {
@@ -230,6 +290,69 @@ mod tests {
         assert_eq!(path_boost("tests/sync_test.rs"), 0.4);
         assert_eq!(path_boost("test/fixtures/foo.js"), 0.1);
         assert_eq!(path_boost("src/components/Button.test.tsx"), 0.4);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_vendor_below_one() {
+        assert!(path_rank_multiplier("node_modules/foo/index.js") < 1.0);
+        assert!(path_rank_multiplier("frontend/node_modules/foo/index.js") < 1.0);
+        assert!(path_rank_multiplier("dist/bundle.js") < 1.0);
+        assert!(path_rank_multiplier("target/debug/build/x.rs") < 1.0);
+        assert!(path_rank_multiplier(".venv/lib/python3.11/site-packages/x.py") < 1.0);
+        assert!(path_rank_multiplier("vendor/github.com/foo/bar.go") < 1.0);
+        assert!(path_rank_multiplier("project/__pycache__/mod.pyc") < 1.0);
+        assert!(path_rank_multiplier("web/.next/server/page.js") < 1.0);
+        assert!(path_rank_multiplier("out/main.js") < 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_app_above_neutral() {
+        assert!(path_rank_multiplier("src/lib.rs") > 1.0);
+        assert!(path_rank_multiplier("app/models/user.rb") > 1.0);
+        assert!(path_rank_multiplier("lib/widget.dart") > 1.0);
+        assert!(path_rank_multiplier("crate/src/foo.rs") > 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_neutral_is_baseline() {
+        assert_eq!(path_rank_multiplier("foo/bar.rs"), 1.0);
+        assert_eq!(path_rank_multiplier("README.md"), 1.0);
+        assert_eq!(path_rank_multiplier("docs/guide.md"), 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_vendor_wins_over_app() {
+        // A `src` dir nested inside node_modules is still vendored code.
+        assert!(path_rank_multiplier("node_modules/pkg/src/index.js") < 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_normalizes_backslashes() {
+        assert!(path_rank_multiplier("web\\node_modules\\foo.js") < 1.0);
+        assert!(path_rank_multiplier("crate\\src\\foo.rs") > 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_substring_not_matched() {
+        // "outbound" contains "out" but is not the `out` build dir.
+        assert_eq!(path_rank_multiplier("outbound/handler.rs"), 1.0);
+        // "library" contains "lib" but is not the `lib` app dir.
+        assert_eq!(path_rank_multiplier("library/foo.rs"), 1.0);
+    }
+
+    #[test]
+    fn test_app_source_outranks_vendor_in_rerank() {
+        let mut candidates = vec![
+            make_result(
+                NodeKind::Function,
+                Visibility::Pub,
+                "node_modules/pkg/index.js",
+                10.0,
+            ),
+            make_result(NodeKind::Function, Visibility::Pub, "src/handler.rs", 10.0),
+        ];
+        rerank_candidates(&mut candidates);
+        assert_eq!(candidates[0].node.file_path, "src/handler.rs");
     }
 
     #[test]

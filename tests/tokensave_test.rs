@@ -97,6 +97,51 @@ fn test_is_test_file_case_insensitive() {
 }
 
 // ---------------------------------------------------------------------------
+// Path-based ranking: app dirs above generated/vendor trees (issue #115)
+// ---------------------------------------------------------------------------
+
+/// Two functions with the same name and comparable base relevance live in
+/// `src/` and in a generated `dist/` tree. The `src/` definition must rank
+/// higher because the path-rank multiplier penalizes generated trees.
+/// (`dist/` is used rather than `node_modules`/`vendor`/`build` because those
+/// are excluded from indexing by default, whereas `dist/` is indexed.)
+#[tokio::test]
+async fn test_search_ranks_app_dir_above_generated_tree() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("dist")).unwrap();
+
+    fs::write(
+        project.join("src/widget.rs"),
+        "pub fn make_widget() -> u32 { 1 }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("dist/widget.rs"),
+        "pub fn make_widget() -> u32 { 2 }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let results = cg.search("make_widget", 10).await.unwrap();
+    let src_pos = results
+        .iter()
+        .position(|r| r.node.file_path == "src/widget.rs")
+        .expect("src definition should be in results");
+    let dist_pos = results
+        .iter()
+        .position(|r| r.node.file_path == "dist/widget.rs")
+        .expect("dist definition should still be in results, just lower");
+    assert!(
+        src_pos < dist_pos,
+        "src/widget.rs (pos {src_pos}) should rank above dist/widget.rs (pos {dist_pos})"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // get_all_files / get_all_nodes / get_all_edges through TokenSave
 // ---------------------------------------------------------------------------
 

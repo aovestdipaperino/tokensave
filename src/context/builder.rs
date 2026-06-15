@@ -261,6 +261,23 @@ impl<'a> ContextBuilder<'a> {
             });
         }
 
+        // --- path_include / path_exclude substring filters (#113) ---
+        if !options.path_include.is_empty() || !options.path_exclude.is_empty() {
+            candidates.retain(|sr| {
+                path_lists_keep(
+                    &sr.node.file_path,
+                    &options.path_include,
+                    &options.path_exclude,
+                )
+            });
+        }
+
+        // --- queryignore filter: drop entry points whose path matches a
+        // project-level query-ignore pattern (.tokensave/queryignore) ---
+        if !options.query_ignore.is_empty() {
+            candidates.retain(|sr| !options.query_ignore.is_ignored(&sr.node.file_path));
+        }
+
         // --- Re-rank with structural signals (kind, visibility, path) ---
         rerank_candidates(&mut candidates);
 
@@ -877,6 +894,22 @@ fn apply_cooccurrence_boost(candidates: &mut [SearchResult], query_terms: &[Stri
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+}
+
+/// Returns `true` if `path` survives the include/exclude substring filters.
+///
+/// Mirrors the MCP handler helper `filter_by_path_lists`: backslashes are
+/// normalized to `/`, exclude takes precedence over include, and an empty
+/// include list means "no positive constraint". Case-sensitive substring match.
+fn path_lists_keep(path: &str, include: &[String], exclude: &[String]) -> bool {
+    let normalized = path.replace('\\', "/");
+    if exclude.iter().any(|sub| normalized.contains(sub.as_str())) {
+        return false;
+    }
+    if !include.is_empty() {
+        return include.iter().any(|sub| normalized.contains(sub.as_str()));
+    }
+    true
 }
 
 /// Applies a per-file cap to search results, keeping the top `max_total`

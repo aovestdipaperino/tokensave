@@ -408,6 +408,88 @@ async fn test_exclude_node_ids_deduplication() {
 }
 
 #[tokio::test]
+async fn test_query_ignore_filters_context_entry_points() {
+    use tempfile::TempDir;
+    use tokensave::config::{load_query_ignore, QueryIgnore};
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    // Two nodes with the same searchable name in different directories.
+    for (id, file) in [
+        ("fn:src", "src/widget.rs"),
+        ("fn:gen", "generated/widget.rs"),
+    ] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: "widget".to_string(),
+            qualified_name: format!("{file}::widget"),
+            file_path: file.to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: Some("pub fn widget()".to_string()),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            updated_at: 0,
+            parent_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // Without an ignore file, both nodes are reachable.
+    let opts = BuildContextOptions::default();
+    let ctx = builder.build_context("widget", &opts).await.unwrap();
+    assert!(ctx.entry_points.iter().any(|n| n.id == "fn:gen"));
+
+    // With a matching queryignore pattern, the generated node is filtered out.
+    let ts_dir = project.join(".tokensave");
+    std::fs::write(ts_dir.join("queryignore"), "generated\n").unwrap();
+    let query_ignore = load_query_ignore(project);
+    assert!(!query_ignore.is_empty());
+
+    let opts_ignored = BuildContextOptions {
+        query_ignore,
+        ..Default::default()
+    };
+    let ctx_ignored = builder
+        .build_context("widget", &opts_ignored)
+        .await
+        .unwrap();
+    assert!(
+        !ctx_ignored.entry_points.iter().any(|n| n.id == "fn:gen"),
+        "queryignore-matched node should not appear as an entry point"
+    );
+    assert!(
+        ctx_ignored.entry_points.iter().any(|n| n.id == "fn:src"),
+        "non-matching node should still appear"
+    );
+
+    // Sanity: an empty QueryIgnore matches nothing.
+    assert!(!QueryIgnore::default().is_ignored("generated/widget.rs"));
+}
+
+#[tokio::test]
 async fn test_merge_adjacent_code_blocks() {
     use std::fs;
     use tempfile::TempDir;

@@ -116,6 +116,100 @@ async fn test_search() {
     );
 }
 
+#[tokio::test]
+async fn test_search_literal_finds_string_in_body() {
+    let (cg, _dir) = setup_project().await;
+    // `Hello, {}!` is a string literal inside `format_greeting`'s body — it is
+    // NOT a symbol name, so a semantic search would not surface it. Literal
+    // mode must scan source text and report file + line + enclosing symbol.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "Hello, {}!", "literal": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(
+        parsed["literal"], true,
+        "result must mark that it was a literal search"
+    );
+    let matches = parsed["matches"].as_array().expect("matches array");
+    assert_eq!(matches.len(), 1, "expected exactly one literal match");
+    let m = &matches[0];
+    assert_eq!(m["file"], "src/utils.rs");
+    assert_eq!(m["line"], 8); // 1-based line of the format!() call
+    assert!(
+        m["text"].as_str().unwrap().contains("Hello, {}!"),
+        "matched line text should contain the query"
+    );
+    assert_eq!(
+        m["enclosing"], "format_greeting",
+        "match should map to its enclosing symbol"
+    );
+}
+
+#[tokio::test]
+async fn test_search_literal_no_match_returns_empty() {
+    let (cg, _dir) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "this string does not exist anywhere zzz", "literal": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["literal"], true);
+    assert!(parsed["matches"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_search_literal_respects_limit() {
+    let (cg, _dir) = setup_project().await;
+    // `helper` appears as a literal substring on several lines across files.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "literal": true, "limit": 1}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["matches"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_search_literal_case_sensitive() {
+    let (cg, _dir) = setup_project().await;
+    // Source has `Hello` (capital H) only; lowercase `hello` must not match.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "hello, {}!", "literal": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        parsed["matches"].as_array().unwrap().is_empty(),
+        "literal search must be case-sensitive"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. tokensave_context
 // ---------------------------------------------------------------------------
@@ -4973,4 +5067,148 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
     );
 
     server.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// path_include / path_exclude filters (#113)
+// ---------------------------------------------------------------------------
+
+/// Creates a project with an app-code tree (`src/`) and a vendored tree
+/// (`third_party/`) that both define a function named `helper`, so path
+/// filters can be observed selecting between them. (`vendor/` is excluded by
+/// default config, so the vendored tree uses `third_party/` to stay indexed.)
+async fn setup_vendored_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("third_party")).unwrap();
+
+    fs::write(
+        project.join("src/app.rs"),
+        r#"
+/// App-level helper.
+pub fn helper() -> String {
+    String::from("app")
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("third_party/lib.rs"),
+        r#"
+/// Vendored helper.
+pub fn helper() -> String {
+    String::from("vendor")
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_search_path_exclude_drops_vendored() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20, "path_exclude": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("third_party/lib.rs"),
+        "path_exclude should drop vendored results, got: {text}"
+    );
+    assert!(
+        text.contains("src/app.rs"),
+        "path_exclude should keep app results, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_search_path_include_keeps_only_matching() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20, "path_include": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("third_party/lib.rs"),
+        "path_include should keep vendored results, got: {text}"
+    );
+    assert!(
+        !text.contains("src/app.rs"),
+        "path_include should drop non-matching results, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_search_no_path_filter_unchanged() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("third_party/lib.rs") && text.contains("src/app.rs"),
+        "no path filter should return both trees, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_context_path_exclude_drops_vendored() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_context",
+        json!({"task": "understand the helper functions", "path_exclude": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("third_party/lib.rs"),
+        "context path_exclude should drop vendored entry points, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_context_path_include_keeps_only_matching() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_context",
+        json!({"task": "understand the helper functions", "path_include": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("src/app.rs"),
+        "context path_include should drop non-matching entry points, got: {text}"
+    );
 }

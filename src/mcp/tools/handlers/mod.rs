@@ -76,6 +76,59 @@ where
     }
 }
 
+/// Filters a Vec of items by include/exclude path-substring lists.
+///
+/// Matching is done on the item's path with backslashes normalized to `/`
+/// (so callers can pass forward-slash substrings on every platform). The
+/// comparison is a case-sensitive substring match.
+///
+/// Rules:
+/// - `exclude` takes precedence: any item whose path contains *any* exclude
+///   substring is dropped.
+/// - If `include` is non-empty, only items whose path contains *at least one*
+///   include substring are kept.
+/// - When both lists are empty the vec is returned unchanged.
+pub(crate) fn filter_by_path_lists<T, F>(
+    items: Vec<T>,
+    include: &[String],
+    exclude: &[String],
+    get_path: F,
+) -> Vec<T>
+where
+    F: Fn(&T) -> &str,
+{
+    if include.is_empty() && exclude.is_empty() {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| {
+            let normalized = get_path(item).replace('\\', "/");
+            if exclude.iter().any(|sub| normalized.contains(sub.as_str())) {
+                return false;
+            }
+            if !include.is_empty() {
+                return include.iter().any(|sub| normalized.contains(sub.as_str()));
+            }
+            true
+        })
+        .collect()
+}
+
+/// Parses an optional JSON array of strings from tool arguments into a
+/// `Vec<String>`, returning an empty vec when the key is absent or not an
+/// array. Used for the `path_include` / `path_exclude` filter params.
+pub(crate) fn parse_string_array(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Deduplicates an iterator of file path strings into a `Vec<String>`.
 pub(crate) fn unique_file_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -476,5 +529,46 @@ mod tests {
     fn diff_tool_is_registered() {
         let tools = get_tool_definitions();
         assert!(tools.iter().any(|t| t.name == "tokensave_diff"));
+    }
+
+    #[test]
+    fn filter_by_path_lists_empty_lists_unchanged() {
+        let items = vec!["src/a.rs", "vendor/b.rs"];
+        let out = filter_by_path_lists(items.clone(), &[], &[], |s| s);
+        assert_eq!(out, items);
+    }
+
+    #[test]
+    fn filter_by_path_lists_exclude_drops_match() {
+        let items = vec!["src/a.rs", "vendor/b.rs"];
+        let out = filter_by_path_lists(items, &[], &["vendor".to_string()], |s| s);
+        assert_eq!(out, vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn filter_by_path_lists_include_keeps_only_match() {
+        let items = vec!["src/a.rs", "vendor/b.rs"];
+        let out = filter_by_path_lists(items, &["vendor".to_string()], &[], |s| s);
+        assert_eq!(out, vec!["vendor/b.rs"]);
+    }
+
+    #[test]
+    fn filter_by_path_lists_exclude_takes_precedence() {
+        let items = vec!["src/a.rs", "vendor/b.rs"];
+        // "b" matches include for vendor, but vendor is also excluded → dropped.
+        let out = filter_by_path_lists(
+            items,
+            &["b.rs".to_string(), "a.rs".to_string()],
+            &["vendor".to_string()],
+            |s| s,
+        );
+        assert_eq!(out, vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn filter_by_path_lists_normalizes_backslashes() {
+        let items = vec!["src\\a.rs", "vendor\\b.rs"];
+        let out = filter_by_path_lists(items, &["src/".to_string()], &[], |s| s);
+        assert_eq!(out, vec!["src\\a.rs"]);
     }
 }

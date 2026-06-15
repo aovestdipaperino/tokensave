@@ -527,6 +527,19 @@ pub struct BuildContextOptions {
     /// considered as entry points. Graph expansion may still traverse outside
     /// the prefix (traversals are unscoped).
     pub path_prefix: Option<String>,
+    /// When non-empty, only entry-point nodes whose `file_path` contains at
+    /// least one of these substrings are kept (backslashes normalized to `/`).
+    pub path_include: Vec<String>,
+    /// Entry-point nodes whose `file_path` contains any of these substrings are
+    /// dropped (backslashes normalized to `/`). Takes precedence over
+    /// `path_include`.
+    pub path_exclude: Vec<String>,
+    /// Project-level query-time ignore patterns (from `.tokensave/queryignore`).
+    /// Entry-point candidates whose `file_path` matches any pattern are
+    /// dropped before ranking. Not serialized — it is recomputed per query
+    /// from the project root, never round-tripped through config snapshots.
+    #[serde(skip)]
+    pub query_ignore: crate::config::QueryIgnore,
 }
 
 impl Default for BuildContextOptions {
@@ -545,6 +558,9 @@ impl Default for BuildContextOptions {
             merge_adjacent: false,
             max_per_file: None,
             path_prefix: None,
+            path_include: Vec::new(),
+            path_exclude: Vec::new(),
+            query_ignore: crate::config::QueryIgnore::default(),
         }
     }
 }
