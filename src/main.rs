@@ -539,7 +539,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Tool { name, args } => {
             tool_command::run(name, args).await?;
         }
-        Commands::Install { agent, git_hook } => {
+        Commands::Install { agent, git_hook, local } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -553,6 +553,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         .to_string(),
                 }
             })?;
+            let scope = if local {
+                let project_path = std::env::current_dir().map_err(|e| {
+                    tokensave::errors::TokenSaveError::Config {
+                        message: format!("could not determine current directory: {e}"),
+                    }
+                })?;
+                tokensave::agents::InstallScope::Local { project_path }
+            } else {
+                tokensave::agents::InstallScope::Global
+            };
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
@@ -562,11 +572,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Some(id) = agent {
                 let ag = tokensave::agents::get_integration(&id)?;
                 let name = ag.name().to_string();
+                if local && !ag.supports_local() {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!(
+                            "--local is not supported for \"{}\" — it has no project-scoped config. \
+                             Run a global install instead (omit --local).",
+                            ag.id()
+                        ),
+                    });
+                }
                 let ctx = tokensave::agents::InstallContext {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
                     tool_permissions: tokensave::agents::expected_tool_perms(),
-                    scope: tokensave::agents::InstallScope::Global,
+                    scope: scope.clone(),
                 };
                 ag.install(&ctx)?;
                 if !user_cfg.installed_agents.contains(&id) {
@@ -582,11 +601,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
                 for id in &to_uninstall {
                     let ag = tokensave::agents::get_integration(id)?;
+                    if local && !ag.supports_local() {
+                        eprintln!(
+                            "  skipping {} (no project-scoped config; --local unsupported)",
+                            ag.name()
+                        );
+                        continue;
+                    }
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
-                        scope: tokensave::agents::InstallScope::Global,
+                        scope: scope.clone(),
                     };
                     ag.uninstall(&ctx)?;
                     removed_names.push(ag.name().to_string());
@@ -594,11 +620,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 for id in &to_install {
                     let ag = tokensave::agents::get_integration(id)?;
+                    if local && !ag.supports_local() {
+                        eprintln!(
+                            "  skipping {} (no project-scoped config; --local unsupported)",
+                            ag.name()
+                        );
+                        continue;
+                    }
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
-                        scope: tokensave::agents::InstallScope::Global,
+                        scope: scope.clone(),
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
@@ -664,22 +697,41 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 user_cfg.save();
             }
         }
-        Commands::Uninstall { agent } => {
+        Commands::Uninstall { agent, local } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
                 }
             })?;
+            let scope = if local {
+                let project_path = std::env::current_dir().map_err(|e| {
+                    tokensave::errors::TokenSaveError::Config {
+                        message: format!("could not determine current directory: {e}"),
+                    }
+                })?;
+                tokensave::agents::InstallScope::Local { project_path }
+            } else {
+                tokensave::agents::InstallScope::Global
+            };
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
             if let Some(id) = agent {
                 let ag = tokensave::agents::get_integration(&id)?;
+                if local && !ag.supports_local() {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!(
+                            "--local is not supported for \"{}\" — it has no project-scoped config. \
+                             Run a global install instead (omit --local).",
+                            ag.id()
+                        ),
+                    });
+                }
                 let ctx = tokensave::agents::InstallContext {
                     home,
                     tokensave_bin: String::new(),
                     tool_permissions: tokensave::agents::expected_tool_perms(),
-                    scope: tokensave::agents::InstallScope::Global,
+                    scope: scope.clone(),
                 };
                 ag.uninstall(&ctx)?;
                 user_cfg.installed_agents.retain(|a| a != &id);
@@ -687,11 +739,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 for id in user_cfg.installed_agents.clone() {
                     if let Ok(ag) = tokensave::agents::get_integration(&id) {
+                        if local && !ag.supports_local() {
+                            eprintln!(
+                                "  skipping {} (no project-scoped config; --local unsupported)",
+                                ag.name()
+                            );
+                            continue;
+                        }
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: String::new(),
                             tool_permissions: tokensave::agents::expected_tool_perms(),
-                            scope: tokensave::agents::InstallScope::Global,
+                            scope: scope.clone(),
                         };
                         ag.uninstall(&ctx).ok();
                     }
@@ -1111,11 +1170,13 @@ mod startup_tests {
         assert!(should_skip_agent_install_maintenance(&Commands::Install {
             agent: Some("kiro".to_string()),
             git_hook: tokensave::agents::GitHookMode::Default,
+            local: false,
         }));
         assert!(should_skip_agent_install_maintenance(&Commands::Reinstall));
         assert!(should_skip_agent_install_maintenance(
             &Commands::Uninstall {
                 agent: Some("kiro".to_string()),
+                local: false,
             }
         ));
     }
