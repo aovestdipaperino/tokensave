@@ -539,7 +539,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Tool { name, args } => {
             tool_command::run(name, args).await?;
         }
-        Commands::Install { agent, git_hook, local } => {
+        Commands::Install {
+            agent,
+            git_hook,
+            local,
+        } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -553,16 +557,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         .to_string(),
                 }
             })?;
-            let scope = if local {
-                let project_path = std::env::current_dir().map_err(|e| {
-                    tokensave::errors::TokenSaveError::Config {
-                        message: format!("could not determine current directory: {e}"),
-                    }
-                })?;
-                tokensave::agents::InstallScope::Local { project_path }
-            } else {
-                tokensave::agents::InstallScope::Global
-            };
+            let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
@@ -703,16 +698,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     message: "could not determine home directory".to_string(),
                 }
             })?;
-            let scope = if local {
-                let project_path = std::env::current_dir().map_err(|e| {
-                    tokensave::errors::TokenSaveError::Config {
-                        message: format!("could not determine current directory: {e}"),
-                    }
-                })?;
-                tokensave::agents::InstallScope::Local { project_path }
-            } else {
-                tokensave::agents::InstallScope::Global
-            };
+            let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
@@ -722,7 +708,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     return Err(tokensave::errors::TokenSaveError::Config {
                         message: format!(
                             "--local is not supported for \"{}\" — it has no project-scoped config. \
-                             Run a global install instead (omit --local).",
+                             Run a global uninstall instead (omit --local).",
                             ag.id()
                         ),
                     });
@@ -1133,6 +1119,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
     }
     Ok(())
+}
+
+fn resolve_install_scope(
+    local: bool,
+) -> tokensave::errors::Result<tokensave::agents::InstallScope> {
+    if local {
+        let project_path =
+            std::env::current_dir().map_err(|e| tokensave::errors::TokenSaveError::Config {
+                message: format!("could not determine current directory: {e}"),
+            })?;
+        Ok(tokensave::agents::InstallScope::Local { project_path })
+    } else {
+        Ok(tokensave::agents::InstallScope::Global)
+    }
 }
 
 fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
