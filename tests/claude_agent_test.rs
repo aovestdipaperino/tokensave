@@ -716,13 +716,13 @@ fn test_healthcheck_detects_missing_claude_md() {
 }
 
 #[test]
-fn test_healthcheck_clean_local_config() {
+fn test_healthcheck_preserves_local_mcp_config() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let project = dir.path().join("myproject");
     std::fs::create_dir_all(&project).unwrap();
 
-    // Create a local .mcp.json with tokensave
+    // Create a local .mcp.json with tokensave (a valid `--local` install)
     std::fs::write(
         project.join(".mcp.json"),
         r#"{"mcpServers":{"tokensave":{"command":"/usr/local/bin/tokensave","args":["serve"]}}}"#,
@@ -740,16 +740,16 @@ fn test_healthcheck_clean_local_config() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
 
-    // The local .mcp.json should be cleaned up (removed entirely since tokensave
-    // was the only entry)
+    // A project-local install is now a supported mode — doctor must report it
+    // as valid and must NOT delete it.
     assert!(
-        !project.join(".mcp.json").exists(),
-        "local .mcp.json should be removed after healthcheck cleanup"
+        project.join(".mcp.json").exists(),
+        "doctor must preserve a valid project-local .mcp.json (--local is supported)"
     );
 }
 
 #[test]
-fn test_healthcheck_local_settings_cleanup() {
+fn test_healthcheck_preserves_local_settings() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let project = dir.path().join("myproject");
@@ -783,11 +783,10 @@ fn test_healthcheck_local_settings_cleanup() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
 
-    // The local settings.local.json should be cleaned up
-    // (removed entirely since tokensave was the only content that mattered)
+    // Doctor reports project-local config but must not delete it.
     assert!(
-        !local_claude.join("settings.local.json").exists(),
-        "settings.local.json should be removed after healthcheck cleanup"
+        local_claude.join("settings.local.json").exists(),
+        "doctor must preserve a valid project-local settings.local.json (--local is supported)"
     );
 }
 
