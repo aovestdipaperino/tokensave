@@ -243,6 +243,10 @@ fn def_search() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols. Case-sensitive. Default false."
                 }
             },
             "required": ["query"]
