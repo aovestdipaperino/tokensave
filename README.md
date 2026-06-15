@@ -142,6 +142,18 @@ Each agent gets its MCP server registered in the native config format. Claude Co
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook.
 
+### Project-local install
+
+By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
+
+```bash
+tokensave install --local --agent claude
+```
+
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
+
+Remove a project-local install with `tokensave uninstall --local`.
+
 ### 3. Index your project
 
 ```bash

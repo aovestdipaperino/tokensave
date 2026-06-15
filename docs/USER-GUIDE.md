@@ -233,6 +233,18 @@ Whenever tokensave rewrites an agent config file — on `install`, on `uninstall
 
 If anything goes wrong (a typo, an unexpected rewrite, an unknown bug), restore with `cp <path>.bak <path>`. The `.bak` is always the **exact bytes** of whatever was on disk just before the write; tokensave never deletes or rotates it, so the most recent backup is the file you want.
 
+### Project-local install
+
+By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
+
+```bash
+tokensave install --local --agent claude
+```
+
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
+
+Remove a project-local install with `tokensave uninstall --local`.
+
 ### Removing an integration
 
 ```bash

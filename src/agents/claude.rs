@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{
     backup_and_write_json, backup_config_file, expected_tool_perms, load_json_file_strict,
     safe_write_json_file, write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext,
-    InstallContext,
+    InstallContext, InstallScope,
 };
 
 /// Claude Code agent.
@@ -31,44 +31,22 @@ impl AgentIntegration for ClaudeIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let claude_dir = ctx.home.join(".claude");
-        let settings_path = claude_dir.join("settings.json");
-        let claude_json_path = ctx.home.join(".claude.json");
-        let claude_md_path = claude_dir.join("CLAUDE.md");
-
-        install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
-
-        std::fs::create_dir_all(&claude_dir).ok();
-        let mut settings = load_json_file_strict(&settings_path)?;
-        install_migrate_old_mcp(&mut settings, &settings_path);
-        install_hook(&mut settings, &ctx.tokensave_bin);
-        install_permissions(&mut settings, &ctx.tool_permissions);
-        write_json_file(&settings_path, &settings)?;
-
-        install_claude_md_rules(&claude_md_path)?;
-        install_clean_local_config();
-
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
-        Ok(())
+        match &ctx.scope {
+            InstallScope::Global => install_global(ctx),
+            InstallScope::Local { project_path } => install_local(ctx, project_path),
+        }
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let claude_dir = ctx.home.join(".claude");
-        let settings_path = claude_dir.join("settings.json");
-        let claude_json_path = ctx.home.join(".claude.json");
-        let claude_md_path = claude_dir.join("CLAUDE.md");
-
-        uninstall_mcp_server(&claude_json_path);
-        uninstall_settings(&settings_path);
-        uninstall_claude_md_rules(&claude_md_path);
-
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
-        eprintln!("Start a new Claude Code session for changes to take effect.");
+        match &ctx.scope {
+            InstallScope::Global => uninstall_global(ctx),
+            InstallScope::Local { project_path } => uninstall_local(project_path),
+        }
         Ok(())
+    }
+
+    fn supports_local(&self) -> bool {
+        true
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
@@ -97,6 +75,86 @@ impl AgentIntegration for ClaudeIntegration {
             .and_then(|v| v.get("tokensave"))
             .is_some()
     }
+}
+
+fn install_global(ctx: &InstallContext) -> Result<()> {
+    let claude_dir = ctx.home.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+    let claude_json_path = ctx.home.join(".claude.json");
+    let claude_md_path = claude_dir.join("CLAUDE.md");
+
+    install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
+
+    std::fs::create_dir_all(&claude_dir).ok();
+    let mut settings = load_json_file_strict(&settings_path)?;
+    install_migrate_old_mcp(&mut settings, &settings_path);
+    install_hook(&mut settings, &ctx.tokensave_bin);
+    install_permissions(&mut settings, &ctx.tool_permissions);
+    write_json_file(&settings_path, &settings)?;
+
+    install_claude_md_rules(&claude_md_path)?;
+    install_clean_local_config();
+
+    eprintln!();
+    eprintln!("Setup complete. Next steps:");
+    eprintln!("  1. cd into your project and run: tokensave init");
+    eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
+    Ok(())
+}
+
+fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
+    let claude_dir = project.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+    let mcp_json_path = project.join(".mcp.json");
+    let claude_md_path = project.join("CLAUDE.md");
+
+    // Project-scoped MCP server lives in ./.mcp.json (Claude Code's project file).
+    install_mcp_server(&mcp_json_path, &ctx.tokensave_bin)?;
+
+    std::fs::create_dir_all(&claude_dir).ok();
+    let mut settings = load_json_file_strict(&settings_path)?;
+    install_hook(&mut settings, &ctx.tokensave_bin);
+    install_permissions(&mut settings, &ctx.tool_permissions);
+    write_json_file(&settings_path, &settings)?;
+
+    install_claude_md_rules(&claude_md_path)?;
+    // NB: no install_clean_local_config() — that is the global-only cleanup.
+
+    eprintln!();
+    eprintln!(
+        "Project setup complete (\x1b[1m{}\x1b[0m).",
+        project.display()
+    );
+    eprintln!("  Tokensave is registered for this project only (./.mcp.json).");
+    eprintln!("  Run: tokensave init   then start a new Claude Code session.");
+    Ok(())
+}
+
+fn uninstall_global(ctx: &InstallContext) {
+    let claude_dir = ctx.home.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+    let claude_json_path = ctx.home.join(".claude.json");
+    let claude_md_path = claude_dir.join("CLAUDE.md");
+
+    uninstall_mcp_server(&claude_json_path);
+    uninstall_settings(&settings_path);
+    uninstall_claude_md_rules(&claude_md_path);
+
+    eprintln!();
+    eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
+    eprintln!("Start a new Claude Code session for changes to take effect.");
+}
+
+fn uninstall_local(project: &Path) {
+    uninstall_mcp_server(&project.join(".mcp.json"));
+    uninstall_settings(&project.join(".claude/settings.json"));
+    uninstall_claude_md_rules(&project.join("CLAUDE.md"));
+
+    eprintln!();
+    eprintln!(
+        "Removed tokensave from this project ({}).",
+        project.display()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,23 +1071,25 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
 
     let mcp_json_path = project_path.join(".mcp.json");
     if mcp_json_path.exists() {
-        local_cleaned |= doctor_clean_local_mcp_json(dc, &mcp_json_path);
+        local_cleaned |= doctor_check_local_mcp_json(dc, &mcp_json_path);
     }
 
     let local_settings_path = project_path.join(".claude").join("settings.local.json");
     if local_settings_path.exists() {
-        local_cleaned |= doctor_clean_local_settings(dc, project_path, &local_settings_path);
+        local_cleaned |= doctor_check_local_settings(dc, &local_settings_path);
     }
 
     if !local_cleaned && !mcp_json_path.exists() && !local_settings_path.exists() {
-        dc.pass("No local MCP config found (correct — global only)");
-    } else if !local_cleaned {
-        dc.pass("No tokensave in local config (correct — global only)");
+        dc.pass("No project-local MCP config (using global install)");
+    } else if local_cleaned {
+        dc.pass("Project-local tokensave install is valid");
     }
 }
 
-/// Remove tokensave from local .mcp.json. Returns true if cleaned.
-fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) -> bool {
+/// Report a local .mcp.json that registers tokensave. With --local now a
+/// supported install mode, this is a valid state — never remove it. Returns
+/// true if a tokensave entry was found (so the caller can adjust messaging).
+fn doctor_check_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(mcp_json_path) else {
         return false;
     };
@@ -1040,33 +1100,16 @@ fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) ->
         dc.pass("No tokensave in .mcp.json");
         return false;
     }
-    let mut mcp_val = mcp_val;
-    let Some(servers) = mcp_val["mcpServers"].as_object_mut() else {
-        return false;
-    };
-    servers.remove("tokensave");
-    if servers.is_empty() {
-        if std::fs::remove_file(mcp_json_path).is_ok() {
-            dc.warn(&format!(
-                "Removed {} (tokensave should only be in global config)",
-                mcp_json_path.display()
-            ));
-        }
-    } else if backup_and_write_json(mcp_json_path, &mcp_val) {
-        dc.warn(&format!(
-            "Removed tokensave entry from {} (should only be in global config)",
-            mcp_json_path.display()
-        ));
-    }
+    dc.pass(&format!(
+        "Local (project-scoped) tokensave install detected in {}",
+        mcp_json_path.display()
+    ));
     true
 }
 
-/// Remove tokensave from local .claude/settings.local.json. Returns true if cleaned.
-fn doctor_clean_local_settings(
-    dc: &mut DoctorCounters,
-    project_path: &Path,
-    local_settings_path: &Path,
-) -> bool {
+/// Report a local settings.local.json that references tokensave. Valid under
+/// --local; never removed by doctor. Returns true if tokensave was found.
+fn doctor_check_local_settings(dc: &mut DoctorCounters, local_settings_path: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(local_settings_path) else {
         return false;
     };
@@ -1074,55 +1117,10 @@ fn doctor_clean_local_settings(
         dc.pass("No tokensave in .claude/settings.local.json");
         return false;
     }
-    let Ok(mut local_val) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return false;
-    };
-    let mut modified = false;
-
-    if let Some(arr) = local_val["enabledMcpjsonServers"].as_array_mut() {
-        let before = arr.len();
-        arr.retain(|v| v.as_str() != Some("tokensave"));
-        if arr.len() < before {
-            modified = true;
-        }
-    }
-
-    if let Some(servers) = local_val
-        .get_mut("mcpServers")
-        .and_then(|v| v.as_object_mut())
-    {
-        if servers.remove("tokensave").is_some() {
-            modified = true;
-            if servers.is_empty() {
-                local_val.as_object_mut().map(|o| o.remove("mcpServers"));
-            }
-        }
-    }
-
-    if modified {
-        clean_orphaned_local_mcp_keys(&mut local_val);
-    }
-
-    if !modified {
-        return false;
-    }
-
-    let is_empty = local_val.as_object().is_some_and(serde_json::Map::is_empty);
-    if is_empty {
-        if std::fs::remove_file(local_settings_path).is_ok() {
-            dc.warn(&format!(
-                "Removed {} (tokensave should only be in global config)",
-                local_settings_path.display()
-            ));
-            let claude_dir = project_path.join(".claude");
-            std::fs::remove_dir(&claude_dir).ok();
-        }
-    } else if backup_and_write_json(local_settings_path, &local_val) {
-        dc.warn(&format!(
-            "Removed tokensave entries from {} (should only be in global config)",
-            local_settings_path.display()
-        ));
-    }
+    dc.pass(&format!(
+        "Local (project-scoped) tokensave config detected in {}",
+        local_settings_path.display()
+    ));
     true
 }
 

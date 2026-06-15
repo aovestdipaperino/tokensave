@@ -11,6 +11,7 @@ fn make_ctx(home: &Path) -> InstallContext {
         home: home.to_path_buf(),
         tokensave_bin: "/usr/local/bin/tokensave".to_string(),
         tool_permissions: Vec::new(),
+        scope: tokensave::agents::InstallScope::Global,
     }
 }
 

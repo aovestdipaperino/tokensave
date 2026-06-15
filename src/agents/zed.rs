@@ -12,6 +12,7 @@ use crate::errors::Result;
 use super::{
     backup_and_write_json, backup_config_file, load_jsonc_file, load_jsonc_file_strict,
     safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    InstallScope,
 };
 
 /// Zed agent.
@@ -29,6 +30,15 @@ fn zed_config_dir(home: &Path) -> PathBuf {
     }
 }
 
+/// Zed settings.json path for this install: the platform config dir for a
+/// global install, `<project>/.zed/settings.json` for `--local`.
+fn zed_settings_path(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => zed_config_dir(&ctx.home).join("settings.json"),
+        InstallScope::Local { project_path } => project_path.join(".zed/settings.json"),
+    }
+}
+
 impl AgentIntegration for ZedIntegration {
     fn name(&self) -> &'static str {
         "Zed"
@@ -38,9 +48,12 @@ impl AgentIntegration for ZedIntegration {
         "zed"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let config_dir = zed_config_dir(&ctx.home);
-        let settings_path = config_dir.join("settings.json");
+        let settings_path = zed_settings_path(ctx);
 
         if let Some(parent) = settings_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -77,7 +90,7 @@ impl AgentIntegration for ZedIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = zed_config_dir(&ctx.home).join("settings.json");
+        let settings_path = zed_settings_path(ctx);
         uninstall_context_server(&settings_path);
 
         eprintln!();

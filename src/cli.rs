@@ -98,6 +98,11 @@ pub enum Commands {
         /// the hook without asking; `no` skips it without asking.
         #[arg(long, value_enum, default_value_t = GitHookMode::Default)]
         git_hook: GitHookMode,
+        /// Install into the current project's config instead of the user's
+        /// global config. Only supported for agents with a project-scoped
+        /// config (claude, cursor, gemini, zed, opencode, roo-code, kiro).
+        #[arg(long)]
+        local: bool,
     },
     /// Refresh settings for all already-installed agents
     Reinstall,
@@ -107,6 +112,10 @@ pub enum Commands {
         /// Agent to remove (removes all if omitted)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
+        /// Remove the project-scoped install from the current directory
+        /// instead of the global config.
+        #[arg(long)]
+        local: bool,
     },
     /// Extraction worker (spawned by tokensave itself; not for direct use).
     #[command(name = "extract-worker", hide = true)]

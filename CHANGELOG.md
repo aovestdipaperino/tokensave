@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [6.3.2] - 2026-06-15
+
+### Added
+- **`tokensave install --local` / `uninstall --local`** (#110) — register tokensave in the current project's config instead of the user's global config. Writes project-scoped config you can commit and share with your team: for Claude, `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: claude, cursor, gemini, zed, opencode, roo-code, kiro — each writing its own project-scoped file (`.cursor/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Agents without a project-scoped config (codex, cline, copilot, antigravity, kimi, vibe, grok, kilo) report a clear error. `tokensave doctor` now treats a project-local install as a valid state and no longer deletes it.
+
 ## [6.3.1] - 2026-06-10
 
 ### Fixed
