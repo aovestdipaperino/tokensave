@@ -166,7 +166,8 @@ jobs:
       - name: Upload signed binary archive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" --clobber
+        # This job has no checkout, so gh can't infer the repo from git context.
+        run: gh release upload "${GITHUB_REF_NAME}" "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" --clobber --repo "$GITHUB_REPOSITORY"
 
   update-homebrew:
     name: Update Homebrew tap
