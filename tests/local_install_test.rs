@@ -97,3 +97,21 @@ fn cursor_local_writes_project_mcp_only() {
         "must not write global cursor config"
     );
 }
+
+#[test]
+fn gemini_local_writes_project_settings() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+    };
+    get_integration("gemini").unwrap().install(&ctx).unwrap();
+    let settings = read_json(&proj.path().join(".gemini/settings.json"));
+    assert!(settings["mcpServers"]["tokensave"].is_object());
+    assert!(!home.path().join(".gemini/settings.json").exists());
+}
