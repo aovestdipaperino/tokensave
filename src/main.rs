@@ -583,11 +583,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     scope: scope.clone(),
                 };
                 ag.install(&ctx)?;
-                if !user_cfg.installed_agents.contains(&id) {
-                    user_cfg.installed_agents.push(id);
+                // A --local install is project-scoped; it must not touch the
+                // global installed-agents registry (which `reinstall` replays
+                // as global installs) or persist global user config.
+                if local {
                     installed_names.push(name);
+                } else {
+                    if !user_cfg.installed_agents.contains(&id) {
+                        user_cfg.installed_agents.push(id);
+                        installed_names.push(name);
+                    }
+                    user_cfg.save();
                 }
-                user_cfg.save();
             } else {
                 let (to_install, to_uninstall) = tokensave::agents::pick_integrations_interactive(
                     &home,
@@ -611,7 +618,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     };
                     ag.uninstall(&ctx)?;
                     removed_names.push(ag.name().to_string());
-                    user_cfg.installed_agents.retain(|a| a != id);
+                    if !local {
+                        user_cfg.installed_agents.retain(|a| a != id);
+                    }
                 }
                 for id in &to_install {
                     let ag = tokensave::agents::get_integration(id)?;
@@ -630,11 +639,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
-                    if !user_cfg.installed_agents.contains(id) {
+                    if !local && !user_cfg.installed_agents.contains(id) {
                         user_cfg.installed_agents.push(id.clone());
                     }
                 }
-                user_cfg.save();
+                if !local {
+                    user_cfg.save();
+                }
             }
 
             eprintln!();
@@ -649,8 +660,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
 
-            user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
-            user_cfg.save();
+            // Skip global user-config writes for a project-scoped install.
+            if !local {
+                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.save();
+            }
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
         }
@@ -720,8 +734,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     scope: scope.clone(),
                 };
                 ag.uninstall(&ctx)?;
-                user_cfg.installed_agents.retain(|a| a != &id);
-                user_cfg.save();
+                // A --local uninstall only removes project config; leave the
+                // global installed-agents registry untouched.
+                if !local {
+                    user_cfg.installed_agents.retain(|a| a != &id);
+                    user_cfg.save();
+                }
             } else {
                 for id in user_cfg.installed_agents.clone() {
                     if let Ok(ag) = tokensave::agents::get_integration(&id) {
@@ -741,9 +759,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         ag.uninstall(&ctx).ok();
                     }
                 }
-                user_cfg.installed_agents.clear();
-                user_cfg.save();
-                eprintln!("All agent integrations removed.");
+                if local {
+                    eprintln!("Project-local agent integrations removed.");
+                } else {
+                    user_cfg.installed_agents.clear();
+                    user_cfg.save();
+                    eprintln!("All agent integrations removed.");
+                }
             }
         }
         Commands::ExtractWorker => {
