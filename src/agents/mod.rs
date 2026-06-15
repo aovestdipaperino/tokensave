@@ -79,6 +79,12 @@ pub trait AgentIntegration {
         false
     }
 
+    /// True if this agent has a project-scoped config that `--local` can
+    /// target. Default false; supporting integrations override to true.
+    fn supports_local(&self) -> bool {
+        false
+    }
+
     /// The single config file this agent rewrites on install / uninstall, if
     /// any. Returning `Some(path)` lets tests (and any future external tool)
     /// ask the integration for its own path instead of re-deriving it via
@@ -92,11 +98,40 @@ pub trait AgentIntegration {
     }
 }
 
+/// Where an install writes its configuration.
+#[derive(Clone, Debug)]
+pub enum InstallScope {
+    /// User-level config under `$HOME` (default).
+    Global,
+    /// Project-level config rooted at `project_path` (`--local`).
+    Local { project_path: PathBuf },
+}
+
 /// Context passed to [`AgentIntegration::install`] and [`AgentIntegration::uninstall`].
 pub struct InstallContext {
     pub home: PathBuf,
     pub tokensave_bin: String,
     pub tool_permissions: Vec<String>,
+    pub scope: InstallScope,
+}
+
+impl InstallContext {
+    /// True when this is a project-scoped (`--local`) install.
+    pub fn is_local(&self) -> bool {
+        matches!(self.scope, InstallScope::Local { .. })
+    }
+
+    /// Directory that agent config paths are rooted at: the user's home for
+    /// global installs, the project directory for `--local`. Use this only for
+    /// agents whose project-scoped path is the same relative path as the
+    /// global one (e.g. `.cursor/mcp.json`). Agents whose layout differs must
+    /// match on `scope` directly.
+    pub fn base_dir(&self) -> &Path {
+        match &self.scope {
+            InstallScope::Global => &self.home,
+            InstallScope::Local { project_path } => project_path,
+        }
+    }
 }
 
 /// Context passed to [`AgentIntegration::healthcheck`].
@@ -1948,5 +1983,36 @@ mod path_normalize_tests {
             normalize_path_separators("/usr/local/bin/tokensave"),
             "/usr/local/bin/tokensave"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod install_scope_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn install_context_base_dir_follows_scope() {
+        let home = PathBuf::from("/home/user");
+        let proj = PathBuf::from("/work/proj");
+
+        let global = InstallContext {
+            home: home.clone(),
+            tokensave_bin: "tokensave".into(),
+            tool_permissions: vec![],
+            scope: InstallScope::Global,
+        };
+        assert_eq!(global.base_dir(), home.as_path());
+        assert!(!global.is_local());
+
+        let local = InstallContext {
+            home: home.clone(),
+            tokensave_bin: "tokensave".into(),
+            tool_permissions: vec![],
+            scope: InstallScope::Local { project_path: proj.clone() },
+        };
+        assert_eq!(local.base_dir(), proj.as_path());
+        assert!(local.is_local());
     }
 }

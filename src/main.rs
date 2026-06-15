@@ -199,6 +199,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             home: home.clone(),
                             tokensave_bin: bin.clone(),
                             tool_permissions: tokensave::agents::expected_tool_perms(),
+                            scope: tokensave::agents::InstallScope::Global,
                         };
                         if ag.install(&ctx).is_err() {
                             all_ok = false;
@@ -565,6 +566,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
                     tool_permissions: tokensave::agents::expected_tool_perms(),
+                    scope: tokensave::agents::InstallScope::Global,
                 };
                 ag.install(&ctx)?;
                 if !user_cfg.installed_agents.contains(&id) {
@@ -584,6 +586,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
+                        scope: tokensave::agents::InstallScope::Global,
                     };
                     ag.uninstall(&ctx)?;
                     removed_names.push(ag.name().to_string());
@@ -595,6 +598,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
+                        scope: tokensave::agents::InstallScope::Global,
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
@@ -651,6 +655,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
+                        scope: tokensave::agents::InstallScope::Global,
                     };
                     ag.install(&ctx)?;
                 }
@@ -674,6 +679,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     home,
                     tokensave_bin: String::new(),
                     tool_permissions: tokensave::agents::expected_tool_perms(),
+                    scope: tokensave::agents::InstallScope::Global,
                 };
                 ag.uninstall(&ctx)?;
                 user_cfg.installed_agents.retain(|a| a != &id);
@@ -685,6 +691,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             home: home.clone(),
                             tokensave_bin: String::new(),
                             tool_permissions: tokensave::agents::expected_tool_perms(),
+                            scope: tokensave::agents::InstallScope::Global,
                         };
                         ag.uninstall(&ctx).ok();
                     }
