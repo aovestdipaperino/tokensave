@@ -115,3 +115,21 @@ fn gemini_local_writes_project_settings() {
     assert!(settings["mcpServers"]["tokensave"].is_object());
     assert!(!home.path().join(".gemini/settings.json").exists());
 }
+
+#[test]
+fn kiro_local_writes_workspace_mcp() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+    };
+    get_integration("kiro").unwrap().install(&ctx).unwrap();
+    let mcp = read_json(&proj.path().join(".kiro/settings/mcp.json"));
+    assert!(mcp["mcpServers"]["tokensave"].is_object());
+    assert!(!home.path().join(".kiro/settings/mcp.json").exists());
+}

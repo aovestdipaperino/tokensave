@@ -21,6 +21,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{
     backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
     safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    InstallScope,
 };
 
 /// Kiro agent.
@@ -51,20 +52,45 @@ fn kiro_home(home: &Path) -> PathBuf {
     home.join(".kiro")
 }
 
+/// The `.kiro` config root for this install: `~/.kiro` (or `$KIRO_HOME`) for a
+/// global install, `<project>/.kiro` for a `--local` install.
+fn kiro_base(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => kiro_home(&ctx.home),
+        InstallScope::Local { project_path } => project_path.join(".kiro"),
+    }
+}
+
+fn mcp_config_path_in(base: &Path) -> PathBuf {
+    base.join("settings/mcp.json")
+}
+
+fn cli_config_path_in(base: &Path) -> PathBuf {
+    base.join("settings/cli.json")
+}
+
+fn managed_agent_path_in(base: &Path) -> PathBuf {
+    base.join("agents/tokensave.json")
+}
+
+fn steering_path_in(base: &Path) -> PathBuf {
+    base.join("steering/tokensave.md")
+}
+
 fn mcp_config_path(home: &Path) -> PathBuf {
-    kiro_home(home).join("settings/mcp.json")
+    mcp_config_path_in(&kiro_home(home))
 }
 
 fn cli_config_path(home: &Path) -> PathBuf {
-    kiro_home(home).join("settings/cli.json")
+    cli_config_path_in(&kiro_home(home))
 }
 
 fn managed_agent_path(home: &Path) -> PathBuf {
-    kiro_home(home).join("agents/tokensave.json")
+    managed_agent_path_in(&kiro_home(home))
 }
 
 fn steering_path(home: &Path) -> PathBuf {
-    kiro_home(home).join("steering/tokensave.md")
+    steering_path_in(&kiro_home(home))
 }
 
 fn workspace_mcp_config_path(project_path: &Path) -> PathBuf {
@@ -80,19 +106,24 @@ impl AgentIntegration for KiroIntegration {
         "kiro"
     }
 
-    fn install(&self, ctx: &InstallContext) -> Result<()> {
-        std::fs::create_dir_all(kiro_home(&ctx.home)).ok();
+    fn supports_local(&self) -> bool {
+        true
+    }
 
-        let mcp_path = mcp_config_path(&ctx.home);
+    fn install(&self, ctx: &InstallContext) -> Result<()> {
+        let base = kiro_base(ctx);
+        std::fs::create_dir_all(&base).ok();
+
+        let mcp_path = mcp_config_path_in(&base);
         install_mcp_server(&mcp_path, &ctx.tokensave_bin)?;
 
-        let steering = steering_path(&ctx.home);
+        let steering = steering_path_in(&base);
         install_steering_rules(&steering)?;
 
-        let agent_path = managed_agent_path(&ctx.home);
+        let agent_path = managed_agent_path_in(&base);
         let owns_agent = install_managed_agent(&agent_path, &ctx.tokensave_bin, &steering)?;
 
-        let cli_path = cli_config_path(&ctx.home);
+        let cli_path = cli_config_path_in(&base);
         install_default_agent(&cli_path, owns_agent)?;
 
         eprintln!();
@@ -107,12 +138,13 @@ impl AgentIntegration for KiroIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        uninstall_mcp_server(&mcp_config_path(&ctx.home));
-        remove_steering_rules(&steering_path(&ctx.home));
-        let agent_path = managed_agent_path(&ctx.home);
+        let base = kiro_base(ctx);
+        uninstall_mcp_server(&mcp_config_path_in(&base));
+        remove_steering_rules(&steering_path_in(&base));
+        let agent_path = managed_agent_path_in(&base);
         let owned_agent = is_owned_agent_file(&agent_path);
         uninstall_managed_agent(&agent_path);
-        uninstall_default_agent(&cli_config_path(&ctx.home), &agent_path, owned_agent);
+        uninstall_default_agent(&cli_config_path_in(&base), &agent_path, owned_agent);
 
         eprintln!();
         eprintln!("Uninstall complete. Tokensave has been removed from Kiro.");
