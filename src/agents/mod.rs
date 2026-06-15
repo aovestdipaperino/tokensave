@@ -99,7 +99,7 @@ pub trait AgentIntegration {
 }
 
 /// Where an install writes its configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum InstallScope {
     /// User-level config under `$HOME` (default).
     Global,
@@ -2010,7 +2010,9 @@ mod install_scope_tests {
             home: home.clone(),
             tokensave_bin: "tokensave".into(),
             tool_permissions: vec![],
-            scope: InstallScope::Local { project_path: proj.clone() },
+            scope: InstallScope::Local {
+                project_path: proj.clone(),
+            },
         };
         assert_eq!(local.base_dir(), proj.as_path());
         assert!(local.is_local());
