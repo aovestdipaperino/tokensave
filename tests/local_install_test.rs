@@ -150,3 +150,21 @@ fn zed_local_writes_project_settings() {
     let settings = read_json(&proj.path().join(".zed/settings.json"));
     assert!(settings["context_servers"]["tokensave"].is_object());
 }
+
+#[test]
+fn opencode_local_writes_project_config() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+    };
+    get_integration("opencode").unwrap().install(&ctx).unwrap();
+    let cfg = read_json(&proj.path().join("opencode.json"));
+    assert!(cfg["mcp"]["tokensave"].is_object());
+    assert!(proj.path().join("AGENTS.md").exists());
+}

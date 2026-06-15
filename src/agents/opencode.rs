@@ -16,6 +16,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{
     backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
     safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    InstallScope,
 };
 
 /// `OpenCode` agent.
@@ -30,12 +31,16 @@ impl AgentIntegration for OpenCodeIntegration {
         "opencode"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let config_path = opencode_config_path(&ctx.home);
+        let config_path = opencode_config_path_for(ctx);
         install_mcp_server(&config_path, &ctx.tokensave_bin)?;
 
-        let global_prompt = opencode_prompt_path(&ctx.home);
-        install_prompt_rules(&global_prompt)?;
+        let prompt = opencode_prompt_path_for(ctx);
+        install_prompt_rules(&prompt)?;
 
         eprintln!();
         eprintln!("Setup complete. Next steps:");
@@ -46,11 +51,11 @@ impl AgentIntegration for OpenCodeIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let config_path = opencode_config_path(&ctx.home);
+        let config_path = opencode_config_path_for(ctx);
         uninstall_mcp_server(&config_path);
 
-        let global_prompt = opencode_prompt_path(&ctx.home);
-        uninstall_prompt_rules(&global_prompt);
+        let prompt = opencode_prompt_path_for(ctx);
+        uninstall_prompt_rules(&prompt);
 
         eprintln!();
         eprintln!("Uninstall complete. Tokensave has been removed from OpenCode.");
@@ -91,6 +96,24 @@ impl AgentIntegration for OpenCodeIntegration {
 /// `$XDG_CONFIG_HOME/opencode/opencode.json` only when the XDG path
 /// is under `home` (so tests with temp-dir homes are never polluted by
 /// the real user's environment).
+/// opencode.json path for this install: global config path, or
+/// `<project>/opencode.json` for `--local`.
+fn opencode_config_path_for(ctx: &InstallContext) -> std::path::PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => opencode_config_path(&ctx.home),
+        InstallScope::Local { project_path } => project_path.join("opencode.json"),
+    }
+}
+
+/// AGENTS.md path for this install: global prompt path, or
+/// `<project>/AGENTS.md` for `--local`.
+fn opencode_prompt_path_for(ctx: &InstallContext) -> std::path::PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => opencode_prompt_path(&ctx.home),
+        InstallScope::Local { project_path } => project_path.join("AGENTS.md"),
+    }
+}
+
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_path = std::path::PathBuf::from(&xdg);
