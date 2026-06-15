@@ -1080,13 +1080,15 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
     }
 
     if !local_cleaned && !mcp_json_path.exists() && !local_settings_path.exists() {
-        dc.pass("No local MCP config found (correct — global only)");
-    } else if !local_cleaned {
-        dc.pass("No tokensave in local config (correct — global only)");
+        dc.pass("No project-local MCP config (using global install)");
+    } else if local_cleaned {
+        dc.pass("Project-local tokensave install is valid");
     }
 }
 
-/// Remove tokensave from local .mcp.json. Returns true if cleaned.
+/// Report a local .mcp.json that registers tokensave. With --local now a
+/// supported install mode, this is a valid state — never remove it. Returns
+/// true if a tokensave entry was found (so the caller can adjust messaging).
 fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) -> bool {
     let Ok(contents) = std::fs::read_to_string(mcp_json_path) else {
         return false;
@@ -1098,31 +1100,18 @@ fn doctor_clean_local_mcp_json(dc: &mut DoctorCounters, mcp_json_path: &Path) ->
         dc.pass("No tokensave in .mcp.json");
         return false;
     }
-    let mut mcp_val = mcp_val;
-    let Some(servers) = mcp_val["mcpServers"].as_object_mut() else {
-        return false;
-    };
-    servers.remove("tokensave");
-    if servers.is_empty() {
-        if std::fs::remove_file(mcp_json_path).is_ok() {
-            dc.warn(&format!(
-                "Removed {} (tokensave should only be in global config)",
-                mcp_json_path.display()
-            ));
-        }
-    } else if backup_and_write_json(mcp_json_path, &mcp_val) {
-        dc.warn(&format!(
-            "Removed tokensave entry from {} (should only be in global config)",
-            mcp_json_path.display()
-        ));
-    }
+    dc.pass(&format!(
+        "Local (project-scoped) tokensave install detected in {}",
+        mcp_json_path.display()
+    ));
     true
 }
 
-/// Remove tokensave from local .claude/settings.local.json. Returns true if cleaned.
+/// Report a local settings.local.json that references tokensave. Valid under
+/// --local; never removed by doctor. Returns true if tokensave was found.
 fn doctor_clean_local_settings(
     dc: &mut DoctorCounters,
-    project_path: &Path,
+    _project_path: &Path,
     local_settings_path: &Path,
 ) -> bool {
     let Ok(contents) = std::fs::read_to_string(local_settings_path) else {
@@ -1132,55 +1121,10 @@ fn doctor_clean_local_settings(
         dc.pass("No tokensave in .claude/settings.local.json");
         return false;
     }
-    let Ok(mut local_val) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return false;
-    };
-    let mut modified = false;
-
-    if let Some(arr) = local_val["enabledMcpjsonServers"].as_array_mut() {
-        let before = arr.len();
-        arr.retain(|v| v.as_str() != Some("tokensave"));
-        if arr.len() < before {
-            modified = true;
-        }
-    }
-
-    if let Some(servers) = local_val
-        .get_mut("mcpServers")
-        .and_then(|v| v.as_object_mut())
-    {
-        if servers.remove("tokensave").is_some() {
-            modified = true;
-            if servers.is_empty() {
-                local_val.as_object_mut().map(|o| o.remove("mcpServers"));
-            }
-        }
-    }
-
-    if modified {
-        clean_orphaned_local_mcp_keys(&mut local_val);
-    }
-
-    if !modified {
-        return false;
-    }
-
-    let is_empty = local_val.as_object().is_some_and(serde_json::Map::is_empty);
-    if is_empty {
-        if std::fs::remove_file(local_settings_path).is_ok() {
-            dc.warn(&format!(
-                "Removed {} (tokensave should only be in global config)",
-                local_settings_path.display()
-            ));
-            let claude_dir = project_path.join(".claude");
-            std::fs::remove_dir(&claude_dir).ok();
-        }
-    } else if backup_and_write_json(local_settings_path, &local_val) {
-        dc.warn(&format!(
-            "Removed tokensave entries from {} (should only be in global config)",
-            local_settings_path.display()
-        ));
-    }
+    dc.pass(&format!(
+        "Local (project-scoped) tokensave config detected in {}",
+        local_settings_path.display()
+    ));
     true
 }
 

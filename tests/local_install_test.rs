@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tempfile::TempDir;
 use tokensave::agents::get_integration;
-use tokensave::agents::{InstallContext, InstallScope};
+use tokensave::agents::{DoctorCounters, HealthcheckContext, InstallContext, InstallScope};
 
 fn read_json(p: &std::path::Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
@@ -48,5 +48,31 @@ fn claude_local_writes_project_files_only() {
     assert!(
         !home.path().join(".claude/settings.json").exists(),
         "must not write global settings"
+    );
+}
+
+#[test]
+fn doctor_preserves_valid_local_mcp_json() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let mcp_path = proj.path().join(".mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers":{"tokensave":{"command":"/usr/bin/tokensave","args":["serve"]}}}"#,
+    )
+    .unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let ctx = HealthcheckContext {
+        home: home.path().to_path_buf(),
+        project_path: proj.path().to_path_buf(),
+    };
+    get_integration("claude")
+        .unwrap()
+        .healthcheck(&mut dc, &ctx);
+
+    assert!(
+        mcp_path.exists(),
+        "doctor must NOT delete a valid local .mcp.json"
     );
 }
