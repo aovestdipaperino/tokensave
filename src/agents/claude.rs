@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 use super::{
     backup_and_write_json, backup_config_file, expected_tool_perms, load_json_file_strict,
     safe_write_json_file, write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext,
-    InstallContext,
+    InstallContext, InstallScope,
 };
 
 /// Claude Code agent.
@@ -31,44 +31,21 @@ impl AgentIntegration for ClaudeIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let claude_dir = ctx.home.join(".claude");
-        let settings_path = claude_dir.join("settings.json");
-        let claude_json_path = ctx.home.join(".claude.json");
-        let claude_md_path = claude_dir.join("CLAUDE.md");
-
-        install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
-
-        std::fs::create_dir_all(&claude_dir).ok();
-        let mut settings = load_json_file_strict(&settings_path)?;
-        install_migrate_old_mcp(&mut settings, &settings_path);
-        install_hook(&mut settings, &ctx.tokensave_bin);
-        install_permissions(&mut settings, &ctx.tool_permissions);
-        write_json_file(&settings_path, &settings)?;
-
-        install_claude_md_rules(&claude_md_path)?;
-        install_clean_local_config();
-
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
-        Ok(())
+        match &ctx.scope {
+            InstallScope::Global => self.install_global(ctx),
+            InstallScope::Local { project_path } => self.install_local(ctx, project_path),
+        }
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let claude_dir = ctx.home.join(".claude");
-        let settings_path = claude_dir.join("settings.json");
-        let claude_json_path = ctx.home.join(".claude.json");
-        let claude_md_path = claude_dir.join("CLAUDE.md");
+        match &ctx.scope {
+            InstallScope::Global => self.uninstall_global(ctx),
+            InstallScope::Local { project_path } => self.uninstall_local(project_path),
+        }
+    }
 
-        uninstall_mcp_server(&claude_json_path);
-        uninstall_settings(&settings_path);
-        uninstall_claude_md_rules(&claude_md_path);
-
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
-        eprintln!("Start a new Claude Code session for changes to take effect.");
-        Ok(())
+    fn supports_local(&self) -> bool {
+        true
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
@@ -96,6 +73,90 @@ impl AgentIntegration for ClaudeIntegration {
         json.get("mcpServers")
             .and_then(|v| v.get("tokensave"))
             .is_some()
+    }
+}
+
+impl ClaudeIntegration {
+    fn install_global(&self, ctx: &InstallContext) -> Result<()> {
+        let claude_dir = ctx.home.join(".claude");
+        let settings_path = claude_dir.join("settings.json");
+        let claude_json_path = ctx.home.join(".claude.json");
+        let claude_md_path = claude_dir.join("CLAUDE.md");
+
+        install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
+
+        std::fs::create_dir_all(&claude_dir).ok();
+        let mut settings = load_json_file_strict(&settings_path)?;
+        install_migrate_old_mcp(&mut settings, &settings_path);
+        install_hook(&mut settings, &ctx.tokensave_bin);
+        install_permissions(&mut settings, &ctx.tool_permissions);
+        write_json_file(&settings_path, &settings)?;
+
+        install_claude_md_rules(&claude_md_path)?;
+        install_clean_local_config();
+
+        eprintln!();
+        eprintln!("Setup complete. Next steps:");
+        eprintln!("  1. cd into your project and run: tokensave init");
+        eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
+        Ok(())
+    }
+
+    fn install_local(&self, ctx: &InstallContext, project: &std::path::Path) -> Result<()> {
+        let claude_dir = project.join(".claude");
+        let settings_path = claude_dir.join("settings.json");
+        let mcp_json_path = project.join(".mcp.json");
+        let claude_md_path = project.join("CLAUDE.md");
+
+        // Project-scoped MCP server lives in ./.mcp.json (Claude Code's project file).
+        install_mcp_server(&mcp_json_path, &ctx.tokensave_bin)?;
+
+        std::fs::create_dir_all(&claude_dir).ok();
+        let mut settings = load_json_file_strict(&settings_path)?;
+        install_hook(&mut settings, &ctx.tokensave_bin);
+        install_permissions(&mut settings, &ctx.tool_permissions);
+        write_json_file(&settings_path, &settings)?;
+
+        install_claude_md_rules(&claude_md_path)?;
+        // NB: no install_clean_local_config() — that is the global-only cleanup.
+
+        eprintln!();
+        eprintln!(
+            "Project setup complete (\x1b[1m{}\x1b[0m).",
+            project.display()
+        );
+        eprintln!("  Tokensave is registered for this project only (./.mcp.json).");
+        eprintln!("  Run: tokensave init   then start a new Claude Code session.");
+        Ok(())
+    }
+
+    fn uninstall_global(&self, ctx: &InstallContext) -> Result<()> {
+        let claude_dir = ctx.home.join(".claude");
+        let settings_path = claude_dir.join("settings.json");
+        let claude_json_path = ctx.home.join(".claude.json");
+        let claude_md_path = claude_dir.join("CLAUDE.md");
+
+        uninstall_mcp_server(&claude_json_path);
+        uninstall_settings(&settings_path);
+        uninstall_claude_md_rules(&claude_md_path);
+
+        eprintln!();
+        eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
+        eprintln!("Start a new Claude Code session for changes to take effect.");
+        Ok(())
+    }
+
+    fn uninstall_local(&self, project: &std::path::Path) -> Result<()> {
+        uninstall_mcp_server(&project.join(".mcp.json"));
+        uninstall_settings(&project.join(".claude/settings.json"));
+        uninstall_claude_md_rules(&project.join("CLAUDE.md"));
+
+        eprintln!();
+        eprintln!(
+            "Removed tokensave from this project ({}).",
+            project.display()
+        );
+        Ok(())
     }
 }
 
