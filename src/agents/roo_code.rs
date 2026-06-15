@@ -12,6 +12,7 @@ use crate::errors::Result;
 use super::{
     backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
     safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    InstallScope,
 };
 
 /// Roo Code agent.
@@ -20,6 +21,15 @@ pub struct RooCodeIntegration;
 /// Returns the Roo Code VS Code extension global storage directory.
 fn roo_ext_dir(home: &Path) -> PathBuf {
     super::vscode_data_dir(home).join("User/globalStorage/rooveterinaryinc.roo-cline")
+}
+
+/// Roo Code MCP settings path for this install: the extension global storage
+/// for a global install, `<project>/.roo/mcp.json` for `--local`.
+fn roo_settings_path(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => roo_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json"),
+        InstallScope::Local { project_path } => project_path.join(".roo/mcp.json"),
+    }
 }
 
 impl AgentIntegration for RooCodeIntegration {
@@ -31,8 +41,12 @@ impl AgentIntegration for RooCodeIntegration {
         "roo-code"
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = roo_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = roo_settings_path(ctx);
 
         if let Some(parent) = settings_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -68,7 +82,7 @@ impl AgentIntegration for RooCodeIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = roo_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = roo_settings_path(ctx);
         uninstall_mcp_server(&settings_path);
 
         eprintln!();

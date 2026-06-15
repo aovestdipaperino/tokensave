@@ -168,3 +168,20 @@ fn opencode_local_writes_project_config() {
     assert!(cfg["mcp"]["tokensave"].is_object());
     assert!(proj.path().join("AGENTS.md").exists());
 }
+
+#[test]
+fn roo_local_writes_project_mcp() {
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+    };
+    get_integration("roo-code").unwrap().install(&ctx).unwrap();
+    let mcp = read_json(&proj.path().join(".roo/mcp.json"));
+    assert!(mcp["mcpServers"]["tokensave"].is_object());
+}
