@@ -14,7 +14,8 @@ use crate::types::{BuildContextOptions, EdgeKind, NodeKind, Visibility};
 
 use super::super::ToolResult;
 use super::{
-    effective_path, filter_by_scope, require_node_id, truncate_response, unique_file_paths,
+    effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
+    truncate_response, unique_file_paths,
 };
 
 /// Errors when `node_id` matches no node in the graph.
@@ -55,8 +56,23 @@ pub(super) async fn handle_search(
         .and_then(serde_json::Value::as_u64)
         .map_or(10, |v| v.min(500) as usize);
 
-    let results = cg.search(query, limit).await?;
-    let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
+    let results = if path_include.is_empty() && path_exclude.is_empty() {
+        let results = cg.search(query, limit).await?;
+        filter_by_scope(results, scope_prefix, |r| &r.node.file_path)
+    } else {
+        // Path filters drop candidates after the ranked search, so fetch a
+        // larger set first to keep `limit` satisfiable post-filter.
+        let candidate_limit = limit.saturating_mul(5).max(50);
+        let results = cg.search(query, candidate_limit).await?;
+        let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
+        let mut results =
+            filter_by_path_lists(results, &path_include, &path_exclude, |r| &r.node.file_path);
+        results.truncate(limit);
+        results
+    };
 
     let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
 
@@ -150,6 +166,9 @@ pub(super) async fn handle_context(
 
     let path_prefix = effective_path(&args, scope_prefix).map(String::from);
 
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
     let options = BuildContextOptions {
         max_nodes,
         max_code_blocks,
@@ -159,6 +178,8 @@ pub(super) async fn handle_context(
         merge_adjacent,
         max_per_file,
         path_prefix,
+        path_include,
+        path_exclude,
         ..Default::default()
     };
 

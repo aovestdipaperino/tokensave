@@ -4974,3 +4974,147 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
 
     server.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// path_include / path_exclude filters (#113)
+// ---------------------------------------------------------------------------
+
+/// Creates a project with an app-code tree (`src/`) and a vendored tree
+/// (`third_party/`) that both define a function named `helper`, so path
+/// filters can be observed selecting between them. (`vendor/` is excluded by
+/// default config, so the vendored tree uses `third_party/` to stay indexed.)
+async fn setup_vendored_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("third_party")).unwrap();
+
+    fs::write(
+        project.join("src/app.rs"),
+        r#"
+/// App-level helper.
+pub fn helper() -> String {
+    String::from("app")
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("third_party/lib.rs"),
+        r#"
+/// Vendored helper.
+pub fn helper() -> String {
+    String::from("vendor")
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn test_search_path_exclude_drops_vendored() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20, "path_exclude": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("third_party/lib.rs"),
+        "path_exclude should drop vendored results, got: {text}"
+    );
+    assert!(
+        text.contains("src/app.rs"),
+        "path_exclude should keep app results, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_search_path_include_keeps_only_matching() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20, "path_include": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("third_party/lib.rs"),
+        "path_include should keep vendored results, got: {text}"
+    );
+    assert!(
+        !text.contains("src/app.rs"),
+        "path_include should drop non-matching results, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_search_no_path_filter_unchanged() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "limit": 20}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        text.contains("third_party/lib.rs") && text.contains("src/app.rs"),
+        "no path filter should return both trees, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_context_path_exclude_drops_vendored() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_context",
+        json!({"task": "understand the helper functions", "path_exclude": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("third_party/lib.rs"),
+        "context path_exclude should drop vendored entry points, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_context_path_include_keeps_only_matching() {
+    let (cg, _dir) = setup_vendored_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_context",
+        json!({"task": "understand the helper functions", "path_include": ["third_party/"]}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(
+        !text.contains("src/app.rs"),
+        "context path_include should drop non-matching entry points, got: {text}"
+    );
+}
