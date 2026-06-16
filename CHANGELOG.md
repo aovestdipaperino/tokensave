@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [6.4.0] - 2026-06-16
+
+### Added
+- **`tokensave discover` — missed-opportunity analyzer (#123).** A deterministic command over the already-ingested Claude Code transcript data (`turns` table) that surfaces navigation turns (`Read`/`Grep`/`Glob`) a tokensave graph query could have answered more cheaply, bucketed by the tokensave tool that would have applied (Read→`outline`/`read`/`node`, Grep→`search`/`callers`/`callees`/`impact`, Glob→`files`/`search`). Reports the input tokens spent on those turns ("addressable") and a conservative recoverable-token lower bound. Detection is by tool name only — a turn counts only if *every* tool it used was a navigation tool, and Bash `grep`/`find`/`cat` are deliberately not counted (their command text isn't persisted), so the figure never over-claims. `--since <range>` and `--json` supported.
+- **Pi coding agent integration (#128).** `tokensave install --agent pi` registers the MCP server in Pi's config at `~/.pi/agent/mcp.json` (honoring `$PI_CODING_AGENT_DIR`). install/uninstall read-modify-write only the `tokensave` server entry, preserving any other configured servers. Brings the supported-agent count to 16.
+- **Compact memory delta at `session_start` (#122).** `tokensave_session_start` now returns a bounded `memory_delta` (up to 5 recent decisions + 5 recent code areas, each headline truncated) so a session resumes with a cheap "where we left off" summary instead of a full recall dump. The existing baseline-save contract is unchanged; a memory-read failure degrades to `null` rather than blocking the baseline.
+
+### Changed
+- **Recency-decay recall ranking (#122).** `tokensave_session_recall` (no-query path) now ranks decisions by an exponential recency-decay weight (14-day half-life) instead of strict newest-first. Older decisions sink but are **never** dropped or expired — they remain permanently recallable. The FTS/query path is unchanged.
+- **Calls-first BFS traversal (#118).** Graph traversal now visits `calls` edges ahead of reference edges, so a budget-limited subgraph fills with call structure before fanning out to references. Improves `callers`/`callees`/`context`/`impact` results when `max_nodes`/depth cut traversal short.
+- **Entry points capped before expansion (#120).** `tokensave_context` now caps the number of BFS roots to `search_limit` before expanding, so each top-ranked entry point keeps a meaningful share of the node budget instead of spreading it thin across many roots.
+- **Non-production directories down-weighted in ranking (#119).** `examples`/`samples`/`benchmarks`/`demos` (singular and plural) now receive a soft ranking penalty in `tokensave_search`/`tokensave_context`, below first-party `src`/`app`/`lib` but above vendored/generated trees. A re-rank only — results are never dropped, and vendor classification still takes precedence.
+
+### Fixed
+- **Exact-name matches no longer buried by FTS noise (#117).** `tokensave_context` merged search channels with first-seen deduplication, so a symbol returned first by full-text search kept its low BM25 score even when it was also an exact name match — burying perfect matches the exact-name supplement was meant to surface. Channels are now merged by **max** score across FTS and exact-name lookups; exclusion (`exclude_node_ids`), `min_score`, and the candidate cap are all preserved.
+
 ## [6.3.3] - 2026-06-15
 
 ### Added
@@ -1429,3 +1445,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.2.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.2.0
 [6.3.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.3.0
 [6.3.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.3.1
+[6.4.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.0
