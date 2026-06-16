@@ -206,6 +206,15 @@ pub enum Commands {
         #[arg(long)]
         export: Option<String>,
     },
+    /// Find navigation turns a tokensave query could have served more cheaply
+    Discover {
+        /// Time range: "today", "7d", "30d", "month", or "all"
+        #[arg(long, default_value = "30d")]
+        since: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run a reproducible retrieval benchmark against the current project.
     Bench {
         /// Path to a TOML query file (defaults to the shipped default set).

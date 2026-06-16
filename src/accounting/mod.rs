@@ -5,10 +5,12 @@
 //! the global database for fast aggregate queries.
 
 pub mod classifier;
+pub mod discover;
 pub mod metrics;
 pub mod parser;
 pub mod pricing;
 
 pub use classifier::TaskCategory;
+pub use discover::{analyze, DiscoverReport};
 pub use metrics::{quick_cost_summary, CostSummary};
 pub use parser::ingest;
