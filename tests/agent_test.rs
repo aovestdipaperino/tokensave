@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 15);
+    assert_eq!(all.len(), 16);
 }
 
 #[test]
@@ -31,7 +31,8 @@ fn test_available_integrations() {
     assert!(ids.contains(&"kimi"));
     assert!(ids.contains(&"vibe"));
     assert!(ids.contains(&"grok"));
-    assert_eq!(ids.len(), 15);
+    assert!(ids.contains(&"pi"));
+    assert_eq!(ids.len(), 16);
 }
 
 #[test]
@@ -52,6 +53,7 @@ fn test_get_integration_valid() {
         "kimi",
         "vibe",
         "grok",
+        "pi",
     ] {
         let agent = get_integration(id).unwrap();
         assert_eq!(agent.id(), *id);
@@ -96,6 +98,7 @@ fn test_agent_names_are_human_readable() {
         ("kimi", "Kimi CLI"),
         ("vibe", "Mistral Vibe"),
         ("grok", "Grok Build"),
+        ("pi", "Pi"),
     ];
     for (id, expected_name) in expected_names {
         let agent = get_integration(id).unwrap();
