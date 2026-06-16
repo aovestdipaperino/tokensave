@@ -505,9 +505,7 @@ async fn test_exact_name_match_wins_max_merge() {
 
     // Excluding the exact-match node must still keep it out entirely.
     let opts_excl = BuildContextOptions {
-        exclude_node_ids: vec!["variant:validate".to_string()]
-            .into_iter()
-            .collect(),
+        exclude_node_ids: vec!["variant:validate".to_string()].into_iter().collect(),
         ..Default::default()
     };
     let ctx_excl = builder
