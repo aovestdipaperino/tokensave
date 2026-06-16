@@ -312,9 +312,7 @@ mod tests {
         let large = analyze(&[t("Read", 1000), t("Grep", 4000)]);
         assert!(large.total_recoverable_input_tokens() >= small.total_recoverable_input_tokens());
         // Recoverable never exceeds addressable (fraction <= 1).
-        assert!(
-            large.total_recoverable_input_tokens() <= large.total_addressable_input_tokens()
-        );
+        assert!(large.total_recoverable_input_tokens() <= large.total_addressable_input_tokens());
         // And is never negative (u64) — trivially true, but assert the bound.
         assert!(small.total_recoverable_input_tokens() <= small.total_addressable_input_tokens());
     }

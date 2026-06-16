@@ -43,13 +43,15 @@ async fn analyzer_buckets_seeded_turns() {
     assert!(db.insert_turn(&turn("m2", base + 1, 2000, "Read")).await);
     assert!(db.insert_turn(&turn("m3", base + 2, 5000, "Grep")).await);
     assert!(db.insert_turn(&turn("m4", base + 3, 900, "Glob")).await);
-    assert!(db
-        .insert_turn(&turn("m5", base + 4, 1500, "Read,Grep"))
-        .await); // -> Grep
-    // Non-navigation / mixed turns that must NOT be counted.
-    assert!(db
-        .insert_turn(&turn("m6", base + 5, 9999, "Read,Edit"))
-        .await);
+    assert!(
+        db.insert_turn(&turn("m5", base + 4, 1500, "Read,Grep"))
+            .await
+    ); // -> Grep
+       // Non-navigation / mixed turns that must NOT be counted.
+    assert!(
+        db.insert_turn(&turn("m6", base + 5, 9999, "Read,Edit"))
+            .await
+    );
     assert!(db.insert_turn(&turn("m7", base + 6, 9999, "Bash")).await);
     assert!(db.insert_turn(&turn("m8", base + 7, 9999, "")).await);
 
@@ -76,9 +78,7 @@ async fn analyzer_buckets_seeded_turns() {
     assert_eq!(report.total_addressable_input_tokens(), 6500 + 3000 + 900);
 
     // Estimate is a non-negative lower bound never exceeding addressable.
-    assert!(
-        report.total_recoverable_input_tokens() <= report.total_addressable_input_tokens()
-    );
+    assert!(report.total_recoverable_input_tokens() <= report.total_addressable_input_tokens());
     assert_eq!(
         report.total_recoverable_input_tokens(),
         ((6500 + 3000 + 900) as f64 * discover::RECOVERABLE_FRACTION) as u64
@@ -92,9 +92,10 @@ async fn since_filter_restricts_window_and_estimate_is_monotonic() {
 
     let base: u64 = 1_715_000_000;
     assert!(db.insert_turn(&turn("old", base, 1000, "Read")).await);
-    assert!(db
-        .insert_turn(&turn("new", base + 10_000, 4000, "Grep"))
-        .await);
+    assert!(
+        db.insert_turn(&turn("new", base + 10_000, 4000, "Grep"))
+            .await
+    );
 
     // Full window sees both turns.
     let full = discover::analyze(&db.nav_turns_since(0).await);
@@ -106,9 +107,7 @@ async fn since_filter_restricts_window_and_estimate_is_monotonic() {
     assert_eq!(narrowed.buckets[0].bucket, NavBucket::Grep);
 
     // A superset window never reports fewer recoverable tokens.
-    assert!(
-        full.total_recoverable_input_tokens() >= narrowed.total_recoverable_input_tokens()
-    );
+    assert!(full.total_recoverable_input_tokens() >= narrowed.total_recoverable_input_tokens());
 }
 
 #[tokio::test]
