@@ -910,9 +910,18 @@ cargo clippy --all
  </picture>
 </a>
 
-## Acknowledgments
+## Sponsors
 
-Windows builds are code-signed with a free Authenticode certificate generously provided by [SignPath.io](https://signpath.io), with a certificate issued by the [SignPath Foundation](https://signpath.org).
+<table>
+  <tr>
+    <td width="64" align="center" valign="middle">
+      <img src="src/resources/signpath-logo.svg" alt="SignPath" width="40">
+    </td>
+    <td valign="middle">
+      Free code signing on Windows provided by <a href="https://signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>
+    </td>
+  </tr>
+</table>
 
 ## License
 
