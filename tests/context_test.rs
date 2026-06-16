@@ -408,6 +408,120 @@ async fn test_exclude_node_ids_deduplication() {
 }
 
 #[tokio::test]
+async fn test_exact_name_match_wins_max_merge() {
+    // Regression for #117: a node that matches BOTH an FTS term (with a tiny
+    // BM25 score) and the exact-name lookup must carry the exact-match base
+    // score, not the low FTS score it happened to be seen with first.
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    // Exact-match target: a low-boost node (enum variant, private). Without the
+    // exact-match score it would rank dead last after structural re-ranking.
+    // Name is camelCase so the query token is extracted as a symbol (a plain
+    // lowercase word is not), which is what feeds the exact-name lookup.
+    db.insert_node(&Node {
+        id: "variant:validate".to_string(),
+        kind: NodeKind::EnumVariant,
+        name: "validateInput".to_string(),
+        qualified_name: "src/lib.rs::Action::validateInput".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 1,
+        start_column: 0,
+        end_column: 10,
+        signature: Some("validateInput".to_string()),
+        docstring: None,
+        visibility: Visibility::Private,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    // Competitor: a high-boost node (public function) that only matches the FTS
+    // "validate" prefix term, never the exact symbol names. Its structural boost
+    // dwarfs the enum variant's, so under the old first-seen bug it ranks first.
+    db.insert_node(&Node {
+        id: "fn:validate_helper".to_string(),
+        kind: NodeKind::Function,
+        name: "validateRequest".to_string(),
+        qualified_name: "src/lib.rs::validateRequest".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 2,
+        attrs_start_line: 2,
+        end_line: 6,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn validateRequest()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // Both nodes match the "validate" FTS term; only validateInput is an exact
+    // name match for the query's extracted symbols.
+    let ctx = builder
+        .build_context("validateInput", &BuildContextOptions::default())
+        .await
+        .unwrap();
+
+    // The exact-match node must carry the high base score and rank first,
+    // despite its much weaker structural boost.
+    assert_eq!(
+        ctx.entry_points.first().map(|n| n.id.as_str()),
+        Some("variant:validate"),
+        "exact-name match should rank first via MAX-merge, not be buried by BM25"
+    );
+
+    // Excluding the exact-match node must still keep it out entirely.
+    let opts_excl = BuildContextOptions {
+        exclude_node_ids: vec!["variant:validate".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let ctx_excl = builder
+        .build_context("validateInput", &opts_excl)
+        .await
+        .unwrap();
+    assert!(
+        !ctx_excl
+            .entry_points
+            .iter()
+            .any(|n| n.id == "variant:validate"),
+        "excluded node must not reappear via the exact-name supplement"
+    );
+}
+
+#[tokio::test]
 async fn test_query_ignore_filters_context_entry_points() {
     use tempfile::TempDir;
     use tokensave::config::{load_query_ignore, QueryIgnore};

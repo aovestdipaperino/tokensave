@@ -179,12 +179,22 @@ impl<'a> ContextBuilder<'a> {
         symbols: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<Node>> {
+        // Base score for an exact name match. Far above any realistic BM25
+        // score (~1e-6 in practice), so a perfect name match always wins the
+        // MAX merge over FTS noise and ranks ahead of it.
+        const EXACT_MATCH_SCORE: f64 = 20.0;
         debug_assert!(
             !query.is_empty(),
             "find_entry_points called with empty query"
         );
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
-        let mut seen_ids: HashSet<String> = options.exclude_node_ids.clone();
+        // `excluded` is the hard exclusion set: nodes here never enter
+        // `candidates`, regardless of which channel surfaces them.
+        let excluded: HashSet<String> = options.exclude_node_ids.clone();
+        // `index_of` maps an already-collected node id to its slot in
+        // `candidates`, so a node surfaced by multiple channels (FTS + exact
+        // name) is merged in place via MAX score rather than first-seen-wins.
+        let mut index_of: HashMap<String, usize> = HashMap::new();
         let mut candidates: Vec<SearchResult> = Vec::new();
         let cap = options.max_nodes * 2;
 
@@ -221,9 +231,17 @@ impl<'a> ContextBuilder<'a> {
             }
             let results = self.db.search_nodes(term, options.search_limit).await?;
             for sr in results {
-                if Self::score_passes(sr.score, options.min_score)
-                    && seen_ids.insert(sr.node.id.clone())
+                if !Self::score_passes(sr.score, options.min_score)
+                    || excluded.contains(&sr.node.id)
                 {
+                    continue;
+                }
+                // Merge by MAX score: a node surfaced by an earlier term keeps
+                // the higher of the two BM25 scores instead of being dropped.
+                if let Some(&idx) = index_of.get(&sr.node.id) {
+                    candidates[idx].score = candidates[idx].score.max(sr.score);
+                } else {
+                    index_of.insert(sr.node.id.clone(), candidates.len());
                     candidates.push(sr);
                 }
             }
@@ -242,9 +260,20 @@ impl<'a> ContextBuilder<'a> {
                 .search_nodes_by_exact_name(&exact_names, options.search_limit)
                 .await?;
             for node in exact_nodes {
-                if seen_ids.insert(node.id.clone()) {
-                    // Give exact matches a high base score so they compete well.
-                    candidates.push(SearchResult { node, score: 20.0 });
+                if excluded.contains(&node.id) {
+                    continue;
+                }
+                // Exact matches bypass the min_score gate by design. If the node
+                // already arrived via FTS (with a low score), upgrade it in place
+                // to the exact-match score rather than dropping the duplicate.
+                if let Some(&idx) = index_of.get(&node.id) {
+                    candidates[idx].score = candidates[idx].score.max(EXACT_MATCH_SCORE);
+                } else {
+                    index_of.insert(node.id.clone(), candidates.len());
+                    candidates.push(SearchResult {
+                        node,
+                        score: EXACT_MATCH_SCORE,
+                    });
                 }
             }
         }
