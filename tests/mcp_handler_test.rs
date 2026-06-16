@@ -3128,6 +3128,14 @@ async fn test_dependencies_crate_lookup() {
 #[tokio::test]
 async fn test_session_start() {
     let (cg, dir) = setup_project().await;
+
+    // Record more decisions than the delta budget to assert the cap.
+    for i in 0..10 {
+        cg.record_decision(&format!("decision {i}"), None, &[], &[])
+            .await
+            .unwrap();
+    }
+
     let result = handle_tool_call(&cg, "tokensave_session_start", json!({}), None, None)
         .await
         .unwrap();
@@ -3137,6 +3145,18 @@ async fn test_session_start() {
     assert_eq!(output["status"].as_str().unwrap(), "baseline_saved");
     let baseline_path = dir.path().join(".tokensave/session_baseline.json");
     assert!(baseline_path.exists(), "baseline file should exist");
+
+    // session_start emits a compact, budget-bounded memory delta (issue #122).
+    let decisions = output["memory_delta"]["recent_decisions"]
+        .as_array()
+        .expect("memory_delta.recent_decisions should be present");
+    assert!(!decisions.is_empty(), "delta should contain decisions");
+    assert!(
+        decisions.len() <= 5,
+        "delta decisions must be capped, got {}",
+        decisions.len()
+    );
+    assert!(decisions[0]["summary"].as_str().is_some());
 }
 
 #[tokio::test]
