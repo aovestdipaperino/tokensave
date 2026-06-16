@@ -1080,6 +1080,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Discover { since, json } => {
+            commands::handle_discover(&since, json).await?;
+        }
         Commands::Bench {
             queries,
             json,

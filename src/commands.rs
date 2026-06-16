@@ -626,6 +626,106 @@ pub async fn handle_gain(
     Ok(())
 }
 
+/// Handle `tokensave discover`: surface file-navigation turns that a tokensave
+/// graph query could have served far more cheaply.
+///
+/// Ingests any new session data first (mirroring `tokensave cost`), then runs
+/// the deterministic [`tokensave::accounting::discover::analyze`] over the
+/// `turns` table for the requested range and prints a ranked summary. The
+/// recoverable figure is a clearly-labeled conservative lower bound; see the
+/// `discover` module docs for the estimation assumptions.
+pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::errors::Result<()> {
+    use tokensave::accounting::discover;
+
+    let gdb = match tokensave::global_db::GlobalDb::open().await {
+        Some(db) => db,
+        None => {
+            eprintln!("Could not open the global database (~/.tokensave/global.db).");
+            return Ok(());
+        }
+    };
+
+    // Ingest new session data before querying, same as `tokensave cost`.
+    let ingest_stats = tokensave::accounting::parser::ingest(&gdb).await;
+    if ingest_stats.turns_inserted > 0 {
+        eprintln!(
+            "Ingested {} new turns from Claude Code sessions.",
+            ingest_stats.turns_inserted
+        );
+    }
+
+    let since_ts = tokensave::accounting::metrics::parse_range(since);
+    let rows = gdb.nav_turns_since(since_ts).await;
+    let report = discover::analyze(&rows);
+
+    if json_output {
+        let buckets: Vec<_> = report
+            .buckets
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "bucket": b.bucket.as_str(),
+                    "tool": b.bucket.tool_name(),
+                    "suggestion": b.bucket.suggestion(),
+                    "turns": b.turns,
+                    "addressable_input_tokens": b.addressable_input_tokens,
+                    "recoverable_input_tokens": b.recoverable_input_tokens(),
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "since": since,
+            "recoverable_fraction": discover::RECOVERABLE_FRACTION,
+            "total_turns": report.total_turns,
+            "replaceable_turns": report.total_replaceable_turns(),
+            "total_addressable_input_tokens": report.total_addressable_input_tokens(),
+            "total_recoverable_input_tokens": report.total_recoverable_input_tokens(),
+            "buckets": buckets,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+
+    println!("Missed-opportunity scan (since: {since})");
+    if report.buckets.is_empty() {
+        println!(
+            "  No replaceable file-navigation turns found in {} examined turns.",
+            report.total_turns
+        );
+        return Ok(());
+    }
+
+    println!(
+        "  {:<8} {:<32} {:>6} {:>14} {:>14}",
+        "Tool", "TokenSave alternative", "Turns", "Addressable", "Recoverable"
+    );
+    for b in &report.buckets {
+        println!(
+            "  {:<8} {:<32} {:>6} {:>14} {:>14}",
+            b.bucket.tool_name(),
+            b.bucket.suggestion(),
+            b.turns,
+            tokensave::display::format_token_count(b.addressable_input_tokens),
+            tokensave::display::format_token_count(b.recoverable_input_tokens()),
+        );
+    }
+
+    println!();
+    println!(
+        "  {} navigation turns; addressable input tokens \u{2248} {}.",
+        report.total_replaceable_turns(),
+        tokensave::display::format_token_count(report.total_addressable_input_tokens()),
+    );
+    println!(
+        "  Conservative recoverable \u{2248} {} (lower bound: {:.0}% of addressable; \
+         excludes Bash grep/find/cat/rg, whose command text is not stored).",
+        tokensave::display::format_token_count(report.total_recoverable_input_tokens()),
+        discover::RECOVERABLE_FRACTION * 100.0,
+    );
+
+    Ok(())
+}
+
 /// Print the `--doctor` report after an incremental sync.
 pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     let has_changes = !result.added_paths.is_empty()

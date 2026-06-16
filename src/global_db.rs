@@ -423,6 +423,32 @@ impl GlobalDb {
         out
     }
 
+    /// Fetch `(tool_names, input_tokens)` for every turn since a timestamp.
+    ///
+    /// Used by the "missed opportunity" analyzer (`tokensave discover`), which
+    /// inspects `tool_names` to decide whether a turn was pure file navigation
+    /// that a graph query could have served more cheaply. Returns an empty
+    /// vector on any DB error.
+    pub async fn nav_turns_since(&self, since: u64) -> Vec<(String, u64)> {
+        let Ok(mut rows) = self
+            .conn
+            .query(
+                "SELECT tool_names, input_tokens FROM turns WHERE timestamp >= ?1",
+                params![since as i64],
+            )
+            .await
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let tool_names: String = row.get(0).unwrap_or_default();
+            let input_tokens: i64 = row.get(1).unwrap_or(0);
+            out.push((tool_names, input_tokens.max(0) as u64));
+        }
+        out
+    }
+
     // ── Accounting: parse_offsets table ────────────────────────────────
 
     /// Get the saved parse offset for a JSONL file.
