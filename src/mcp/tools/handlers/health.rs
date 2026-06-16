@@ -1235,10 +1235,17 @@ pub(super) async fn handle_session_start(
         message: format!("failed to write session baseline: {e}"),
     })?;
 
+    // Augment the response with a compact, budget-bounded memory delta — a
+    // cheap "here's where we left off" summary of the highest-value recent
+    // decisions and touched code areas (issue #122). A failure to read memory
+    // must not block the baseline save, so degrade to an empty delta.
+    let memory_delta = cg.session_delta().await.ok();
+
     let output = json!({
         "status": "baseline_saved",
         "quality_signal": snap.quality_signal,
         "files_analyzed": snap.files_analyzed,
+        "memory_delta": memory_delta,
     });
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
     Ok(ToolResult {

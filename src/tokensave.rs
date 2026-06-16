@@ -2901,6 +2901,72 @@ impl TokenSave {
 const MAX_RECALL_LIMIT: usize = 200;
 const MAX_CODE_AREAS_LIMIT: usize = 200;
 
+/// Half-life (in seconds) of the recency-decay weight applied to decisions in
+/// the no-explicit-query recall path.
+///
+/// A decision's weight halves every `RECALL_DECAY_HALF_LIFE_SECS`. Chosen as
+/// 14 days: recent decisions clearly outrank stale ones within a typical
+/// multi-week work cycle, while the decay stays gentle enough that month-old
+/// context still carries meaningful weight. This is a *ranking* knob only —
+/// the weight asymptotically approaches zero but never reaches it, so no
+/// decision is ever dropped or expired (issue #122: decay, not TTL).
+const RECALL_DECAY_HALF_LIFE_SECS: f64 = 14.0 * 24.0 * 60.0 * 60.0;
+
+/// Maximum number of decisions summarised in the `session_start` delta.
+///
+/// Keeps the injected "here's where we left off" summary within a small token
+/// budget. Each entry is additionally truncated (see [`DELTA_TEXT_MAX_CHARS`]).
+const SESSION_DELTA_MAX_DECISIONS: usize = 5;
+
+/// Maximum number of code areas summarised in the `session_start` delta.
+const SESSION_DELTA_MAX_CODE_AREAS: usize = 5;
+
+/// Maximum character length of any single text field in the session delta.
+const DELTA_TEXT_MAX_CHARS: usize = 120;
+
+/// Recency-decay weight for a decision recorded at `created_at`, evaluated at
+/// `now`.
+///
+/// Returns `2^(-age / half_life)`, an exponential decay in `[0, 1]` that is
+/// `1.0` for a just-recorded decision and halves every
+/// [`RECALL_DECAY_HALF_LIFE_SECS`]. The weight is strictly positive for all
+/// finite ages, so older decisions sink in ranking but are never excluded.
+///
+/// Future timestamps (clock skew) clamp to weight `1.0`.
+fn recency_decay_weight(created_at: i64, now: i64) -> f64 {
+    let age = (now - created_at).max(0) as f64;
+    2.0_f64.powf(-age / RECALL_DECAY_HALF_LIFE_SECS)
+}
+
+/// Truncate `s` to at most `max_chars` characters, appending an ellipsis when
+/// the string was shortened. Respects UTF-8 char boundaries.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max_chars).collect();
+    format!("{kept}…")
+}
+
+/// A compact, budget-bounded "where we left off" summary emitted at session
+/// start. See [`TokenSave::session_delta`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionDelta {
+    /// Highest-value recent decisions, newest-first, each truncated.
+    pub recent_decisions: Vec<DeltaEntry>,
+    /// Recently touched code areas, newest-first, each truncated.
+    pub recent_code_areas: Vec<DeltaEntry>,
+}
+
+/// A single truncated line in a [`SessionDelta`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeltaEntry {
+    /// Short, truncated headline (decision text or code-area path).
+    pub summary: String,
+    /// UNIX timestamp (seconds) the underlying memory was recorded/touched.
+    pub at: i64,
+}
+
 impl TokenSave {
     /// Record an agent decision. Returns the new row id.
     pub async fn record_decision(
@@ -2936,8 +3002,10 @@ impl TokenSave {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Recall decisions. With `query`, runs FTS5 MATCH against text+reason.
-    /// Without `query`, returns newest-first.
+    /// Recall decisions. With `query`, runs FTS5 MATCH against text+reason
+    /// ordered by relevance (recency). Without `query`, orders by a
+    /// recency-decay weight ([`recency_decay_weight`]) so older decisions
+    /// rank lower but are never dropped — there is no TTL or hard expiry.
     pub async fn session_recall(
         &self,
         query: Option<&str>,
@@ -3016,7 +3084,65 @@ impl TokenSave {
                 tags: serde_json::from_str(&tags_json).map_err(json_err)?,
             });
         }
+
+        // Recency-decay ranking for the no-explicit-query path. The SQL above
+        // already LIMITed to the newest N rows (which, because the decay is
+        // monotonic in `created_at`, are exactly the N highest-weighted rows),
+        // so we only need to (re)order the selected set by decay weight here.
+        // Higher weight first; ties keep newest-first. No row is dropped — old
+        // decisions still surface, just lower down.
+        if query.is_none() {
+            let now = current_timestamp();
+            out.sort_by(|a, b| {
+                let wa = recency_decay_weight(a.created_at, now);
+                let wb = recency_decay_weight(b.created_at, now);
+                wb.partial_cmp(&wa)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.created_at.cmp(&a.created_at))
+            });
+        }
         Ok(out)
+    }
+
+    /// Build a compact, budget-bounded "where we left off" delta for session
+    /// start.
+    ///
+    /// Returns the highest-value *recent* memories — the most recent decisions
+    /// (ranked by the same recency-decay weight as [`session_recall`]) and the
+    /// most recently touched code areas — each truncated to a short headline.
+    /// Entry counts are capped ([`SESSION_DELTA_MAX_DECISIONS`],
+    /// [`SESSION_DELTA_MAX_CODE_AREAS`]) so the result stays cheap to inject at
+    /// session start. This never deletes or expires any memory; it is a view.
+    ///
+    /// # Errors
+    /// Returns a database error if the underlying recall queries fail.
+    pub async fn session_delta(&self) -> crate::errors::Result<SessionDelta> {
+        let decisions = self
+            .session_recall(None, None, SESSION_DELTA_MAX_DECISIONS)
+            .await?;
+        let recent_decisions = decisions
+            .into_iter()
+            .take(SESSION_DELTA_MAX_DECISIONS)
+            .map(|d| DeltaEntry {
+                summary: truncate_chars(&d.text, DELTA_TEXT_MAX_CHARS),
+                at: d.created_at,
+            })
+            .collect();
+
+        let areas = self.list_code_areas(SESSION_DELTA_MAX_CODE_AREAS).await?;
+        let recent_code_areas = areas
+            .into_iter()
+            .take(SESSION_DELTA_MAX_CODE_AREAS)
+            .map(|a| DeltaEntry {
+                summary: truncate_chars(&a.path, DELTA_TEXT_MAX_CHARS),
+                at: a.last_touched_at,
+            })
+            .collect();
+
+        Ok(SessionDelta {
+            recent_decisions,
+            recent_code_areas,
+        })
     }
 
     /// Record (or update) a code area the agent worked in. Increments `touch_count`
