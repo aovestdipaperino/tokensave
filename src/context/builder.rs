@@ -326,6 +326,17 @@ impl<'a> ContextBuilder<'a> {
             apply_cooccurrence_boost(&mut candidates, &query_terms);
         }
 
+        // --- Cap BFS roots (#120) ---
+        // Every surviving entry point seeds its own BFS in `expand_subgraph`,
+        // which shares a fixed `max_nodes` budget across all roots. With many
+        // roots the per-root budget collapses to a shallow fan-out (e.g. 36
+        // roots over a 120-node budget gives ~3 nodes each). Capping the roots
+        // to `search_limit` keeps each top-ranked root's traversal meaningful.
+        // Candidates are score-sorted here (rerank + connectivity + cooccurrence
+        // boosts all re-sort), so truncation keeps the highest-scoring roots.
+        // Done before the per-file cap so the cap rebalances the retained set.
+        candidates.truncate(options.search_limit);
+
         // --- Per-file diversity cap ---
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
         let entry_points = apply_per_file_cap(candidates, options.max_nodes, max_per_file);

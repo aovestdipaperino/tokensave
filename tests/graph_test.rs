@@ -293,6 +293,79 @@ async fn test_dfs_traversal() {
 }
 
 #[tokio::test]
+async fn test_bfs_visits_calls_before_references() {
+    // Regression test for #118: a budget-limited BFS frontier must visit
+    // `calls` neighbors before reference/other-kind neighbors, regardless of
+    // database edge order. We insert the reference edge FIRST (so it would win
+    // a naive DB-order traversal) and assert the `calls` neighbor is the one
+    // that survives a one-neighbor budget.
+    let (db, _dir) = setup_db().await;
+
+    let root = make_node("n-root", "root", "src/root.rs", Visibility::Pub);
+    let ref_target = make_node("n-ref", "ref_target", "src/ref.rs", Visibility::Pub);
+    let call_target = make_node("n-call", "call_target", "src/call.rs", Visibility::Pub);
+    db.insert_nodes(&[root, ref_target, call_target])
+        .await
+        .expect("failed to insert nodes");
+
+    // Reference edge inserted first, calls edge second.
+    let edges = vec![
+        Edge {
+            source: "n-root".to_string(),
+            target: "n-ref".to_string(),
+            kind: EdgeKind::Uses,
+            line: Some(1),
+        },
+        Edge {
+            source: "n-root".to_string(),
+            target: "n-call".to_string(),
+            kind: EdgeKind::Calls,
+            line: Some(2),
+        },
+    ];
+    db.insert_edges(&edges)
+        .await
+        .expect("failed to insert edges");
+
+    let traverser = GraphTraverser::new(&db);
+
+    // limit = 2: the start node plus exactly one neighbor. The `calls`
+    // neighbor must be the one chosen.
+    let opts = TraversalOptions {
+        max_depth: 5,
+        edge_kinds: None,
+        node_kinds: None,
+        direction: TraversalDirection::Outgoing,
+        limit: 2,
+        include_start: true,
+    };
+
+    let subgraph = traverser
+        .traverse_bfs("n-root", &opts)
+        .await
+        .expect("traverse_bfs failed");
+
+    let node_names: Vec<&str> = subgraph.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        node_names.contains(&"call_target"),
+        "calls neighbor should be visited ahead of reference neighbor, got: {node_names:?}"
+    );
+    assert!(
+        !node_names.contains(&"ref_target"),
+        "reference neighbor should be cut off by the budget, got: {node_names:?}"
+    );
+
+    // The first edge recorded in the subgraph should be the `calls` edge,
+    // confirming queue ordering and not just which node fit the budget.
+    assert_eq!(
+        subgraph.edges.first().map(|e| e.kind),
+        Some(EdgeKind::Calls),
+        "calls edge should be queued first, got: {:?}",
+        subgraph.edges
+    );
+}
+
+#[tokio::test]
 async fn test_find_path() {
     let (db, _dir) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);

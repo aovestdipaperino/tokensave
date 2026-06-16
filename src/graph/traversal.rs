@@ -69,9 +69,17 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self
+            let mut edges = self
                 .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
                 .await?;
+
+            // Order `calls` edges ahead of reference/other edges before they
+            // seed the FIFO queue. Under a tight `opts.limit`, this lets the
+            // subgraph fill with structural call relationships before fanning
+            // out to references. Stable so DB order is preserved within a kind.
+            // (`contains` edges were denormalized in v9 and are expanded above
+            // via `get_children_of`, so they need no ordering here.)
+            edges.sort_by_key(|edge| edge_kind_priority(edge.kind));
 
             let neighbor_ids: Vec<String> = edges
                 .iter()
@@ -761,6 +769,20 @@ impl<'a> GraphTraverser<'a> {
             }
         }
         true
+    }
+}
+
+/// BFS/DFS visitation priority for an edge kind: lower is visited first.
+///
+/// `Calls` edges (structural call relationships) are prioritized over
+/// reference and other edges so a budget-limited traversal fills with call
+/// structure before fanning out to weaker references. `Contains` edges were
+/// denormalized in v9 (children come via `parent_id`) and do not flow through
+/// this path, so they are grouped with the default tier.
+fn edge_kind_priority(kind: EdgeKind) -> u8 {
+    match kind {
+        EdgeKind::Calls => 0,
+        _ => 1,
     }
 }
 

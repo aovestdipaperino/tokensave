@@ -704,3 +704,83 @@ async fn test_merge_adjacent_code_blocks() {
     assert!(ctx.code_blocks[0].content.contains("alpha"));
     assert!(ctx.code_blocks[0].content.contains("beta"));
 }
+
+#[tokio::test]
+async fn test_entry_points_capped_to_search_limit() {
+    // Regression test for #120: when many candidates match, the number of
+    // entry points (BFS roots) must be bounded by `search_limit` so each
+    // root's traversal budget stays meaningful.
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    // Insert many distinct nodes, each matching a distinct keyword. Each
+    // per-keyword FTS search surfaces its node, so the candidate pool greatly
+    // exceeds `search_limit`.
+    const NUM_NODES: usize = 12;
+    let keywords: Vec<String> = (0..NUM_NODES).map(|i| format!("widgetkind{i}")).collect();
+    let mut nodes = Vec::new();
+    for (i, kw) in keywords.iter().enumerate() {
+        nodes.push(Node {
+            id: format!("function:{kw}"),
+            kind: NodeKind::Function,
+            name: kw.clone(),
+            qualified_name: format!("src/file{i}.rs::{kw}"),
+            file_path: format!("src/file{i}.rs"),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: Some(format!("pub fn {kw}()")),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            updated_at: 0,
+            parent_id: None,
+        });
+    }
+    db.insert_nodes(&nodes).await.unwrap();
+
+    const SEARCH_LIMIT: usize = 5;
+    let opts = BuildContextOptions {
+        search_limit: SEARCH_LIMIT,
+        max_nodes: 100, // large, so search_limit is the binding cap on roots
+        max_per_file: Some(100),
+        extra_keywords: keywords.clone(),
+        ..Default::default()
+    };
+
+    let builder = ContextBuilder::new(&db, project);
+    // Query the first keyword; the rest surface via extra_keywords, producing
+    // far more candidates than `search_limit`.
+    let ctx = builder.build_context(&keywords[0], &opts).await.unwrap();
+
+    assert!(
+        ctx.entry_points.len() > 1,
+        "expected multiple matching candidates, got {}",
+        ctx.entry_points.len()
+    );
+    assert!(
+        ctx.entry_points.len() <= SEARCH_LIMIT,
+        "entry points (BFS roots) must be capped to search_limit ({}), got {}",
+        SEARCH_LIMIT,
+        ctx.entry_points.len()
+    );
+}
