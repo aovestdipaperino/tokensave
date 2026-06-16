@@ -18,6 +18,7 @@ pub mod kilo;
 pub mod kimi;
 pub mod kiro;
 pub mod opencode;
+pub mod pi;
 pub mod roo_code;
 pub mod vibe;
 pub mod zed;
@@ -42,6 +43,7 @@ pub use kilo::KiloIntegration;
 pub use kimi::KimiIntegration;
 pub use kiro::KiroIntegration;
 pub use opencode::OpenCodeIntegration;
+pub use pi::PiIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
 pub use zed::ZedIntegration;
@@ -162,6 +164,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "kimi" => Ok(Box::new(KimiIntegration)),
         "vibe" => Ok(Box::new(VibeIntegration)),
         "grok" => Ok(Box::new(GrokIntegration)),
+        "pi" => Ok(Box::new(PiIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -189,6 +192,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(KimiIntegration),
         Box::new(VibeIntegration),
         Box::new(GrokIntegration),
+        Box::new(PiIntegration),
     ]
 }
 
@@ -210,6 +214,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "kimi",
         "vibe",
         "grok",
+        "pi",
     ]
 }
 
