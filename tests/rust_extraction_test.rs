@@ -846,3 +846,50 @@ fn use_foo() {
         "expected 'bar' method-name ref from f.bar(), got: {ref_names:?}"
     );
 }
+
+/// #141: a method call through a typed binding (`recv.method()`) must emit a
+/// receiver-qualified `Type::method` Calls ref so the resolver can bind it to
+/// the correct impl when several types define a method of the same name.
+/// Covers the three type sources: constructor RHS, typed parameter, and `self`.
+#[test]
+fn test_receiver_typed_method_calls() {
+    let source = r#"
+struct Renderer;
+
+impl Renderer {
+    fn render(&self) {}
+
+    fn run(&self) {
+        // self receiver -> enclosing impl type
+        self.render();
+    }
+}
+
+fn via_ctor() {
+    let mut r = Renderer::new();
+    r.render();
+}
+
+fn via_param(r: &mut Renderer) {
+    r.render();
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("render.rs", source);
+
+    let has_ref = |name: &str| {
+        result.unresolved_refs.iter().any(|u| {
+            u.reference_name == name && u.reference_kind == tokensave::types::EdgeKind::Calls
+        })
+    };
+
+    assert!(
+        has_ref("Renderer::render"),
+        "expected a Renderer::render call ref from the constructor/param/self receivers, got: {:?}",
+        result
+            .unresolved_refs
+            .iter()
+            .map(|u| &u.reference_name)
+            .collect::<Vec<_>>()
+    );
+}

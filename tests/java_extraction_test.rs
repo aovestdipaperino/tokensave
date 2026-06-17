@@ -457,3 +457,34 @@ public class App {
     assert!(methods[0].qualified_name.contains("App"));
     assert!(methods[0].qualified_name.contains("run"));
 }
+
+/// #141: receiver-typed method calls emit `Type::method` (declared type or
+/// `new T()`), enabling disambiguation between same-named methods.
+#[test]
+fn test_receiver_typed_method_calls_java() {
+    let source = r#"
+class Alpha { int handle() { return 1; } }
+class Beta { int handle() { return 2; } }
+class Main {
+  int run() {
+    Alpha a = new Alpha();
+    Beta b = new Beta();
+    return a.handle() + b.handle();
+  }
+}
+"#;
+    let result = JavaExtractor.extract("M.java", source);
+    let names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Alpha::handle"),
+        "expected Alpha::handle, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Beta::handle"),
+        "expected Beta::handle, got {names:?}"
+    );
+}

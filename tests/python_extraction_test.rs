@@ -570,3 +570,24 @@ fn test_py_extensions() {
     assert_eq!(extractor.extensions(), &["py"]);
     assert_eq!(extractor.language_name(), "Python");
 }
+
+/// #141: receiver-typed method calls emit `Type::method`. Type is inferred
+/// from `x = ClassName()` (CapWords) and `self`.
+#[test]
+fn test_receiver_typed_method_calls_python() {
+    let source = "class Alpha:\n    def handle(self):\n        return 1\n    def run(self):\n        return self.handle()\n\nclass Beta:\n    def handle(self):\n        return 2\n\ndef main():\n    a = Alpha()\n    b = Beta()\n    return a.handle() + b.handle()\n";
+    let result = PythonExtractor.extract("m.py", source);
+    let names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Alpha::handle"),
+        "expected Alpha::handle, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Beta::handle"),
+        "expected Beta::handle, got {names:?}"
+    );
+}

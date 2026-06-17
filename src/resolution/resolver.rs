@@ -118,6 +118,15 @@ const CROSS_FILE_BLOCKLIST: &[&str] = &[
     "try_lock",
 ];
 
+/// Returns the trailing "simple" name of a possibly-qualified reference:
+/// the last segment after the final `::` (Rust/C++/PHP path) or `.`
+/// (Python/TS/JS/Java receiver call). `Self::watermark_band` -> `watermark_band`,
+/// `obj.render_to_png` -> `render_to_png`, `plain` -> `plain`.
+fn simple_ref_name(name: &str) -> &str {
+    let after_path = name.rsplit("::").next().unwrap_or(name);
+    after_path.rsplit('.').next().unwrap_or(after_path)
+}
+
 /// Infer a coarse language tag from a file path extension.
 fn lang_from_path(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
@@ -306,7 +315,8 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
-        // Strategy 1: qualified name match
+        // Strategy 1: qualified name match (`::`-separated paths, e.g. Rust's
+        // `Type::method`, `Self::method`, C++ `Class::method`, PHP `A::b`).
         if uref.reference_name.contains("::") {
             if let Some(resolved) = self.try_qualified_match(uref) {
                 return Some(resolved);
@@ -319,6 +329,26 @@ impl<'a> ReferenceResolver<'a> {
                 .unwrap_or(&uref.reference_name);
             if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name) {
                 return Some(resolved);
+            }
+            return None;
+        }
+
+        // Strategy 1b: dotted receiver call (`recv.method`). The Python / TS /
+        // JS extractors emit the full callee text (`obj.method`) with no
+        // separate bare-name ref, so a method call never resolves without this
+        // fallback to the trailing segment. (Rust/Go already emit a bare-name
+        // ref alongside, so this is harmless there — the duplicate edge is
+        // collapsed by the unique edge index.)
+        if uref.reference_name.contains('.') {
+            let simple_name = uref
+                .reference_name
+                .rsplit('.')
+                .next()
+                .unwrap_or(&uref.reference_name);
+            if simple_name != uref.reference_name {
+                if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name) {
+                    return Some(resolved);
+                }
             }
             return None;
         }
@@ -341,9 +371,19 @@ impl<'a> ReferenceResolver<'a> {
         let total = refs.len();
 
         // Partition into resolvable (name exists in graph) and hopeless.
-        let (candidates, hopeless): (Vec<_>, Vec<_>) = refs
-            .iter()
-            .partition(|uref| self.is_known_name(&uref.reference_name));
+        //
+        // A qualified/dotted ref (`Self::method`, `Type::method`, `obj.method`)
+        // rarely matches a known name *verbatim* — `Self::watermark_band` is
+        // not a node name, qualified name, or suffix — so the literal-name
+        // check alone dropped every such ref into `hopeless` before
+        // `resolve_one` (which strips the prefix and matches the simple name)
+        // ever ran. That silently lost all `Self::`/`Type::` and Python/TS
+        // dotted-method call edges (#141). Also admit a ref when its trailing
+        // simple name is known.
+        let (candidates, hopeless): (Vec<_>, Vec<_>) = refs.iter().partition(|uref| {
+            self.is_known_name(&uref.reference_name)
+                || self.is_known_name(simple_ref_name(&uref.reference_name))
+        });
 
         let results: Vec<_> = candidates
             .par_iter()

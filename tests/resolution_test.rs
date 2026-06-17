@@ -372,3 +372,238 @@ async fn test_resolve_all_empty_input() {
     assert!(result.resolved.is_empty());
     assert!(result.unresolved.is_empty());
 }
+
+/// #141 regression: `resolve_all`'s pre-filter must not drop a qualified
+/// `Self::helper` (or `Type::helper`) ref just because the literal string
+/// isn't a known name — its trailing simple name is, and `resolve_one`
+/// strips the prefix and matches it. Previously these were silently lost.
+#[tokio::test]
+async fn test_resolve_all_self_qualified_call_not_dropped() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
+
+    let refs = vec![UnresolvedRef {
+        from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
+        reference_name: "Self::helper".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 3,
+        column: 12,
+        file_path: "src/main.rs".to_string(),
+    }];
+
+    let result = resolver.resolve_all(&refs);
+    assert_eq!(
+        result.resolved_count, 1,
+        "Self::helper should resolve via the simple-name fallback, not be pre-filtered as hopeless"
+    );
+    assert_eq!(
+        result.resolved[0].target_node_id,
+        generate_node_id("src/utils.rs", &NodeKind::Function, "helper", 1),
+    );
+}
+
+/// #141 cross-language: Python/TS extractors emit the full dotted callee
+/// (`obj.helper`) with no bare-name ref. The resolver must fall back to the
+/// trailing method name so the call edge still forms.
+#[tokio::test]
+async fn test_resolve_all_dotted_method_call() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let resolver = ReferenceResolver::from_nodes(&db, &db.get_all_nodes().await.unwrap());
+
+    let refs = vec![UnresolvedRef {
+        from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
+        reference_name: "obj.helper".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 3,
+        column: 12,
+        file_path: "src/main.rs".to_string(),
+    }];
+
+    let result = resolver.resolve_all(&refs);
+    assert_eq!(
+        result.resolved_count, 1,
+        "obj.helper should resolve to `helper` via the dotted-call fallback"
+    );
+    assert_eq!(
+        result.resolved[0].target_node_id,
+        generate_node_id("src/utils.rs", &NodeKind::Function, "helper", 1),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #141 Option 2: build-variant call-edge propagation
+// ---------------------------------------------------------------------------
+
+fn variant_node(id: &str, kind: NodeKind, name: &str, qn: &str, file: &str) -> Node {
+    Node {
+        id: id.to_string(),
+        kind,
+        name: name.to_string(),
+        qualified_name: qn.to_string(),
+        file_path: file.to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 5,
+        start_column: 0,
+        end_column: 1,
+        signature: Some(format!("fn {name}()")),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        updated_at: 0,
+        parent_id: None,
+    }
+}
+
+fn calls_edge(from: &str, to: &str) -> Edge {
+    Edge {
+        source: from.to_string(),
+        target: to.to_string(),
+        kind: EdgeKind::Calls,
+        line: Some(1),
+    }
+}
+
+/// Rust `#[cfg]` twins (same qualified_name, both cfg-gated): a call landing on
+/// one variant must propagate to the other so neither looks dead.
+#[test]
+fn test_variant_fanout_rust_cfg() {
+    let nodes = vec![
+        variant_node(
+            "fn:caller",
+            NodeKind::Function,
+            "main",
+            "src/main.rs::main",
+            "src/main.rs",
+        ),
+        variant_node(
+            "fn:macos",
+            NodeKind::Function,
+            "copy",
+            "src/c.rs::copy",
+            "src/c.rs",
+        ),
+        variant_node(
+            "fn:other",
+            NodeKind::Function,
+            "copy",
+            "src/c.rs::copy",
+            "src/c.rs",
+        ),
+        variant_node(
+            "au:1",
+            NodeKind::AnnotationUsage,
+            "cfg",
+            "src/c.rs::cfg",
+            "src/c.rs",
+        ),
+        variant_node(
+            "au:2",
+            NodeKind::AnnotationUsage,
+            "cfg",
+            "src/c.rs::cfg",
+            "src/c.rs",
+        ),
+    ];
+    let edges = vec![
+        Edge {
+            source: "au:1".into(),
+            target: "fn:macos".into(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        Edge {
+            source: "au:2".into(),
+            target: "fn:other".into(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        calls_edge("fn:caller", "fn:macos"),
+    ];
+    let extra = tokensave::resolution::propagate_variant_edges(&nodes, &edges);
+    assert!(
+        extra.iter().any(|e| e.source == "fn:caller"
+            && e.target == "fn:other"
+            && e.kind == EdgeKind::Calls),
+        "call should propagate to the cfg sibling, got: {extra:?}"
+    );
+}
+
+/// Go platform files (`foo_linux.go` / `foo_windows.go`): same package
+/// directory + function name across different files = build variants.
+#[test]
+fn test_variant_fanout_go_platform_files() {
+    let nodes = vec![
+        variant_node(
+            "fn:caller",
+            NodeKind::Function,
+            "Main",
+            "pkg/main.go::Main",
+            "pkg/main.go",
+        ),
+        variant_node(
+            "fn:linux",
+            NodeKind::Function,
+            "Do",
+            "pkg/foo_linux.go::Do",
+            "pkg/foo_linux.go",
+        ),
+        variant_node(
+            "fn:win",
+            NodeKind::Function,
+            "Do",
+            "pkg/foo_windows.go::Do",
+            "pkg/foo_windows.go",
+        ),
+    ];
+    let edges = vec![calls_edge("fn:caller", "fn:linux")];
+    let extra = tokensave::resolution::propagate_variant_edges(&nodes, &edges);
+    assert!(
+        extra
+            .iter()
+            .any(|e| e.source == "fn:caller" && e.target == "fn:win"),
+        "call should propagate to the windows platform-file sibling, got: {extra:?}"
+    );
+}
+
+/// Negative: two functions sharing a qualified_name but NOT cfg-gated (e.g.
+/// distinct trait impls) must NOT be fused — that would invent false edges.
+#[test]
+fn test_no_fanout_without_cfg() {
+    let nodes = vec![
+        variant_node(
+            "fn:caller",
+            NodeKind::Function,
+            "main",
+            "src/main.rs::main",
+            "src/main.rs",
+        ),
+        variant_node(
+            "m:a",
+            NodeKind::Method,
+            "from",
+            "src/t.rs::T::from",
+            "src/t.rs",
+        ),
+        variant_node(
+            "m:b",
+            NodeKind::Method,
+            "from",
+            "src/t.rs::T::from",
+            "src/t.rs",
+        ),
+    ];
+    let edges = vec![calls_edge("fn:caller", "m:a")];
+    let extra = tokensave::resolution::propagate_variant_edges(&nodes, &edges);
+    assert!(
+        extra.is_empty(),
+        "non-cfg same-qualified-name nodes must not fan out, got: {extra:?}"
+    );
+}

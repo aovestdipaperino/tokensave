@@ -781,6 +781,11 @@ impl TokenSave {
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
             all_edges.extend(resolver.create_edges(&resolution.resolved));
+            // Propagate call edges across build-config variants (Rust `#[cfg]`
+            // twins, Go platform files) so an inactive-platform definition is
+            // not seen as dead merely because the call bound to its sibling (#141).
+            let variant_edges = crate::resolution::propagate_variant_edges(&all_nodes, &all_edges);
+            all_edges.extend(variant_edges);
         }
         on_verbose(&format!(
             "resolved {} references in {:.1}s",
@@ -1037,6 +1042,14 @@ impl TokenSave {
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
+                    // Re-propagate build-variant call edges over the full graph
+                    // now that new call edges exist (#141).
+                    let all_db_edges = self.db.get_all_edges().await.unwrap_or_default();
+                    let variant_edges =
+                        crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
+                    if !variant_edges.is_empty() {
+                        self.db.insert_edges(&variant_edges).await?;
+                    }
                 }
             }
         }
@@ -1300,6 +1313,13 @@ impl TokenSave {
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
+                    // Propagate call edges across build-config variants (#141).
+                    let all_db_edges = self.db.get_all_edges().await.unwrap_or_default();
+                    let variant_edges =
+                        crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
+                    if !variant_edges.is_empty() {
+                        self.db.insert_edges(&variant_edges).await?;
+                    }
                 }
             }
             on_verbose(&format!(

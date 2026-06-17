@@ -243,6 +243,7 @@ impl PythonExtractor {
         // Extract call sites from the function body.
         if let Some(body) = Self::find_child_by_kind(node, "block") {
             Self::extract_call_sites(state, body, &id);
+            Self::extract_receiver_typed_calls(state, node, body, &id);
         }
     }
 
@@ -789,6 +790,178 @@ impl PythonExtractor {
     }
 
     /// Recursively find call nodes inside a given node and create unresolved Calls references.
+    /// Type name of the nearest enclosing class (for `self` receivers).
+    fn enclosing_class_type(state: &ExtractionState) -> Option<String> {
+        state
+            .node_stack
+            .iter()
+            .rev()
+            .find(|(_, id)| id.starts_with("class:"))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Normalizes a Python type expression to a bare type name: take the last
+    /// `.`-segment, drop subscripts. `mod.Service` -> `Service`.
+    fn normalize_type_name(raw: &str) -> Option<String> {
+        let mut s = raw.trim();
+        if let Some(p) = s.find(['[', '(', ' ']) {
+            s = &s[..p];
+        }
+        let seg = s.rsplit('.').next().unwrap_or(s).trim();
+        let first = seg.chars().next()?;
+        if !first.is_alphabetic() && first != '_' {
+            return None;
+        }
+        Some(seg.to_string())
+    }
+
+    /// True if `name` looks like a class per PEP8 CapWords — the only cheap
+    /// signal that `Service()` is construction (Python has no `new`).
+    fn looks_like_class(name: &str) -> bool {
+        name.chars().next().is_some_and(char::is_uppercase)
+    }
+
+    /// Builds a `var-name -> type-name` table from typed parameters, annotated
+    /// or `ClassName()`-constructed assignments, and `self`.
+    fn collect_var_types(
+        state: &ExtractionState,
+        fn_node: TsNode<'_>,
+        self_type: Option<&str>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        if let Some(t) = self_type {
+            map.insert("self".to_string(), t.to_string());
+        }
+        if let Some(params) = fn_node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let p = cursor.node();
+                    if p.kind() == "typed_parameter" {
+                        // typed_parameter: <identifier> : <type>
+                        let ident = p.named_child(0).filter(|n| n.kind() == "identifier");
+                        if let (Some(ident), Some(ty)) = (ident, p.child_by_field_name("type")) {
+                            if let Some(tn) = Self::normalize_type_name(&state.node_text(ty)) {
+                                map.insert(state.node_text(ident), tn);
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(body) = Self::find_child_by_kind(fn_node, "block") {
+            Self::collect_assignment_types(state, body, &mut map);
+        }
+        map
+    }
+
+    /// Records assignment types: `x: T = ...` (annotation) or `x = T(...)`
+    /// where `T` is CapWords. Skips nested function/class scopes.
+    fn collect_assignment_types(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        map: &mut std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if c.kind() == "assignment" {
+                    if let Some(lhs) = c.child_by_field_name("left") {
+                        if lhs.kind() == "identifier" {
+                            let ty = c
+                                .child_by_field_name("type")
+                                .and_then(|t| Self::normalize_type_name(&state.node_text(t)))
+                                .or_else(|| {
+                                    let rhs = c.child_by_field_name("right")?;
+                                    if rhs.kind() != "call" {
+                                        return None;
+                                    }
+                                    let callee = rhs.child_by_field_name("function")?;
+                                    if callee.kind() != "identifier" {
+                                        return None;
+                                    }
+                                    let name = state.node_text(callee);
+                                    Self::looks_like_class(&name).then_some(name)
+                                });
+                            if let Some(t) = ty {
+                                map.insert(state.node_text(lhs), t);
+                            }
+                        }
+                    }
+                }
+                if !matches!(c.kind(), "function_definition" | "class_definition") {
+                    Self::collect_assignment_types(state, c, map);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Emits a `Type::method` Calls ref for `recv.method(...)` whose receiver
+    /// type is known (#141).
+    fn emit_typed_method_calls(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        var_types: &std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "call" {
+                    if let Some(func) = child.child_by_field_name("function") {
+                        if func.kind() == "attribute" {
+                            if let (Some(obj), Some(attr)) = (
+                                func.child_by_field_name("object"),
+                                func.child_by_field_name("attribute"),
+                            ) {
+                                if obj.kind() == "identifier" {
+                                    if let Some(ty) = var_types.get(&state.node_text(obj)) {
+                                        let method = state.node_text(attr);
+                                        state.unresolved_refs.push(UnresolvedRef {
+                                            from_node_id: fn_node_id.to_string(),
+                                            reference_name: format!("{ty}::{method}"),
+                                            reference_kind: EdgeKind::Calls,
+                                            line: child.start_position().row as u32,
+                                            column: child.start_position().column as u32,
+                                            file_path: state.file_path.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !matches!(child.kind(), "function_definition" | "class_definition") {
+                    Self::emit_typed_method_calls(state, child, fn_node_id, var_types);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Receiver-type-aware method-call extraction (#141), mirroring the Rust
+    /// pass.
+    fn extract_receiver_typed_calls(
+        state: &mut ExtractionState,
+        fn_node: TsNode<'_>,
+        body: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let self_type = Self::enclosing_class_type(state);
+        let var_types = Self::collect_var_types(state, fn_node, self_type.as_deref());
+        Self::emit_typed_method_calls(state, body, fn_node_id, &var_types);
+    }
+
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
