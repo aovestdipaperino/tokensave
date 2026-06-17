@@ -485,39 +485,64 @@ async fn test_find_dead_code_excludes_pub() {
 /// Regression for issue #137: Rust trait-impl methods (e.g. `Display::fmt`)
 /// are reached via implicit compiler dispatch, so they carry no incoming
 /// `calls` edge and — being un-`pub`able — are stored as `private`. They must
-/// NOT be reported as dead by default, but inherent-impl methods (whose impl
-/// block has no `implements` edge) with no callers still must be. Passing
-/// `include_trait_impls: true` opts back into reporting them.
+/// NOT be reported as dead by default, while inherent-impl methods with no
+/// callers still must be. `include_trait_impls: true` opts back into them.
+///
+/// The critical case is a trait impl of a STDLIB/external trait (`Display`,
+/// `Drop`, `Deref`, `From`, `AsRef`): the trait is not an indexed node, so the
+/// extractor never materializes an `implements` edge. Detection therefore
+/// keys off the impl node's signature (`impl <Trait> for <Type>`), with the
+/// `implements` edge as a fallback for multi-line headers. A prior fix that
+/// relied on the edge alone was inert on real codebases (zero such edges).
 #[tokio::test]
 async fn test_find_dead_code_excludes_trait_impl_methods() {
     let (db, _dir) = setup_db().await;
 
-    // `impl Display for MyType` block + the trait it implements.
-    let mut trait_impl = make_node("n-impl-display", "MyType", "src/ty.rs", Visibility::Pub);
-    trait_impl.kind = NodeKind::Impl;
-    let mut display_trait = make_node("n-trait-display", "Display", "src/ty.rs", Visibility::Pub);
-    display_trait.kind = NodeKind::Trait;
-
-    // The trait-impl method `fmt`: private, no incoming call edge.
+    // (1) Stdlib trait impl, signature-only, NO `implements` edge — the case
+    // the edge-only fix missed. `fmt` must be excluded.
+    let mut display_impl = make_node("n-impl-display", "MyType", "src/ty.rs", Visibility::Pub);
+    display_impl.kind = NodeKind::Impl;
+    display_impl.signature = Some("impl std::fmt::Display for MyType".to_string());
     let mut fmt = make_node("n-fmt", "fmt", "src/ty.rs", Visibility::Private);
     fmt.kind = NodeKind::Method;
     fmt.parent_id = Some("n-impl-display".to_string());
 
-    // An inherent `impl MyType` block (no `implements` edge) holding a private
-    // method with no callers — a *genuine* dead-code candidate that must still
-    // be reported, proving the exclusion is scoped to trait impls only.
+    // (2) Inherent `impl MyType` (signature has no ` for `, no edge) holding a
+    // private method with no callers — a genuine dead candidate that must
+    // still be reported, proving the exclusion is scoped to trait impls.
     let mut inherent_impl = make_node("n-impl-inherent", "MyType", "src/ty.rs", Visibility::Pub);
     inherent_impl.kind = NodeKind::Impl;
+    inherent_impl.signature = Some("impl MyType".to_string());
     let mut truly_dead = make_node("n-dead", "truly_dead", "src/ty.rs", Visibility::Private);
     truly_dead.kind = NodeKind::Method;
     truly_dead.parent_id = Some("n-impl-inherent".to_string());
 
-    db.insert_nodes(&[trait_impl, display_trait, fmt, inherent_impl, truly_dead])
-        .await
-        .expect("insert nodes failed");
+    // (3) Trait impl whose first-line signature was truncated before ` for `
+    // (multi-line header), but which DOES carry an `implements` edge — the
+    // fallback path. `via_edge` must be excluded.
+    let mut edge_impl = make_node("n-impl-edge", "MyType", "src/ty.rs", Visibility::Pub);
+    edge_impl.kind = NodeKind::Impl;
+    edge_impl.signature = Some("impl<T> LongTrait<T>".to_string());
+    let mut local_trait = make_node("n-trait-local", "LongTrait", "src/ty.rs", Visibility::Pub);
+    local_trait.kind = NodeKind::Trait;
+    let mut via_edge = make_node("n-via-edge", "via_edge", "src/ty.rs", Visibility::Private);
+    via_edge.kind = NodeKind::Method;
+    via_edge.parent_id = Some("n-impl-edge".to_string());
+
+    db.insert_nodes(&[
+        display_impl,
+        fmt,
+        inherent_impl,
+        truly_dead,
+        edge_impl,
+        local_trait,
+        via_edge,
+    ])
+    .await
+    .expect("insert nodes failed");
     db.insert_edges(&[Edge {
-        source: "n-impl-display".to_string(),
-        target: "n-trait-display".to_string(),
+        source: "n-impl-edge".to_string(),
+        target: "n-trait-local".to_string(),
         kind: EdgeKind::Implements,
         line: Some(1),
     }])
@@ -526,7 +551,7 @@ async fn test_find_dead_code_excludes_trait_impl_methods() {
 
     let qm = GraphQueryManager::new(&db);
 
-    // Default: trait-impl method excluded, inherent dead method still reported.
+    // Default: both trait-impl methods excluded, inherent dead method reported.
     let dead = qm
         .find_dead_code(&[NodeKind::Method], false, false)
         .await
@@ -534,22 +559,26 @@ async fn test_find_dead_code_excludes_trait_impl_methods() {
     let names: Vec<&str> = dead.iter().map(|n| n.name.as_str()).collect();
     assert!(
         !names.contains(&"fmt"),
-        "trait-impl method `fmt` should not be dead by default, got: {names:?}"
+        "stdlib trait-impl method `fmt` (signature-only) should not be dead, got: {names:?}"
+    );
+    assert!(
+        !names.contains(&"via_edge"),
+        "trait-impl method via `implements`-edge fallback should not be dead, got: {names:?}"
     );
     assert!(
         names.contains(&"truly_dead"),
         "inherent-impl method with no callers should still be dead, got: {names:?}"
     );
 
-    // Opt-in: include_trait_impls=true surfaces `fmt` again.
+    // Opt-in: include_trait_impls=true surfaces both trait-impl methods again.
     let dead_all = qm
         .find_dead_code(&[NodeKind::Method], false, true)
         .await
         .expect("find_dead_code failed");
     let names_all: Vec<&str> = dead_all.iter().map(|n| n.name.as_str()).collect();
     assert!(
-        names_all.contains(&"fmt"),
-        "include_trait_impls=true should surface `fmt`, got: {names_all:?}"
+        names_all.contains(&"fmt") && names_all.contains(&"via_edge"),
+        "include_trait_impls=true should surface trait-impl methods, got: {names_all:?}"
     );
 }
 

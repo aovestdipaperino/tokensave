@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Dead-code trait-impl exclusion now actually fires for stdlib traits (#137, completes 6.4.1).** The 6.4.1 fix keyed off the impl block's outgoing `implements` edge, but that edge only materializes when the trait resolves to an *indexed* node. Impls of stdlib/external traits — `Display`, `Drop`, `Deref`, `From`, `AsRef`, the exact traits in the bug report — never get the edge, so the fix was inert on real codebases (the mex codebase has zero `implements` edges; all 13 trait-impl methods were still flagged). Detection now keys off the impl node's signature (`impl <Trait> for <Type>` contains ` for `), with the `implements` edge kept only as a fallback for multi-line headers that `extract_first_line` truncates before the ` for `. Verified against mex: false positives dropped from 20 to 7, the 7 remaining being genuine inherent/free functions. Inherent impls (`impl Type`, no ` for `) and ObjC `@implementation` blocks are still untouched.
+
 
 ## [6.4.1] - 2026-06-17
 

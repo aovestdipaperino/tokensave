@@ -143,24 +143,37 @@ impl<'a> GraphQueryManager<'a> {
         // also can't be written `pub` in Rust, so they're stored as `private`
         // and the visibility filter above never excludes them. The result is
         // a flood of false positives (issue #137). Exclude any method whose
-        // parent is an `Impl`-kind node bearing an outgoing `implements` edge:
-        // that set is exactly Rust's trait-impl blocks, which contain ONLY the
-        // trait's methods, so the exclusion is precise. It deliberately does
-        // NOT fire for class-based languages — there the `implements` edge
-        // hangs off the `Class` node (whose methods are a mix of interface and
-        // private), and interface methods are stored `public` so the
-        // visibility filter already covers them. ObjC `@implementation` blocks
-        // are `Impl` nodes too but carry no `implements` edge (conformance is
-        // recorded on the `@interface`), so they are untouched. The guarding
+        // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
+        // `impl Type` block, whose un-called methods are genuine dead code).
+        //
+        // We detect a trait impl two ways, OR'd together:
+        //   1) the impl node's signature contains ` for ` — i.e. the header is
+        //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
+        //      only one that works for the common case, because…
+        //   2) …the impl node bears an outgoing `implements` edge. This edge
+        //      only materializes when the trait resolves to an indexed node,
+        //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
+        //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
+        //      report. So the edge alone misses almost every real case (mex has
+        //      zero `implements` edges); the signature scan is what carries the
+        //      fix. The edge is kept as a fallback for multi-line impl headers
+        //      where `extract_first_line` truncates before the ` for `.
+        //
+        // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
+        // blocks contain no ` for `, so they are untouched — inherent dead
+        // methods are still reported. Class-based languages attach `implements`
+        // to the `Class` node (not an `impl`) and store interface methods
+        // `public`, so the visibility filter already covers them. The guarding
         // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
         // true, which would silently drop every top-level function.
         let trait_impl_filter = if include_trait_impls {
             ""
         } else {
             " AND (parent_id IS NULL OR parent_id NOT IN (
-                 SELECT e.source FROM edges e
-                 JOIN nodes p ON p.id = e.source
-                 WHERE e.kind = 'implements' AND p.kind = 'impl'
+                 SELECT p.id FROM nodes p
+                 WHERE p.kind = 'impl'
+                   AND (p.signature LIKE '% for %'
+                        OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
              ))"
         };
 
