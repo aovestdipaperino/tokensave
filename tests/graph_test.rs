@@ -443,7 +443,7 @@ async fn test_find_dead_code() {
 
     let qm = GraphQueryManager::new(&db);
     let dead = qm
-        .find_dead_code(&[], false)
+        .find_dead_code(&[], false, true)
         .await
         .expect("find_dead_code failed");
 
@@ -471,7 +471,7 @@ async fn test_find_dead_code_excludes_pub() {
 
     let qm = GraphQueryManager::new(&db);
     let dead = qm
-        .find_dead_code(&[], false)
+        .find_dead_code(&[], false, true)
         .await
         .expect("find_dead_code failed");
 
@@ -479,6 +479,77 @@ async fn test_find_dead_code_excludes_pub() {
     assert!(
         !dead_names.contains(&"public_api"),
         "pub functions should not be reported as dead code"
+    );
+}
+
+/// Regression for issue #137: Rust trait-impl methods (e.g. `Display::fmt`)
+/// are reached via implicit compiler dispatch, so they carry no incoming
+/// `calls` edge and — being un-`pub`able — are stored as `private`. They must
+/// NOT be reported as dead by default, but inherent-impl methods (whose impl
+/// block has no `implements` edge) with no callers still must be. Passing
+/// `include_trait_impls: true` opts back into reporting them.
+#[tokio::test]
+async fn test_find_dead_code_excludes_trait_impl_methods() {
+    let (db, _dir) = setup_db().await;
+
+    // `impl Display for MyType` block + the trait it implements.
+    let mut trait_impl = make_node("n-impl-display", "MyType", "src/ty.rs", Visibility::Pub);
+    trait_impl.kind = NodeKind::Impl;
+    let mut display_trait = make_node("n-trait-display", "Display", "src/ty.rs", Visibility::Pub);
+    display_trait.kind = NodeKind::Trait;
+
+    // The trait-impl method `fmt`: private, no incoming call edge.
+    let mut fmt = make_node("n-fmt", "fmt", "src/ty.rs", Visibility::Private);
+    fmt.kind = NodeKind::Method;
+    fmt.parent_id = Some("n-impl-display".to_string());
+
+    // An inherent `impl MyType` block (no `implements` edge) holding a private
+    // method with no callers — a *genuine* dead-code candidate that must still
+    // be reported, proving the exclusion is scoped to trait impls only.
+    let mut inherent_impl = make_node("n-impl-inherent", "MyType", "src/ty.rs", Visibility::Pub);
+    inherent_impl.kind = NodeKind::Impl;
+    let mut truly_dead = make_node("n-dead", "truly_dead", "src/ty.rs", Visibility::Private);
+    truly_dead.kind = NodeKind::Method;
+    truly_dead.parent_id = Some("n-impl-inherent".to_string());
+
+    db.insert_nodes(&[trait_impl, display_trait, fmt, inherent_impl, truly_dead])
+        .await
+        .expect("insert nodes failed");
+    db.insert_edges(&[Edge {
+        source: "n-impl-display".to_string(),
+        target: "n-trait-display".to_string(),
+        kind: EdgeKind::Implements,
+        line: Some(1),
+    }])
+    .await
+    .expect("insert edges failed");
+
+    let qm = GraphQueryManager::new(&db);
+
+    // Default: trait-impl method excluded, inherent dead method still reported.
+    let dead = qm
+        .find_dead_code(&[NodeKind::Method], false, false)
+        .await
+        .expect("find_dead_code failed");
+    let names: Vec<&str> = dead.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        !names.contains(&"fmt"),
+        "trait-impl method `fmt` should not be dead by default, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"truly_dead"),
+        "inherent-impl method with no callers should still be dead, got: {names:?}"
+    );
+
+    // Opt-in: include_trait_impls=true surfaces `fmt` again.
+    let dead_all = qm
+        .find_dead_code(&[NodeKind::Method], false, true)
+        .await
+        .expect("find_dead_code failed");
+    let names_all: Vec<&str> = dead_all.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        names_all.contains(&"fmt"),
+        "include_trait_impls=true should surface `fmt`, got: {names_all:?}"
     );
 }
 
@@ -580,7 +651,7 @@ async fn test_find_dead_code_excludes_test_annotated() {
 
     let qm = GraphQueryManager::new(&db);
     let dead = qm
-        .find_dead_code(&[NodeKind::Function], false)
+        .find_dead_code(&[NodeKind::Function], false, true)
         .await
         .expect("find_dead_code failed");
 
@@ -619,7 +690,7 @@ async fn test_find_dead_code_with_kind_filter() {
 
     // Filter to only Function kind.
     let dead = qm
-        .find_dead_code(&[NodeKind::Function], false)
+        .find_dead_code(&[NodeKind::Function], false, true)
         .await
         .expect("find_dead_code failed");
 
@@ -1377,7 +1448,7 @@ async fn dead_code_marker_resolve_is_single_pass() {
 
     let t0 = std::time::Instant::now();
     let dead = qm
-        .find_dead_code(&[NodeKind::Function], false)
+        .find_dead_code(&[NodeKind::Function], false, true)
         .await
         .expect("find_dead_code failed");
     let elapsed = t0.elapsed();

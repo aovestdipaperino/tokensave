@@ -95,8 +95,11 @@ pub(super) async fn compute_health_snapshot(
     let gini = gini_coefficient(&complexity_values);
     let equality = (1.0 - gini).clamp(0.0, 1.0);
 
+    // Exclude trait-impl methods (issue #137): they have no explicit caller
+    // edge but are reached via implicit compiler dispatch, so counting them
+    // as dead falsely depresses the redundancy dimension.
     let dead = cg
-        .find_dead_code(&[NodeKind::Function, NodeKind::Method], false)
+        .find_dead_code(&[NodeKind::Function, NodeKind::Method], false, false)
         .await?;
     let dead_in_scope = dead.iter().filter(|n| {
         path_prefix.is_none_or(|pfx| {

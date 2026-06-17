@@ -121,6 +121,7 @@ impl<'a> GraphQueryManager<'a> {
         &self,
         kinds: &[NodeKind],
         include_public: bool,
+        include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
         let kind_filter = if kinds.is_empty() {
             String::new()
@@ -133,6 +134,34 @@ impl<'a> GraphQueryManager<'a> {
             ""
         } else {
             " AND visibility != 'public'"
+        };
+
+        // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
+        // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
+        // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
+        // `.into()` — so they carry no explicit incoming `calls` edge. They
+        // also can't be written `pub` in Rust, so they're stored as `private`
+        // and the visibility filter above never excludes them. The result is
+        // a flood of false positives (issue #137). Exclude any method whose
+        // parent is an `Impl`-kind node bearing an outgoing `implements` edge:
+        // that set is exactly Rust's trait-impl blocks, which contain ONLY the
+        // trait's methods, so the exclusion is precise. It deliberately does
+        // NOT fire for class-based languages — there the `implements` edge
+        // hangs off the `Class` node (whose methods are a mix of interface and
+        // private), and interface methods are stored `public` so the
+        // visibility filter already covers them. ObjC `@implementation` blocks
+        // are `Impl` nodes too but carry no `implements` edge (conformance is
+        // recorded on the `@interface`), so they are untouched. The guarding
+        // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
+        // true, which would silently drop every top-level function.
+        let trait_impl_filter = if include_trait_impls {
+            ""
+        } else {
+            " AND (parent_id IS NULL OR parent_id NOT IN (
+                 SELECT e.source FROM edges e
+                 JOIN nodes p ON p.id = e.source
+                 WHERE e.kind = 'implements' AND p.kind = 'impl'
+             ))"
         };
 
         // Only true "use sites" count as evidence that a symbol is alive:
@@ -180,7 +209,7 @@ impl<'a> GraphQueryManager<'a> {
         //   probe is now against a ~15K-row indexed lookup table, not a
         //   correlated subquery the optimiser can re-shape.
         let result = self
-            .find_dead_code_inner(visibility_filter, &kind_filter)
+            .find_dead_code_inner(visibility_filter, &kind_filter, trait_impl_filter)
             .await;
 
         // Always drop both temp tables, even on the error path, so a
@@ -198,6 +227,7 @@ impl<'a> GraphQueryManager<'a> {
         &self,
         visibility_filter: &str,
         kind_filter: &str,
+        trait_impl_filter: &str,
     ) -> Result<Vec<Node>> {
         let marker_ids = self.db.collect_test_marker_ids().await?;
         self.db.populate_test_marker_temp_table(&marker_ids).await?;
@@ -213,6 +243,7 @@ impl<'a> GraphQueryManager<'a> {
              AND name NOT LIKE 'test%'
              {visibility_filter}
              {kind_filter}
+             {trait_impl_filter}
              AND NOT EXISTS (
                  SELECT 1 FROM edges
                  WHERE target = nodes.id
