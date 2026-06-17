@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Dead-code analysis no longer reports Rust trait-impl methods as false positives (#137).** Methods inside `impl Trait for Type` blocks — `Display::fmt`, `Deref::deref`, `Drop::drop`, `From::from`, `AsRef::as_ref`, etc. — are dispatched implicitly by the compiler (format macros, auto-deref, drop glue, `?`/`.into()`), so they carry no incoming `calls` edge, and because they can't be written `pub` in Rust they are stored as `private` and slipped past the visibility filter. `tokensave_dead_code` flagged them as dead (inflating `dead_code_count`) and `tokensave_health` counted them against the `redundancy` dimension. `find_dead_code` now excludes methods whose parent is an `Impl`-kind node bearing an outgoing `implements` edge — precisely Rust's trait-impl blocks, which contain only the trait's methods. Inherent-impl and free functions are still reported. The exclusion is language-aware: class-based languages (C#/Java/TS/PHP/VB) attach `implements` to the `Class` node and store interface methods `public` (already filtered), and ObjC `@implementation` blocks carry no `implements` edge, so neither is affected. New `include_trait_impls: true` arg on `tokensave_dead_code` opts back into reporting them.
+
 
 ## [6.4.0] - 2026-06-16
 

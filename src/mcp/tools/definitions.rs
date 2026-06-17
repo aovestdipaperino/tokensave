@@ -591,7 +591,11 @@ fn def_dead_code() -> ToolDefinition {
          Always excludes `main` and `test*` functions. By default also excludes \
          `pub` items (they may be referenced outside the indexed scope) — pass \
          `include_public: true` to audit pub items with zero indexed callers, \
-         which is what you want for workspace-internal cleanup.",
+         which is what you want for workspace-internal cleanup. Rust trait-impl \
+         methods (e.g. `Display::fmt`, `Deref::deref`, `Drop::drop`) are also \
+         excluded by default: they are dispatched implicitly by the compiler so \
+         they have no caller edge yet are never truly dead — pass \
+         `include_trait_impls: true` to include them.",
         json!({
             "type": "object",
             "properties": {
@@ -603,6 +607,10 @@ fn def_dead_code() -> ToolDefinition {
                 "include_public": {
                     "type": "boolean",
                     "description": "When true, do NOT exclude pub items. Default false."
+                },
+                "include_trait_impls": {
+                    "type": "boolean",
+                    "description": "When true, do NOT exclude Rust trait-impl methods (implicitly-dispatched methods like fmt/deref/drop). Default false."
                 }
             }
         }),

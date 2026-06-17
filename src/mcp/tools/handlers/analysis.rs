@@ -168,7 +168,13 @@ pub(super) async fn handle_dead_code(
         .get("include_public")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let dead = cg.find_dead_code(&kinds, include_public).await?;
+    let include_trait_impls = args
+        .get("include_trait_impls")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let dead = cg
+        .find_dead_code(&kinds, include_public, include_trait_impls)
+        .await?;
     let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
 
     let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));

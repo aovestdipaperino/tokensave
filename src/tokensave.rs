@@ -2182,13 +2182,21 @@ impl TokenSave {
     /// excluded — they may be referenced by code outside the indexed
     /// scope. Pass `true` to also surface pub items with zero indexed
     /// callers (useful for workspace-internal audits).
+    ///
+    /// When `include_trait_impls` is `false` (the default), Rust trait-impl
+    /// methods are excluded — they are dispatched implicitly by the compiler
+    /// (e.g. `Display::fmt`, `Deref::deref`, `Drop::drop`) so they carry no
+    /// explicit caller edge yet are never truly dead. Pass `true` to include
+    /// them anyway. See issue #137.
     pub async fn find_dead_code(
         &self,
         kinds: &[NodeKind],
         include_public: bool,
+        include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
         let qm = GraphQueryManager::new(&self.db);
-        qm.find_dead_code(kinds, include_public).await
+        qm.find_dead_code(kinds, include_public, include_trait_impls)
+            .await
     }
 
     /// Returns all nodes for a given file, ordered by start line.
