@@ -696,6 +696,7 @@ impl JavaExtractor {
         // Extract call sites from the method body.
         if has_body {
             Self::extract_call_sites(state, node, &id);
+            Self::extract_receiver_typed_calls(state, node, &id);
         }
     }
 
@@ -755,6 +756,7 @@ impl JavaExtractor {
 
         // Extract call sites from the constructor body.
         Self::extract_call_sites(state, node, &id);
+        Self::extract_receiver_typed_calls(state, node, &id);
     }
 
     /// Extract field declarations. Each `variable_declarator` in the field becomes a Field node.
@@ -1390,6 +1392,185 @@ impl JavaExtractor {
 
     /// Recursively find `method_invocation` and `object_creation_expression` nodes inside a
     /// given node and create unresolved Calls references.
+    /// Type name of the nearest enclosing class (for `this` receivers).
+    fn enclosing_class_type(state: &ExtractionState) -> Option<String> {
+        state
+            .node_stack
+            .iter()
+            .rev()
+            .find(|(_, id)| id.starts_with("class:"))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Normalizes a Java type expression to a bare type name: drops generics,
+    /// array brackets, and any package/qualifier prefix. `List<Foo>` -> `List`,
+    /// `com.x.Service[]` -> `Service`.
+    fn normalize_type_name(raw: &str) -> Option<String> {
+        let mut s = raw.trim();
+        if let Some(p) = s.find(['<', '[', ' ']) {
+            s = &s[..p];
+        }
+        let seg = s.rsplit('.').next().unwrap_or(s).trim();
+        let first = seg.chars().next()?;
+        if !first.is_alphabetic() && first != '_' {
+            return None;
+        }
+        Some(seg.to_string())
+    }
+
+    /// Builds a `var-name -> type-name` table from typed parameters, local
+    /// variable declarations (declared type, or `new T(...)` when `var`), and
+    /// `this`.
+    fn collect_var_types(
+        state: &ExtractionState,
+        fn_node: TsNode<'_>,
+        self_type: Option<&str>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        if let Some(t) = self_type {
+            map.insert("this".to_string(), t.to_string());
+        }
+        if let Some(params) = fn_node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let p = cursor.node();
+                    if p.kind() == "formal_parameter" {
+                        if let (Some(ty), Some(name)) =
+                            (p.child_by_field_name("type"), p.child_by_field_name("name"))
+                        {
+                            if let Some(tn) = Self::normalize_type_name(&state.node_text(ty)) {
+                                map.insert(state.node_text(name), tn);
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(body) = fn_node.child_by_field_name("body") {
+            Self::collect_local_types(state, body, &mut map);
+        }
+        map
+    }
+
+    /// Records `local_variable_declaration` types (declared type, or the
+    /// constructed type for `var x = new T()`), skipping nested type bodies.
+    fn collect_local_types(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        map: &mut std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if c.kind() == "local_variable_declaration" {
+                    let declared = c
+                        .child_by_field_name("type")
+                        .map(|t| state.node_text(t))
+                        .filter(|t| t != "var");
+                    let mut dc = c.walk();
+                    if dc.goto_first_child() {
+                        loop {
+                            let d = dc.node();
+                            if d.kind() == "variable_declarator" {
+                                if let Some(name) = d.child_by_field_name("name") {
+                                    let ty = declared
+                                        .as_deref()
+                                        .and_then(Self::normalize_type_name)
+                                        .or_else(|| {
+                                            d.child_by_field_name("value").and_then(|v| {
+                                                (v.kind() == "object_creation_expression")
+                                                    .then(|| v.child_by_field_name("type"))
+                                                    .flatten()
+                                                    .and_then(|t| {
+                                                        Self::normalize_type_name(
+                                                            &state.node_text(t),
+                                                        )
+                                                    })
+                                            })
+                                        });
+                                    if let Some(t) = ty {
+                                        map.insert(state.node_text(name), t);
+                                    }
+                                }
+                            }
+                            if !dc.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !matches!(c.kind(), "class_declaration" | "method_declaration") {
+                    Self::collect_local_types(state, c, map);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Emits a `Type::method` Calls ref for `recv.method(...)` whose receiver
+    /// type is known (#141), so the resolver binds to the right class method.
+    fn emit_typed_method_calls(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        var_types: &std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "method_invocation" {
+                    if let (Some(obj), Some(name)) = (
+                        child.child_by_field_name("object"),
+                        child.child_by_field_name("name"),
+                    ) {
+                        let ty = match obj.kind() {
+                            "this" => var_types.get("this").cloned(),
+                            "identifier" => var_types.get(&state.node_text(obj)).cloned(),
+                            _ => None,
+                        };
+                        if let Some(ty) = ty {
+                            let method = state.node_text(name);
+                            state.unresolved_refs.push(UnresolvedRef {
+                                from_node_id: fn_node_id.to_string(),
+                                reference_name: format!("{ty}::{method}"),
+                                reference_kind: EdgeKind::Calls,
+                                line: child.start_position().row as u32,
+                                column: child.start_position().column as u32,
+                                file_path: state.file_path.clone(),
+                            });
+                        }
+                    }
+                }
+                if !matches!(child.kind(), "class_declaration" | "method_declaration") {
+                    Self::emit_typed_method_calls(state, child, fn_node_id, var_types);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Receiver-type-aware method-call extraction (#141), mirroring the Rust
+    /// pass.
+    fn extract_receiver_typed_calls(
+        state: &mut ExtractionState,
+        fn_node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let self_type = Self::enclosing_class_type(state);
+        let var_types = Self::collect_var_types(state, fn_node, self_type.as_deref());
+        Self::emit_typed_method_calls(state, fn_node, fn_node_id, &var_types);
+    }
+
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {

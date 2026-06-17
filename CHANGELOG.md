@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Dead-code analysis resolves calls through receiver bindings, `Self::`, and dotted method calls (#141).** After the trait-impl fix (#137), `tokensave_dead_code` still reported functions/methods as dead when their only call sites used call forms the resolver didn't trace. Three gaps are closed:
+  - **`Self::`/qualified call pre-filter (resolver, all languages).** `resolve_all`'s pre-filter dropped any `Self::method` / `Type::method` ref whose *literal* string wasn't a known name — so it never reached `resolve_one`, which strips the prefix and matches the simple name. It now admits a ref when its trailing simple name is known, and `resolve_one` gained a `.`-separator fallback so Python/TS/Java dotted calls (`obj.method`, emitted as the full callee text with no bare-name ref) resolve via the method name. This alone recovers `Self::` calls in Rust and *all* receiver-method calls in the dotted-callee languages.
+  - **Receiver-type inference (per-extractor: Rust, TypeScript, Java, Python).** A method call through a binding (`r.render_to_png()`) was emitted only as the bare method name, which mis-resolves when several types define a method of that name (e.g. two `render_to_png`s — all call edges piled onto the wrong one). Each extractor now builds a per-function variable→type table (from typed parameters, constructor/`new` initializers or type annotations, and `self`/`this`) and emits a precise `Type::method` ref that the resolver binds by qualified/suffix match to the correct impl/class.
+  - **Build-variant call-edge propagation (#141 Option 2: Rust `#[cfg]`, Go platform files).** Conditionally-compiled definitions (`#[cfg(target_os="macos")] fn f()` vs its `not(...)` twin; `foo_linux.go` vs `foo_windows.go`) are the same logical symbol compiled per-config, but the name-based resolver binds a call to one variant, leaving the others with zero incoming edges and flagged dead. A new post-resolution pass groups build-variant siblings (Rust: same `qualified_name` + `#[cfg]`-gated; Go: same package directory + function name across files) and replicates the call edge to every sibling. Verified against the mex crate: `dead_code_count` dropped from 7 to 0, every removal being a genuine reachable symbol.
+
 
 ## [6.4.2] - 2026-06-17
 

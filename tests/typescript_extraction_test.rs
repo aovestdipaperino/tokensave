@@ -719,3 +719,32 @@ enum Direction {
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].visibility, Visibility::Private); // not exported
 }
+
+/// #141: a method call through a typed binding must emit `Type::method` so the
+/// resolver can disambiguate between classes that share a method name.
+#[test]
+fn test_receiver_typed_method_calls_ts() {
+    let source = r#"
+class Alpha { handle(): number { return 1; } }
+class Beta { handle(): number { return 2; } }
+function run(): number {
+  const a = new Alpha();
+  const b: Beta = new Beta();
+  return a.handle() + b.handle();
+}
+"#;
+    let result = TypeScriptExtractor.extract("svc.ts", source);
+    let names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Alpha::handle"),
+        "expected Alpha::handle, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Beta::handle"),
+        "expected Beta::handle, got {names:?}"
+    );
+}
