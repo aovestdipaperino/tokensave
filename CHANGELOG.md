@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`post-checkout` hook for automatic initialization on clone.** A new `scripts/post-checkout` git hook runs `tokensave init` automatically after a fresh `git clone`, matching the pattern of the existing `post-commit` hook. The README has been updated to document both hooks.
+
 ### Fixed
 - **Dead-code analysis resolves calls through receiver bindings, `Self::`, and dotted method calls (#141).** After the trait-impl fix (#137), `tokensave_dead_code` still reported functions/methods as dead when their only call sites used call forms the resolver didn't trace. Three gaps are closed:
   - **`Self::`/qualified call pre-filter (resolver, all languages).** `resolve_all`'s pre-filter dropped any `Self::method` / `Type::method` ref whose *literal* string wasn't a known name — so it never reached `resolve_one`, which strips the prefix and matches the simple name. It now admits a ref when its trailing simple name is known, and `resolve_one` gained a `.`-separator fallback so Python/TS/Java dotted calls (`obj.method`, emitted as the full callee text with no bare-name ref) resolve via the method name. This alone recovers `Self::` calls in Rust and *all* receiver-method calls in the dotted-callee languages.
