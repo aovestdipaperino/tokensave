@@ -1,0 +1,17 @@
+#!/bin/bash
+# Git post-checkout hook that initializes tokensave after a fresh clone.
+#
+# Install globally:
+#   git config --global core.hooksPath ~/.git-hooks
+#   cp scripts/post-checkout ~/.git-hooks/post-checkout
+#   chmod +x ~/.git-hooks/post-checkout
+#
+# Install per-repo:
+#   cp scripts/post-checkout .git/hooks/post-checkout
+#   chmod +x .git/hooks/post-checkout
+
+PREV_HEAD="$1"
+
+if [ "$PREV_HEAD" = "0000000000000000000000000000000000000000" ] && command -v tokensave &>/dev/null; then
+    tokensave init &>/dev/null &
+fi
