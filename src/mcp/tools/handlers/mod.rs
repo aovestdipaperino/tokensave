@@ -129,6 +129,16 @@ pub(crate) fn parse_string_array(args: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Returns `caller` if non-empty, otherwise falls back to `defaults`.
+/// Used to merge explicit tool-call args with config-level defaults.
+pub(crate) fn with_defaults(caller: Vec<String>, defaults: &[String]) -> Vec<String> {
+    if caller.is_empty() {
+        defaults.to_vec()
+    } else {
+        caller
+    }
+}
+
 /// Deduplicates an iterator of file path strings into a `Vec<String>`.
 pub(crate) fn unique_file_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut seen = HashSet::new();

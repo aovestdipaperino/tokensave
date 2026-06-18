@@ -13,7 +13,7 @@ use crate::types::{NodeKind, Visibility};
 use super::super::ToolResult;
 use super::{
     effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, truncate_response,
-    unique_file_paths,
+    unique_file_paths, with_defaults,
 };
 
 /// True if `line` contains `identifier` as a whole token (boundaries are
@@ -175,9 +175,10 @@ pub(super) async fn handle_dead_code(
         .get("include_trait_impls")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = parse_string_array(&args, "path_include");
-    let path_exclude = parse_string_array(&args, "path_exclude");
+    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
+    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
 
     let dead = cg
         .find_dead_code(&kinds, include_public, include_trait_impls)
@@ -347,9 +348,10 @@ pub(super) async fn handle_hotspots(
         }
     }
 
+    let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = parse_string_array(&args, "path_include");
-    let path_exclude = parse_string_array(&args, "path_exclude");
+    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
+    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
 
     if let Some(prefix) = path_prefix {
         let with_slash = if prefix.ends_with('/') {
@@ -394,9 +396,10 @@ pub(super) async fn handle_unused_imports(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
+    let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = parse_string_array(&args, "path_include");
-    let path_exclude = parse_string_array(&args, "path_exclude");
+    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
+    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
 
     let all_nodes = cg.get_all_nodes().await?;
 

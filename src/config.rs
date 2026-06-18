@@ -44,6 +44,14 @@ pub struct TokenSaveConfig {
     /// Whether to respect `.gitignore` rules when scanning files.
     #[serde(default)]
     pub git_ignore: bool,
+    /// Default path-include substrings applied to analysis tool queries when
+    /// no explicit `path_include` is provided by the caller.
+    #[serde(default)]
+    pub default_path_include: Vec<String>,
+    /// Default path-exclude substrings applied to analysis tool queries when
+    /// no explicit `path_exclude` is provided by the caller.
+    #[serde(default)]
+    pub default_path_exclude: Vec<String>,
 }
 
 impl Default for TokenSaveConfig {
@@ -68,6 +76,8 @@ impl Default for TokenSaveConfig {
             extract_docstrings: true,
             track_call_sites: true,
             git_ignore: true,
+            default_path_include: Vec::new(),
+            default_path_exclude: Vec::new(),
         }
     }
 }
