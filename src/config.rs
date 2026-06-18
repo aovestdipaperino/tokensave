@@ -67,7 +67,7 @@ impl Default for TokenSaveConfig {
             max_file_size: 1_048_576,
             extract_docstrings: true,
             track_call_sites: true,
-            git_ignore: false,
+            git_ignore: true,
         }
     }
 }
