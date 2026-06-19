@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`post-checkout` hook for automatic initialization on clone.** A new `scripts/post-checkout` git hook runs `tokensave init` automatically after a fresh `git clone`, matching the pattern of the existing `post-commit` hook. The README has been updated to document both hooks.
+- **`post-checkout` hook for automatic initialization on clone.** `tokensave install` now offers a global git `post-checkout` hook alongside the `post-commit` hook, gated by the same opt-in (`--git-hook` flag / interactive prompt). When accepted, it writes a `post-checkout` hook that runs `tokensave init` in the background — but only on the initial checkout of a fresh `git clone` (the all-zeros previous HEAD), so ordinary branch switches don't trigger indexing. A reference `scripts/post-checkout` is included for manual installs, and the hook is also installed on the next run for users who already have the `post-commit` hook. The README documents both hooks.
 
 ### Fixed
 - **Dead-code analysis resolves calls through receiver bindings, `Self::`, and dotted method calls (#141).** After the trait-impl fix (#137), `tokensave_dead_code` still reported functions/methods as dead when their only call sites used call forms the resolver didn't trace. Three gaps are closed:
