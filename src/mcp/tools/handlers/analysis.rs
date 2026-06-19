@@ -177,8 +177,14 @@ pub(super) async fn handle_dead_code(
         .unwrap_or(false);
     let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
-    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
 
     let dead = cg
         .find_dead_code(&kinds, include_public, include_trait_impls)
@@ -350,8 +356,14 @@ pub(super) async fn handle_hotspots(
 
     let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
-    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
 
     if let Some(prefix) = path_prefix {
         let with_slash = if prefix.ends_with('/') {
@@ -398,8 +410,14 @@ pub(super) async fn handle_unused_imports(
 ) -> Result<ToolResult> {
     let cfg = cg.get_config();
     let path_prefix = effective_path(&args, scope_prefix);
-    let path_include = with_defaults(parse_string_array(&args, "path_include"), &cfg.default_path_include);
-    let path_exclude = with_defaults(parse_string_array(&args, "path_exclude"), &cfg.default_path_exclude);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
 
     let all_nodes = cg.get_all_nodes().await?;
 
@@ -418,9 +436,7 @@ pub(super) async fn handle_unused_imports(
             })
         })
         .collect();
-    let use_nodes = filter_by_path_lists(use_nodes, &path_include, &path_exclude, |n| {
-        &n.file_path
-    });
+    let use_nodes = filter_by_path_lists(use_nodes, &path_include, &path_exclude, |n| &n.file_path);
 
     let mut unused: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
