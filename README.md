@@ -135,13 +135,13 @@ tokensave install --agent roo-code        # Roo Code
 tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed
 tokensave install --agent grok            # Grok Build (xAI)
-tokensave install --git-hook yes           # auto-install the global post-commit hook (no prompt)
-tokensave install --git-hook no            # skip the post-commit hook (no prompt)
+tokensave install --git-hook yes           # auto-install the global post-commit and post-checkout hooks (no prompt)
+tokensave install --git-hook no            # skip the post-commit and post-checkout hooks (no prompt)
 ```
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
-All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered a global git post-commit hook.
+All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks.
 
 ### Project-local install
 
@@ -162,7 +162,7 @@ cd /path/to/your/project
 tokensave init
 ```
 
-This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git post-commit hook from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
+This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git hooks from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
 
 <details>
 <summary><strong>What install writes for Claude Code</strong></summary>
@@ -545,11 +545,11 @@ tokensave keeps the graph up to date without a background daemon or an OS-level 
 
 **Multi-agent work and git worktrees.** When multiple agents work on the same project concurrently, the strong assumption is that each agent operates in its own git worktree. Worktrees are independent filesystem checkouts of the same repository: agent A and agent B each have their own copy of every file, so they never overwrite each other's in-flight edits. tokensave automatically detects when a query comes from a worktree nested inside the main checkout and serves results from the correct branch graph. Changes accumulate independently and are eventually reconciled via git merge or rebase — the same process used for any other parallel development. This design avoids the complexity and failure modes of cross-agent locking over a shared mutable directory.
 
-**CLI-only workflows.** If you run `tokensave` commands without an attached agent (no MCP server), the staleness check is not running between commands. Install a git post-commit hook to keep the index fresh automatically after every commit:
+**CLI-only workflows.** If you run `tokensave` commands without an attached agent (no MCP server), the staleness check is not running between commands. Install git hooks to keep the index fresh automatically after every commit or clone:
 
 ```bash
-cp scripts/post-commit .git/hooks/post-commit
-chmod +x .git/hooks/post-commit
+cp scripts/post-commit scripts/post-checkout .git/hooks/
+chmod +x .git/hooks/post-commit .git/hooks/post-checkout
 ```
 
 ### Upgrading from 5.x

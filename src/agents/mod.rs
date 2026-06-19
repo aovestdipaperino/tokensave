@@ -1040,6 +1040,9 @@ pub enum GitHookMode {
 /// The marker comment used to identify tokensave's section in a hook script.
 const HOOK_MARKER: &str = "# tokensave: auto-sync";
 
+/// Marker comment identifying tokensave's section in the post-checkout hook.
+const HOOK_MARKER_CHECKOUT: &str = "# tokensave: auto-init";
+
 /// The hook snippet appended to (or written as) the post-commit script.
 fn post_commit_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
@@ -1047,6 +1050,63 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
         "{HOOK_MARKER}\n\
          {bin} sync >/dev/null 2>&1 &\n"
     )
+}
+
+/// The hook snippet appended to (or written as) the post-checkout script.
+///
+/// Runs `tokensave init` in the background, but only on the initial checkout of
+/// a fresh clone — git passes the all-zeros sentinel as the previous HEAD in
+/// that case — so ordinary branch switches and file checkouts don't trigger
+/// indexing.
+fn post_checkout_snippet(tokensave_bin: &str) -> String {
+    let bin = tokensave_bin.replace('\\', "/");
+    format!(
+        "{HOOK_MARKER_CHECKOUT}\n\
+         if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+         \t{bin} init >/dev/null 2>&1 &\n\
+         fi\n"
+    )
+}
+
+/// Append `snippet` to an existing hook file (creating it with a `#!/bin/sh`
+/// shebang first if absent), then mark it executable on Unix. Prints an error
+/// and returns `false` on any I/O failure. Idempotency (skipping when the
+/// tokensave marker is already present) is the caller's responsibility.
+fn write_global_hook(hook_path: &Path, snippet: &str) -> bool {
+    if hook_path.exists() {
+        use std::io::Write;
+        let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(hook_path) else {
+            eprintln!(
+                "  \x1b[31m✘\x1b[0m Failed to open {} for writing",
+                hook_path.display()
+            );
+            return false;
+        };
+        if write!(f, "\n{snippet}").is_err() {
+            eprintln!(
+                "  \x1b[31m✘\x1b[0m Failed to write to {}",
+                hook_path.display()
+            );
+            return false;
+        }
+    } else {
+        let contents = format!("#!/bin/sh\n{snippet}");
+        if std::fs::write(hook_path, contents).is_err() {
+            eprintln!(
+                "  \x1b[31m✘\x1b[0m Failed to create {}",
+                hook_path.display()
+            );
+            return false;
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(hook_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    true
 }
 
 /// Action decided by [`decide_hook_action`]: what the caller should do
@@ -1109,38 +1169,37 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         None
     };
 
-    match decide_hook_action(mode, existing_contents.as_deref()) {
+    // Whether to (re)write the post-commit hook. The post-checkout hook is
+    // installed alongside it under the same opt-in, with its own marker, so a
+    // pre-existing post-commit install still gains post-checkout on the next run.
+    let install_post_commit = match decide_hook_action(mode, existing_contents.as_deref()) {
         HookAction::AlreadyInstalled => {
             eprintln!("  Global git post-commit hook already contains tokensave, skipping");
-            return;
+            false
         }
         HookAction::Skip => {
             // Mode `No` (or default-mode non-TTY). Stay quiet — script
             // callers asked for no output here.
             return;
         }
-        HookAction::Prompt => {}
-        HookAction::Install => {}
-    }
-
-    // If we reach this point, we are either prompting (TTY, default
-    // mode) or installing unconditionally (mode `Yes`). For the
-    // prompting branch, ask and bail if the user declines.
-    if matches!(mode, GitHookMode::Default) {
-        eprintln!();
-        eprint!(
-            "Install a global git post-commit hook to auto-run \x1b[1mtokensave sync\x1b[0m after each commit? [y/N] "
-        );
-
-        let mut answer = String::new();
-        if std::io::stdin().read_line(&mut answer).is_err() {
-            return;
+        HookAction::Prompt => {
+            // TTY + default mode: ask, and bail entirely if the user declines.
+            eprintln!();
+            eprint!(
+                "Install global git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m hooks to auto-run \x1b[1mtokensave sync\x1b[0m after each commit and \x1b[1mtokensave init\x1b[0m after a fresh clone? [y/N] "
+            );
+            let mut answer = String::new();
+            if std::io::stdin().read_line(&mut answer).is_err() {
+                return;
+            }
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+                eprintln!("  Skipped git hooks");
+                return;
+            }
+            true
         }
-        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
-            eprintln!("  Skipped git post-commit hook");
-            return;
-        }
-    }
+        HookAction::Install => true,
+    };
 
     // Create the hooks directory if needed.
     if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
@@ -1164,47 +1223,27 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         );
     }
 
-    // Append to or create the hook file.
-    let snippet = post_commit_snippet(tokensave_bin);
-
-    if hook_path.exists() {
-        use std::io::Write;
-        let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&hook_path) else {
-            eprintln!(
-                "  \x1b[31m✘\x1b[0m Failed to open {} for writing",
-                hook_path.display()
-            );
-            return;
-        };
-        if write!(f, "\n{snippet}").is_err() {
-            eprintln!(
-                "  \x1b[31m✘\x1b[0m Failed to write to {}",
-                hook_path.display()
-            );
-            return;
-        }
-    } else {
-        let contents = format!("#!/bin/sh\n{snippet}");
-        if std::fs::write(&hook_path, contents).is_err() {
-            eprintln!(
-                "  \x1b[31m✘\x1b[0m Failed to create {}",
-                hook_path.display()
-            );
-            return;
-        }
+    if install_post_commit && write_global_hook(&hook_path, &post_commit_snippet(tokensave_bin)) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Installed global git post-commit hook at {}",
+            hook_path.display()
+        );
     }
 
-    // Make executable (Unix).
-    #[cfg(unix)]
+    // Install the post-checkout hook so a fresh clone auto-initializes. Its
+    // marker is independent of post-commit's, so this is skipped only when the
+    // post-checkout hook itself is already present.
+    let checkout_path = hooks_dir.join("post-checkout");
+    let checkout_present = std::fs::read_to_string(&checkout_path)
+        .ok()
+        .is_some_and(|c| c.contains(HOOK_MARKER_CHECKOUT));
+    if !checkout_present && write_global_hook(&checkout_path, &post_checkout_snippet(tokensave_bin))
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Installed global git post-checkout hook at {}",
+            checkout_path.display()
+        );
     }
-
-    eprintln!(
-        "\x1b[32m✔\x1b[0m Installed global git post-commit hook at {}",
-        hook_path.display()
-    );
 }
 
 /// Reads `core.hooksPath` from the global gitconfig files.
@@ -1529,6 +1568,51 @@ mod git_hook_tests {
     #[test]
     fn decide_hook_action_no_skips_even_when_file_missing() {
         assert_eq!(decide_hook_action(GitHookMode::No, None), HookAction::Skip);
+    }
+
+    #[test]
+    fn post_checkout_snippet_inits_only_on_fresh_clone() {
+        let s = post_checkout_snippet("/usr/local/bin/tokensave");
+        assert!(
+            s.contains(HOOK_MARKER_CHECKOUT),
+            "must carry its idempotency marker, got: {s}"
+        );
+        assert!(
+            s.contains("/usr/local/bin/tokensave init"),
+            "must run `init` with the resolved binary, got: {s}"
+        );
+        assert!(
+            s.contains("0000000000000000000000000000000000000000"),
+            "must guard on the fresh-clone sentinel so branch switches don't index, got: {s}"
+        );
+    }
+
+    #[test]
+    fn write_global_hook_creates_with_shebang_then_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("post-checkout");
+
+        assert!(write_global_hook(&path, "FIRST\n"));
+        let after_create = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after_create.starts_with("#!/bin/sh\n"),
+            "new hook file must get a shebang, got: {after_create}"
+        );
+        assert!(after_create.contains("FIRST"));
+
+        assert!(write_global_hook(&path, "SECOND\n"));
+        let after_append = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after_append.contains("FIRST") && after_append.contains("SECOND"),
+            "second write must append, not clobber, got: {after_append}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "hook must be executable");
+        }
     }
 
     #[test]

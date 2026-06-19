@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`post-checkout` hook for automatic initialization on clone.** `tokensave install` now offers a global git `post-checkout` hook alongside the `post-commit` hook, gated by the same opt-in (`--git-hook` flag / interactive prompt). When accepted, it writes a `post-checkout` hook that runs `tokensave init` in the background — but only on the initial checkout of a fresh `git clone` (the all-zeros previous HEAD), so ordinary branch switches don't trigger indexing. A reference `scripts/post-checkout` is included for manual installs, and the hook is also installed on the next run for users who already have the `post-commit` hook. The README documents both hooks.
 - **`path`, `path_include`, `path_exclude` params on `dead_code`, `hotspots`, and `unused_imports`.** These three analysis tools were the only ones missing path-scoping support. Same semantics as `god_class`, `coupling`, `complexity`, and `largest`. `path` filters to a directory prefix; `path_include`/`path_exclude` filter by substring (exclude takes precedence).
 - **`default_path_include` / `default_path_exclude` config fields.** Query-level defaults in `.tokensave/config.json` applied to analysis tools when no explicit `path_include`/`path_exclude` is passed. Useful for permanently excluding test/mock directories from analysis results without repeating args on every call.
 
