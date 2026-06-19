@@ -11,7 +11,10 @@ use crate::tokensave::TokenSave;
 use crate::types::{NodeKind, Visibility};
 
 use super::super::ToolResult;
-use super::{effective_path, filter_by_scope, truncate_response, unique_file_paths};
+use super::{
+    effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, truncate_response,
+    unique_file_paths, with_defaults,
+};
 
 /// True if `line` contains `identifier` as a whole token (boundaries are
 /// any non-`[A-Za-z0-9_]` char or string ends). Avoids false positives
@@ -172,10 +175,22 @@ pub(super) async fn handle_dead_code(
         .get("include_trait_impls")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let cfg = cg.get_config();
+    let path_prefix = effective_path(&args, scope_prefix);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
+
     let dead = cg
         .find_dead_code(&kinds, include_public, include_trait_impls)
         .await?;
-    let dead = filter_by_scope(dead, scope_prefix, |n| &n.file_path);
+    let dead = filter_by_scope(dead, path_prefix, |n| &n.file_path);
+    let dead = filter_by_path_lists(dead, &path_include, &path_exclude, |n| &n.file_path);
 
     let touched_files = unique_file_paths(dead.iter().map(|n| n.file_path.as_str()));
 
@@ -339,7 +354,18 @@ pub(super) async fn handle_hotspots(
         }
     }
 
-    if let Some(prefix) = scope_prefix {
+    let cfg = cg.get_config();
+    let path_prefix = effective_path(&args, scope_prefix);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
+
+    if let Some(prefix) = path_prefix {
         let with_slash = if prefix.ends_with('/') {
             prefix.to_string()
         } else {
@@ -351,6 +377,13 @@ pub(super) async fn handle_hotspots(
                 .is_some_and(|f| f.starts_with(&with_slash) || f == prefix)
         });
         touched.retain(|f| f.starts_with(&with_slash) || f == prefix);
+    }
+
+    if !path_include.is_empty() || !path_exclude.is_empty() {
+        items = filter_by_path_lists(items, &path_include, &path_exclude, |item| {
+            item["file"].as_str().unwrap_or("")
+        });
+        touched = filter_by_path_lists(touched, &path_include, &path_exclude, |f| f.as_str());
     }
 
     let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
@@ -375,7 +408,17 @@ pub(super) async fn handle_unused_imports(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let _ = args; // currently unused beyond scope filtering
+    let cfg = cg.get_config();
+    let path_prefix = effective_path(&args, scope_prefix);
+    let path_include = with_defaults(
+        parse_string_array(&args, "path_include"),
+        &cfg.default_path_include,
+    );
+    let path_exclude = with_defaults(
+        parse_string_array(&args, "path_exclude"),
+        &cfg.default_path_exclude,
+    );
+
     let all_nodes = cg.get_all_nodes().await?;
 
     // Find all Use nodes
@@ -383,7 +426,7 @@ pub(super) async fn handle_unused_imports(
         .iter()
         .filter(|n| n.kind == NodeKind::Use)
         .filter(|n| {
-            scope_prefix.is_none_or(|prefix| {
+            path_prefix.is_none_or(|prefix| {
                 let with_slash = if prefix.ends_with('/') {
                     prefix.to_string()
                 } else {
@@ -393,6 +436,7 @@ pub(super) async fn handle_unused_imports(
             })
         })
         .collect();
+    let use_nodes = filter_by_path_lists(use_nodes, &path_include, &path_exclude, |n| &n.file_path);
 
     let mut unused: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
