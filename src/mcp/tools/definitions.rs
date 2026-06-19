@@ -611,6 +611,20 @@ fn def_dead_code() -> ToolDefinition {
                 "include_trait_impls": {
                     "type": "boolean",
                     "description": "When true, do NOT exclude Rust trait-impl methods (implicitly-dispatched methods like fmt/deref/drop). Default false."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             }
         }),
@@ -686,6 +700,20 @@ fn def_hotspots() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of hotspots to return (default: 10)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             }
         }),
@@ -739,7 +767,22 @@ fn def_unused_imports() -> ToolDefinition {
         "Find import/use nodes that are never referenced by any other node.",
         json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
+                }
+            }
         }),
     )
 }
