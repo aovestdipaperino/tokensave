@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [6.4.3] - 2026-06-19
+
 ### Added
 - **`post-checkout` hook for automatic initialization on clone.** `tokensave install` now offers a global git `post-checkout` hook alongside the `post-commit` hook, gated by the same opt-in (`--git-hook` flag / interactive prompt). When accepted, it writes a `post-checkout` hook that runs `tokensave init` in the background — but only on the initial checkout of a fresh `git clone` (the all-zeros previous HEAD), so ordinary branch switches don't trigger indexing. A reference `scripts/post-checkout` is included for manual installs, and the hook is also installed on the next run for users who already have the `post-commit` hook. The README documents both hooks.
 - **`path`, `path_include`, `path_exclude` params on `dead_code`, `hotspots`, and `unused_imports`.** These three analysis tools were the only ones missing path-scoping support. Same semantics as `god_class`, `coupling`, `complexity`, and `largest`. `path` filters to a directory prefix; `path_include`/`path_exclude` filter by substring (exclude takes precedence).
@@ -22,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Receiver-type inference (per-extractor: Rust, TypeScript, Java, Python).** A method call through a binding (`r.render_to_png()`) was emitted only as the bare method name, which mis-resolves when several types define a method of that name (e.g. two `render_to_png`s — all call edges piled onto the wrong one). Each extractor now builds a per-function variable→type table (from typed parameters, constructor/`new` initializers or type annotations, and `self`/`this`) and emits a precise `Type::method` ref that the resolver binds by qualified/suffix match to the correct impl/class.
   - **Build-variant call-edge propagation (#141 Option 2: Rust `#[cfg]`, Go platform files).** Conditionally-compiled definitions (`#[cfg(target_os="macos")] fn f()` vs its `not(...)` twin; `foo_linux.go` vs `foo_windows.go`) are the same logical symbol compiled per-config, but the name-based resolver binds a call to one variant, leaving the others with zero incoming edges and flagged dead. A new post-resolution pass groups build-variant siblings (Rust: same `qualified_name` + `#[cfg]`-gated; Go: same package directory + function name across files) and replicates the call edge to every sibling. Verified against the mex crate: `dead_code_count` dropped from 7 to 0, every removal being a genuine reachable symbol.
 - **`tokensave install` / `reinstall` no longer reorders keys in agent config files (#140).** The installers parse each agent's JSON config (`mcp.json`, `settings.json`, …) into a `serde_json::Value`, edit the tokensave entry, and write it back. Because the `serde_json` dependency didn't enable `preserve_order`, its object maps were backed by `BTreeMap` and re-serialized **every** key alphabetically — turning a one-line edit into a whole-file diff that clobbered the user's preferred ordering. Enabling the `preserve_order` feature makes `Value` retain the original key order (and append newly-inserted keys like the `tokensave` MCP server at the end), so install now touches only the related lines. Reported by @cometkim.
-
 
 ## [6.4.2] - 2026-06-17
 
@@ -1474,3 +1476,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.4.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.0
 [6.4.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.1
 [6.4.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.2
+[6.4.3]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.3
