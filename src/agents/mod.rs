@@ -504,7 +504,18 @@ pub fn which_tokensave() -> Option<String> {
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with("tokensave"))
         {
-            return Some(normalize_path_separators(&exe.to_string_lossy()));
+            let normalized = normalize_path_separators(&exe.to_string_lossy());
+            // `current_exe()` resolves symlinks, so under Homebrew it points at the
+            // version-pinned Cellar path (e.g. `.../Cellar/tokensave/6.4.2/bin/...`).
+            // `brew upgrade`/`brew cleanup` later remove that path, breaking any hook
+            // config that embedded it (#146). Prefer the version-stable `bin` symlink
+            // when it exists.
+            if let Some(stable) = homebrew_stable_path(&normalized) {
+                if Path::new(&stable).exists() {
+                    return Some(stable);
+                }
+            }
+            return Some(normalized);
         }
     }
     // Fall back to PATH lookup
@@ -527,6 +538,19 @@ pub fn which_tokensave() -> Option<String> {
 /// contexts on Windows. No-op on Unix where paths already use `/`.
 fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// Maps a Homebrew Cellar executable path to its version-stable `bin` symlink.
+///
+/// Homebrew installs the real binary under `<prefix>/Cellar/tokensave/<version>/bin/`
+/// and exposes it on `PATH` via a stable `<prefix>/bin/tokensave` symlink. Embedding
+/// the Cellar path in hook configs breaks on `brew upgrade`/`brew cleanup`; the `bin`
+/// symlink always tracks the current version. Expects a forward-slash path. Returns
+/// `None` for non-Cellar paths, leaving the caller to use the path as-is.
+fn homebrew_stable_path(exe: &str) -> Option<String> {
+    let (prefix, rest) = exe.split_once("/Cellar/tokensave/")?;
+    let file = rest.rsplit('/').next()?;
+    Some(format!("{prefix}/bin/{file}"))
 }
 
 /// Returns the user's home directory, cross-platform.
@@ -832,6 +856,44 @@ mod migrate_tests {
         assert!(
             additions.is_empty(),
             "no agent files in home → no additions, got {additions:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod which_tokensave_tests {
+    use super::*;
+
+    // Regression for #146: hooks embedded a version-pinned Homebrew Cellar
+    // path, which `brew upgrade`/`brew cleanup` later removes. The stable
+    // `<prefix>/bin/tokensave` symlink survives upgrades and must be preferred.
+
+    #[test]
+    fn deversions_linuxbrew_cellar_path() {
+        assert_eq!(
+            homebrew_stable_path("/home/linuxbrew/.linuxbrew/Cellar/tokensave/6.4.2/bin/tokensave"),
+            Some("/home/linuxbrew/.linuxbrew/bin/tokensave".to_string())
+        );
+    }
+
+    #[test]
+    fn deversions_macos_arm_cellar_path() {
+        assert_eq!(
+            homebrew_stable_path("/opt/homebrew/Cellar/tokensave/6.4.2/bin/tokensave"),
+            Some("/opt/homebrew/bin/tokensave".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_non_cellar_cargo_path() {
+        assert_eq!(homebrew_stable_path("/Users/me/.cargo/bin/tokensave"), None);
+    }
+
+    #[test]
+    fn ignores_already_stable_bin_path() {
+        assert_eq!(
+            homebrew_stable_path("/home/linuxbrew/.linuxbrew/bin/tokensave"),
+            None
         );
     }
 }
