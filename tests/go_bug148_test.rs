@@ -54,20 +54,21 @@ import (
 	"example.com/repro/obs"
 )
 
-// Parse uses the net/url import (selector + type ref) — bug 1.
+// Bug 1 — selector call (`url.Parse`) AND type reference (`*url.URL`) both
+// exercise the net/url import.
 func Parse(raw string) (*url.URL, error) { return url.Parse(raw) }
 
-// Class A — same-file plain call.
-func handler() { _ = readToken() }
-func readToken() string { return "" }
+// Class A — direct call, even same-file.
+func handler()                { _ = readToken(nil) }
+func readToken(r *Req) string { return "" }
 
-// Class B — cross-package call + generic cross-package call.
+// Class B — direct cross-package call + generic cross-package call.
 func wire(m obs.Meter, xs []int) {
 	_ = obs.MustCounter(m, "x")
 	_ = obs.Distinct[int](xs)
 }
 
-// Class C — function values in a slice/registry literal.
+// Class C — function referenced as a value in a slice / composite literal.
 var registrations = []func() error{applyA, applyB}
 
 func applyA() error { return nil }
@@ -79,22 +80,28 @@ func Apply() error {
 	return nil
 }
 
-// Class D — function passed as an argument / struct field value.
+// Class D — function passed as a value (argument or struct field), including a
+// package-level struct-field reference and a call expression in argument
+// position.
 type entry struct{ wrap func() }
 
-func setup(mux *Mux) {
-	mux.HandleFunc("GET /x", HandleX)
-	withMiddleware(tagRoute)
-	_ = []entry{{wrap: Recover}}
+var chain = []entry{{wrap: Recover}}
+
+func setup(mux *Mux, store *Store) {
+	mux.HandleFunc("GET /x", HandleX) // arg
+	api.WithMiddleware(tagRoute)      // arg (cross-package selector call)
+	queue.AddWorker(NewWorker(store)) // call expression in argument position
 }
 
 type Mux struct{}
+type Store struct{}
+type Worker struct{}
 
 func (m *Mux) HandleFunc(pat string, h func()) {}
-func withMiddleware(h func())                  {}
-func HandleX()                                 {}
-func tagRoute()                                {}
-func Recover()                                 {}
+func HandleX()                                  {}
+func tagRoute()                                 {}
+func Recover()                                  {}
+func NewWorker(s *Store) *Worker                { return nil }
 "#,
     )
     .unwrap();
@@ -127,14 +134,15 @@ async fn dead_code_no_false_positives_for_referenced_functions() {
         .collect();
 
     for name in [
-        "readToken",   // class A
-        "MustCounter", // class B cross-package call
-        "Distinct",    // class B generic call
-        "applyA",      // class C registry value
-        "applyB",      // class C registry value
-        "HandleX",     // class D argument value
-        "tagRoute",    // class D argument value
-        "Recover",     // class D struct-field value
+        "readToken",   // class A — same-file call readToken(nil)
+        "MustCounter", // class B — cross-package call obs.MustCounter(...)
+        "Distinct",    // class B — generic call obs.Distinct[int](...)
+        "applyA",      // class C — registry slice value
+        "applyB",      // class C — registry slice value
+        "HandleX",     // class D — argument value mux.HandleFunc(_, HandleX)
+        "tagRoute",    // class D — argument value api.WithMiddleware(tagRoute)
+        "Recover",     // class D — package-level struct-field value {wrap: Recover}
+        "NewWorker",   // class D — call expr in argument position AddWorker(NewWorker(...))
     ] {
         assert!(
             !dead.contains(&name),
