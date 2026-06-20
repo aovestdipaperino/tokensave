@@ -250,21 +250,74 @@ impl GoExtractor {
     }
 
     /// Extract a single import spec as a Use node.
+    ///
+    /// An `import_spec` has an optional leading form — a named alias
+    /// (`package_identifier`), a blank `_` (`blank_identifier`), or a dot `.`
+    /// (`dot`) — followed by the path string literal. The previous version
+    /// took the raw spec text and merely stripped surrounding quotes, which
+    /// mangled aliased imports (`u "net/url"` became `u "net/url`) and lost
+    /// the alias entirely (#148).
     fn visit_single_import(state: &mut ExtractionState, node: TsNode<'_>) {
         let text = state.node_text(node);
-        // Strip quotes from the import path.
-        let path = text.trim().trim_matches('"').to_string();
+        let mut alias: Option<String> = None;
+        let mut is_blank = false;
+        let mut is_dot = false;
+        let mut path = String::new();
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "package_identifier" => alias = Some(state.node_text(child)),
+                    "blank_identifier" => is_blank = true,
+                    "dot" => is_dot = true,
+                    "interpreted_string_literal" | "raw_string_literal" => {
+                        path = state
+                            .node_text(child)
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('`')
+                            .to_string();
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if path.is_empty() {
+            // Fallback: strip quotes from the whole spec (defensive).
+            path = text.trim().trim_matches('"').to_string();
+        }
+
+        // The Use node `name` displays the import path. For aliased imports we
+        // append ` as <alias>` so the unused-imports analysis can recover the
+        // in-scope identifier (mirroring the Rust `use foo as bar` convention).
+        let display_name = match &alias {
+            Some(a) => format!("{path} as {a}"),
+            None => path.clone(),
+        };
+        // Blank (`_`, side-effect) and dot imports are deliberate and are never
+        // referenced by a package-qualified identifier, so they must never be
+        // flagged as unused. `unused_imports` skips `Pub` Use nodes.
+        let visibility = if is_blank || is_dot {
+            Visibility::Pub
+        } else {
+            Visibility::Private
+        };
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
-        let qualified_name = format!("{}::{}", state.qualified_prefix(), path);
-        let id = generate_node_id(&state.file_path, &NodeKind::Use, &path, start_line);
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), display_name);
+        let id = generate_node_id(&state.file_path, &NodeKind::Use, &display_name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
             kind: NodeKind::Use,
-            name: path.clone(),
+            name: display_name,
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
@@ -274,7 +327,7 @@ impl GoExtractor {
             end_column,
             signature: Some(text.trim().to_string()),
             docstring: None,
-            visibility: Visibility::Private,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -919,11 +972,15 @@ impl GoExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // Scan the initializer for value references so functions used only as
+        // registry entries (`var reg = []func(){applyA}`) stay alive (#148).
+        Self::extract_call_sites(state, node, &id);
     }
 
     /// Extract a var declaration. May contain multiple `var_spec` children.
@@ -986,11 +1043,14 @@ impl GoExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // Scan the initializer for value references (registry/handler tables).
+        Self::extract_call_sites(state, node, &id);
     }
 
     // ----------------------------
@@ -1130,8 +1190,13 @@ impl GoExtractor {
         }
     }
 
-    /// Recursively find `call_expression` and `selector_expression` nodes inside a
-    /// given node and create unresolved Calls references.
+    /// Recursively walk an expression subtree and create unresolved references
+    /// for everything that points at a definition: `call_expression` callees
+    /// (Calls), function names used as *values* in composite literals and call
+    /// arguments (Uses), and the base name of `generic_type` instantiations
+    /// (Uses). Without the value/generic references, live functions wired up as
+    /// registry entries, handlers, middleware, or called generically are
+    /// flagged as dead code (#148).
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1170,12 +1235,37 @@ impl GoExtractor {
                                 file_path: state.file_path.clone(),
                             });
                         }
-                        // Also recurse into the call expression for nested calls.
+                        // Also recurse into the call expression for nested calls
+                        // and value-reference arguments.
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
-                    // Skip nested function literals to avoid polluting call sites.
-                    "func_literal" => {}
+                    // `argument_list` — a bare `identifier` or `selector_expression`
+                    // passed as an argument is a function/value reference
+                    // (`mux.HandleFunc("GET /x", HandleX)`), not a call.
+                    "argument_list" => {
+                        Self::extract_value_refs_from_list(state, child, fn_node_id);
+                        Self::extract_call_sites(state, child, fn_node_id);
+                    }
+                    // `literal_element` — a bare identifier/selector inside a
+                    // composite or slice literal (`[]func(){applyA, applyB}`,
+                    // struct field values) is a value reference.
+                    "literal_element" => {
+                        Self::extract_value_ref(state, child, fn_node_id);
+                        Self::extract_call_sites(state, child, fn_node_id);
+                    }
+                    // `generic_type` — a generic instantiation such as
+                    // `slices2.Distinct[int]` mis-parses as a type (and a
+                    // generic *call* parses as a `type_conversion_expression`
+                    // wrapping it), so the call is never seen. Emit a Uses
+                    // reference to the base name to keep the target alive.
+                    "generic_type" => {
+                        Self::extract_generic_base_ref(state, child, fn_node_id);
+                        Self::extract_call_sites(state, child, fn_node_id);
+                    }
                     _ => {
+                        // Recurse into everything else, including function
+                        // literals — a function called only inside a closure
+                        // (goroutine, handler) is still very much alive.
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
                 }
@@ -1183,6 +1273,78 @@ impl GoExtractor {
                     break;
                 }
             }
+        }
+    }
+
+    /// Emit a Uses reference for each direct `identifier` / `selector_expression`
+    /// child of an `argument_list` (a function or value passed by name).
+    fn extract_value_refs_from_list(
+        state: &mut ExtractionState,
+        list: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let mut cursor = list.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                Self::push_value_ref(state, child, fn_node_id);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Emit a Uses reference for a `literal_element` whose value is a bare
+    /// `identifier` / `selector_expression`.
+    fn extract_value_ref(state: &mut ExtractionState, elem: TsNode<'_>, fn_node_id: &str) {
+        if let Some(child) = elem.named_child(0) {
+            Self::push_value_ref(state, child, fn_node_id);
+        }
+    }
+
+    /// If `node` is an `identifier` or `selector_expression`, push a Uses
+    /// reference to the (bare) name it refers to.
+    fn push_value_ref(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        let name = match node.kind() {
+            "identifier" => state.node_text(node),
+            "selector_expression" => match Self::find_child_by_kind(node, "field_identifier") {
+                Some(field) => state.node_text(field),
+                None => return,
+            },
+            _ => return,
+        };
+        state.unresolved_refs.push(UnresolvedRef {
+            from_node_id: fn_node_id.to_string(),
+            reference_name: name,
+            reference_kind: EdgeKind::Uses,
+            line: node.start_position().row as u32,
+            column: node.start_position().column as u32,
+            file_path: state.file_path.clone(),
+        });
+    }
+
+    /// Emit a Uses reference to the base name of a `generic_type` node, e.g.
+    /// `Distinct` from `slices2.Distinct[int]` or `List` from `List[T]`.
+    fn extract_generic_base_ref(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        // The base is either a `type_identifier` child or a `qualified_type`
+        // (`package_identifier` + `type_identifier`).
+        let base_name = Self::find_child_by_kind(node, "type_identifier")
+            .map(|n| state.node_text(n))
+            .or_else(|| {
+                Self::find_child_by_kind(node, "qualified_type")
+                    .and_then(|q| Self::find_child_by_kind(q, "type_identifier"))
+                    .map(|n| state.node_text(n))
+            });
+        if let Some(name) = base_name {
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: fn_node_id.to_string(),
+                reference_name: name,
+                reference_kind: EdgeKind::Uses,
+                line: node.start_position().row as u32,
+                column: node.start_position().column as u32,
+                file_path: state.file_path.clone(),
+            });
         }
     }
 

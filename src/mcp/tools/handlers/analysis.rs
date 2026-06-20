@@ -131,6 +131,26 @@ fn push_identifier(out: &mut Vec<String>, item: &str, parent: &str) {
     out.push(id);
 }
 
+/// Returns the identifier a Go import brings into scope.
+///
+/// Go imports are slash-separated paths, not `::`-separated, so the generic
+/// [`identifiers_from_use_path`] would treat `net/url` as a single token that
+/// never matches the `url.Parse` call site — flagging every import as unused
+/// (#148). The in-scope identifier is the alias (`u "net/url"` → `u`, encoded
+/// as `"net/url as u"`) or, for a plain import, the last path segment (`url`).
+/// Blank (`_`) and dot (`.`) imports are stored as `Pub` Use nodes and are
+/// filtered out before this is ever called.
+fn go_import_identifier(name: &str) -> Option<String> {
+    let name = name.trim();
+    // Aliased form: `<path> as <alias>` — the alias is what code references.
+    if let Some((_, alias)) = name.rsplit_once(" as ") {
+        let alias = alias.trim();
+        return (!alias.is_empty()).then(|| alias.to_string());
+    }
+    let last = name.rsplit('/').next().unwrap_or(name).trim();
+    (!last.is_empty()).then(|| last.to_string())
+}
+
 /// Resolves a single use-tree segment (no `::`) into the identifier it
 /// brings into scope, accounting for `as` aliases.
 fn identifier_from_segment(seg: &str) -> String {
@@ -467,7 +487,16 @@ pub(super) async fn handle_unused_imports(
         // flagged every grouped import (false positive) or missed unused
         // members inside a partially-used group (false negative). Real
         // codebases lean heavily on grouped imports.
-        let identifiers = identifiers_from_use_path(&use_node.name);
+        // Go imports are slash-separated paths; the generic `::`-based parser
+        // would never recover the package identifier (#148).
+        let is_go = std::path::Path::new(&use_node.file_path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("go"));
+        let identifiers = if is_go {
+            go_import_identifier(&use_node.name).into_iter().collect()
+        } else {
+            identifiers_from_use_path(&use_node.name)
+        };
         if identifiers.is_empty() {
             continue;
         }

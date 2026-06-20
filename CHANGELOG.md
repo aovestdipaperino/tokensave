@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Go extractor: `dead_code` and `unused_imports` no longer flood with false positives from missing call/use edges (#148).** Follow-up to #141/#137 for the Go extractor, which only emitted edges for direct `call_expression` callees and stored import paths verbatim. Three gaps are closed:
+  - **Value references (`dead_code` classes C/D).** A function named without being called — as a registry/slice entry (`var reg = []func() error{applyA, applyB}`), a call argument (`mux.HandleFunc("GET /x", HandleX)`, `withMiddleware(tagRoute)`), or a struct-field value (`{wrap: Recover}`) — produced no edge, so live wiring functions were flagged dead. The extractor now emits a `uses` reference for bare `identifier`/`selector_expression` values in `argument_list` and `literal_element` positions, and scans package-level `var`/`const` initializers (previously never traversed). It also recurses into `func_literal` bodies, so a function called only inside a closure/goroutine stays alive.
+  - **Generic calls (`dead_code` class B).** A generic call such as `slices2.Distinct[int](xs)` parses as a `type_conversion_expression` wrapping a `generic_type`, so no `call_expression` was ever seen and the target had zero incoming edges. The extractor now emits a `uses` reference to the base name of any `generic_type` instantiation, keeping generic functions (and types) alive.
+  - **Import usage (`unused_imports`).** Go imports are slash-separated paths, but the package identifier was derived with the `::`-based Rust parser, so `"net/url"` yielded the token `net/url` — which never matches the `url.Parse` call site, flagging ~97% of imports as unused. The analysis now derives the Go in-scope identifier as the alias (`u "net/url"` → `u`) or the last path segment (`net/url` → `url`). Import parsing was also rewritten to extract a clean path plus alias (fixing a pre-existing case where `u "net/url"` was stored mangled as `u "net/url`), and blank (`_`) and dot (`.`) imports are now never reported, since they are deliberate. Reported by @iKyMTV.
 
 ## [6.4.3] - 2026-06-19
 
