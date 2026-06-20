@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [6.4.4] - 2026-06-20
+
 ### Fixed
 - **Go extractor: `dead_code` and `unused_imports` no longer flood with false positives from missing call/use edges (#148).** Follow-up to #141/#137 for the Go extractor, which only emitted edges for direct `call_expression` callees and stored import paths verbatim. Three gaps are closed:
   - **Value references (`dead_code` classes C/D).** A function named without being called — as a registry/slice entry (`var reg = []func() error{applyA, applyB}`), a call argument (`mux.HandleFunc("GET /x", HandleX)`, `withMiddleware(tagRoute)`), or a struct-field value (`{wrap: Recover}`) — produced no edge, so live wiring functions were flagged dead. The extractor now emits a `uses` reference for bare `identifier`/`selector_expression` values in `argument_list` and `literal_element` positions, and scans package-level `var`/`const` initializers (previously never traversed). It also recurses into `func_literal` bodies, so a function called only inside a closure/goroutine stays alive.
@@ -1482,3 +1485,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.4.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.1
 [6.4.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.2
 [6.4.3]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.3
+[6.4.4]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.4
