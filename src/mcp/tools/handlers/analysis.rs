@@ -137,18 +137,16 @@ fn push_identifier(out: &mut Vec<String>, item: &str, parent: &str) {
 /// [`identifiers_from_use_path`] would treat `net/url` as a single token that
 /// never matches the `url.Parse` call site — flagging every import as unused
 /// (#148). The in-scope identifier is the alias (`u "net/url"` → `u`, encoded
-/// as `"net/url as u"`) or, for a plain import, the last path segment (`url`).
-/// Blank (`_`) and dot (`.`) imports are stored as `Pub` Use nodes and are
-/// filtered out before this is ever called.
+/// as `"net/url as u"`) or, for a plain import, the package name — which for a
+/// semantic-import-versioning path (`github.com/jackc/pgx/v5`) is the segment
+/// *before* the `/vN` marker (`pgx`), not the literal last segment (`v5`)
+/// (#149 Bug 2). Blank (`_`) and dot (`.`) imports are stored as `Pub` Use
+/// nodes and are filtered out before this is ever called.
+///
+/// Delegates to [`crate::go_import::import_identifier`] so the resolver
+/// (#149 Bug 1) derives the same qualifier.
 fn go_import_identifier(name: &str) -> Option<String> {
-    let name = name.trim();
-    // Aliased form: `<path> as <alias>` — the alias is what code references.
-    if let Some((_, alias)) = name.rsplit_once(" as ") {
-        let alias = alias.trim();
-        return (!alias.is_empty()).then(|| alias.to_string());
-    }
-    let last = name.rsplit('/').next().unwrap_or(name).trim();
-    (!last.is_empty()).then(|| last.to_string())
+    crate::go_import::import_identifier(name)
 }
 
 /// Resolves a single use-tree segment (no `::`) into the identifier it
@@ -2299,4 +2297,45 @@ fn line_is_comment(source: &str, byte: usize) -> bool {
     let line = &source[line_start..];
     let trimmed = line.trim_start();
     trimmed.starts_with("//")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::go_import_identifier;
+
+    #[test]
+    fn go_import_identifier_plain_last_segment() {
+        assert_eq!(go_import_identifier("net/url").as_deref(), Some("url"));
+    }
+
+    #[test]
+    fn go_import_identifier_versioned_uses_preceding_segment() {
+        // #149 Bug 2: a bare `/vN` import must derive the package name, not `vN`.
+        assert_eq!(
+            go_import_identifier("github.com/golang-jwt/jwt/v5").as_deref(),
+            Some("jwt")
+        );
+        assert_eq!(
+            go_import_identifier("github.com/jackc/pgx/v5").as_deref(),
+            Some("pgx")
+        );
+    }
+
+    #[test]
+    fn go_import_identifier_alias_overrides_version_logic() {
+        assert_eq!(
+            go_import_identifier("github.com/jackc/pgx/v5 as pgxv5").as_deref(),
+            Some("pgxv5")
+        );
+    }
+
+    #[test]
+    fn go_import_identifier_non_version_v_segment() {
+        // Only `^v\d+$` triggers; a name merely starting with `v` is unchanged.
+        assert_eq!(
+            go_import_identifier("example.com/m/internal/foo/revision").as_deref(),
+            Some("revision")
+        );
+    }
 }
