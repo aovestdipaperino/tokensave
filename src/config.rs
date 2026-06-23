@@ -52,6 +52,14 @@ pub struct TokenSaveConfig {
     /// no explicit `path_exclude` is provided by the caller.
     #[serde(default)]
     pub default_path_exclude: Vec<String>,
+    /// tokensave version that last fully indexed this project.
+    ///
+    /// Used to decide whether a major-version upgrade requires a forced
+    /// per-project reindex (`sync -f` equivalent). Empty on pre-7.0 projects
+    /// and brand-new configs; an empty value is treated as "needs reindex" so
+    /// such projects backfill the latest schema on first MCP tool use.
+    #[serde(default)]
+    pub last_indexed_version: String,
 }
 
 impl Default for TokenSaveConfig {
@@ -78,6 +86,7 @@ impl Default for TokenSaveConfig {
             git_ignore: true,
             default_path_include: Vec::new(),
             default_path_exclude: Vec::new(),
+            last_indexed_version: String::new(),
         }
     }
 }

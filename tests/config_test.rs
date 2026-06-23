@@ -44,6 +44,41 @@ fn test_config_serde_roundtrip() {
 }
 
 #[test]
+fn test_default_last_indexed_version_is_empty() {
+    let config = TokenSaveConfig::default();
+    assert_eq!(config.last_indexed_version, "");
+}
+
+#[test]
+fn test_last_indexed_version_persists() {
+    let dir = TempDir::new().unwrap();
+    let mut config = TokenSaveConfig::default();
+    config.last_indexed_version = "7.0.0".to_string();
+    save_config(dir.path(), &config).unwrap();
+    let loaded = load_config(dir.path()).unwrap();
+    assert_eq!(loaded.last_indexed_version, "7.0.0");
+}
+
+#[test]
+fn test_legacy_config_without_last_indexed_version_loads_empty() {
+    let dir = TempDir::new().unwrap();
+    let tokensave_dir = dir.path().join(".tokensave");
+    std::fs::create_dir_all(&tokensave_dir).unwrap();
+    // Pre-7.0 config that predates the `last_indexed_version` field.
+    let legacy_json = r#"{
+        "version": 1,
+        "root_dir": ".",
+        "exclude": ["target/**"],
+        "max_file_size": 1048576,
+        "extract_docstrings": true,
+        "track_call_sites": true
+    }"#;
+    std::fs::write(tokensave_dir.join("config.json"), legacy_json).unwrap();
+    let loaded = load_config(dir.path()).unwrap();
+    assert_eq!(loaded.last_indexed_version, "");
+}
+
+#[test]
 fn test_legacy_config_with_include_field_still_loads() {
     let dir = TempDir::new().unwrap();
     let tokensave_dir = dir.path().join(".tokensave");
