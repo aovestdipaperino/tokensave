@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Version-aware reinstall & per-project sync on upgrade.** tokensave now classifies every version transition as patch, minor, or major and runs the matching maintenance automatically. A new `cloud::bump_kind` semver classifier (returning `BumpKind::{None, Patch, Minor, Major}`, with the same beta/stable channel handling as `is_newer_version`) drives the decision. Patch bumps do nothing beyond advancing the recorded version; minor bumps trigger the existing global agent reinstall; **major bumps additionally force a per-project reindex** to backfill schema changes. The reindex runs lazily and non-blocking: on the first MCP `tools/call` in a project, the server checks whether `bump_kind(last_indexed_version, running) == Major` **or** the project DB schema is behind the latest (`read_schema_version() < latest_version()`), and if so spawns a background full re-index (`sync -f` equivalent), advancing the new `last_indexed_version` marker in `.tokensave/config.json` on success. An empty marker (pre-7.0 projects) is treated as needing the reindex so existing projects backfill the v11 schema/metrics columns on first use. The check is gated to run at most once per session. Accompanies the v11 schema/metrics work in 6.4.5.
+
 
 ## [6.4.5] - 2026-06-23
 

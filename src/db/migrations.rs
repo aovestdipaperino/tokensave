@@ -17,6 +17,20 @@ use crate::errors::{Result, TokenSaveError};
 /// new entry to `run_migration` whenever the schema changes.
 const LATEST_VERSION: u32 = 11;
 
+/// Returns the highest schema version this build knows how to produce.
+#[must_use]
+pub const fn latest_version() -> u32 {
+    LATEST_VERSION
+}
+
+/// Reads the current schema version stored in the database's `PRAGMA user_version`.
+///
+/// # Errors
+/// Returns an error if the `PRAGMA user_version` query fails.
+pub async fn read_schema_version(conn: &Connection) -> Result<u32> {
+    get_version(conn).await
+}
+
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
     let mut rows =

@@ -269,6 +269,17 @@ impl TokenSave {
         &self.db
     }
 
+    /// Returns `true` if the project DB schema is older than this build's latest.
+    ///
+    /// A stale schema (for example a project last indexed before a major upgrade
+    /// added columns) signals that a forced reindex is needed to backfill the
+    /// new schema. Falls back to `false` when the version cannot be read.
+    pub async fn needs_schema_upgrade(&self) -> bool {
+        crate::db::migrations::read_schema_version(self.db.conn())
+            .await
+            .is_ok_and(|v| v < crate::db::migrations::latest_version())
+    }
+
     /// Opens an existing `TokenSave` project at the given root.
     ///
     /// If branch metadata exists, resolves the current git branch and opens

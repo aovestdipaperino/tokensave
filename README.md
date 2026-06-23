@@ -579,6 +579,24 @@ tokensave channel stable           # switch back to stable
 
 ---
 
+## Versioning & upgrades
+
+tokensave follows [Semantic Versioning](https://semver.org/), and the version component that changes determines what maintenance runs automatically on the next launch — you never run a reinstall or reindex by hand.
+
+| Bump | Example | Meaning | Automatic action |
+| --- | --- | --- | --- |
+| **Patch** (`x.y.Z`) | `6.4.4 → 6.4.5` | Bug fixes only | None — no reinstall, no reindex |
+| **Minor** (`x.Y.0`) | `6.4.4 → 6.5.0` | New MCPs / tools | **Global reinstall** of every installed agent integration (refreshes permissions, hooks, and MCP config) |
+| **Major** (`X.0.0`) | `6.4.4 → 7.0.0` | Database / schema changes | Global reinstall **and** a per-project forced reindex (`sync -f` equivalent) |
+
+**Global reinstall.** On the first run of a new minor or major build, tokensave silently re-runs `install` for each agent it has registered, so the agent config always points at the current binary and exposes the current tool set. Patch bumps skip this — the running version marker is simply advanced.
+
+**Per-project forced reindex (major only).** A major bump can change the on-disk schema, so each project's index must be rebuilt to backfill the new columns. tokensave does this lazily and per project: on the **first MCP tool call** in a project after a major upgrade, it spawns a background full reindex (equivalent to `tokensave sync --force`). The reindex never blocks the tool response; when it finishes, the project records the version that indexed it. A project that has never recorded a version (created before this mechanism existed) is treated as needing the reindex, as is any project whose DB schema is older than the running build's latest schema.
+
+**Brew / cargo fallback.** External upgrades that replace the binary outside of `tokensave upgrade` — `brew upgrade tokensave` or `cargo install tokensave` — are detected the same way: if the running version is newer than the last version that performed an install, the global reinstall (and, for a major bump, the per-project reindex) runs on the next launch just as it would after a self-upgrade.
+
+---
+
 ## CLI Reference
 
 ```bash

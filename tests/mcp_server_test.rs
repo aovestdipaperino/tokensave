@@ -1223,3 +1223,101 @@ async fn search_call_writes_savings_ledger_row() {
         total.calls
     );
 }
+
+// ---------------------------------------------------------------------------
+// Version-aware forced reindex on first tool call (#v11)
+// ---------------------------------------------------------------------------
+
+/// A fresh project starts with an empty `last_indexed_version`. The first
+/// `tools/call` must trigger a background forced reindex that, on completion,
+/// advances the marker in the persisted project config to the running version.
+#[tokio::test]
+async fn test_first_tool_call_backfills_last_indexed_version() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Sanity: brand-new config has no recorded indexed version.
+    let before = tokensave::config::load_config(project).unwrap();
+    assert_eq!(before.last_indexed_version, "");
+
+    let server = McpServer::new(cg, None).await;
+    let server_for_drive = Arc::clone(&server);
+
+    // Drive one tool call through the full JSON-RPC transport.
+    let _ = run_server_with_messages(
+        server_for_drive,
+        vec![jsonrpc_request(
+            json!(1),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "main" }
+            }),
+        )],
+    )
+    .await;
+
+    let completed = server
+        .wait_for_version_reindex(std::time::Duration::from_secs(30))
+        .await;
+    assert!(completed, "version reindex task did not complete in time");
+
+    let after = tokensave::config::load_config(project).unwrap();
+    assert_eq!(
+        after.last_indexed_version,
+        env!("CARGO_PKG_VERSION"),
+        "marker should advance to the running version after reindex"
+    );
+}
+
+/// When the project was already indexed by the running version and the schema
+/// is current, the first tool call must not regress the marker.
+#[tokio::test]
+async fn test_first_tool_call_keeps_current_marker() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Pre-seed the marker to the running version so no reindex is needed.
+    let mut config = tokensave::config::load_config(project).unwrap();
+    config.last_indexed_version = env!("CARGO_PKG_VERSION").to_string();
+    tokensave::config::save_config(project, &config).unwrap();
+
+    let server = McpServer::new(cg, None).await;
+    let server_for_drive = Arc::clone(&server);
+    let _ = run_server_with_messages(
+        server_for_drive,
+        vec![jsonrpc_request(
+            json!(1),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "main" }
+            }),
+        )],
+    )
+    .await;
+
+    let completed = server
+        .wait_for_version_reindex(std::time::Duration::from_secs(30))
+        .await;
+    assert!(completed, "version reindex gate did not settle in time");
+
+    let after = tokensave::config::load_config(project).unwrap();
+    assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
+}

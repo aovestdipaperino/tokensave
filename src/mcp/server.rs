@@ -256,6 +256,15 @@ pub struct McpServer {
     /// [`Self::wait_for_startup_catch_up`] so they can race-free assert on
     /// the index state after the detached catch-up task completes.
     startup_catch_up_done: AtomicBool,
+    /// Once-gate for the version-aware forced reindex. Flipped to `true` the
+    /// first time a `tools/call` evaluates the upgrade check, so the (possibly
+    /// expensive) reindex is spawned at most once per session.
+    version_reindex_started: AtomicBool,
+    /// Flipped to `true` once the version-aware reindex evaluation settles —
+    /// either the background reindex finished, the marker was advanced, or no
+    /// action was needed. Production code never reads this; tests poll it via
+    /// [`Self::wait_for_version_reindex`].
+    version_reindex_done: AtomicBool,
 }
 
 impl McpServer {
@@ -314,6 +323,8 @@ impl McpServer {
             last_staleness_check_at: AtomicI64::new(0),
             worktree_mismatch,
             startup_catch_up_done: AtomicBool::new(false),
+            version_reindex_started: AtomicBool::new(false),
+            version_reindex_done: AtomicBool::new(false),
         });
 
         // Catch-up sync (#414): pick up changes made while the server
@@ -514,6 +525,108 @@ impl McpServer {
         self.refresh_file_token_map().await;
     }
 
+    /// On the first `tools/call` of the session, force a per-project reindex if
+    /// a major version bump or a stale DB schema requires it.
+    ///
+    /// "Needed" is true when the recorded `last_indexed_version` → running
+    /// transition classifies as [`crate::cloud::BumpKind::Major`] **or** the
+    /// project DB schema is older than this build's latest. An empty
+    /// `last_indexed_version` (pre-7.0 projects) is treated as needing a reindex
+    /// so the latest schema columns are backfilled.
+    ///
+    /// When needed, a forced full reindex runs in a detached background task so
+    /// the triggering tool response is never blocked. On success the marker is
+    /// advanced to the running version and the project config is saved. When not
+    /// needed but the marker is merely behind, the marker is advanced without a
+    /// reindex. The whole evaluation runs at most once per session, gated by
+    /// [`Self::version_reindex_started`].
+    fn maybe_reindex_on_version_bump(self: &Arc<Self>) {
+        // Once-gate: only the first caller proceeds.
+        if self
+            .version_reindex_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let Some(server) = weak.upgrade() else {
+                return;
+            };
+            server.run_version_reindex().await;
+            server.version_reindex_done.store(true, Ordering::Release);
+        });
+    }
+
+    /// Evaluates and, if required, performs the version-aware forced reindex.
+    ///
+    /// Best-effort: any failure is logged, never panics, and still advances the
+    /// session gate so the work is not retried in a tight loop.
+    async fn run_version_reindex(&self) {
+        let running = env!("CARGO_PKG_VERSION");
+        let project_root = self.cg.project_root().to_path_buf();
+
+        let mut config = match crate::config::load_config(&project_root) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[tokensave] version reindex: failed to load config: {e}");
+                return;
+            }
+        };
+
+        let bump = crate::cloud::bump_kind(&config.last_indexed_version, running);
+        let needs_reindex =
+            bump == crate::cloud::BumpKind::Major || self.cg.needs_schema_upgrade().await;
+
+        if needs_reindex {
+            eprintln!(
+                "[tokensave] major upgrade or schema change detected \
+                 (indexed by {:?}, running {running}) — forcing project reindex…",
+                config.last_indexed_version
+            );
+            if let Err(e) = self.cg.index_all().await {
+                eprintln!("[tokensave] version reindex failed: {e}");
+                return;
+            }
+            self.refresh_file_token_map().await;
+            config.last_indexed_version = running.to_string();
+            if let Err(e) = crate::config::save_config(&project_root, &config) {
+                eprintln!("[tokensave] version reindex: failed to save config: {e}");
+            }
+        } else if config.last_indexed_version != running {
+            // No reindex needed (patch/minor/none) but advance the marker so we
+            // don't keep re-evaluating across sessions.
+            config.last_indexed_version = running.to_string();
+            if let Err(e) = crate::config::save_config(&project_root, &config) {
+                eprintln!("[tokensave] version marker advance: failed to save config: {e}");
+            }
+        }
+    }
+
+    /// Returns `true` once the version-aware reindex evaluation has settled.
+    ///
+    /// Production code never needs this; tests poll it to make the otherwise
+    /// detached background task observable.
+    pub fn version_reindex_done(&self) -> bool {
+        self.version_reindex_done.load(Ordering::Acquire)
+    }
+
+    /// Polls [`Self::version_reindex_done`] every 25 ms up to `timeout`.
+    ///
+    /// Returns `true` if the evaluation settled within the budget.
+    pub async fn wait_for_version_reindex(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.version_reindex_done() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
     /// Internal: snapshot of the current `file_token_map`. Exposed for
     /// integration tests only; not part of the stable public API.
     #[doc(hidden)]
@@ -619,7 +732,7 @@ impl McpServer {
     /// Used to replay a peeked `initialize` message that was consumed before
     /// the server's main loop started.
     pub async fn handle_and_write(
-        &self,
+        self: &Arc<Self>,
         line: &str,
         transport: &mut impl super::transport::McpTransport,
     ) {
@@ -643,7 +756,10 @@ impl McpServer {
     /// Runs the server, reading JSON-RPC requests from stdin and writing
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
-    pub async fn run(&self, transport: &mut impl super::transport::McpTransport) -> Result<()> {
+    pub async fn run(
+        self: &Arc<Self>,
+        transport: &mut impl super::transport::McpTransport,
+    ) -> Result<()> {
         debug_assert!(
             self.stats.total_requests.load(Ordering::Relaxed) == 0,
             "server run() called on an already-used server"
@@ -801,7 +917,10 @@ impl McpServer {
     /// Dispatches a parsed JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for notifications (requests without an `id`).
-    pub(crate) async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    pub(crate) async fn handle_request(
+        self: &Arc<Self>,
+        request: &JsonRpcRequest,
+    ) -> Option<JsonRpcResponse> {
         debug_assert!(
             !request.method.is_empty(),
             "handle_request called with empty method"
@@ -1131,7 +1250,11 @@ impl McpServer {
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
-    async fn handle_tools_call(&self, id: Value, params: Option<&Value>) -> JsonRpcResponse {
+    async fn handle_tools_call(
+        self: &Arc<Self>,
+        id: Value,
+        params: Option<&Value>,
+    ) -> JsonRpcResponse {
         debug_assert!(
             !id.is_null(),
             "handle_tools_call called with null request id"
@@ -1159,8 +1282,15 @@ impl McpServer {
         // (see McpServer::new). No-op on the hot path most of the time.
         self.maybe_sync_if_stale().await;
 
-        self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
+        let prev_tool_calls = self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
         eprintln!("[tokensave] tool call: {tool_name}");
+
+        // On the first tool call of the session, evaluate whether a major
+        // version bump or stale schema requires a forced project reindex. The
+        // work is detached and non-blocking; this returns immediately.
+        if prev_tool_calls == 0 {
+            self.maybe_reindex_on_version_bump();
+        }
         if let Ok(mut counts) = self.tool_call_counts.lock() {
             *counts.entry(tool_name.to_string()).or_insert(0) += 1;
         }

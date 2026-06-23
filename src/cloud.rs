@@ -206,22 +206,104 @@ pub fn is_beta() -> bool {
     env!("CARGO_PKG_VERSION").contains('-')
 }
 
+/// Parses a version string into `(major, minor, patch, pre-release)`.
+///
+/// Handles optional pre-release suffixes (e.g. `"2.5.0-beta.1"`) by splitting
+/// on the first `-`. Returns `None` when the base version is malformed.
+fn parse_version(v: &str) -> Option<(u64, u64, u64, Option<&str>)> {
+    let (base, pre) = match v.split_once('-') {
+        Some((b, p)) => (b, Some(p)),
+        None => (v, None),
+    };
+    let mut parts = base.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch, pre))
+}
+
+/// Classification of an upgrade between two tokensave versions.
+///
+/// The variant drives the automatic maintenance tokensave performs on upgrade:
+///
+/// - [`BumpKind::Patch`] (`x.y.Z`): bug fixes only — no reinstall, no reindex.
+/// - [`BumpKind::Minor`] (`x.Y.0`): new MCPs/tools — global agent reinstall, no reindex.
+/// - [`BumpKind::Major`] (`X.0.0`): DB/schema changes — global reinstall **and** a
+///   per-project forced reindex (`sync -f` equivalent).
+/// - [`BumpKind::None`]: equal versions, downgrades, or cross-channel transitions —
+///   no action beyond advancing the recorded version marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BumpKind {
+    /// No actionable change (equal, downgrade, or cross-channel).
+    None,
+    /// Patch bump (`x.y.Z`): bug fixes only.
+    Patch,
+    /// Minor bump (`x.Y.0`): new MCPs/tools, warrants a global reinstall.
+    Minor,
+    /// Major bump (`X.0.0`): DB changes, warrants reinstall + forced reindex.
+    Major,
+}
+
+/// Classifies the upgrade from `old` to `new` as patch, minor, major, or none.
+///
+/// Uses the same semver rules and channel handling as [`is_newer_version`]:
+/// beta and stable are separate channels and never cross. A `new` version that
+/// is not strictly newer than `old` (equal or a downgrade) yields
+/// [`BumpKind::None`]. An empty or unparseable `old` version is treated as a
+/// [`BumpKind::Major`] bump so pre-versioned projects backfill on first use.
+///
+/// # Examples
+///
+/// ```
+/// use tokensave::cloud::{bump_kind, BumpKind};
+/// assert_eq!(bump_kind("6.4.4", "7.0.0"), BumpKind::Major);
+/// assert_eq!(bump_kind("6.4.4", "6.5.0"), BumpKind::Minor);
+/// assert_eq!(bump_kind("6.4.4", "6.4.5"), BumpKind::Patch);
+/// assert_eq!(bump_kind("6.4.4", "6.4.4"), BumpKind::None);
+/// ```
+pub fn bump_kind(old: &str, new: &str) -> BumpKind {
+    // Empty/unparseable old version: treat as needing a full refresh, but only
+    // when `new` itself parses and is on the same (stable-vs-stable) channel.
+    let Some((nm, nn, np, npre)) = parse_version(new) else {
+        return BumpKind::None;
+    };
+    let Some((om, on, op, opre)) = parse_version(old) else {
+        // Cross-channel "old" can't be reasoned about; only backfill when the
+        // running version is on the same channel kind we'd otherwise expect.
+        return if npre.is_none() {
+            BumpKind::Major
+        } else {
+            BumpKind::None
+        };
+    };
+
+    // Beta and stable are separate channels — never cross them.
+    if opre.is_some() != npre.is_some() {
+        return BumpKind::None;
+    }
+
+    if !is_newer_version(old, new) {
+        return BumpKind::None;
+    }
+
+    if nm != om {
+        BumpKind::Major
+    } else if nn != on {
+        BumpKind::Minor
+    } else if np != op {
+        BumpKind::Patch
+    } else {
+        // Same base version, strictly-newer pre-release tag within the same
+        // channel: classify by base (patch level), matching the channel rules.
+        BumpKind::Patch
+    }
+}
+
 /// Returns true if `latest` is strictly newer than `current` using semver comparison.
 /// Handles pre-release suffixes (e.g. "2.5.0-beta.1") by stripping them for the
 /// base version comparison, then comparing pre-release tags lexicographically.
 pub fn is_newer_version(current: &str, latest: &str) -> bool {
-    /// Parses a version string into (major, minor, patch, pre-release).
-    fn parse(v: &str) -> Option<(u64, u64, u64, Option<&str>)> {
-        let (base, pre) = match v.split_once('-') {
-            Some((b, p)) => (b, Some(p)),
-            None => (v, None),
-        };
-        let mut parts = base.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next()?.parse().ok()?;
-        Some((major, minor, patch, pre))
-    }
+    let parse = parse_version;
 
     match (parse(current), parse(latest)) {
         (Some((cm, cn, cp, cpre)), Some((lm, ln, lp, lpre))) => {
