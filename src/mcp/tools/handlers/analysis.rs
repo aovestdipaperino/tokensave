@@ -1180,6 +1180,43 @@ fn dfs_cycle_path<'a>(
     false
 }
 
+/// Returns the set of node IDs reached by a test via the call graph: any node
+/// targeted by a `Calls` edge whose source is in a test file or is a
+/// `#[test]`-annotated function. This is the same "tested" definition used by
+/// `tokensave_test_risk`, and is the binary coverage signal behind the `crap`
+/// score reported by `tokensave_complexity`.
+async fn test_reached_node_ids(cg: &TokenSave) -> Result<HashSet<String>> {
+    use crate::types::EdgeKind;
+    let all_nodes = cg.get_all_nodes().await?;
+    let all_edges = cg.get_all_edges().await?;
+    let node_to_file: HashMap<String, String> = all_nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.file_path.clone()))
+        .collect();
+    let call_source_ids: Vec<String> = all_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .map(|e| e.source.clone())
+        .collect();
+    let test_annotated_callers = cg
+        .get_test_annotated_node_ids(&call_source_ids)
+        .await
+        .unwrap_or_default();
+    let mut tested: HashSet<String> = HashSet::new();
+    for e in &all_edges {
+        if e.kind == EdgeKind::Calls {
+            let is_test = node_to_file
+                .get(&e.source)
+                .is_some_and(|f| crate::tokensave::is_test_file(f))
+                || test_annotated_callers.contains(&e.source);
+            if is_test {
+                tested.insert(e.target.clone());
+            }
+        }
+    }
+    Ok(tested)
+}
+
 /// Handles `tokensave_complexity` tool calls.
 pub(super) async fn handle_complexity(
     cg: &TokenSave,
@@ -1205,13 +1242,24 @@ pub(super) async fn handle_complexity(
     let touched_files =
         unique_file_paths(results.iter().map(|(n, _, _, _, _)| n.file_path.as_str()));
 
+    // CRAP needs a per-unit coverage signal. tokensave has no execution
+    // (line/branch) coverage, but it can tell whether a unit is reached by a
+    // test via the call graph: a node is "covered" when some `Calls` edge
+    // targeting it originates in a test file or a `#[test]`-annotated function
+    // (same definition as `tokensave_test_risk`). This is binary, so CRAP's
+    // `(1 - coverage)³` term collapses to 0 (tested) or 1 (untested).
+    let tested = test_reached_node_ids(cg).await?;
+
     let items: Vec<Value> = results
         .iter()
         .map(|(node, lines, fan_out, fan_in, score)| {
             use crate::extraction::complexity::{
-                halstead_difficulty, halstead_effort, halstead_volume, maintainability_index,
+                crap_score, halstead_difficulty, halstead_effort, halstead_volume,
+                maintainability_index,
             };
             let cyclomatic = node.branches + 1;
+            let test_covered = tested.contains(&node.id);
+            let crap = crap_score(cyclomatic, if test_covered { 1.0 } else { 0.0 });
             let volume = halstead_volume(
                 node.distinct_operators,
                 node.distinct_operands,
@@ -1247,6 +1295,8 @@ pub(super) async fn handle_complexity(
                 "halstead_difficulty": round2(difficulty),
                 "halstead_effort": round2(effort),
                 "maintainability_index": round2(mi),
+                "test_covered": test_covered,
+                "crap": round2(crap),
                 "fan_out": fan_out,
                 "fan_in": fan_in,
                 "score": score,
@@ -1256,7 +1306,7 @@ pub(super) async fn handle_complexity(
 
     let output = json!({
         "formula": "lines + (fan_out × 3) + fan_in",
-        "note": "cyclomatic_complexity = branches + 1. cognitive_complexity is SonarSource-style (nesting-weighted). halstead_* derive from operator/operand token counts; maintainability_index uses MI = max(0, (171 - 5.2·ln(V) - 0.23·G - 16.2·ln(LOC)) · 100/171), clamped 0–100 (higher is better). CRAP is not reported: it requires per-method test-coverage data tokensave does not track.",
+        "note": "cyclomatic_complexity = branches + 1. cognitive_complexity is SonarSource-style (nesting-weighted). halstead_* derive from operator/operand token counts; maintainability_index uses MI = max(0, (171 - 5.2·ln(V) - 0.23·G - 16.2·ln(LOC)) · 100/171), clamped 0–100 (higher is better). crap = cyclomatic²·(1-coverage)³ + cyclomatic, where coverage is call-graph test reachability (test_covered: a test reaches the unit). Coverage is binary today (no execution coverage), so crap = cyclomatic when test_covered else cyclomatic²+cyclomatic.",
         "result_count": items.len(),
         "ranking": items,
     });

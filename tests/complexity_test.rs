@@ -495,3 +495,46 @@ fn test_maintainability_index_within_bounds_and_decreases() {
         "a simpler/smaller unit should have a higher maintainability index: {mi_small} vs {mi_large}"
     );
 }
+
+// ── CRAP score (issue #150, structural test-coverage signal) ─────────────────
+
+#[test]
+fn test_crap_fully_covered_equals_cyclomatic() {
+    use tokensave::extraction::complexity::crap_score;
+    // With full coverage the (1 - coverage)³ term vanishes: CRAP == comp.
+    for comp in [1u32, 3, 7, 20] {
+        let crap = crap_score(comp, 1.0);
+        assert!(
+            (crap - f64::from(comp)).abs() < 1e-9,
+            "fully covered CRAP should equal cyclomatic {comp}, got {crap}"
+        );
+    }
+}
+
+#[test]
+fn test_crap_untested_is_quadratic() {
+    use tokensave::extraction::complexity::crap_score;
+    // Untested: comp² + comp.
+    assert!((crap_score(5, 0.0) - 30.0).abs() < 1e-9);
+    // Untested risk grows faster than complexity and dwarfs the covered case.
+    let covered = crap_score(10, 1.0);
+    let untested = crap_score(10, 0.0);
+    assert!(
+        untested > covered,
+        "untested complex code must score higher than covered: {untested} vs {covered}"
+    );
+    assert!((untested - 110.0).abs() < 1e-9, "10² + 10 = 110, got {untested}");
+}
+
+#[test]
+fn test_crap_monotonic_in_coverage() {
+    use tokensave::extraction::complexity::crap_score;
+    // For fixed complexity, more coverage means strictly lower CRAP, and the
+    // coverage arg is clamped so out-of-range values don't explode.
+    let none = crap_score(8, 0.0);
+    let half = crap_score(8, 0.5);
+    let full = crap_score(8, 1.0);
+    assert!(none > half && half > full, "CRAP must decrease as coverage rises: {none} > {half} > {full}");
+    assert!((crap_score(8, 2.0) - full).abs() < 1e-9, "coverage > 1 should clamp to 1.0");
+    assert!((crap_score(8, -1.0) - none).abs() < 1e-9, "coverage < 0 should clamp to 0.0");
+}

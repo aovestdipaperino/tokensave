@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [6.4.5] - 2026-06-23
+
 ### Added
 - **Expanded code-health metrics: cognitive complexity, Halstead, and maintainability index (#150).** Building on the existing per-function complexity counts (cyclomatic, nesting depth, unsafe/unchecked/assertion counts), `count_complexity` now also computes, in the same single AST walk:
   - **Cognitive complexity** — SonarSource-style, nesting-weighted: each control-flow structure adds `1 + (enclosing control-flow depth)`, and each extra boolean operator in a logical sequence (`&&`/`||`) adds `1`. This cannot be derived from the scalar branch/loop counts, so it is computed during extraction and stored on each node.
@@ -15,8 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The new metrics are persisted on the `nodes` table (schema migration v11) and surfaced in the `tokensave_complexity` and `tokensave_node` tool outputs as `cognitive_complexity`, `halstead_volume`, `halstead_difficulty`, `halstead_effort`, and `maintainability_index`.
 
-  **CRAP (change-risk / anti-pattern) is intentionally deferred:** it is defined as `comp² · (1 − coverage)³ + comp`, which requires per-method test-coverage data that tokensave does not track. This is noted in code comments and will follow once coverage tracking exists.
+  - **CRAP score (change-risk / anti-pattern).** `tokensave_complexity` now also reports `crap` and `test_covered`. CRAP is `cyclomatic² · (1 − coverage)³ + cyclomatic` — it flags code that is both complex and untested (a fully covered unit scores its cyclomatic complexity; an untested unit scores `cyclomatic² + cyclomatic`). tokensave has no execution (line/branch) coverage, but it derives a per-unit coverage signal from the call graph: a unit is `test_covered` when a `Calls` edge targeting it originates in a test file or a `#[test]`-annotated function (the same definition `tokensave_test_risk` uses). This signal is binary today, so the `(1 − coverage)³` term collapses to 0 (tested) or 1 (untested); the underlying `crap_score(cyclomatic, coverage)` accepts any fractional coverage so it stays correct if execution-coverage ingestion is added later.
 
+### Fixed
+- **Go extractor: residual `dead_code` / `unused_imports` false positives after #148 (#149).** Two root causes that #148 did not cover are closed, each verified against the reporter's deterministic repros:
+  - **Same-named functions in same-named packages collided (`dead_code`).** A cross-package selector call (`foojobs.NewCleanupWorker()`) resolved on the function name alone, so when two packages share a name (both `package jobs`, at `internal/foo/jobs` and `internal/bar/jobs`) and each defines a function of the same name, every call collapsed onto a single target — the others got zero incoming edges and were flagged dead. The resolver now builds a per-file map of Go import qualifier → import path and disambiguates a selector call by restricting candidates to the function defined in that import's package directory; an unknown qualifier (a receiver variable) falls back to the previous bare-name behavior, so method-call resolution is unchanged.
+  - **Bare versioned (`/vN`) imports flagged unused (`unused_imports`).** For a Go semantic-import-versioned path with no explicit alias (`github.com/golang-jwt/jwt/v5`, `github.com/jackc/pgx/v5`), the in-scope identifier was derived as the trailing path segment (`v5`), which never appears in source (code writes `jwt.` / `pgx.`), so the import was reported unused. The identifier derivation now skips a trailing `vN` segment (matching `^v\d+$`) and uses the preceding segment (`jwt`, `pgx`) when no alias is present. The shared logic lives in a new `go_import` module so the resolver and the analysis tool stay consistent. Reported by @iKyi.
 
 ## [6.4.4] - 2026-06-20
 
@@ -1496,3 +1503,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.4.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.2
 [6.4.3]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.3
 [6.4.4]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.4
+[6.4.5]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.5

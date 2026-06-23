@@ -388,6 +388,34 @@ pub fn maintainability_index(volume: f64, cyclomatic: u32, lines_of_code: u32) -
     (raw * 100.0 / 171.0).clamp(0.0, 100.0)
 }
 
+/// Computes the CRAP (Change Risk Anti-Pattern) score for a unit.
+///
+/// `CRAP(m) = comp(m)² · (1 − cov(m))³ + comp(m)`, where `comp` is cyclomatic
+/// complexity and `cov` is the fraction of `m` covered by tests (`0.0..=1.0`).
+/// A fully covered unit scores exactly its cyclomatic complexity; an untested
+/// unit scores `comp² + comp`, so risk grows quadratically with complexity when
+/// tests are absent — the metric flags code that is both complex and untested.
+///
+/// tokensave derives `cov` from call-graph reachability (whether a test
+/// function reaches the unit), which is binary today — callers pass `1.0` for a
+/// test-reached unit and `0.0` otherwise. The formula accepts any fractional
+/// coverage so it stays correct if execution-coverage ingestion is added later.
+///
+/// # Examples
+/// ```
+/// use tokensave::extraction::complexity::crap_score;
+/// // Fully tested: CRAP == cyclomatic complexity.
+/// assert!((crap_score(5, 1.0) - 5.0).abs() < 1e-9);
+/// // Untested: comp² + comp.
+/// assert!((crap_score(5, 0.0) - 30.0).abs() < 1e-9);
+/// ```
+#[must_use]
+pub fn crap_score(cyclomatic: u32, coverage: f64) -> f64 {
+    let comp = f64::from(cyclomatic);
+    let uncovered = (1.0 - coverage.clamp(0.0, 1.0)).powi(3);
+    comp * comp * uncovered + comp
+}
+
 /// Pushes the direct children of `parent` onto `stack` in reverse order, so
 /// a LIFO pop reproduces left-to-right traversal. Iterates via a `TreeCursor`
 /// — sibling walks are O(1) each, vs. O(i) for `parent.child(i)`. Skipping
