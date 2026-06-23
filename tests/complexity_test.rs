@@ -523,7 +523,10 @@ fn test_crap_untested_is_quadratic() {
         untested > covered,
         "untested complex code must score higher than covered: {untested} vs {covered}"
     );
-    assert!((untested - 110.0).abs() < 1e-9, "10² + 10 = 110, got {untested}");
+    assert!(
+        (untested - 110.0).abs() < 1e-9,
+        "10² + 10 = 110, got {untested}"
+    );
 }
 
 #[test]
@@ -534,7 +537,16 @@ fn test_crap_monotonic_in_coverage() {
     let none = crap_score(8, 0.0);
     let half = crap_score(8, 0.5);
     let full = crap_score(8, 1.0);
-    assert!(none > half && half > full, "CRAP must decrease as coverage rises: {none} > {half} > {full}");
-    assert!((crap_score(8, 2.0) - full).abs() < 1e-9, "coverage > 1 should clamp to 1.0");
-    assert!((crap_score(8, -1.0) - none).abs() < 1e-9, "coverage < 0 should clamp to 0.0");
+    assert!(
+        none > half && half > full,
+        "CRAP must decrease as coverage rises: {none} > {half} > {full}"
+    );
+    assert!(
+        (crap_score(8, 2.0) - full).abs() < 1e-9,
+        "coverage > 1 should clamp to 1.0"
+    );
+    assert!(
+        (crap_score(8, -1.0) - none).abs() < 1e-9,
+        "coverage < 0 should clamp to 0.0"
+    );
 }

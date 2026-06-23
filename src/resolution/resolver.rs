@@ -557,7 +557,10 @@ impl<'a> ReferenceResolver<'a> {
         if name.contains('.') {
             return None;
         }
-        let import_path = self.go_import_qualifiers.get(&uref.file_path)?.get(qualifier)?;
+        let import_path = self
+            .go_import_qualifiers
+            .get(&uref.file_path)?
+            .get(qualifier)?;
 
         let candidates = self.name_cache.get(name)?;
         let mut matched: Vec<&Node> = candidates
