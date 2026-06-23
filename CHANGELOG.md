@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Windows ARM64 release binaries.** The release workflows now build and upload `aarch64-windows` artifacts (`tokensave-<tag>-aarch64-windows.zip`) targeting `aarch64-pc-windows-msvc` on the `windows-11-arm` runner. The Scoop manifest is updated to include an `arm64` architecture entry alongside the existing `64bit` one so Scoop installs the native binary on ARM devices automatically.
 
 ## [7.0.0] - 2026-06-23
 
@@ -138,6 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Write/exec MCP tools no longer advertise `readOnlyHint: true` (#94).** `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` mutate source files or run a `cargo test` subprocess, but were annotated read-only via the shared `def()` helper — so harnesses that auto-approve read-only tools could edit files or compile and execute project code without prompting. They now use a new `def_rw()` helper that stamps `readOnlyHint: false`, matching the other edit tools. A regression test asserts every write/exec tool is non-read-only.
+
 
 ## [6.1.2] - 2026-05-30
 
