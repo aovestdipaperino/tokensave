@@ -38,7 +38,13 @@ fn build_qmark_placeholders(n: usize) -> String {
 /// docstring(9), signature(10), visibility(11), `is_async(12)`,
 /// branches(13), loops(14), returns(15), `max_nesting(16)`,
 /// `unsafe_blocks(17)`, `unchecked_calls(18)`, assertions(19), `updated_at(20)`,
-/// `attrs_start_line(21)`.
+/// `attrs_start_line(21)`, `parent_id(22)`, and the issue #150 health columns
+/// `cognitive_complexity(23)`, `distinct_operators(24)`, `distinct_operands(25)`,
+/// `total_operators(26)`, `total_operands(27)`.
+///
+/// The health columns are read tolerantly (`unwrap_or(0)`): older SELECT lists
+/// in this file that don't request them simply yield 0, the same way
+/// `parent_id` tolerates absence.
 fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
     let kind_str = get_string_lossy(row, 1)?;
     let vis_str = get_string_lossy(row, 11)?;
@@ -78,6 +84,13 @@ fn row_to_node(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
         unsafe_blocks: row.get::<u32>(17)?,
         unchecked_calls: row.get::<u32>(18)?,
         assertions: row.get::<u32>(19)?,
+        // Issue #150 health columns (23..=27). Tolerant of absence in older
+        // SELECT lists, mirroring the parent_id pattern above.
+        cognitive_complexity: row.get::<u32>(23).unwrap_or(0),
+        distinct_operators: row.get::<u32>(24).unwrap_or(0),
+        distinct_operands: row.get::<u32>(25).unwrap_or(0),
+        total_operators: row.get::<u32>(26).unwrap_or(0),
+        total_operands: row.get::<u32>(27).unwrap_or(0),
         updated_at: row.get::<u64>(20)?,
         parent_id,
     })
@@ -176,8 +189,8 @@ impl Database {
                  start_line, end_line, start_column, end_column,
                  docstring, signature, visibility, is_async,
                  branches, loops, returns, max_nesting,
-                 unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                 unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
                 params![
                     node.id.as_str(),
                     node.kind.as_str(),
@@ -202,6 +215,11 @@ impl Database {
                     node.updated_at as i64,
                     i64::from(node.attrs_start_line),
                     opt_str(node.parent_id.as_deref()),
+                    i64::from(node.cognitive_complexity),
+                    i64::from(node.distinct_operators),
+                    i64::from(node.distinct_operands),
+                    i64::from(node.total_operators),
+                    i64::from(node.total_operands),
                 ],
             )
             .await
@@ -275,7 +293,7 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id) VALUES ",
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands) VALUES ",
             );
             for (i, node) in chunk.iter().enumerate() {
                 if i > 0 {
@@ -327,6 +345,16 @@ impl Database {
                 push_int(&mut sql, i64::from(node.attrs_start_line));
                 sql.push(',');
                 push_opt_quoted(&mut sql, node.parent_id.as_deref());
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.cognitive_complexity));
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.distinct_operators));
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.distinct_operands));
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.total_operators));
+                sql.push(',');
+                push_int(&mut sql, i64::from(node.total_operands));
                 sql.push(')');
             }
             sql.push_str(";\n");
@@ -416,8 +444,8 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)"
             )
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -450,6 +478,11 @@ impl Database {
                 node.updated_at as i64,
                 i64::from(node.attrs_start_line),
                 opt_str(node.parent_id.as_deref()),
+                i64::from(node.cognitive_complexity),
+                i64::from(node.distinct_operators),
+                i64::from(node.distinct_operands),
+                i64::from(node.total_operators),
+                i64::from(node.total_operands),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -476,7 +509,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes WHERE id = ?1",
                 params![id],
             )
@@ -517,7 +550,7 @@ impl Database {
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
              FROM nodes WHERE id IN ({placeholders})",
         );
         let param_values: Vec<libsql::Value> = ids
@@ -542,7 +575,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes WHERE file_path = ?1 ORDER BY start_line",
                 params![file_path],
             )
@@ -564,7 +597,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes WHERE parent_id = ?1 ORDER BY start_line",
                 params![parent_id],
             )
@@ -584,7 +617,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes WHERE kind = ?1",
                 params![kind.as_str()],
             )
@@ -604,7 +637,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes",
                 (),
             )
@@ -1245,7 +1278,7 @@ impl Database {
     pub async fn get_nodes_by_name(&self, name: &str) -> Result<Vec<Node>> {
         let sql = "SELECT id, kind, name, qualified_name, file_path,
                           start_line, end_line, start_column, end_column,
-                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                    FROM nodes
                    WHERE name = ?1
                    LIMIT 200";
@@ -1270,7 +1303,7 @@ impl Database {
         // Exact match first — preserves the precise-lookup contract.
         let exact_sql = "SELECT id, kind, name, qualified_name, file_path,
                           start_line, end_line, start_column, end_column,
-                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                          docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                    FROM nodes
                    WHERE qualified_name = ?1";
         let mut rows = self
@@ -1305,7 +1338,7 @@ impl Database {
             (
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
                  WHERE qualified_name LIKE ?1
                  LIMIT 50",
@@ -1315,7 +1348,7 @@ impl Database {
             (
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
-                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                        docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
                  WHERE name = ?1
                  LIMIT 50",
@@ -1389,7 +1422,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     COUNT(*) AS cnt
              FROM edges e
              JOIN nodes n ON {join_col} = n.id
@@ -1419,7 +1452,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let count = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
+            let count = row.get::<u64>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read count column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1461,7 +1494,7 @@ impl Database {
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id,
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands,
                     (end_line - start_line + 1) AS lines
              FROM nodes
              {where_clause}
@@ -1489,7 +1522,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let lines = row.get::<u32>(23).map_err(|e| TokenSaveError::Database {
+            let lines = row.get::<u32>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read lines column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1613,7 +1646,7 @@ impl Database {
              )
              SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
@@ -1641,7 +1674,7 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let depth = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
+            let depth = row.get::<u64>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read depth column: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1842,7 +1875,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     (n.end_line - n.start_line + 1) AS lines,
                     COALESCE(out_calls.cnt, 0) AS fan_out,
                     COALESCE(in_calls.cnt, 0) AS fan_in,
@@ -1875,19 +1908,19 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let lines = row.get::<u32>(23).map_err(|e| TokenSaveError::Database {
+            let lines = row.get::<u32>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read lines: {e}"),
                 operation: op.to_string(),
             })?;
-            let fan_out = row.get::<u64>(24).map_err(|e| TokenSaveError::Database {
+            let fan_out = row.get::<u64>(29).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fan_out: {e}"),
                 operation: op.to_string(),
             })?;
-            let fan_in = row.get::<u64>(25).map_err(|e| TokenSaveError::Database {
+            let fan_in = row.get::<u64>(30).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fan_in: {e}"),
                 operation: op.to_string(),
             })?;
-            let score = row.get::<u64>(26).map_err(|e| TokenSaveError::Database {
+            let score = row.get::<u64>(31).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read score: {e}"),
                 operation: op.to_string(),
             })?;
@@ -1920,7 +1953,7 @@ impl Database {
                 format!(
                     "SELECT id, kind, name, qualified_name, file_path,
                             start_line, end_line, start_column, end_column,
-                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                      FROM nodes
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
@@ -1938,7 +1971,7 @@ impl Database {
                 format!(
                     "SELECT id, kind, name, qualified_name, file_path,
                             start_line, end_line, start_column, end_column,
-                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                            docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                      FROM nodes
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
@@ -1981,7 +2014,7 @@ impl Database {
         let sql = format!(
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     SUM(CASE WHEN c.kind IN ('method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
                     SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
@@ -2013,15 +2046,15 @@ impl Database {
                 message: format!("failed to map row: {e}"),
                 operation: op.to_string(),
             })?;
-            let methods = row.get::<u64>(23).map_err(|e| TokenSaveError::Database {
+            let methods = row.get::<u64>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read methods: {e}"),
                 operation: op.to_string(),
             })?;
-            let fields = row.get::<u64>(24).map_err(|e| TokenSaveError::Database {
+            let fields = row.get::<u64>(29).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read fields: {e}"),
                 operation: op.to_string(),
             })?;
-            let total = row.get::<u64>(25).map_err(|e| TokenSaveError::Database {
+            let total = row.get::<u64>(30).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read total: {e}"),
                 operation: op.to_string(),
             })?;
@@ -2361,7 +2394,7 @@ impl Database {
             .query(
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
-                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
                  WHERE name LIKE ?1 OR qualified_name LIKE ?1 OR docstring LIKE ?1 OR signature LIKE ?1
                  LIMIT ?2",
@@ -2394,7 +2427,7 @@ impl Database {
             .query(
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id,
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0) AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
@@ -2418,7 +2451,7 @@ impl Database {
                 message: format!("failed to map search result: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
-            let rank: f64 = row.get::<f64>(23).map_err(|e| TokenSaveError::Database {
+            let rank: f64 = row.get::<f64>(28).map_err(|e| TokenSaveError::Database {
                 message: format!("failed to read rank: {e}"),
                 operation: "search_nodes".to_string(),
             })?;
@@ -2481,7 +2514,7 @@ impl Database {
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async,
                     branches, loops, returns, max_nesting,
-                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
              FROM nodes
              WHERE LOWER(name) IN ({placeholders})
              LIMIT ?",
@@ -2736,7 +2769,7 @@ impl Database {
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async,
                     branches, loops, returns, max_nesting,
-                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id
+                    unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
              FROM nodes
              WHERE file_path LIKE ?1 || '%' AND kind IN ({})
              ORDER BY file_path, start_line",

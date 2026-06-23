@@ -37,6 +37,11 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 1000,
         parent_id: None,
     }
@@ -455,14 +460,14 @@ async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
         .expect("migrate failed");
     assert!(migrated, "expected v7 migration to run");
 
-    // user_version is now LATEST (= 10).
+    // user_version is now LATEST (= 11).
     let mut rows = conn
         .query("PRAGMA user_version", ())
         .await
         .expect("read version");
     let row = rows.next().await.expect("row").expect("some row");
     let version: i64 = row.get(0).expect("version");
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 
     // attrs_start_line is backfilled from start_line for both rows.
     // Row a: start_line=42 -> attrs_start_line=42.

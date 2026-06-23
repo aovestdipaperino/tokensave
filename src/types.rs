@@ -350,6 +350,17 @@ pub struct Node {
     pub unchecked_calls: u32,
     /// Number of assertion calls (e.g. `assert!`, `assertEquals`, `expect`).
     pub assertions: u32,
+    /// `SonarSource`-style cognitive complexity (nesting-weighted). 0 for
+    /// non-function nodes. See `extraction::complexity` for the algorithm.
+    pub cognitive_complexity: u32,
+    /// Distinct Halstead operators (n1) within the function body.
+    pub distinct_operators: u32,
+    /// Distinct Halstead operands (n2) within the function body.
+    pub distinct_operands: u32,
+    /// Total Halstead operator occurrences (N1) within the function body.
+    pub total_operators: u32,
+    /// Total Halstead operand occurrences (N2) within the function body.
+    pub total_operands: u32,
     pub updated_at: u64,
     /// `id` of the enclosing scope (module, impl, class, …). `None` for
     /// top-level nodes whose parent is the file itself. Populated from

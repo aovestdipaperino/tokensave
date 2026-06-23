@@ -335,3 +335,163 @@ fn complex(data: &[Option<i32>]) -> i32 {
     assert!(m.assertions >= 1, "assertions: {}", m.assertions);
     assert!(m.max_nesting >= 3, "nesting: {}", m.max_nesting);
 }
+
+// ── Cognitive complexity (issue #150) ────────────────────────────────────────
+
+#[test]
+fn test_cognitive_flat_function_is_low() {
+    let m = rust_fn_complexity(
+        r#"
+fn flat() {
+    let a = 1;
+    let b = 2;
+    let c = a + b;
+}
+"#,
+    );
+    assert_eq!(
+        m.cognitive_complexity, 0,
+        "a function with no control flow has 0 cognitive complexity, got {}",
+        m.cognitive_complexity
+    );
+}
+
+#[test]
+fn test_cognitive_nesting_penalty_exceeds_flat_with_same_cyclomatic() {
+    // Flat: three sequential `if`s — cyclomatic = 3+1 = 4, no nesting.
+    let flat = rust_fn_complexity(
+        r#"
+fn flat(a: i32, b: i32, c: i32) {
+    if a > 0 { println!("a"); }
+    if b > 0 { println!("b"); }
+    if c > 0 { println!("c"); }
+}
+"#,
+    );
+    // Nested: three `if`s nested inside each other — same number of branches,
+    // so the same cyclomatic complexity, but each deeper `if` adds a nesting
+    // penalty under SonarSource cognitive complexity.
+    let nested = rust_fn_complexity(
+        r#"
+fn nested(a: i32, b: i32, c: i32) {
+    if a > 0 {
+        if b > 0 {
+            if c > 0 {
+                println!("deep");
+            }
+        }
+    }
+}
+"#,
+    );
+
+    assert_eq!(
+        flat.branches, nested.branches,
+        "test setup: both functions must have the same branch (cyclomatic) count"
+    );
+    assert!(
+        nested.cognitive_complexity > flat.cognitive_complexity,
+        "nested cognitive ({}) should exceed flat cognitive ({}) for equal cyclomatic complexity",
+        nested.cognitive_complexity,
+        flat.cognitive_complexity
+    );
+}
+
+#[test]
+fn test_cognitive_boolean_operator_sequence_adds_increment() {
+    let simple = rust_fn_complexity(
+        r#"
+fn simple(a: bool) {
+    if a { println!("x"); }
+}
+"#,
+    );
+    let compound = rust_fn_complexity(
+        r#"
+fn compound(a: bool, b: bool, c: bool) {
+    if a && b && c { println!("x"); }
+}
+"#,
+    );
+    assert!(
+        compound.cognitive_complexity > simple.cognitive_complexity,
+        "boolean-operator sequence should raise cognitive complexity: compound {} vs simple {}",
+        compound.cognitive_complexity,
+        simple.cognitive_complexity
+    );
+}
+
+// ── Halstead primitives (issue #150) ─────────────────────────────────────────
+
+#[test]
+fn test_halstead_counts_nonzero_for_nontrivial_function() {
+    let m = rust_fn_complexity(
+        r#"
+fn calc(a: i32, b: i32) -> i32 {
+    let c = a + b;
+    let d = c * a;
+    d - b
+}
+"#,
+    );
+    assert!(
+        m.total_operators > 0,
+        "expected operators to be counted, got {}",
+        m.total_operators
+    );
+    assert!(
+        m.total_operands > 0,
+        "expected operands to be counted, got {}",
+        m.total_operands
+    );
+    assert!(
+        m.distinct_operators > 0 && m.distinct_operators <= m.total_operators,
+        "distinct operators ({}) must be in (0, total {}]",
+        m.distinct_operators,
+        m.total_operators
+    );
+    assert!(
+        m.distinct_operands > 0 && m.distinct_operands <= m.total_operands,
+        "distinct operands ({}) must be in (0, total {}]",
+        m.distinct_operands,
+        m.total_operands
+    );
+}
+
+// ── Derived Halstead + maintainability index (issue #150) ────────────────────
+
+#[test]
+fn test_halstead_volume_increases_with_program_length() {
+    use tokensave::extraction::complexity::halstead_volume;
+    let small = halstead_volume(2, 3, 4, 6);
+    let large = halstead_volume(5, 10, 40, 80);
+    assert!(small > 0.0, "volume should be positive, got {small}");
+    assert!(
+        large > small,
+        "larger program should have larger Halstead volume: {large} vs {small}"
+    );
+}
+
+#[test]
+fn test_maintainability_index_within_bounds_and_decreases() {
+    use tokensave::extraction::complexity::{halstead_volume, maintainability_index};
+
+    // Small, simple unit.
+    let small_vol = halstead_volume(3, 4, 8, 12);
+    let mi_small = maintainability_index(small_vol, 1, 5);
+
+    // Large, complex unit.
+    let large_vol = halstead_volume(15, 40, 200, 400);
+    let mi_large = maintainability_index(large_vol, 30, 400);
+
+    for mi in [mi_small, mi_large] {
+        assert!(
+            (0.0..=100.0).contains(&mi),
+            "maintainability index must be clamped to 0..=100, got {mi}"
+        );
+    }
+    assert!(
+        mi_small > mi_large,
+        "a simpler/smaller unit should have a higher maintainability index: {mi_small} vs {mi_large}"
+    );
+}

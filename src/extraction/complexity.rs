@@ -2,9 +2,19 @@
 //! Generic complexity counting for tree-sitter AST nodes.
 //!
 //! Walks descendants of a function/method node and counts branches,
-//! loops, early-exit statements, and maximum nesting depth. The counts
-//! are language-agnostic — each extractor supplies the node type names
-//! that correspond to each category.
+//! loops, early-exit statements, maximum nesting depth, cognitive
+//! complexity, and Halstead operator/operand tokens — all in a single
+//! AST walk. The counts are language-agnostic: each extractor supplies the
+//! node type names that correspond to each category via [`ComplexityConfig`].
+//!
+//! Derived float metrics (Halstead volume/difficulty/effort and the
+//! maintainability index) are provided as pure functions
+//! ([`halstead_volume`], [`halstead_difficulty`], [`halstead_effort`],
+//! [`maintainability_index`]) so callers can compute them on demand without
+//! storing redundant floats on every node.
+//!
+//! The CRAP change-risk metric is intentionally out of scope: it needs
+//! per-method test-coverage data tokensave does not collect.
 
 use tree_sitter::Node as TsNode;
 
@@ -35,6 +45,18 @@ pub struct ComplexityConfig {
     pub assertion_names: &'static [&'static str],
     /// Node types representing macro invocations (e.g. `macro_invocation` in Rust).
     pub macro_invocation_types: &'static [&'static str],
+    /// Node types classified as Halstead *operators* (operators, keywords, calls).
+    ///
+    /// Each matching node contributes one token to the total-operator count and
+    /// its `kind` to the distinct-operator set. Leave empty to skip Halstead
+    /// operator counting for a language.
+    pub operator_types: &'static [&'static str],
+    /// Node types classified as Halstead *operands* (identifiers, literals).
+    ///
+    /// Each matching node contributes one token to the total-operand count and
+    /// its source text to the distinct-operand set. Leave empty to skip Halstead
+    /// operand counting for a language.
+    pub operand_types: &'static [&'static str],
 }
 
 /// Complexity metrics extracted from a function body.
@@ -50,6 +72,23 @@ pub struct ComplexityMetrics {
     pub unchecked_calls: u32,
     /// Number of assertion calls (assert, `debug_assert`, assertEquals, etc.).
     pub assertions: u32,
+    /// `SonarSource`-style cognitive complexity.
+    ///
+    /// Increments for each break in linear control flow (if/else-if/switch
+    /// arms, loops, catch, ternaries) plus a nesting penalty equal to the
+    /// number of enclosing control-flow structures, and one increment per
+    /// extra boolean operator in a logical sequence. Unlike cyclomatic
+    /// complexity this is nesting-weighted, so it must be computed during the
+    /// AST walk and cannot be derived from the scalar branch/loop counts.
+    pub cognitive_complexity: u32,
+    /// Number of distinct Halstead operators (n1).
+    pub distinct_operators: u32,
+    /// Number of distinct Halstead operands (n2).
+    pub distinct_operands: u32,
+    /// Total Halstead operator occurrences (N1).
+    pub total_operators: u32,
+    /// Total Halstead operand occurrences (N2).
+    pub total_operands: u32,
 }
 
 /// Counts complexity metrics by iterating over all descendants of `node`.
@@ -75,8 +114,16 @@ pub fn count_complexity(
     );
     let mut metrics = ComplexityMetrics::default();
 
-    // Stack: (tree-sitter node, current nesting depth)
-    let mut stack: Vec<(TsNode<'_>, u32)> = Vec::new();
+    // Distinct-token sets for Halstead. Operators are keyed by node kind
+    // (stable, allocation-free); operands by source text so two uses of the
+    // same identifier/literal collapse to one distinct operand.
+    let mut distinct_operators: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut distinct_operands: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Stack: (tree-sitter node, block nesting depth, cognitive nesting depth).
+    // Block nesting feeds `max_nesting`; cognitive nesting feeds the
+    // SonarSource nesting penalty and counts only control-flow ancestors.
+    let mut stack: Vec<(TsNode<'_>, u32, u32)> = Vec::new();
 
     // Seed with direct children of the function node. Earlier revisions used
     // `node.child(i)` in a `for i in 0..N` loop — tree-sitter's `child(i)`
@@ -84,11 +131,11 @@ pub fn count_complexity(
     // seed loop alone was O(N²) for high-fanout nodes (e.g. the giant
     // `switch` in `kernel/bpf/verifier.c` with thousands of cases). Use a
     // cursor for O(1) per step.
-    push_children(&mut stack, node, 0);
+    push_children(&mut stack, node, 0, 0);
 
     let mut iterations: usize = 0;
 
-    while let Some((current, depth)) = stack.pop() {
+    while let Some((current, depth, cog_depth)) = stack.pop() {
         iterations += 1;
         if iterations >= MAX_ITERATIONS {
             break;
@@ -97,14 +144,38 @@ pub fn count_complexity(
         let kind = current.kind();
 
         // Classify the node.
-        if config.branch_types.contains(&kind) {
+        let is_branch = config.branch_types.contains(&kind);
+        let is_loop = config.loop_types.contains(&kind);
+        if is_branch {
             metrics.branches += 1;
         }
-        if config.loop_types.contains(&kind) {
+        if is_loop {
             metrics.loops += 1;
         }
         if config.return_types.contains(&kind) {
             metrics.returns += 1;
+        }
+
+        // Cognitive complexity: each control-flow structure adds one base
+        // increment plus the current cognitive nesting penalty. Boolean
+        // operator sequences add one increment each (handled below).
+        let is_control_flow = is_branch || is_loop;
+        if is_control_flow {
+            metrics.cognitive_complexity += 1 + cog_depth;
+        } else if is_logical_operator(current, source) {
+            metrics.cognitive_complexity += 1;
+        }
+
+        // Halstead: classify the node as operator or operand.
+        if config.operator_types.contains(&kind) {
+            metrics.total_operators += 1;
+            distinct_operators.insert(kind);
+        }
+        if config.operand_types.contains(&kind) {
+            metrics.total_operands += 1;
+            if let Ok(text) = current.utf8_text(source) {
+                distinct_operands.insert(text.to_string());
+            }
         }
 
         // Unsafe blocks.
@@ -141,7 +212,7 @@ pub fn count_complexity(
             }
         }
 
-        // Track nesting.
+        // Track block nesting (for `max_nesting`).
         let new_depth = if config.nesting_types.contains(&kind) {
             let d = depth + 1;
             if d > metrics.max_nesting {
@@ -152,10 +223,21 @@ pub fn count_complexity(
             depth
         };
 
+        // Track cognitive nesting: descendants of a control-flow structure
+        // pay an extra nesting penalty for their own control-flow.
+        let new_cog_depth = if is_control_flow {
+            cog_depth + 1
+        } else {
+            cog_depth
+        };
+
         // Push children via cursor — see `push_children`. Same O(N²) trap
         // as the seed loop above.
-        push_children(&mut stack, current, new_depth);
+        push_children(&mut stack, current, new_depth, new_cog_depth);
     }
+
+    metrics.distinct_operators = distinct_operators.len() as u32;
+    metrics.distinct_operands = distinct_operands.len() as u32;
 
     debug_assert!(
         metrics.max_nesting <= 500,
@@ -168,18 +250,161 @@ pub fn count_complexity(
     metrics
 }
 
+/// Returns true if `node` is a binary expression whose operator is a logical
+/// `&&` or `||`. Used for the `SonarSource` boolean-sequence cognitive
+/// increment. Walks immediate children looking for the operator token, which
+/// keeps this grammar-agnostic across the supported languages.
+fn is_logical_operator(node: TsNode<'_>, source: &[u8]) -> bool {
+    let kind = node.kind();
+    // Common binary-expression node kinds across grammars.
+    if !(kind.contains("binary_expression")
+        || kind == "boolean_operator"
+        || kind == "logical_expression")
+    {
+        return false;
+    }
+    if source.is_empty() {
+        return false;
+    }
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            // Operator tokens are unnamed leaves; check their text directly.
+            if !child.is_named() {
+                if let Ok(text) = child.utf8_text(source) {
+                    let t = text.trim();
+                    if t == "&&" || t == "||" || t == "and" || t == "or" {
+                        return true;
+                    }
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Derived Halstead and maintainability metrics
+//
+// These are pure functions over the raw token counts produced by
+// `count_complexity`, kept here so callers (e.g. the MCP complexity handler)
+// can derive the float-valued metrics on demand without storing redundant
+// floats on every `Node`.
+//
+// NOTE: the CRAP metric requested in issue #150 is intentionally *not*
+// implemented. CRAP = comp^2 * (1 - coverage)^3 + comp, which requires
+// per-method test-coverage data that tokensave does not collect. It is
+// deferred until coverage tracking exists.
+// ---------------------------------------------------------------------------
+
+/// Computes Halstead volume `V = N * log2(n)`.
+///
+/// `N` is program length (`total_operators` + `total_operands`) and `n` is
+/// vocabulary (`distinct_operators` + `distinct_operands`). Returns 0.0 for an
+/// empty unit (vocabulary <= 1, where `log2` is undefined or zero).
+///
+/// # Examples
+/// ```
+/// use tokensave::extraction::complexity::halstead_volume;
+/// assert!(halstead_volume(2, 3, 4, 6) > 0.0);
+/// ```
+#[must_use]
+pub fn halstead_volume(
+    distinct_operators: u32,
+    distinct_operands: u32,
+    total_operators: u32,
+    total_operands: u32,
+) -> f64 {
+    let vocabulary = f64::from(distinct_operators + distinct_operands);
+    let length = f64::from(total_operators + total_operands);
+    if vocabulary <= 1.0 {
+        return 0.0;
+    }
+    length * vocabulary.log2()
+}
+
+/// Computes Halstead difficulty `D = (n1 / 2) * (N2 / n2)`.
+///
+/// Returns 0.0 when there are no distinct operands (avoids divide-by-zero).
+///
+/// # Examples
+/// ```
+/// use tokensave::extraction::complexity::halstead_difficulty;
+/// assert!(halstead_difficulty(4, 6, 12) > 0.0);
+/// ```
+#[must_use]
+pub fn halstead_difficulty(
+    distinct_operators: u32,
+    distinct_operands: u32,
+    total_operands: u32,
+) -> f64 {
+    if distinct_operands == 0 {
+        return 0.0;
+    }
+    (f64::from(distinct_operators) / 2.0)
+        * (f64::from(total_operands) / f64::from(distinct_operands))
+}
+
+/// Computes Halstead effort `E = D * V`.
+///
+/// # Examples
+/// ```
+/// use tokensave::extraction::complexity::halstead_effort;
+/// assert!(halstead_effort(10.0, 2.0) > 0.0);
+/// ```
+#[must_use]
+pub fn halstead_effort(volume: f64, difficulty: f64) -> f64 {
+    volume * difficulty
+}
+
+/// Computes the maintainability index, clamped to `0..=100`.
+///
+/// Uses the widely adopted Microsoft/SEI variant scaled to a 0–100 range:
+/// `MI = max(0, (171 - 5.2*ln(V) - 0.23*G - 16.2*ln(LOC)) * 100 / 171)`,
+/// where `V` is Halstead volume, `G` is cyclomatic complexity, and `LOC` is
+/// lines of code. Higher is more maintainable. Returns 100.0 for trivial units
+/// (volume and LOC both 0).
+///
+/// # Examples
+/// ```
+/// use tokensave::extraction::complexity::maintainability_index;
+/// let mi = maintainability_index(100.0, 3, 20);
+/// assert!((0.0..=100.0).contains(&mi));
+/// ```
+#[must_use]
+pub fn maintainability_index(volume: f64, cyclomatic: u32, lines_of_code: u32) -> f64 {
+    // ln(0) is -inf; guard the volume and LOC terms so a tiny unit yields a
+    // high (good) score rather than NaN/inf.
+    let ln_v = if volume > 0.0 { volume.ln() } else { 0.0 };
+    let loc = f64::from(lines_of_code);
+    let ln_loc = if loc > 0.0 { loc.ln() } else { 0.0 };
+
+    let raw = 171.0 - 5.2 * ln_v - 0.23 * f64::from(cyclomatic) - 16.2 * ln_loc;
+    // Scale the classic 0–171 range to 0–100 and clamp.
+    (raw * 100.0 / 171.0).clamp(0.0, 100.0)
+}
+
 /// Pushes the direct children of `parent` onto `stack` in reverse order, so
 /// a LIFO pop reproduces left-to-right traversal. Iterates via a `TreeCursor`
 /// — sibling walks are O(1) each, vs. O(i) for `parent.child(i)`. Skipping
 /// this matters: high-fanout nodes (1 K+ children, common in switch-heavy
 /// C files like `kernel/bpf/verifier.c`) turn `for i in 0..N { child(i) }`
 /// into an O(N²) trap that dominated indexing time before this helper.
-fn push_children<'a>(stack: &mut Vec<(TsNode<'a>, u32)>, parent: TsNode<'a>, depth: u32) {
+fn push_children<'a>(
+    stack: &mut Vec<(TsNode<'a>, u32, u32)>,
+    parent: TsNode<'a>,
+    depth: u32,
+    cog_depth: u32,
+) {
     let start = stack.len();
     let mut cursor = parent.walk();
     if cursor.goto_first_child() {
         loop {
-            stack.push((cursor.node(), depth));
+            stack.push((cursor.node(), depth, cog_depth));
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -311,6 +536,30 @@ pub static RUST_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "debug_assert_ne",
     ],
     macro_invocation_types: &["macro_invocation"],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_expression",
+        "compound_assignment_expr",
+        "call_expression",
+        "field_expression",
+        "index_expression",
+        "reference_expression",
+        "try_expression",
+        "await_expression",
+        "macro_invocation",
+        "range_expression",
+    ],
+    operand_types: &[
+        "identifier",
+        "field_identifier",
+        "integer_literal",
+        "float_literal",
+        "string_literal",
+        "char_literal",
+        "boolean_literal",
+        "self",
+    ],
 };
 
 pub static JAVA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -352,6 +601,30 @@ pub static JAVA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "assertArrayEquals",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_expression",
+        "update_expression",
+        "method_invocation",
+        "object_creation_expression",
+        "field_access",
+        "array_access",
+        "cast_expression",
+        "instanceof_expression",
+    ],
+    operand_types: &[
+        "identifier",
+        "decimal_integer_literal",
+        "hex_integer_literal",
+        "decimal_floating_point_literal",
+        "string_literal",
+        "character_literal",
+        "true",
+        "false",
+        "null_literal",
+        "this",
+    ],
 };
 
 pub static GO_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -374,6 +647,29 @@ pub static GO_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "NoError",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_statement",
+        "inc_statement",
+        "dec_statement",
+        "call_expression",
+        "selector_expression",
+        "index_expression",
+        "composite_literal",
+    ],
+    operand_types: &[
+        "identifier",
+        "field_identifier",
+        "int_literal",
+        "float_literal",
+        "interpreted_string_literal",
+        "raw_string_literal",
+        "rune_literal",
+        "true",
+        "false",
+        "nil",
+    ],
 };
 
 pub static PYTHON_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -411,6 +707,27 @@ pub static PYTHON_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "assertAlmostEqual",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_operator",
+        "boolean_operator",
+        "comparison_operator",
+        "unary_operator",
+        "not_operator",
+        "assignment",
+        "augmented_assignment",
+        "call",
+        "attribute",
+        "subscript",
+    ],
+    operand_types: &[
+        "identifier",
+        "integer",
+        "float",
+        "string",
+        "true",
+        "false",
+        "none",
+    ],
 };
 
 pub static TYPESCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -450,6 +767,31 @@ pub static TYPESCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "notOk",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "update_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "call_expression",
+        "member_expression",
+        "subscript_expression",
+        "new_expression",
+        "await_expression",
+        "ternary_expression",
+    ],
+    operand_types: &[
+        "identifier",
+        "property_identifier",
+        "number",
+        "string",
+        "template_string",
+        "true",
+        "false",
+        "null",
+        "undefined",
+        "this",
+    ],
 };
 
 pub static C_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -479,6 +821,28 @@ pub static C_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "CU_ASSERT_EQUAL",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "update_expression",
+        "assignment_expression",
+        "call_expression",
+        "field_expression",
+        "subscript_expression",
+        "pointer_expression",
+        "cast_expression",
+        "sizeof_expression",
+    ],
+    operand_types: &[
+        "identifier",
+        "field_identifier",
+        "number_literal",
+        "string_literal",
+        "char_literal",
+        "true",
+        "false",
+        "null",
+    ],
 };
 
 pub static CPP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -522,6 +886,31 @@ pub static CPP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "static_assert",
     ],
     macro_invocation_types: &[],
+    operator_types: &[
+        "binary_expression",
+        "unary_expression",
+        "update_expression",
+        "assignment_expression",
+        "call_expression",
+        "field_expression",
+        "subscript_expression",
+        "pointer_expression",
+        "cast_expression",
+        "new_expression",
+        "delete_expression",
+        "sizeof_expression",
+    ],
+    operand_types: &[
+        "identifier",
+        "field_identifier",
+        "number_literal",
+        "string_literal",
+        "char_literal",
+        "true",
+        "false",
+        "nullptr",
+        "this",
+    ],
 };
 
 pub static KOTLIN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -546,6 +935,8 @@ pub static KOTLIN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "assertIsNot",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 pub static SCALA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -560,6 +951,8 @@ pub static SCALA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "function",
     assertion_names: &["assert", "assertEquals", "assertResult", "assertThrows"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-dart")]
@@ -585,6 +978,8 @@ pub static DART_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "function",
     assertion_names: &["assert", "expect", "expectLater", "expectAsync"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 pub static CSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -623,6 +1018,8 @@ pub static CSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "ThrowsException",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-pascal")]
@@ -638,6 +1035,8 @@ pub static PASCAL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["Assert", "CheckEquals", "CheckTrue", "CheckFalse"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-php")]
@@ -679,6 +1078,8 @@ pub static PHP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "assertInstanceOf",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-ruby")]
@@ -703,6 +1104,8 @@ pub static RUBY_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "refute",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
@@ -736,6 +1139,8 @@ pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "XCTAssertNotNil",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-bash")]
@@ -751,6 +1156,8 @@ pub static BASH_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "name",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-lua")]
@@ -771,6 +1178,8 @@ pub static LUA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["assert", "assert_equal", "assert_true", "assert_false"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-zig")]
@@ -795,6 +1204,8 @@ pub static ZIG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["expect", "expectEqual", "expectEqualStrings", "expectError"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-nix")]
@@ -810,6 +1221,8 @@ pub static NIX_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-vbnet")]
@@ -844,6 +1257,8 @@ pub static VBNET_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "IsNotNull",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-powershell")]
@@ -875,6 +1290,8 @@ pub static POWERSHELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["Should", "Assert"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-perl")]
@@ -901,6 +1318,8 @@ pub static PERL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["ok", "is", "isnt", "like", "unlike", "cmp_ok", "is_deeply"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-objc")]
@@ -936,6 +1355,8 @@ pub static OBJC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "XCTAssertNotNil",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-fortran")]
@@ -962,6 +1383,8 @@ pub static FORTRAN_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-cobol")]
@@ -977,6 +1400,8 @@ pub static COBOL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-msbasic2")]
@@ -992,6 +1417,8 @@ pub static MSBASIC2_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-gwbasic")]
@@ -1007,6 +1434,8 @@ pub static GWBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-qbasic")]
@@ -1022,6 +1451,8 @@ pub static QBASIC_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-r")]
@@ -1043,6 +1474,8 @@ pub static R_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "expect_false",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-sql")]
@@ -1058,6 +1491,8 @@ pub static SQL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &[],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-julia")]
@@ -1073,6 +1508,8 @@ pub static JULIA_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["@assert", "assert", "@test", "@test_throws"],
     macro_invocation_types: &["macro_expression"],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-haskell")]
@@ -1095,6 +1532,8 @@ pub static HASKELL_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "shouldSatisfy",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-ocaml")]
@@ -1116,6 +1555,8 @@ pub static OCAML_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "check_bool",
     ],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-clojure")]
@@ -1131,6 +1572,8 @@ pub static CLOJURE_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["assert", "is", "are", "testing"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-erlang")]
@@ -1146,6 +1589,8 @@ pub static ERLANG_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["assertEqual", "assert", "assertMatch", "assertError"],
     macro_invocation_types: &["macro_application"],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-elixir")]
@@ -1161,6 +1606,8 @@ pub static ELIXIR_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["assert", "assert_raise", "assert_receive", "refute"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 #[cfg(feature = "lang-fsharp")]
@@ -1176,6 +1623,8 @@ pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "",
     assertion_names: &["Assert", "assertEqual", "assertTrue", "assertFalse"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };
 
 /// ActionScript 2/3 (tree-sitter-actionscript grammar).
@@ -1208,4 +1657,6 @@ pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_method_field: "function",
     assertion_names: &["assert", "assertEquals", "assertTrue", "assertFalse"],
     macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
 };

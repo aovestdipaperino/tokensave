@@ -18,6 +18,30 @@ use super::{
     truncate_response, unique_file_paths,
 };
 
+/// Rounds a derived health metric to two decimal places for compact JSON.
+fn round2_health(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+/// Halstead volume for a node from its stored token counts (issue #150).
+fn halstead_vol_for(n: &crate::types::Node) -> f64 {
+    crate::extraction::complexity::halstead_volume(
+        n.distinct_operators,
+        n.distinct_operands,
+        n.total_operators,
+        n.total_operands,
+    )
+}
+
+/// Halstead difficulty for a node from its stored token counts (issue #150).
+fn halstead_diff_for(n: &crate::types::Node) -> f64 {
+    crate::extraction::complexity::halstead_difficulty(
+        n.distinct_operators,
+        n.distinct_operands,
+        n.total_operands,
+    )
+}
+
 /// Errors when `node_id` matches no node in the graph.
 ///
 /// Traversal queries return an empty result set for an unknown ID, which is
@@ -767,6 +791,22 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
                 "unchecked_calls": n.unchecked_calls,
                 "assertions": n.assertions,
                 "cyclomatic_complexity": n.branches + 1,
+                "cognitive_complexity": n.cognitive_complexity,
+                "halstead_volume": round2_health(halstead_vol_for(&n)),
+                "halstead_difficulty": round2_health(halstead_diff_for(&n)),
+                "halstead_effort": round2_health(
+                    crate::extraction::complexity::halstead_effort(
+                        halstead_vol_for(&n),
+                        halstead_diff_for(&n),
+                    )
+                ),
+                "maintainability_index": round2_health(
+                    crate::extraction::complexity::maintainability_index(
+                        halstead_vol_for(&n),
+                        n.branches + 1,
+                        n.end_line.saturating_sub(n.start_line) + 1,
+                    )
+                ),
                 "cost_to_expand": cost_to_expand(&n, file_size_bytes),
                 "derives": derives,
             });

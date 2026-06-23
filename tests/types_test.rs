@@ -23,6 +23,11 @@ fn make_node(id: &str, name: &str) -> Node {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 0,
         parent_id: None,
     }
@@ -159,6 +164,11 @@ fn node_serde_roundtrip() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 1700000000,
         parent_id: None,
     };
