@@ -403,7 +403,7 @@ The server exposes more than 80 tools (one fewer when the optional `ast-grep` bi
 
 | Tool | Purpose |
 |------|---------|
-| `tokensave_complexity` | Rank functions by cyclomatic complexity, nesting depth, safety metrics |
+| `tokensave_complexity` | Rank functions by cyclomatic & cognitive complexity, nesting depth, Halstead metrics, maintainability index, CRAP, and safety metrics |
 | `tokensave_dead_code` | Find unreachable symbols (no incoming edges) |
 | `tokensave_god_class` | Find classes with too many members |
 | `tokensave_coupling` | Rank files by fan-in/fan-out |
@@ -776,7 +776,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Agent integrations** | 12+ (Claude, Codex, Gemini, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe, Grok) | 1 (Claude Code) |
 | **Index freshness** | On-demand staleness check on every MCP call; catch-up sync on connect; multi-agent work expected to use git worktrees | Native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW, 2 s debounce); catch-up sync on connect |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
-| **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic) | No |
+| **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic & cognitive complexity, Halstead, maintainability index, CRAP) | No |
 | **Porting tools** | Yes (`port_status`, `port_order`) | No |
 | **Graph visualizer** | Removed (v4.0.1) | Yes |
 | **Semantic search** | Agent-driven keyword expansion (zero-cost) | Local embeddings (nomic-embed-text-v1.5 via ONNX) |
