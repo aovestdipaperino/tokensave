@@ -34,6 +34,7 @@ pub mod errors;
 pub mod extraction;
 pub mod extraction_worker;
 pub mod global_db;
+pub mod go_import;
 pub mod graph;
 pub mod hooks;
 pub mod mcp;

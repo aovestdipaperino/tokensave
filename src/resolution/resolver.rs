@@ -168,6 +168,34 @@ fn path_proximity(a: &str, b: &str) -> i64 {
     (shared as i64 * 5).min(40)
 }
 
+/// True if Go source file `file_path` belongs to the package that import path
+/// `import_path` points at.
+///
+/// A Go import path's trailing segments name the package directory: import
+/// `example.com/m/internal/foo/jobs` is satisfied by any `.go` file directly
+/// under `internal/foo/jobs`. We compare the file's directory segments against
+/// the import path's trailing segments (the file's dir must be a suffix of the
+/// import path), so a single-module repo whose paths are relative to the module
+/// root matches without needing the module prefix.
+fn go_file_in_package(file_path: &str, import_path: &str) -> bool {
+    // Directory of the candidate file (drop the file name). A file at module
+    // root matches only a bare-package import (no slash).
+    let Some((dir, _)) = file_path.rsplit_once('/') else {
+        return !import_path.contains('/');
+    };
+    let dir_segs: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+    let imp_segs: Vec<&str> = import_path.split('/').filter(|s| !s.is_empty()).collect();
+    if dir_segs.is_empty() || dir_segs.len() > imp_segs.len() {
+        return false;
+    }
+    // The file's directory segments must be a suffix of the import path.
+    dir_segs
+        .iter()
+        .rev()
+        .zip(imp_segs.iter().rev())
+        .all(|(d, i)| d == i)
+}
+
 /// Resolves unresolved references into concrete edges by matching them against
 /// known nodes loaded from the database.
 ///
@@ -189,6 +217,12 @@ pub struct ReferenceResolver<'a> {
     /// Maps `file_path` to the set of qualified names imported by that file.
     /// Built from Use nodes. Used to prefer candidates that the caller imports.
     import_index: HashMap<String, HashSet<String>>,
+    /// Maps `file_path` to that Go file's in-scope import qualifiers
+    /// (`qualifier` -> full import path). Built from Go Use nodes. Used to
+    /// disambiguate a selector call `qualifier.Name` to the package directory
+    /// the qualifier refers to, so same-named packages don't collide (#149
+    /// Bug 1).
+    go_import_qualifiers: HashMap<String, HashMap<String, String>>,
 }
 
 impl<'a> ReferenceResolver<'a> {
@@ -265,6 +299,33 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
+        // Build the Go selector-qualifier map: for each Go Use node, record the
+        // in-scope qualifier (alias, or the package identifier derived from the
+        // import path — handling `/vN` versioned paths) -> the full import path.
+        let mut go_import_qualifiers: HashMap<String, HashMap<String, String>> = HashMap::new();
+        for node in all_nodes {
+            if node.kind != NodeKind::Use || lang_from_path(&node.file_path) != "go" {
+                continue;
+            }
+            // A Go Use node `name` is `<path>` or `<path> as <alias>`.
+            let path = node
+                .name
+                .split_once(" as ")
+                .map_or(node.name.as_str(), |(p, _)| p)
+                .trim();
+            let Some(qualifier) = crate::go_import::import_identifier(&node.name) else {
+                continue;
+            };
+            // Blank (`_`) / dot (`.`) imports derive no usable qualifier — skip.
+            if qualifier == "_" || qualifier == "." {
+                continue;
+            }
+            go_import_qualifiers
+                .entry(node.file_path.clone())
+                .or_default()
+                .insert(qualifier, path.to_string());
+        }
+
         Self {
             db,
             name_cache,
@@ -272,6 +333,7 @@ impl<'a> ReferenceResolver<'a> {
             suffix_cache,
             known_names,
             import_index,
+            go_import_qualifiers,
         }
     }
 
@@ -340,6 +402,17 @@ impl<'a> ReferenceResolver<'a> {
         // ref alongside, so this is harmless there — the duplicate edge is
         // collapsed by the unique edge index.)
         if uref.reference_name.contains('.') {
+            // Go selector disambiguation (#149 Bug 1): if the leading qualifier
+            // is a known import qualifier in this file, resolve `qualifier.Name`
+            // against the package directory that import points at. This keeps
+            // same-named packages (`internal/foo/jobs`, `internal/bar/jobs`,
+            // both `package jobs`) from collapsing onto a single name-keyed
+            // target. A qualifier that is NOT a known import is a receiver
+            // variable for a method call; that falls through to the bare-name
+            // behavior below, unchanged.
+            if let Some(resolved) = self.try_go_selector_match(uref) {
+                return Some(resolved);
+            }
             let simple_name = uref
                 .reference_name
                 .rsplit('.')
@@ -463,6 +536,57 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
+        None
+    }
+
+    /// Go selector resolution (#149 Bug 1): resolve `qualifier.Name` by mapping
+    /// `qualifier` to its import path (via the file's in-scope imports), then
+    /// picking the candidate named `Name` whose file lives in that import's
+    /// package directory.
+    ///
+    /// Returns `None` when `qualifier` is not a known import in this file (it is
+    /// then treated as a receiver variable and resolved by the bare-name
+    /// fallback) or when no candidate's directory matches the import path.
+    fn try_go_selector_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        if lang_from_path(&uref.file_path) != "go" {
+            return None;
+        }
+        let (qualifier, name) = uref.reference_name.split_once('.')?;
+        // Only single-level selectors (`pkg.Fn`) carry a package qualifier; a
+        // chained selector (`a.b.c`) is field/method access on a receiver.
+        if name.contains('.') {
+            return None;
+        }
+        let import_path = self.go_import_qualifiers.get(&uref.file_path)?.get(qualifier)?;
+
+        let candidates = self.name_cache.get(name)?;
+        let mut matched: Vec<&Node> = candidates
+            .iter()
+            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .filter(|n| go_file_in_package(&n.file_path, import_path))
+            .collect();
+        // A single unambiguous match in the imported package is the answer.
+        if matched.len() == 1 {
+            return Some(ResolvedRef {
+                original: uref.clone(),
+                target_node_id: matched.remove(0).id.clone(),
+                confidence: 0.95,
+                resolved_by: "go-selector-import".to_string(),
+            });
+        }
+        // Multiple files in the same package dir define the name — score them,
+        // but only among the package-restricted set so a same-named function in
+        // a *different* package can never win.
+        if matched.len() > 1 {
+            let owned: Vec<Node> = matched.iter().map(|n| (*n).clone()).collect();
+            let best = Self::find_best_match(uref, &owned, &self.import_index)?;
+            return Some(ResolvedRef {
+                original: uref.clone(),
+                target_node_id: best.id.clone(),
+                confidence: 0.9,
+                resolved_by: "go-selector-import".to_string(),
+            });
+        }
         None
     }
 
