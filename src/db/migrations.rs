@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 10;
+const LATEST_VERSION: u32 = 11;
 
 /// Reads the current schema version from `PRAGMA user_version`.
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -83,7 +83,12 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             assertions INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL,
             attrs_start_line INTEGER NOT NULL DEFAULT 0,
-            parent_id TEXT
+            parent_id TEXT,
+            cognitive_complexity INTEGER NOT NULL DEFAULT 0,
+            distinct_operators INTEGER NOT NULL DEFAULT 0,
+            distinct_operands INTEGER NOT NULL DEFAULT 0,
+            total_operators INTEGER NOT NULL DEFAULT 0,
+            total_operands INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS edges (
@@ -333,6 +338,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         8 => migrate_v8(conn).await,
         9 => migrate_v9(conn).await,
         10 => migrate_v10(conn).await,
+        11 => migrate_v11(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -874,4 +880,71 @@ async fn migrate_v10(conn: &Connection) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V11: code-health metric columns (issue #150)
+// ---------------------------------------------------------------------------
+
+/// Adds the issue #150 code-health columns to the nodes table:
+/// `cognitive_complexity` plus the raw Halstead token counts
+/// (`distinct_operators`, `distinct_operands`, `total_operators`,
+/// `total_operands`). Derived metrics (Halstead volume/difficulty/effort and
+/// the maintainability index) are computed on demand in the complexity handler
+/// and are not stored.
+///
+/// Existing rows default to 0; they are repopulated on the next re-index.
+///
+/// `SQLite` has no `ADD COLUMN IF NOT EXISTS`, so each column is added only
+/// when absent. This keeps the migration idempotent — important because the
+/// v7→latest upgrade path may re-run v11 against a schema that `create_schema`
+/// already provisioned with these columns.
+async fn migrate_v11(conn: &Connection) -> Result<()> {
+    let existing = node_columns(conn).await?;
+    for col in [
+        "cognitive_complexity",
+        "distinct_operators",
+        "distinct_operands",
+        "total_operators",
+        "total_operands",
+    ] {
+        if existing.iter().any(|c| c == col) {
+            continue;
+        }
+        conn.execute(
+            &format!("ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"),
+            (),
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v11: failed to add column {col}: {e}"),
+            operation: "migrate_v11".to_string(),
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Returns the column names of the `nodes` table via `PRAGMA table_info`.
+async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
+    let mut rows = conn
+        .query("PRAGMA table_info(nodes)", ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read nodes table_info: {e}"),
+            operation: "node_columns".to_string(),
+        })?;
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read table_info row: {e}"),
+        operation: "node_columns".to_string(),
+    })? {
+        // PRAGMA table_info columns: cid(0), name(1), type(2), ...
+        let name: String = row.get(1).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read column name: {e}"),
+            operation: "node_columns".to_string(),
+        })?;
+        cols.push(name);
+    }
+    Ok(cols)
 }

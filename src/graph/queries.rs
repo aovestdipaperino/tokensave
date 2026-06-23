@@ -64,6 +64,13 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
         unsafe_blocks: row.get::<u32>(17)?,
         unchecked_calls: row.get::<u32>(18)?,
         assertions: row.get::<u32>(19)?,
+        // The dead-code SELECT does not request the issue #150 health columns;
+        // they are irrelevant to dead-code analysis, so default them to 0.
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: row.get::<u64>(20)?,
         parent_id: None,
     })

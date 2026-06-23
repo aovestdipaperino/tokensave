@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Expanded code-health metrics: cognitive complexity, Halstead, and maintainability index (#150).** Building on the existing per-function complexity counts (cyclomatic, nesting depth, unsafe/unchecked/assertion counts), `count_complexity` now also computes, in the same single AST walk:
+  - **Cognitive complexity** — SonarSource-style, nesting-weighted: each control-flow structure adds `1 + (enclosing control-flow depth)`, and each extra boolean operator in a logical sequence (`&&`/`||`) adds `1`. This cannot be derived from the scalar branch/loop counts, so it is computed during extraction and stored on each node.
+  - **Halstead primitives** — distinct and total operator/operand token counts, classified per-language via new `operator_types`/`operand_types` fields on `ComplexityConfig` (populated for Rust, Go, Python, TypeScript, Java, C, and C++; other languages default to empty and report 0).
+  - **Derived Halstead volume/difficulty/effort and the maintainability index** — pure functions (`halstead_volume`, `halstead_difficulty`, `halstead_effort`, `maintainability_index`) over the stored token counts. The maintainability index uses the Microsoft/SEI variant scaled and clamped to 0–100.
+
+  The new metrics are persisted on the `nodes` table (schema migration v11) and surfaced in the `tokensave_complexity` and `tokensave_node` tool outputs as `cognitive_complexity`, `halstead_volume`, `halstead_difficulty`, `halstead_effort`, and `maintainability_index`.
+
+  **CRAP (change-risk / anti-pattern) is intentionally deferred:** it is defined as `comp² · (1 − coverage)³ + comp`, which requires per-method test-coverage data that tokensave does not track. This is noted in code comments and will follow once coverage tracking exists.
+
 
 ## [6.4.4] - 2026-06-20
 

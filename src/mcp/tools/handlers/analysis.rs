@@ -1210,6 +1210,25 @@ pub(super) async fn handle_complexity(
     let items: Vec<Value> = results
         .iter()
         .map(|(node, lines, fan_out, fan_in, score)| {
+            use crate::extraction::complexity::{
+                halstead_difficulty, halstead_effort, halstead_volume, maintainability_index,
+            };
+            let cyclomatic = node.branches + 1;
+            let volume = halstead_volume(
+                node.distinct_operators,
+                node.distinct_operands,
+                node.total_operators,
+                node.total_operands,
+            );
+            let difficulty = halstead_difficulty(
+                node.distinct_operators,
+                node.distinct_operands,
+                node.total_operands,
+            );
+            let effort = halstead_effort(volume, difficulty);
+            let mi = maintainability_index(volume, cyclomatic, *lines);
+            // Round derived floats to 2 decimals to keep the JSON compact.
+            let round2 = |x: f64| (x * 100.0).round() / 100.0;
             json!({
                 "id": node.id,
                 "name": node.name,
@@ -1217,7 +1236,8 @@ pub(super) async fn handle_complexity(
                 "file": node.file_path,
                 "line": node.start_line,
                 "lines": lines,
-                "cyclomatic_complexity": node.branches + 1,
+                "cyclomatic_complexity": cyclomatic,
+                "cognitive_complexity": node.cognitive_complexity,
                 "branches": node.branches,
                 "loops": node.loops,
                 "returns": node.returns,
@@ -1225,6 +1245,10 @@ pub(super) async fn handle_complexity(
                 "unsafe_blocks": node.unsafe_blocks,
                 "unchecked_calls": node.unchecked_calls,
                 "assertions": node.assertions,
+                "halstead_volume": round2(volume),
+                "halstead_difficulty": round2(difficulty),
+                "halstead_effort": round2(effort),
+                "maintainability_index": round2(mi),
                 "fan_out": fan_out,
                 "fan_in": fan_in,
                 "score": score,
@@ -1234,7 +1258,7 @@ pub(super) async fn handle_complexity(
 
     let output = json!({
         "formula": "lines + (fan_out × 3) + fan_in",
-        "note": "cyclomatic_complexity = branches + 1 (computed from AST during extraction)",
+        "note": "cyclomatic_complexity = branches + 1. cognitive_complexity is SonarSource-style (nesting-weighted). halstead_* derive from operator/operand token counts; maintainability_index uses MI = max(0, (171 - 5.2·ln(V) - 0.23·G - 16.2·ln(LOC)) · 100/171), clamped 0–100 (higher is better). CRAP is not reported: it requires per-method test-coverage data tokensave does not track.",
         "result_count": items.len(),
         "ranking": items,
     });
