@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [7.0.1] - 2026-06-24
+
 ### Added
 - **Qwen Code agent integration (#152).** `tokensave install --agent qwen` now registers the tokensave MCP server in `~/.qwen/settings.json` (with `trust: true` for tool auto-approval) and appends tokensave prompt rules to `~/.qwen/QWEN.md`. Qwen Code is an open-source coding CLI forked from Gemini CLI and shares its configuration shape, so the integration mirrors the Gemini one (install / uninstall / healthcheck / detection).
 - **Windows ARM64 release binaries.** The release workflows now build and upload `aarch64-windows` artifacts (`tokensave-<tag>-aarch64-windows.zip`) targeting `aarch64-pc-windows-msvc` on the `windows-11-arm` runner. The Scoop manifest is updated to include an `arm64` architecture entry alongside the existing `64bit` one so Scoop installs the native binary on ARM devices automatically.
@@ -1519,3 +1522,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.4.4]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.4
 [6.4.5]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.5
 [7.0.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.0
+[7.0.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.1
