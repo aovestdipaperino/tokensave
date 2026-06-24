@@ -219,11 +219,7 @@ async fn unused_imports_still_flags_truly_unused_versioned_go_import() {
     // under its real package identifier (`pgx`), not the version segment.
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::write(
-        project.join("go.mod"),
-        "module example.com/u\n\ngo 1.22\n",
-    )
-    .unwrap();
+    fs::write(project.join("go.mod"), "module example.com/u\n\ngo 1.22\n").unwrap();
     fs::write(
         project.join("a.go"),
         r#"package main

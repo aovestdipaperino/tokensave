@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Qwen Code agent integration (#152).** `tokensave install --agent qwen` now registers the tokensave MCP server in `~/.qwen/settings.json` (with `trust: true` for tool auto-approval) and appends tokensave prompt rules to `~/.qwen/QWEN.md`. Qwen Code is an open-source coding CLI forked from Gemini CLI and shares its configuration shape, so the integration mirrors the Gemini one (install / uninstall / healthcheck / detection).
+- **Windows ARM64 release binaries.** The release workflows now build and upload `aarch64-windows` artifacts (`tokensave-<tag>-aarch64-windows.zip`) targeting `aarch64-pc-windows-msvc` on the `windows-11-arm` runner. The Scoop manifest is updated to include an `arm64` architecture entry alongside the existing `64bit` one so Scoop installs the native binary on ARM devices automatically.
 
 ### Fixed
 - **Go extractor: residual phantom call edges and `/vN` unused-import false positive after #149 (#153).** Two residual defects, each a direct continuation of a #149 fix:
   - **Phantom duplicate call edges (`callers` / `callees` / `impact` accuracy).** #149 made `pkg.Fn()` resolve to the correct same-named package via the in-scope import path, but the old bare-name resolution still *also* fired and collapsed every same-name call onto a single ranking-tie winner — so for N same-named definitions each called once, the winner accumulated N incoming edges while the rest kept 1 (N + (N−1) edges for N call sites). The resolver now drops the bare-name sibling ref whenever its selector resolved through an import path (`go-selector-import`), leaving exactly one correct edge per package-qualified call. Genuine bare calls and receiver-method fallbacks (whose qualifier is not a known import) are untouched.
   - **`unused_imports`: `/vN` import whose package name ≠ the pre-`/vN` segment.** #149 derived an un-aliased import's identifier as the segment preceding `/vN`, which is wrong when the package name differs (e.g. `github.com/resend/resend-go/v3` has package clause `resend`, but the derived `resend-go` contains a hyphen and can never appear in source), so the used import was reported unused. The derivation now rejects any candidate that is not a legal Go identifier rather than flagging on a guess it knows is invalid.
-
 
 ## [7.0.0] - 2026-06-23
 
@@ -146,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Write/exec MCP tools no longer advertise `readOnlyHint: true` (#94).** `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, and `tokensave_run_affected_tests` mutate source files or run a `cargo test` subprocess, but were annotated read-only via the shared `def()` helper — so harnesses that auto-approve read-only tools could edit files or compile and execute project code without prompting. They now use a new `def_rw()` helper that stamps `readOnlyHint: false`, matching the other edit tools. A regression test asserts every write/exec tool is non-read-only.
+
 
 ## [6.1.2] - 2026-05-30
 
