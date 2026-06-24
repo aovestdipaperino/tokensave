@@ -19,6 +19,7 @@ pub mod kimi;
 pub mod kiro;
 pub mod opencode;
 pub mod pi;
+pub mod qwen;
 pub mod roo_code;
 pub mod vibe;
 pub mod zed;
@@ -44,6 +45,7 @@ pub use kimi::KimiIntegration;
 pub use kiro::KiroIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use pi::PiIntegration;
+pub use qwen::QwenIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
 pub use zed::ZedIntegration;
@@ -153,6 +155,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "opencode" => Ok(Box::new(OpenCodeIntegration)),
         "codex" => Ok(Box::new(CodexIntegration)),
         "gemini" => Ok(Box::new(GeminiIntegration)),
+        "qwen" => Ok(Box::new(QwenIntegration)),
         "copilot" => Ok(Box::new(CopilotIntegration)),
         "cursor" => Ok(Box::new(CursorIntegration)),
         "zed" => Ok(Box::new(ZedIntegration)),
@@ -181,6 +184,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(OpenCodeIntegration),
         Box::new(CodexIntegration),
         Box::new(GeminiIntegration),
+        Box::new(QwenIntegration),
         Box::new(CopilotIntegration),
         Box::new(CursorIntegration),
         Box::new(ZedIntegration),
@@ -203,6 +207,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "opencode",
         "codex",
         "gemini",
+        "qwen",
         "copilot",
         "cursor",
         "zed",

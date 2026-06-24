@@ -127,6 +127,62 @@ fn simple_ref_name(name: &str) -> &str {
     after_path.rsplit('.').next().unwrap_or(after_path)
 }
 
+/// Removes redundant bare-name Go call edges left beside an import-path
+/// selector resolution (#153 Bug 1).
+///
+/// The Go extractor emits two refs for a selector call `pkg.Fn()`: the selector
+/// `pkg.Fn` and a bare-name sibling `Fn`, both at the same call position. Once
+/// `pkg.Fn` resolves through its in-scope import path (`go-selector-import`),
+/// the sibling is redundant; left in, it falls back to a name-keyed tie-break
+/// and dumps a phantom edge onto whichever same-named definition wins. Dropping
+/// the sibling makes a package-qualified call contribute exactly one edge — the
+/// correct one — without touching genuine bare calls or receiver-method
+/// fallbacks, whose qualifier is not a known import.
+fn suppress_go_selector_bare_siblings(resolved: &mut Vec<ResolvedRef>) {
+    // Sites where a selector resolved by import path, keyed on the exact call
+    // position plus the callee's bare name (the selector's trailing segment) —
+    // precisely the identity the sibling bare-name ref carries.
+    let suppressed: HashSet<(&str, &str, u32, u32, &str)> = resolved
+        .iter()
+        .filter(|r| r.resolved_by == "go-selector-import")
+        .filter_map(|r| {
+            let bare = r.original.reference_name.rsplit('.').next()?;
+            Some((
+                r.original.from_node_id.as_str(),
+                r.original.file_path.as_str(),
+                r.original.line,
+                r.original.column,
+                bare,
+            ))
+        })
+        .collect();
+    if suppressed.is_empty() {
+        return;
+    }
+    // A bare-name ref (no `.`) sitting on a suppressed site is the phantom
+    // sibling; everything else — including the selector ref itself — is kept.
+    let keep: Vec<bool> = resolved
+        .iter()
+        .map(|r| {
+            r.original.reference_name.contains('.')
+                || !suppressed.contains(&(
+                    r.original.from_node_id.as_str(),
+                    r.original.file_path.as_str(),
+                    r.original.line,
+                    r.original.column,
+                    r.original.reference_name.as_str(),
+                ))
+        })
+        .collect();
+    drop(suppressed);
+    let mut idx = 0;
+    resolved.retain(|_| {
+        let k = keep[idx];
+        idx += 1;
+        k
+    });
+}
+
 /// Infer a coarse language tag from a file path extension.
 fn lang_from_path(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
@@ -472,6 +528,12 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
+        // #153 Bug 1: a Go selector call emits both a selector ref and a
+        // bare-name sibling at the same site. Once the selector resolves via
+        // its import path, the sibling only adds a phantom name-tie edge — drop
+        // it so a package-qualified call yields exactly one correct edge.
+        suppress_go_selector_bare_siblings(&mut resolved);
+
         let resolved_count = resolved.len();
 
         ResolutionResult {
@@ -557,7 +619,10 @@ impl<'a> ReferenceResolver<'a> {
         if name.contains('.') {
             return None;
         }
-        let import_path = self.go_import_qualifiers.get(&uref.file_path)?.get(qualifier)?;
+        let import_path = self
+            .go_import_qualifiers
+            .get(&uref.file_path)?
+            .get(qualifier)?;
 
         let candidates = self.name_cache.get(name)?;
         let mut matched: Vec<&Node> = candidates

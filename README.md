@@ -131,6 +131,7 @@ tokensave install --agent kiro            # AWS Kiro
 tokensave install --agent kimi            # Moonshot Kimi CLI
 tokensave install --agent opencode        # OpenCode
 tokensave install --agent pi              # Pi (pi.dev)
+tokensave install --agent qwen            # Qwen Code
 tokensave install --agent roo-code        # Roo Code
 tokensave install --agent vibe            # Mistral Vibe
 tokensave install --agent zed             # Zed

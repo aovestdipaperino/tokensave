@@ -10,7 +10,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 16);
+    assert_eq!(all.len(), 17);
 }
 
 #[test]
@@ -20,6 +20,7 @@ fn test_available_integrations() {
     assert!(ids.contains(&"copilot"));
     assert!(ids.contains(&"codex"));
     assert!(ids.contains(&"gemini"));
+    assert!(ids.contains(&"qwen"));
     assert!(ids.contains(&"opencode"));
     assert!(ids.contains(&"cursor"));
     assert!(ids.contains(&"zed"));
@@ -32,7 +33,8 @@ fn test_available_integrations() {
     assert!(ids.contains(&"vibe"));
     assert!(ids.contains(&"grok"));
     assert!(ids.contains(&"pi"));
-    assert_eq!(ids.len(), 16);
+    assert!(ids.contains(&"qwen"));
+    assert_eq!(ids.len(), 17);
 }
 
 #[test]
@@ -42,6 +44,7 @@ fn test_get_integration_valid() {
         "opencode",
         "codex",
         "gemini",
+        "qwen",
         "copilot",
         "cursor",
         "zed",
@@ -87,6 +90,7 @@ fn test_agent_names_are_human_readable() {
         ("copilot", "GitHub Copilot"),
         ("codex", "Codex CLI"),
         ("gemini", "Gemini CLI"),
+        ("qwen", "Qwen Code"),
         ("opencode", "OpenCode"),
         ("cursor", "Cursor"),
         ("zed", "Zed"),
@@ -207,6 +211,39 @@ fn test_gemini_install_creates_config() {
     let gemini_md = home.join(".gemini/GEMINI.md");
     assert!(gemini_md.exists(), "GEMINI.md should exist after install");
     let md_content = std::fs::read_to_string(&gemini_md).unwrap();
+    assert!(md_content.contains("tokensave"));
+}
+
+#[test]
+fn test_qwen_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    QwenIntegration.install(&ctx).unwrap();
+
+    // Check ~/.qwen/settings.json
+    let settings_path = home.join(".qwen/settings.json");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert!(
+        content["mcpServers"]["tokensave"].is_object(),
+        "mcpServers.tokensave should exist"
+    );
+    // Verify trust flag
+    assert_eq!(
+        content["mcpServers"]["tokensave"]["trust"],
+        serde_json::json!(true),
+        "qwen should have trust: true"
+    );
+
+    // Check QWEN.md
+    let qwen_md = home.join(".qwen/QWEN.md");
+    assert!(qwen_md.exists(), "QWEN.md should exist after install");
+    let md_content = std::fs::read_to_string(&qwen_md).unwrap();
     assert!(md_content.contains("tokensave"));
 }
 
@@ -559,6 +596,43 @@ fn test_gemini_install_then_uninstall() {
         assert!(
             !content.contains("## Prefer tokensave MCP tools"),
             "GEMINI.md should not contain tokensave rules after uninstall"
+        );
+    }
+}
+
+#[test]
+fn test_qwen_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    QwenIntegration.install(&ctx).unwrap();
+    let settings_path = home.join(".qwen/settings.json");
+    assert!(settings_path.exists());
+
+    QwenIntegration.uninstall(&ctx).unwrap();
+
+    // After uninstall, settings.json should be removed or not contain tokensave
+    if settings_path.exists() {
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let has_tokensave = content
+            .get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some();
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from settings.json"
+        );
+    }
+
+    // QWEN.md should be removed (was only tokensave rules)
+    let qwen_md = home.join(".qwen/QWEN.md");
+    if qwen_md.exists() {
+        let content = std::fs::read_to_string(&qwen_md).unwrap();
+        assert!(
+            !content.contains("## Prefer tokensave MCP tools"),
+            "QWEN.md should not contain tokensave rules after uninstall"
         );
     }
 }
