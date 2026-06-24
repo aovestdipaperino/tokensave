@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [7.0.2] - 2026-06-24
+
 ### Fixed
 - **WinARM release pipeline: the signed `aarch64-windows` artifact was never published (follow-up to #151).** The Windows ARM build target (added in #151) compiled, but the signing/publishing half of `release.yml` was written for a single Windows binary: both build legs uploaded their unsigned `.exe` under the same artifact name, and the `sign-windows` job signed one binary and always uploaded it as `x86_64-windows.zip`. So no `aarch64-windows.zip` reached the release, and `update-scoop` then published a Scoop `arm64` entry pointing at a 404 with an empty hash (the failure was masked because a `VAR=$(sha256sum missing)` assignment swallows the non-zero exit under `set -e`). Fixed by giving each Windows leg a per-target unsigned-artifact name, turning `sign-windows` into a matrix over both Windows architectures (each signed and uploaded as `tokensave-<tag>-<arch>.zip`), and making `update-scoop` fail loudly when a required asset is missing. The same swallow-the-error hardening was applied to `release-beta.yml`. First surfaced on the 7.0.1 release.
-
 
 ## [7.0.1] - 2026-06-24
 
@@ -1526,3 +1528,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [6.4.5]: https://github.com/aovestdipaperino/tokensave/releases/tag/v6.4.5
 [7.0.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.0
 [7.0.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.1
+[7.0.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.2
