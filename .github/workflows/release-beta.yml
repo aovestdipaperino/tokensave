@@ -225,6 +225,14 @@ jobs:
             --pattern "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" \
             --pattern "tokensave-beta-${GITHUB_REF_NAME}-aarch64-windows.zip" \
             --dir .
+          # Fail loudly on a missing asset rather than masking it inside a
+          # `VAR=$(sha256sum missing)` assignment and publishing an empty hash.
+          for arch in x86_64-windows aarch64-windows; do
+            if [ ! -f "tokensave-beta-${GITHUB_REF_NAME}-${arch}.zip" ]; then
+              echo "::error::required release asset tokensave-beta-${GITHUB_REF_NAME}-${arch}.zip is missing — aborting Scoop update"
+              exit 1
+            fi
+          done
           SHA256=$(sha256sum "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
           echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
           SHA256_ARM=$(sha256sum "tokensave-beta-${GITHUB_REF_NAME}-aarch64-windows.zip" | cut -d' ' -f1)

@@ -90,7 +90,9 @@ jobs:
         id: upload-unsigned
         uses: actions/upload-artifact@v6
         with:
-          name: tokensave-windows-unsigned
+          # Per-target name: both Windows legs (x86_64 and aarch64) run this
+          # step, so a shared name would collide and only one would survive.
+          name: tokensave-windows-unsigned-${{ matrix.name }}
           path: target/${{ matrix.target }}/release/tokensave.exe
           if-no-files-found: error
 
@@ -103,7 +105,7 @@ jobs:
         if: matrix.archive == 'zip' && github.event_name == 'release'
         uses: actions/upload-artifact@v6
         with:
-          name: windows-unsigned-artifact-id
+          name: windows-unsigned-artifact-id-${{ matrix.name }}
           path: unsigned-artifact-id.txt
           if-no-files-found: error
 
@@ -127,18 +129,24 @@ jobs:
           path: "tokensave-*.bottle.tar.gz"
 
   sign-windows:
-    name: Sign Windows binary
+    name: Sign Windows binary (${{ matrix.name }})
     if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write   # upload the signed zip to the release
       actions: read     # let the SignPath action read the unsigned artifact
+    strategy:
+      # One signing request per Windows architecture. Independent so a slow
+      # approval on one does not block the other; both must land for update-scoop.
+      fail-fast: false
+      matrix:
+        name: [x86_64-windows, aarch64-windows]
     steps:
       - name: Download unsigned artifact id
         uses: actions/download-artifact@v7
         with:
-          name: windows-unsigned-artifact-id
+          name: windows-unsigned-artifact-id-${{ matrix.name }}
 
       - name: Read unsigned artifact id
         id: meta
@@ -165,13 +173,13 @@ jobs:
       - name: Package signed binary
         run: |
           cd signed
-          zip "../tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" tokensave.exe
+          zip "../tokensave-${GITHUB_REF_NAME}-${{ matrix.name }}.zip" tokensave.exe
 
       - name: Upload signed binary archive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # This job has no checkout, so gh can't infer the repo from git context.
-        run: gh release upload "${GITHUB_REF_NAME}" "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${GITHUB_REF_NAME}" "tokensave-${GITHUB_REF_NAME}-${{ matrix.name }}.zip" --clobber --repo "$GITHUB_REPOSITORY"
 
   update-homebrew:
     name: Update Homebrew tap
@@ -299,6 +307,15 @@ jobs:
             --pattern "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" \
             --pattern "tokensave-${GITHUB_REF_NAME}-aarch64-windows.zip" \
             --dir .
+          # Fail loudly on a missing asset. `VAR=$(sha256sum missing)` would
+          # otherwise mask the error from `set -e` and publish an empty hash
+          # against a 404 URL (the WinARM regression this guards against).
+          for arch in x86_64-windows aarch64-windows; do
+            if [ ! -f "tokensave-${GITHUB_REF_NAME}-${arch}.zip" ]; then
+              echo "::error::required release asset tokensave-${GITHUB_REF_NAME}-${arch}.zip is missing — aborting Scoop update"
+              exit 1
+            fi
+          done
           SHA256=$(sha256sum "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
           echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
           SHA256_ARM=$(sha256sum "tokensave-${GITHUB_REF_NAME}-aarch64-windows.zip" | cut -d' ' -f1)
