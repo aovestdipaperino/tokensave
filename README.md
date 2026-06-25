@@ -264,6 +264,10 @@ tokensave gain --json
 
 Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
 
+<p align="center">
+  <img src="src/resources/gain-screenshot.png" alt="tokensave gain history output" width="700">
+</p>
+
 ---
 
 ## Reproducible Benchmark
@@ -526,6 +530,10 @@ tokensave monitor
 
 A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's spend, savings, efficiency, and top model (refreshed every 30 seconds).
 
+<p align="center">
+  <img src="src/resources/monitor-screenshot.png" alt="tokensave monitor TUI" width="800">
+</p>
+
 ### Session and lifetime counters
 
 ```bash
@@ -533,6 +541,12 @@ tokensave current-counter          # show per-project session counter
 tokensave reset-counter            # reset the session counter
 tokensave status                   # shows project + global lifetime totals + cost
 ```
+
+`tokensave status` renders the project index stats, language breakdown, cost row (today / 7d / efficiency), and project + worldwide lifetime totals:
+
+<p align="center">
+  <img src="src/resources/status-screenshot.png" alt="tokensave status output" width="640">
+</p>
 
 ### Worldwide counter
 
