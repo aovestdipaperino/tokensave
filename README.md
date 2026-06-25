@@ -282,20 +282,20 @@ tokensave bench --max-nodes 5
 
 **Measured against this repo (`tokensave` itself) using the shipped generic query set:**
 
-| # | Query | Baseline | Context | Savings |
-|---|---|---:|---:|---:|
-| 1 | How is configuration loaded at startup? | 15,475 | 460 | 97% |
-| 2 | Where are command-line arguments parsed and dispatched? | 8,047 | 242 | 97% |
-| 3 | How is the main entry point organized? | 11,883 | 242 | 98% |
-| 4 | How are errors defined, wrapped, and propagated? | 11,883 | 270 | 98% |
-| 5 | Where is logging or diagnostic output emitted? | 14,714 | 310 | 98% |
-| 6 | How are tests organized and what test harness is used? | 348 | 195 | 44% |
-| 7 | How is data persisted to disk or to a database? | 53,894 | 414 | 99% |
-| 8 | How are async tasks or background work spawned? | 13,439 | 221 | 98% |
-| 9 | How does the build wire up dependencies and initialize state? | 20,368 | 400 | 98% |
-| 10 | How are public API surfaces exposed (HTTP endpoints, library exports, or CLI commands)? | 30,345 | 630 | 98% |
+| # | Query | Baseline | Context | Savings | Files | Nodes |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | How is configuration loaded at startup? | 45.3k | 454 | 99% | 4 | 5 |
+| 2 | Where are command-line arguments parsed and dispatched? | 948 | 402 | 58% | 3 | 3 |
+| 3 | How is the main entry point organized? | 6.1k | 251 | 96% | 3 | 8 |
+| 4 | How are errors defined, wrapped, and propagated? | 3.5k | 819 | 77% | 2 | 3 |
+| 5 | Where is logging or diagnostic output emitted? | 8.6k | 514 | 94% | 6 | 14 |
+| 6 | How are tests organized and what test harness is used? | 3.5k | 818 | 77% | 2 | 3 |
+| 7 | How is data persisted to disk or to a database? | 11.9k | 330 | 97% | 3 | 6 |
+| 8 | How are async tasks or background work spawned? | 29.4k | 364 | 99% | 2 | 3 |
+| 9 | How does the build wire up dependencies and initialize state? | 10.9k | 1.4k | 88% | 4 | 5 |
+| 10 | How are public API surfaces exposed (HTTP endpoints, library exports, or CLI commands)? | 22.5k | 235 | 99% | 4 | 5 |
 
-**Aggregate:** 93% mean retrieval savings (180,396 → 3,384 tokens across 10 queries).
+**Aggregate:** 88% mean retrieval savings (142.8k → 5.5k tokens across 10 queries).
 
 The default query set targets patterns present in most application codebases (CLIs, daemons, services). Run it on your own project with `tokensave bench` to see your numbers, or write a tailored query file (`--queries my.toml`) for tighter recall.
 
