@@ -276,6 +276,10 @@ tokensave bench --queries my-queries.toml --json
 tokensave bench --max-nodes 5
 ```
 
+<p align="center">
+  <img src="src/resources/bench-screenshot.png" alt="tokensave bench output" width="800">
+</p>
+
 **Measured against this repo (`tokensave` itself) using the shipped generic query set:**
 
 | # | Query | Baseline | Context | Savings |
