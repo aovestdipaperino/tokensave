@@ -1666,6 +1666,38 @@ impl DartExtractor {
                                 });
                             }
                         }
+                    } else if let Some(uas) =
+                        Self::find_child_by_kind(child, "unconditional_assignable_selector")
+                    {
+                        // tree-sitter-dart 0.2 splits a receiver method call
+                        // `recv.method(args)` into two *sibling* selectors: one
+                        // holding the member name (`.method`) and a separate one
+                        // holding the call's `argument_part`. The branch above
+                        // only fires when both live in one selector (the 0.1
+                        // shape), so member calls like `this._parseItem(s)` or
+                        // `obj.method(s)` produced no Calls edge (#155). Detect a
+                        // name-only selector whose next named sibling is the
+                        // argument selector and emit the call here.
+                        let is_call = child
+                            .next_named_sibling()
+                            .filter(|s| s.kind() == "selector")
+                            .is_some_and(|s| {
+                                Self::find_child_by_kind(s, "argument_part").is_some()
+                                    || Self::find_child_by_kind(s, "arguments").is_some()
+                            });
+                        if is_call {
+                            if let Some(ident) = Self::find_child_by_kind(uas, "identifier") {
+                                let callee_name = state.node_text(ident);
+                                state.unresolved_refs.push(UnresolvedRef {
+                                    from_node_id: fn_node_id.to_string(),
+                                    reference_name: callee_name,
+                                    reference_kind: EdgeKind::Calls,
+                                    line: child.start_position().row as u32,
+                                    column: child.start_position().column as u32,
+                                    file_path: state.file_path.clone(),
+                                });
+                            }
+                        }
                     }
                     // Also recurse into selectors for nested calls in arguments.
                     Self::extract_call_sites(state, child, fn_node_id);
