@@ -158,7 +158,10 @@ fn header_far_from_span_is_dropped() {
     }
     input.push_str("  --> src/far.rs:1:1\n");
     let diags = parse_cargo_output(&input);
-    assert!(diags.is_empty(), "span too far from header should be dropped");
+    assert!(
+        diags.is_empty(),
+        "span too far from header should be dropped"
+    );
 }
 
 #[test]

@@ -45,7 +45,10 @@ fn pyright_multiple_diagnostics_preserved() {
     assert_eq!(diags[1].file, "src/b.py");
     assert_eq!(diags[0].level, "error");
     assert_eq!(diags[1].level, "warning");
-    assert_eq!(diags[1].line_start, 11, "0-based line 10 should become 1-based 11");
+    assert_eq!(
+        diags[1].line_start, 11,
+        "0-based line 10 should become 1-based 11"
+    );
 }
 
 #[test]
@@ -164,7 +167,8 @@ fn tsc_line_warning_with_code() {
 #[test]
 fn tsc_line_without_code_number() {
     // Some tsc output lines may have different code formats
-    let line = "src/app.ts(1,8): error TS18003: No inputs were found in config file 'tsconfig.json'.";
+    let line =
+        "src/app.ts(1,8): error TS18003: No inputs were found in config file 'tsconfig.json'.";
     let d = parse_tsc_line(line).expect("should parse TS code with 5 digits");
     assert_eq!(d.code, "TS18003");
     assert_eq!(d.line_start, 1);

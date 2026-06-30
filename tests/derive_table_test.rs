@@ -3,8 +3,19 @@ use tokensave::derive_table::{enrich, lookup};
 #[test]
 fn all_well_known_derives_are_found() {
     let expected = &[
-        "Debug", "Clone", "Copy", "Default", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash",
-        "Serialize", "Deserialize", "Display", "Error",
+        "Debug",
+        "Clone",
+        "Copy",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "PartialOrd",
+        "Ord",
+        "Hash",
+        "Serialize",
+        "Deserialize",
+        "Display",
+        "Error",
     ];
     for name in expected {
         assert!(
@@ -79,8 +90,19 @@ fn display_and_error_not_from_std_core() {
 fn each_well_known_has_derive_name_matching_lookup() {
     // Verify consistency: lookup(name).derive_name == name
     let names = [
-        "Debug", "Clone", "Copy", "Default", "PartialEq", "Eq", "PartialOrd", "Ord",
-        "Hash", "Serialize", "Deserialize", "Display", "Error",
+        "Debug",
+        "Clone",
+        "Copy",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "PartialOrd",
+        "Ord",
+        "Hash",
+        "Serialize",
+        "Deserialize",
+        "Display",
+        "Error",
     ];
     for name in names {
         let info = lookup(name).unwrap_or_else(|| panic!("{name} not found"));
@@ -129,12 +151,20 @@ fn marker_traits_have_no_methods() {
 
 #[test]
 fn non_marker_traits_have_methods() {
-    for name in &["Debug", "Clone", "Default", "PartialEq", "PartialOrd", "Ord", "Hash", "Serialize", "Deserialize", "Display", "Error"] {
+    for name in &[
+        "Debug",
+        "Clone",
+        "Default",
+        "PartialEq",
+        "PartialOrd",
+        "Ord",
+        "Hash",
+        "Serialize",
+        "Deserialize",
+        "Display",
+        "Error",
+    ] {
         let info = lookup(name).unwrap_or_else(|| panic!("{name} is well-known"));
-        assert!(
-            !info.methods.is_empty(),
-            "{} should have methods",
-            name
-        );
+        assert!(!info.methods.is_empty(), "{} should have methods", name);
     }
 }

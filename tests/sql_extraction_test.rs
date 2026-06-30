@@ -32,10 +32,18 @@ fn test_sql_extract_table_classes() {
         .iter()
         .filter(|n| n.kind == NodeKind::Class)
         .collect();
-    assert_eq!(classes.len(), 3, "expected 3 class nodes (2 tables + 1 view), got {}", classes.len());
+    assert_eq!(
+        classes.len(),
+        3,
+        "expected 3 class nodes (2 tables + 1 view), got {}",
+        classes.len()
+    );
     assert!(classes.iter().any(|n| n.name == "users"));
     assert!(classes.iter().any(|n| n.name == "orders"));
-    assert!(classes.iter().any(|n| n.name == "active_users"), "VIEW should be extracted as Class");
+    assert!(
+        classes.iter().any(|n| n.name == "active_users"),
+        "VIEW should be extracted as Class"
+    );
 }
 
 #[test]
@@ -50,7 +58,12 @@ fn test_sql_contains_edges() {
         .iter()
         .filter(|e| e.kind == EdgeKind::Contains)
         .collect();
-    assert_eq!(contains.len(), 3, "expected 3 Contains edges, got {}", contains.len());
+    assert_eq!(
+        contains.len(),
+        3,
+        "expected 3 Contains edges, got {}",
+        contains.len()
+    );
 }
 
 #[test]
@@ -100,7 +113,11 @@ fn test_sql_all_edges_are_contains() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 
     for edge in &result.edges {
-        assert_eq!(edge.kind, EdgeKind::Contains, "all SQL edges should be Contains");
+        assert_eq!(
+            edge.kind,
+            EdgeKind::Contains,
+            "all SQL edges should be Contains"
+        );
     }
 }
 
