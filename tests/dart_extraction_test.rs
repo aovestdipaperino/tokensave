@@ -302,6 +302,29 @@ fn test_dart_call_site_tracking() {
 }
 
 #[test]
+fn test_dart_receiver_method_call_tracking() {
+    // tree-sitter-dart 0.2 splits `recv.method(args)` into two sibling
+    // selectors (member name, then argument_part). Member calls such as
+    // `this._parseItem(s)` and `obj.method(s)` must still emit Calls refs
+    // so private helpers aren't reported as dead introductions (#155).
+    let result = extract(
+        "class Parser {\n  int parse(String s) {\n    return this._parseItem(s);\n  }\n  int _parseItem(String s) => s.length;\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let calls: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"_parseItem"),
+        "expected a Calls ref to '_parseItem' via this., got {:?}",
+        calls
+    );
+}
+
+#[test]
 fn test_dart_contains_edges() {
     let result = extract("class Foo {\n  void bar() {}\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
