@@ -146,3 +146,11 @@ criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 name = "large_repos"
 harness = false
 
+
+[profile.release]
+# Strip debug symbols from release binaries. The unstripped binary is ~159 MB,
+# large enough that Windows Defender's post-extract scan can still hold the file
+# when Scoop tries to create its shim, causing "Can't shim 'tokensave.exe':
+# File doesn't exist." even though the exe is present (#156). Stripping cuts the
+# binary to a fraction of that size and avoids the scan/shim race.
+strip = true
