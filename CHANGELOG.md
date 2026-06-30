@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [7.0.3] - 2026-06-30
+
+### Fixed
+- **Dart: receiver method calls were never recorded, so private helpers were wrongly reported as dead introductions (#155).** tree-sitter-dart 0.2 represents a receiver call `recv.method(args)` — including the idiomatic `this._parseItem(s)` — as **two sibling `selector` nodes**: one holding the member name (`._parseItem`), a separate one holding the `argument_part`. The call-site extractor only emitted a `Calls` ref when the name and `argument_part` lived in the *same* selector (the 0.1 grammar shape), so every `this.x()` / `obj.x()` call produced no call edge. Private helpers reached only through `this.` then showed zero incoming edges and `tokensave_simplify_scan` flagged them as dead. The selector handler now also matches a name-only selector whose next sibling carries the arguments, which additionally recovers all receiver method calls (e.g. `xs.map(...)`, `.toList()`) that were silently missed before — not just private ones.
+- **Monitor: the two on-screen "Saved" figures disagreed.** The cost panel's `Saved:` was sourced from `global_tokens_saved()` (the authoritative lifetime total from the global DB) while the footer summed the in-memory ring-buffer deltas (which double-count per-call file-token estimates and only cover the last `RING_CAPACITY` events). The prominent header value lagging the live footer made the monitor look like it wasn't updating. The footer now reads the same authoritative total as the header, so the two always agree; the per-tool breakdown and `TOTAL` line remain the live ring view.
+
 ## [7.0.2] - 2026-06-24
 
 ### Fixed
