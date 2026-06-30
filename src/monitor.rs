@@ -613,8 +613,14 @@ fn monitor_loop(
         }
 
         // ── Footer ──
+        // Show the same authoritative lifetime "saved" figure as the cost
+        // panel's `Saved:` (both sourced from `global_tokens_saved()` in the
+        // global DB). Previously the footer summed the in-memory ring deltas,
+        // which double-count per-call file-token estimates and only cover the
+        // last RING_CAPACITY events — so the prominent header "Saved" and the
+        // footer "saved tokens" disagreed and looked stale.
         let sep = "\u{2500}".repeat(w);
-        let total_saved: u64 = entries.iter().map(|e| e.delta).sum();
+        let total_saved: u64 = cost_cache.tokens_saved;
         let total_str = format_number(total_saved);
         let label = "TokenSave Monitor";
         let suffix = "saved tokens";
