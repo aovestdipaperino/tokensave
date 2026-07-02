@@ -240,6 +240,69 @@ pub fn add_to_gitignore(project_path: &Path) {
     }
 }
 
+/// Appends `.tokensave/` to the repository's local `.git/info/exclude`.
+///
+/// Unlike `.gitignore`, this file is never committed, so excluding a
+/// per-developer index there keeps it out of shared project history.
+/// Resolves the exclude path via `git` (so worktrees and
+/// custom `$GIT_DIR` layouts are handled), creates the file if missing, and is
+/// idempotent — an existing `.tokensave` entry is left untouched.
+pub fn add_to_git_info_exclude(project_path: &Path) {
+    let Some(exclude) = git_info_exclude_path(project_path) else {
+        eprintln!("warning: could not locate .git/info/exclude");
+        return;
+    };
+    let content = fs::read_to_string(&exclude).unwrap_or_default();
+    if content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
+    }) {
+        return;
+    }
+    if let Some(parent) = exclude.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("warning: failed to create {}: {e}", parent.display());
+            return;
+        }
+    }
+    let mut content = content;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(".tokensave/\n");
+    if let Err(e) = fs::write(&exclude, content) {
+        eprintln!("warning: failed to update .git/info/exclude: {e}");
+    }
+}
+
+/// Resolves the absolute path to this repository's `info/exclude` file via
+/// `git rev-parse --git-path`. Returns `None` outside a Git repository.
+fn git_info_exclude_path(project_path: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_path)
+        .arg("rev-parse")
+        .arg("--git-path")
+        .arg("info/exclude")
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let rel = String::from_utf8(output.stdout).ok()?;
+    let rel = rel.trim();
+    if rel.is_empty() {
+        return None;
+    }
+    let path = Path::new(rel);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_path.join(path)
+    })
+}
+
 /// Resolves a CLI path argument to an absolute `PathBuf`.
 ///
 /// If `path` is `Some`, uses that value; otherwise falls back to the current

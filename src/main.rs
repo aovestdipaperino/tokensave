@@ -527,8 +527,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // Warn if .tokensave is not in .gitignore
                 if !tokensave::config::is_in_gitignore(&project_path) {
                     eprintln!(
-                        "\n\x1b[33mWarning: .tokensave is not in .gitignore — \
-                         run `echo .tokensave >> .gitignore` to exclude it from git.\x1b[0m"
+                        "\n\x1b[33mWarning: .tokensave is not excluded from git — \
+                         run `echo '.tokensave/' >> .git/info/exclude` to exclude it locally.\x1b[0m"
                     );
                 }
 

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`tokensave init` now excludes `.tokensave` via the local `.git/info/exclude` instead of the tracked `.gitignore` by default.** `.tokensave/` is a per-developer index, not a project artifact, so it should not be written into the tracked `.gitignore`, which commits a per-developer choice into shared project history. On init, if `git check-ignore` already ignores `.tokensave/` (global excludes, an existing rule, or a prior run) nothing is written; otherwise the entry goes to `.git/info/exclude` (untracked, local-only). The prompt keeps an explicit `[g]` opt-in for the old tracked-`.gitignore` behavior, so nothing regresses. The `status` warning and the new `add_to_git_info_exclude` helper (which resolves the exclude path via `git rev-parse --git-path`, so worktrees and custom `$GIT_DIR` layouts work) follow suit.
+
 
 ## [7.0.3] - 2026-06-30
 
