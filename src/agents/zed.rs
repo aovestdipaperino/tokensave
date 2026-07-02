@@ -69,9 +69,13 @@ impl AgentIntegration for ZedIntegration {
                 return Err(e);
             }
         };
+        let bin = crate::agents::preserve_mcp_command(
+            settings.pointer("/context_servers/tokensave/command/path"),
+            &ctx.tokensave_bin,
+        );
         settings["context_servers"]["tokensave"] = json!({
             "command": {
-                "path": ctx.tokensave_bin,
+                "path": bin,
                 "args": ["serve"]
             }
         });

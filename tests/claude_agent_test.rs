@@ -35,6 +35,66 @@ fn test_install_creates_claude_json_with_mcp_server() {
 }
 
 #[test]
+fn test_reinstall_preserves_existing_resolvable_command() {
+    // Issue #161: a user-chosen MCP command that still resolves to a
+    // tokensave binary must survive reinstall instead of being overwritten
+    // with this install's absolute path.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // A fake tokensave binary at a user-chosen location.
+    let user_bin = home.join("mybin").join("tokensave");
+    std::fs::create_dir_all(user_bin.parent().unwrap()).unwrap();
+    std::fs::write(&user_bin, "").unwrap();
+    let user_bin = user_bin.to_string_lossy().to_string();
+
+    // Pre-seed .claude.json with the user's command.
+    std::fs::write(
+        home.join(".claude.json"),
+        format!(
+            r#"{{"mcpServers": {{"tokensave": {{"command": "{user_bin}", "args": ["serve"]}}}}}}"#
+        ),
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home); // installs with /usr/local/bin/tokensave
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        user_bin,
+        "existing resolvable command should be preserved on reinstall"
+    );
+}
+
+#[test]
+fn test_reinstall_replaces_stale_command() {
+    // A previous command that no longer exists must be replaced.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers": {"tokensave": {"command": "/gone/tokensave", "args": ["serve"]}}}"#,
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        "/usr/local/bin/tokensave",
+        "stale command should be replaced with the new bin path"
+    );
+}
+
+#[test]
 fn test_install_creates_settings_with_hook() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();

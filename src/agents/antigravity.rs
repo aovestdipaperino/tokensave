@@ -60,8 +60,12 @@ impl AgentIntegration for AntigravityIntegration {
                 return Err(e);
             }
         };
+        let bin = crate::agents::preserve_mcp_command(
+            settings.pointer("/mcpServers/tokensave/command"),
+            &ctx.tokensave_bin,
+        );
         settings["mcpServers"]["tokensave"] = json!({
-            "command": ctx.tokensave_bin,
+            "command": bin,
             "args": ["serve"]
         });
         safe_write_json_file(&mcp_path, &settings, backup.as_deref())?;
@@ -81,7 +85,7 @@ impl AgentIntegration for AntigravityIntegration {
         let plugin_settings = json!({
             "mcpServers": {
                 "tokensave": {
-                    "command": ctx.tokensave_bin,
+                    "command": bin,
                     "args": ["serve"],
                 }
             }
