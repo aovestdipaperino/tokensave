@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Claude Code `PreToolUse` hook never fired — the grep/Read→MCP guardrail was silently dead.** `hook_pre_tool_use` read the tool arguments from a `TOOL_INPUT` environment variable, but Claude Code delivers the hook event as JSON on **stdin** (with the tool arguments nested under `tool_input`) and sets no such variable. The decision logic was correct, but it always ran against an empty input, so every Grep/Read/Agent call was implicitly allowed and nothing redirected exploration to the tokensave MCP tools — under-reporting `tokensave monitor` savings. The handler now reads Claude's stdin contract (unwrapping the nested `tool_input`), keeps the `TOOL_INPUT` env var as a fallback for empty stdin, and preserves the existing flat-input decision logic. The sibling Kiro hooks already read stdin correctly and are unaffected.
+
 
 ## [7.0.3] - 2026-06-30
 
