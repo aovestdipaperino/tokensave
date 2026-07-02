@@ -13,7 +13,7 @@ use common::{make_install_ctx, make_install_ctx_with_real_bin};
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 17);
+    assert_eq!(all.len(), 18);
 }
 
 #[test]
@@ -26,6 +26,7 @@ fn test_available_integrations() {
     assert!(ids.contains(&"qwen"));
     assert!(ids.contains(&"opencode"));
     assert!(ids.contains(&"cursor"));
+    assert!(ids.contains(&"droid"));
     assert!(ids.contains(&"zed"));
     assert!(ids.contains(&"cline"));
     assert!(ids.contains(&"roo-code"));
@@ -37,7 +38,7 @@ fn test_available_integrations() {
     assert!(ids.contains(&"grok"));
     assert!(ids.contains(&"pi"));
     assert!(ids.contains(&"qwen"));
-    assert_eq!(ids.len(), 17);
+    assert_eq!(ids.len(), 18);
 }
 
 #[test]
@@ -50,6 +51,7 @@ fn test_get_integration_valid() {
         "qwen",
         "copilot",
         "cursor",
+        "droid",
         "zed",
         "cline",
         "roo-code",
@@ -96,6 +98,7 @@ fn test_agent_names_are_human_readable() {
         ("qwen", "Qwen Code"),
         ("opencode", "OpenCode"),
         ("cursor", "Cursor"),
+        ("droid", "Factory Droid"),
         ("zed", "Zed"),
         ("cline", "Cline"),
         ("roo-code", "Roo Code"),

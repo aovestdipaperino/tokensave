@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Factory Droid agent integration (`tokensave install --agent droid`).** Registers the tokensave MCP server in `~/.factory/mcp.json` under `mcpServers.tokensave` (stdio transport) and appends the tokensave rules to `~/.factory/AGENTS.md`. `--local` writes `<project>/.factory/mcp.json` and a repo-root `<project>/AGENTS.md`. Auto-detected by `tokensave install` (and `reinstall`/`doctor`) when `~/.factory` exists.
+
 ### Changed
 - **Extraction: 32 tree-sitter extractors now share one traversal state (`extraction::ts_state`).** Each of these extractors carried a byte-identical private `ExtractionState` struct (some with an extra `class_depth` field) plus identical `new` / `node_text` / `qualified_prefix` / `parent_node_id` / `build_result` implementations, and most also duplicated the pure node-search helpers (`find_child_by_kind` alone had 28 identical copies). They now share a single `ExtractionState` and free helper functions; extractors with genuinely language-specific state (C++, Java, Kotlin, Scala, TypeScript, Pascal, Markdown, Rust, …) keep their own structs and only adopt the shared pure helpers where their copies were identical. ~2,500 duplicated lines removed with no behavior change, and a new language extractor can now start from the shared state instead of a copy-paste.
 - **Module layout: `src/tokensave.rs` and `src/db/queries.rs` split into directory modules.** The two largest files (~3.6k and ~3.4k lines) are now `src/tokensave/` (lifecycle in `mod.rs`, plus `extract` / `guard` / `indexing` / `query` / `staleness` / `memory` / `util`) and `src/db/queries/` (row mappers and shared helpers in `mod.rs`, plus `nodes` / `edges` / `files` / `unresolved` / `search` / `stats` / `clear` / `metadata` / `fingerprints`), following the section markers the files already had. Pure code motion; the public API is unchanged.
