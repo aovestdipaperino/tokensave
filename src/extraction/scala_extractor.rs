@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, SCALA_COMPLEXITY};
+use crate::extraction::ts_state::find_child_by_kind;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -651,7 +652,7 @@ impl ScalaExtractor {
     fn visit_enum_case(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = node
             .child_by_field_name("name")
-            .or_else(|| Self::find_child_by_kind(node, "identifier"))
+            .or_else(|| find_child_by_kind(node, "identifier"))
             .map_or_else(
                 || state.node_text(node).trim().to_string(),
                 |n| state.node_text(n),
@@ -1237,15 +1238,15 @@ impl ScalaExtractor {
     fn extract_type_parameters(state: &mut ExtractionState, node: TsNode<'_>, owner_id: &str) {
         let tp_node = node
             .child_by_field_name("type_parameters")
-            .or_else(|| Self::find_child_by_kind(node, "type_parameters"));
+            .or_else(|| find_child_by_kind(node, "type_parameters"));
         if let Some(tp) = tp_node {
             let mut cursor = tp.walk();
             if cursor.goto_first_child() {
                 loop {
                     let child = cursor.node();
                     if child.is_named() && child.kind().contains("type_parameter") {
-                        let param_name = Self::find_child_by_kind(child, "identifier")
-                            .or_else(|| Self::find_child_by_kind(child, "type_identifier"))
+                        let param_name = find_child_by_kind(child, "identifier")
+                            .or_else(|| find_child_by_kind(child, "type_identifier"))
                             .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                         let start_line = child.start_position().row as u32;
                         let id = generate_node_id(
@@ -1565,7 +1566,7 @@ impl ScalaExtractor {
     /// Looks for a `type_identifier` child first, then falls back to
     /// stripping `@` prefix and `(` suffix from the text.
     fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(ti) = Self::find_child_by_kind(node, "type_identifier") {
+        if let Some(ti) = find_child_by_kind(node, "type_identifier") {
             return state.node_text(ti);
         }
         // Fallback: text after '@', before '('
@@ -1578,23 +1579,6 @@ impl ScalaExtractor {
             .unwrap_or(&text)
             .trim()
             .to_string()
-    }
-
-    /// Find the first child node of a specific kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
     }
 
     /// Build the final `ExtractionResult` from the accumulated state.

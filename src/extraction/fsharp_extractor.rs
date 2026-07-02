@@ -1,61 +1,14 @@
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, ComplexityMetrics, FSHARP_COMPLEXITY};
+use crate::extraction::ts_state::ExtractionState;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 pub struct FSharpExtractor;
-
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl FSharpExtractor {
     pub fn extract_fsharp(file_path: &str, source: &str) -> ExtractionResult {
@@ -66,7 +19,7 @@ impl FSharpExtractor {
             Ok(t) => t,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -108,7 +61,7 @@ impl FSharpExtractor {
         Self::visit_children(&mut state, root);
 
         state.node_stack.pop();
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     fn parse_source(source: &str) -> Result<Tree, String> {
@@ -534,16 +487,6 @@ impl FSharpExtractor {
     fn first_line(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let text = state.node_text(node);
         text.lines().next().map(|l| l.trim().to_string())
-    }
-
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

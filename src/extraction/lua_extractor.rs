@@ -1,70 +1,18 @@
 /// Tree-sitter based Lua source code extractor.
 ///
 /// Parses Lua source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, LUA_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Lua source files using tree-sitter.
 pub struct LuaExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl LuaExtractor {
     /// Extract code graph nodes and edges from a Lua source file.
@@ -79,7 +27,7 @@ impl LuaExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -124,7 +72,7 @@ impl LuaExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -281,17 +229,17 @@ impl LuaExtractor {
     /// - `local CONST = <literal>` → Const node (uppercase names)
     fn visit_variable_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // variable_declaration contains an assignment_statement child.
-        let Some(assignment) = Self::find_child_by_kind(node, "assignment_statement") else {
+        let Some(assignment) = find_child_by_kind(node, "assignment_statement") else {
             return;
         };
 
         // Get the variable name from the variable_list.
         let var_list = assignment
             .child_by_field_name("variable_list")
-            .or_else(|| Self::find_child_by_kind(assignment, "variable_list"));
+            .or_else(|| find_child_by_kind(assignment, "variable_list"));
         let name_node = var_list.and_then(|vl| {
             // The first named child of variable_list should be the identifier.
-            Self::find_child_by_kind(vl, "identifier")
+            find_child_by_kind(vl, "identifier")
         });
         let Some(n) = name_node else {
             return;
@@ -301,7 +249,7 @@ impl LuaExtractor {
         // Get the value from the expression_list.
         let expr_list = assignment
             .child_by_field_name("expression_list")
-            .or_else(|| Self::find_child_by_kind(assignment, "expression_list"));
+            .or_else(|| find_child_by_kind(assignment, "expression_list"));
         let value_node = expr_list.and_then(|el| el.named_child(0));
 
         let Some(value_node) = value_node else {
@@ -452,7 +400,7 @@ impl LuaExtractor {
     fn extract_require_module(state: &ExtractionState, call_node: TsNode<'_>) -> Option<String> {
         let args = call_node
             .child_by_field_name("arguments")
-            .or_else(|| Self::find_child_by_kind(call_node, "arguments"))?;
+            .or_else(|| find_child_by_kind(call_node, "arguments"))?;
         // Look for a string node inside arguments.
         let mut cursor = args.walk();
         if cursor.goto_first_child() {
@@ -460,7 +408,7 @@ impl LuaExtractor {
                 let child = cursor.node();
                 if child.kind() == "string" {
                     // The string node contains a string_content child.
-                    if let Some(content) = Self::find_child_by_kind(child, "string_content") {
+                    if let Some(content) = find_child_by_kind(child, "string_content") {
                         return Some(state.node_text(content));
                     }
                     // Fall back to stripping quotes from the full text.
@@ -559,34 +507,6 @@ impl LuaExtractor {
                     break;
                 }
             }
-        }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }

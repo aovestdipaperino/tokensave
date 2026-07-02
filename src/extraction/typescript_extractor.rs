@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, TYPESCRIPT_COMPLEXITY};
+use crate::extraction::ts_state::find_child_by_kind;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -178,7 +179,7 @@ impl TypeScriptExtractor {
             "import_statement" => Self::visit_import(state, node),
             "expression_statement" => {
                 // Namespace declarations appear as expression_statement > internal_module.
-                if let Some(internal) = Self::find_child_by_kind(node, "internal_module") {
+                if let Some(internal) = find_child_by_kind(node, "internal_module") {
                     Self::visit_namespace(state, internal);
                 }
             }
@@ -274,7 +275,7 @@ impl TypeScriptExtractor {
 
     /// Extract a function declaration node.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -338,7 +339,7 @@ impl TypeScriptExtractor {
         Self::extract_type_refs(state, node, &id);
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "statement_block") {
+        if let Some(body) = find_child_by_kind(node, "statement_block") {
             Self::extract_call_sites(state, body, &id);
             Self::extract_receiver_typed_calls(state, node, body, &id);
         }
@@ -355,7 +356,7 @@ impl TypeScriptExtractor {
                 let child = cursor.node();
                 if child.kind() == "variable_declarator" {
                     // Check if this is an arrow function assignment.
-                    if let Some(arrow) = Self::find_child_by_kind(child, "arrow_function") {
+                    if let Some(arrow) = find_child_by_kind(child, "arrow_function") {
                         Self::visit_arrow_function(state, child, arrow);
                     } else if is_const {
                         // It's a const variable (not an arrow function).
@@ -375,7 +376,7 @@ impl TypeScriptExtractor {
         declarator: TsNode<'_>,
         arrow_node: TsNode<'_>,
     ) {
-        let name = Self::find_child_by_kind(declarator, "identifier")
+        let name = find_child_by_kind(declarator, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -451,7 +452,7 @@ impl TypeScriptExtractor {
         Self::extract_type_refs(state, arrow_node, &id);
 
         // Extract call sites from the arrow function body.
-        if let Some(body) = Self::find_child_by_kind(arrow_node, "statement_block") {
+        if let Some(body) = find_child_by_kind(arrow_node, "statement_block") {
             Self::extract_call_sites(state, body, &id);
             Self::extract_receiver_typed_calls(state, arrow_node, body, &id);
         }
@@ -459,7 +460,7 @@ impl TypeScriptExtractor {
 
     /// Extract a const variable declaration (not an arrow function).
     fn visit_const_variable(state: &mut ExtractionState, declarator: TsNode<'_>) {
-        let name = Self::find_child_by_kind(declarator, "identifier")
+        let name = find_child_by_kind(declarator, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -520,8 +521,8 @@ impl TypeScriptExtractor {
     /// Extract a class declaration node.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
         // TS uses type_identifier, JS uses identifier for class names.
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .or_else(|| Self::find_child_by_kind(node, "identifier"))
+        let name = find_child_by_kind(node, "type_identifier")
+            .or_else(|| find_child_by_kind(node, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -586,7 +587,7 @@ impl TypeScriptExtractor {
         Self::extract_class_heritage(state, node, &id);
 
         // Recurse into class_body for methods and fields.
-        if let Some(body) = Self::find_child_by_kind(node, "class_body") {
+        if let Some(body) = find_child_by_kind(node, "class_body") {
             state.node_stack.push((name, id.clone()));
             Self::visit_class_body(state, body);
             state.node_stack.pop();
@@ -613,7 +614,7 @@ impl TypeScriptExtractor {
 
     /// Extract a `method_definition` from a class body.
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "property_identifier")
+        let name = find_child_by_kind(node, "property_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let kind = if name == "constructor" {
@@ -681,7 +682,7 @@ impl TypeScriptExtractor {
         Self::extract_type_refs(state, node, &id);
 
         // Extract call sites from the method body.
-        if let Some(body) = Self::find_child_by_kind(node, "statement_block") {
+        if let Some(body) = find_child_by_kind(node, "statement_block") {
             Self::extract_call_sites(state, body, &id);
             Self::extract_receiver_typed_calls(state, node, body, &id);
         }
@@ -689,7 +690,7 @@ impl TypeScriptExtractor {
 
     /// Extract a field from a class body (`public_field_definition`).
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "property_identifier")
+        let name = find_child_by_kind(node, "property_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = Self::extract_ts_accessibility(state, node);
         let text = state.node_text(node);
@@ -745,7 +746,7 @@ impl TypeScriptExtractor {
 
     /// Extract an interface declaration node.
     fn visit_interface(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -804,7 +805,7 @@ impl TypeScriptExtractor {
         }
 
         // Extract methods from interface body.
-        if let Some(body) = Self::find_child_by_kind(node, "interface_body") {
+        if let Some(body) = find_child_by_kind(node, "interface_body") {
             state.node_stack.push((name, id.clone()));
             Self::visit_interface_body(state, body);
             state.node_stack.pop();
@@ -829,7 +830,7 @@ impl TypeScriptExtractor {
 
     /// Extract a `method_signature` from an interface body.
     fn visit_interface_method(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "property_identifier")
+        let name = find_child_by_kind(node, "property_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -884,7 +885,7 @@ impl TypeScriptExtractor {
 
     /// Extract an enum declaration node.
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -944,7 +945,7 @@ impl TypeScriptExtractor {
         }
 
         // Extract enum members from enum_body.
-        if let Some(body) = Self::find_child_by_kind(node, "enum_body") {
+        if let Some(body) = find_child_by_kind(node, "enum_body") {
             state.node_stack.push((name, id.clone()));
             Self::visit_enum_body(state, body);
             state.node_stack.pop();
@@ -1022,7 +1023,7 @@ impl TypeScriptExtractor {
 
     /// Extract a type alias declaration.
     fn visit_type_alias(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -1148,7 +1149,7 @@ impl TypeScriptExtractor {
 
     /// Extract a namespace (`internal_module`) declaration.
     fn visit_namespace(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let visibility = if state.in_export {
             Visibility::Pub
@@ -1208,7 +1209,7 @@ impl TypeScriptExtractor {
         }
 
         // Recurse into the namespace body.
-        if let Some(body) = Self::find_child_by_kind(node, "statement_block") {
+        if let Some(body) = find_child_by_kind(node, "statement_block") {
             state.node_stack.push((name, id));
             Self::visit_children(state, body);
             state.node_stack.pop();
@@ -1292,7 +1293,7 @@ impl TypeScriptExtractor {
 
     /// Extract extends/implements from a class heritage clause.
     fn extract_class_heritage(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(heritage) = Self::find_child_by_kind(node, "class_heritage") {
+        if let Some(heritage) = find_child_by_kind(node, "class_heritage") {
             let mut cursor = heritage.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -1300,8 +1301,8 @@ impl TypeScriptExtractor {
                     match child.kind() {
                         "extends_clause" => {
                             // Find the extended class name (identifier or type_identifier).
-                            let ext_name = Self::find_child_by_kind(child, "identifier")
-                                .or_else(|| Self::find_child_by_kind(child, "type_identifier"))
+                            let ext_name = find_child_by_kind(child, "identifier")
+                                .or_else(|| find_child_by_kind(child, "type_identifier"))
                                 .map(|n| state.node_text(n));
                             if let Some(name) = ext_name {
                                 state.unresolved_refs.push(UnresolvedRef {
@@ -1350,7 +1351,7 @@ impl TypeScriptExtractor {
     /// Extract the import path from an `import_statement`.
     fn extract_import_path(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // The string child contains the module path.
-        if let Some(string_node) = Self::find_child_by_kind(node, "string") {
+        if let Some(string_node) = find_child_by_kind(node, "string") {
             let text = state.node_text(string_node);
             // Strip quotes.
             let path = text.trim().trim_matches('\'').trim_matches('"').to_string();
@@ -1415,7 +1416,7 @@ impl TypeScriptExtractor {
         if let Some(t) = self_type {
             map.insert("this".to_string(), t.to_string());
         }
-        if let Some(params) = Self::find_child_by_kind(fn_node, "formal_parameters") {
+        if let Some(params) = find_child_by_kind(fn_node, "formal_parameters") {
             let mut cursor = params.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -1438,7 +1439,7 @@ impl TypeScriptExtractor {
                 }
             }
         }
-        if let Some(body) = Self::find_child_by_kind(fn_node, "statement_block") {
+        if let Some(body) = find_child_by_kind(fn_node, "statement_block") {
             Self::collect_let_types(state, body, &mut map);
         }
         map
@@ -1728,7 +1729,7 @@ impl TypeScriptExtractor {
 
     /// Extract TypeScript accessibility modifier (public/private/protected).
     fn extract_ts_accessibility(state: &ExtractionState, node: TsNode<'_>) -> Visibility {
-        if let Some(modifier) = Self::find_child_by_kind(node, "accessibility_modifier") {
+        if let Some(modifier) = find_child_by_kind(node, "accessibility_modifier") {
             let text = state.node_text(modifier);
             match text.as_str() {
                 "private" => Visibility::Private,
@@ -1755,23 +1756,6 @@ impl TypeScriptExtractor {
             }
         }
         false
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
     }
 
     /// Build the final `ExtractionResult` from the accumulated state.

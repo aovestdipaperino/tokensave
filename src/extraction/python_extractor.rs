@@ -1,73 +1,18 @@
 /// Tree-sitter based Python source code extractor.
 ///
 /// Parses Python source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PYTHON_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Python source files using tree-sitter.
 pub struct PythonExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of class nesting. > 0 means we are inside a class.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl PythonExtractor {
     /// Extract code graph nodes and edges from a Python source file.
@@ -82,7 +27,7 @@ impl PythonExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl PythonExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -188,7 +133,7 @@ impl PythonExtractor {
 
     /// Extract a function definition. If inside a class (`class_depth` > 0), it becomes a Method.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>, is_async: bool) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0;
@@ -251,7 +196,7 @@ impl PythonExtractor {
         }
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "block") {
+        if let Some(body) = find_child_by_kind(node, "block") {
             Self::extract_call_sites(state, body, &id);
             Self::extract_receiver_typed_calls(state, node, body, &id);
         }
@@ -259,7 +204,7 @@ impl PythonExtractor {
 
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::python_visibility(&name);
@@ -320,7 +265,7 @@ impl PythonExtractor {
         // Visit class body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "block") {
+        if let Some(body) = find_child_by_kind(node, "block") {
             Self::visit_children(state, body);
         }
         state.class_depth -= 1;
@@ -330,8 +275,8 @@ impl PythonExtractor {
     /// Extract a decorated definition (decorator + function or class).
     fn visit_decorated_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // First, find the inner definition (function_definition or class_definition).
-        let inner_def = Self::find_child_by_kind(node, "function_definition")
-            .or_else(|| Self::find_child_by_kind(node, "class_definition"));
+        let inner_def = find_child_by_kind(node, "function_definition")
+            .or_else(|| find_child_by_kind(node, "class_definition"));
 
         // Check if the inner def is an async function (could be wrapped in decorated_definition)
         let is_async = Self::has_async_keyword(node);
@@ -339,7 +284,7 @@ impl PythonExtractor {
         // Determine the inner definition's node ID ahead of time so we can
         // create Annotates edges from decorators to it.
         let inner_kind_and_name = if let Some(inner) = inner_def {
-            let name = Self::find_child_by_kind(inner, "identifier")
+            let name = find_child_by_kind(inner, "identifier")
                 .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
             let kind = match inner.kind() {
                 "class_definition" => NodeKind::Class,
@@ -445,7 +390,7 @@ impl PythonExtractor {
                 if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
                     let import_name = if child.kind() == "aliased_import" {
                         // aliased_import has a dotted_name child
-                        Self::find_child_by_kind(child, "dotted_name")
+                        find_child_by_kind(child, "dotted_name")
                             .map_or_else(|| state.node_text(child), |n| state.node_text(n))
                     } else {
                         state.node_text(child)
@@ -462,8 +407,8 @@ impl PythonExtractor {
     /// Extract a from-import statement (e.g., `from os.path import join, exists`).
     fn visit_import_from(state: &mut ExtractionState, node: TsNode<'_>) {
         // Get the module being imported from.
-        let module_name = Self::find_child_by_kind(node, "dotted_name")
-            .or_else(|| Self::find_child_by_kind(node, "relative_import"))
+        let module_name = find_child_by_kind(node, "dotted_name")
+            .or_else(|| find_child_by_kind(node, "relative_import"))
             .map(|n| state.node_text(n))
             .unwrap_or_default();
 
@@ -472,7 +417,7 @@ impl PythonExtractor {
         let mut found_names = false;
 
         // Check for wildcard import: from X import *
-        if Self::find_child_by_kind(node, "wildcard_import").is_some() {
+        if find_child_by_kind(node, "wildcard_import").is_some() {
             let full_name = format!("{module_name}.*");
             Self::create_use_node(state, &full_name, node);
             return;
@@ -485,7 +430,7 @@ impl PythonExtractor {
                 let child = cursor.node();
                 if child.kind() == "aliased_import" {
                     // aliased_import has a dotted_name child for the original name
-                    let import_name = Self::find_child_by_kind(child, "dotted_name")
+                    let import_name = find_child_by_kind(child, "dotted_name")
                         .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                     let full_name = if module_name.is_empty() {
                         import_name
@@ -532,7 +477,7 @@ impl PythonExtractor {
                             Self::create_use_node(state, &full_name, node);
                         }
                         "aliased_import" => {
-                            let import_name = Self::find_child_by_kind(child, "dotted_name")
+                            let import_name = find_child_by_kind(child, "dotted_name")
                                 .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                             let full_name = if module_name.is_empty() {
                                 import_name
@@ -679,7 +624,7 @@ impl PythonExtractor {
 
     /// Extract base classes from a class definition's `argument_list`.
     fn extract_base_classes(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(arg_list) = Self::find_child_by_kind(node, "argument_list") {
+        if let Some(arg_list) = find_child_by_kind(node, "argument_list") {
             let mut cursor = arg_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -726,7 +671,7 @@ impl PythonExtractor {
     fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         // Use the block child's start byte to find where the body begins,
         // so we don't truncate at `:` inside type annotations.
-        if let Some(block) = Self::find_child_by_kind(node, "block") {
+        if let Some(block) = find_child_by_kind(node, "block") {
             let text = state.node_text(node);
             let block_offset = block.start_byte() - node.start_byte();
             let before_block = &text[..block_offset];
@@ -739,7 +684,7 @@ impl PythonExtractor {
 
     /// Extract the class signature (class Name or class Name(Base)).
     fn extract_class_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(block) = Self::find_child_by_kind(node, "block") {
+        if let Some(block) = find_child_by_kind(node, "block") {
             let text = state.node_text(node);
             let block_offset = block.start_byte() - node.start_byte();
             let before_block = &text[..block_offset];
@@ -752,14 +697,14 @@ impl PythonExtractor {
     /// Extract docstrings from the first statement in a function/class body.
     /// Python convention: first `expression_statement` containing a string literal.
     fn extract_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        let body = Self::find_child_by_kind(node, "block")?;
+        let body = find_child_by_kind(node, "block")?;
         let mut cursor = body.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
                 if child.kind() == "expression_statement" {
                     // Look for a string child.
-                    if let Some(string_node) = Self::find_child_by_kind(child, "string") {
+                    if let Some(string_node) = find_child_by_kind(child, "string") {
                         let text = state.node_text(string_node);
                         return Some(Self::strip_docstring_quotes(&text));
                     }
@@ -882,7 +827,7 @@ impl PythonExtractor {
                 }
             }
         }
-        if let Some(body) = Self::find_child_by_kind(fn_node, "block") {
+        if let Some(body) = find_child_by_kind(fn_node, "block") {
             Self::collect_assignment_types(state, body, &mut map);
         }
         map
@@ -1057,34 +1002,6 @@ impl PythonExtractor {
         // Must not start with a digit
         let starts_ok = !name.starts_with(|c: char| c.is_ascii_digit());
         has_upper && all_valid && starts_ok
-    }
-
-    /// Find the first named child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 
