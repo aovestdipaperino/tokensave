@@ -1149,6 +1149,7 @@ impl Database {
         target_kind: Option<&str>,
         limit: usize,
     ) -> Result<Vec<serde_json::Value>> {
+        use std::fmt::Write;
         let mut sql = String::from(
             "SELECT a.name AS annotation, a.file_path AS a_file, a.start_line AS a_line, \
                     t.id AS target_id, t.name AS target_name, t.kind AS target_kind, \
@@ -1161,19 +1162,19 @@ impl Database {
         let mut params: Vec<libsql::Value> = Vec::new();
         if let Some(n) = name {
             params.push(libsql::Value::Text(n.to_string()));
-            sql.push_str(&format!(" AND a.name = ?{}", params.len()));
+            let _ = write!(sql, " AND a.name = ?{}", params.len());
         }
         if let Some(prefix) = path_prefix {
             params.push(libsql::Value::Text(format!("{prefix}%")));
-            sql.push_str(&format!(" AND t.file_path LIKE ?{}", params.len()));
+            let _ = write!(sql, " AND t.file_path LIKE ?{}", params.len());
         }
         if let Some(k) = target_kind {
             params.push(libsql::Value::Text(k.to_string()));
-            sql.push_str(&format!(" AND t.kind = ?{}", params.len()));
+            let _ = write!(sql, " AND t.kind = ?{}", params.len());
         }
         sql.push_str(" ORDER BY a.name ASC, t.file_path ASC, t.start_line ASC");
         params.push(libsql::Value::Integer(limit as i64));
-        sql.push_str(&format!(" LIMIT ?{}", params.len()));
+        let _ = write!(sql, " LIMIT ?{}", params.len());
 
         let mut rows = self
             .conn()
