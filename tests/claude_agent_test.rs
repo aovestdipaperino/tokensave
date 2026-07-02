@@ -48,14 +48,12 @@ fn test_reinstall_preserves_existing_resolvable_command() {
     std::fs::write(&user_bin, "").unwrap();
     let user_bin = user_bin.to_string_lossy().to_string();
 
-    // Pre-seed .claude.json with the user's command.
-    std::fs::write(
-        home.join(".claude.json"),
-        format!(
-            r#"{{"mcpServers": {{"tokensave": {{"command": "{user_bin}", "args": ["serve"]}}}}}}"#
-        ),
-    )
-    .unwrap();
+    // Pre-seed .claude.json with the user's command. Built with serde so
+    // Windows backslash paths are escaped correctly.
+    let seeded = serde_json::json!({
+        "mcpServers": {"tokensave": {"command": user_bin, "args": ["serve"]}}
+    });
+    std::fs::write(home.join(".claude.json"), seeded.to_string()).unwrap();
 
     let ctx = make_install_ctx(home); // installs with /usr/local/bin/tokensave
     ClaudeIntegration.install(&ctx).unwrap();
