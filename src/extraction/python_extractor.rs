@@ -845,7 +845,7 @@ impl PythonExtractor {
         Some(seg.to_string())
     }
 
-    /// True if `name` looks like a class per PEP8 CapWords — the only cheap
+    /// True if `name` looks like a class per PEP8 `CapWords` — the only cheap
     /// signal that `Service()` is construction (Python has no `new`).
     fn looks_like_class(name: &str) -> bool {
         name.chars().next().is_some_and(char::is_uppercase)
@@ -889,7 +889,7 @@ impl PythonExtractor {
     }
 
     /// Records assignment types: `x: T = ...` (annotation) or `x = T(...)`
-    /// where `T` is CapWords. Skips nested function/class scopes.
+    /// where `T` is `CapWords`. Skips nested function/class scopes.
     fn collect_assignment_types(
         state: &ExtractionState,
         node: TsNode<'_>,

@@ -1,48 +1,10 @@
-use std::path::Path;
-
 use tempfile::TempDir;
 use tokensave::agents::{
     expected_tool_perms, AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext,
-    InstallContext,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn make_install_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-/// Creates a fake tokensave binary in a temp dir so healthcheck binary-exists
-/// checks pass.
-fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
-    let bin_dir = home.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bin_path = bin_dir.join("tokensave");
-    std::fs::write(&bin_path, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    let contents = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&contents).unwrap()
-}
+mod common;
+use common::{make_install_ctx, make_install_ctx_with_real_bin, read_json};
 
 // ===========================================================================
 // Install content verification

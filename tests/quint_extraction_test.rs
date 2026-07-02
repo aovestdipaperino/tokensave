@@ -2,17 +2,11 @@ use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::QuintExtractor;
 use tokensave::types::*;
 
+mod common;
+use common::names_of;
+
 fn extract(source: &str) -> ExtractionResult {
     QuintExtractor.extract("spec.qnt", source)
-}
-
-fn names_of(result: &ExtractionResult, kind: NodeKind) -> Vec<String> {
-    result
-        .nodes
-        .iter()
-        .filter(|n| n.kind == kind)
-        .map(|n| n.name.clone())
-        .collect()
 }
 
 #[test]

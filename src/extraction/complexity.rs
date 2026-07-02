@@ -1655,7 +1655,7 @@ pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     operand_types: &[],
 };
 
-/// ActionScript 2/3 (tree-sitter-actionscript grammar).
+/// `ActionScript` 2/3 (tree-sitter-actionscript grammar).
 pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &[
         "if_statement",

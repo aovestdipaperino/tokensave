@@ -186,7 +186,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write(
             dir.path(),
-            r#"
+            r"
 module github.com/foo/bar
 
 go 1.22
@@ -195,7 +195,7 @@ require (
     github.com/spf13/cobra v1.8.0
     github.com/sirupsen/logrus v1.9.0 // indirect
 )
-"#,
+",
         );
         let ws = parse(dir.path()).unwrap();
         assert_eq!(ws.ecosystem, "go");
@@ -220,11 +220,11 @@ require (
         let dir = TempDir::new().unwrap();
         write(
             dir.path(),
-            r#"
+            r"
 module example.com/x
 go 1.22
 require example.com/y v0.1.0
-"#,
+",
         );
         let ws = parse(dir.path()).unwrap();
         let m = &ws.members[0];
@@ -236,12 +236,12 @@ require example.com/y v0.1.0
         let dir = TempDir::new().unwrap();
         write(
             dir.path(),
-            r#"
+            r"
 module example.com/x
 go 1.22
 
 replace example.com/y => ../local-y
-"#,
+",
         );
         let ws = parse(dir.path()).unwrap();
         assert_eq!(ws.patches.len(), 1);

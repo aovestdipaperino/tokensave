@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn finds_nested_elements() {
-        let xml = r#"
+        let xml = r"
 <project>
   <dependencies>
     <dependency>
@@ -114,7 +114,7 @@ mod tests {
       <scope>test</scope>
     </dependency>
   </dependencies>
-</project>"#;
+</project>";
         let deps = find_elements(xml, "dependency");
         assert_eq!(deps.len(), 2);
         assert_eq!(first_text(deps[0], "groupId"), Some("com.foo"));
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn ignores_prefix_collisions() {
         // `<groupIdRef>` must not be matched when looking for `<groupId>`.
-        let xml = r#"<root><groupIdRef>x</groupIdRef><groupId>actual</groupId></root>"#;
+        let xml = r"<root><groupIdRef>x</groupIdRef><groupId>actual</groupId></root>";
         let found = find_elements(xml, "groupId");
         assert_eq!(found, vec!["actual"]);
     }

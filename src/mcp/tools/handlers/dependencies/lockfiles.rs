@@ -502,10 +502,10 @@ version = "2.31.0"
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("go.sum"),
-            r#"
+            r"
 github.com/spf13/cobra v1.8.0 h1:foo
 github.com/spf13/cobra v1.8.0/go.mod h1:bar
-"#,
+",
         )
         .unwrap();
         let mut ws = fixture("go", dir.path(), &["github.com/spf13/cobra"]);

@@ -1,7 +1,7 @@
-//! Tree-sitter based ActionScript source code extractor.
+//! Tree-sitter based `ActionScript` source code extractor.
 //!
-//! Targets ActionScript 2 (AVM1) as emitted by the JPEXS / FFDec decompiler,
-//! and also parses ActionScript 3 (`package { ... }` wrapped). Built on the
+//! Targets `ActionScript` 2 (AVM1) as emitted by the JPEXS / `FFDec` decompiler,
+//! and also parses `ActionScript` 3 (`package { ... }` wrapped). Built on the
 //! vendored `tree-sitter-actionscript` grammar (key `"actionscript"`).
 //!
 //! Emits the standard graph shape: classes, interfaces, methods, free
@@ -16,12 +16,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, ACTIONSCRIPT_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, ACTIONSCRIPT_COMPLEXITY};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
-/// Extracts code graph nodes and edges from ActionScript source files.
+/// Extracts code graph nodes and edges from `ActionScript` source files.
 pub struct ActionScriptExtractor;
 
 /// Kind of lexical scope on the scope stack.
@@ -177,7 +177,7 @@ impl ExtractionState {
 }
 
 impl ActionScriptExtractor {
-    /// Extract code graph nodes and edges from an ActionScript source file.
+    /// Extract code graph nodes and edges from an `ActionScript` source file.
     pub fn extract_actionscript(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
@@ -303,7 +303,7 @@ impl ActionScriptExtractor {
             Some(format!("package {name}")),
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
 
@@ -347,7 +347,7 @@ impl ActionScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             visibility,
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
 
@@ -395,7 +395,7 @@ impl ActionScriptExtractor {
             Some(Self::first_line(state, node)),
             Self::extract_docstring(state, node),
             Self::visibility_of(state, node),
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
 
@@ -486,7 +486,7 @@ impl ActionScriptExtractor {
             Some(Self::signature(state, node)),
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
         if let Some(rt) = node.child_by_field_name("return_type") {
@@ -527,7 +527,7 @@ impl ActionScriptExtractor {
             Some(Self::first_line(state, node)),
             Self::extract_docstring(state, node),
             Self::visibility_of(state, node),
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
         if let Some(ty_node) = node.child_by_field_name("type") {
@@ -573,7 +573,7 @@ impl ActionScriptExtractor {
             Some(format!("import {path}")),
             None,
             Visibility::Private,
-            Default::default(),
+            ComplexityMetrics::default(),
         );
         if let (Some(id), Some(parent)) = (id, state.parent_node_id().map(str::to_string)) {
             let _ = id;

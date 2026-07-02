@@ -202,7 +202,10 @@ fn hook_command(tokensave_bin: &str, subcommand: &str) -> String {
     format!("{tokensave_bin} {subcommand}")
 }
 
-fn file_resource_uri(path: &Path) -> String {
+/// Converts a filesystem path to a percent-encoded `file://` URI.
+///
+/// Public so integration tests can assert against the exact URI format.
+pub fn file_resource_uri(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\\', "/");
     let path = percent_encode_file_uri_path(&path);
     if path.starts_with('/') {
