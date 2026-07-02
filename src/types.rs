@@ -82,6 +82,9 @@ pub enum NodeKind {
     ProtoService,
     #[cfg(feature = "lang-protobuf")]
     ProtoRpc,
+    // GDScript-specific
+    #[cfg(feature = "lang-gdscript")]
+    Signal,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -155,6 +158,8 @@ impl NodeKind {
             NodeKind::ProtoService => "proto_service",
             #[cfg(feature = "lang-protobuf")]
             NodeKind::ProtoRpc => "proto_rpc",
+            #[cfg(feature = "lang-gdscript")]
+            NodeKind::Signal => "signal",
         }
     }
 
@@ -227,6 +232,8 @@ impl NodeKind {
             "proto_service" => Some(NodeKind::ProtoService),
             #[cfg(feature = "lang-protobuf")]
             "proto_rpc" => Some(NodeKind::ProtoRpc),
+            #[cfg(feature = "lang-gdscript")]
+            "signal" => Some(NodeKind::Signal),
             _ => None,
         }
     }

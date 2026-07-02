@@ -58,6 +58,8 @@ mod fortran_extractor;
 mod fsharp_extractor;
 #[cfg(feature = "lang-fstar")]
 mod fstar_extractor;
+#[cfg(feature = "lang-gdscript")]
+mod gdscript_extractor;
 #[cfg(feature = "lang-glsl")]
 mod glsl_extractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -157,6 +159,8 @@ pub use fortran_extractor::FortranExtractor;
 pub use fsharp_extractor::FSharpExtractor;
 #[cfg(feature = "lang-fstar")]
 pub use fstar_extractor::FStarExtractor;
+#[cfg(feature = "lang-gdscript")]
+pub use gdscript_extractor::GdScriptExtractor;
 #[cfg(feature = "lang-glsl")]
 pub use glsl_extractor::GlslExtractor;
 #[cfg(feature = "lang-gwbasic")]
@@ -331,6 +335,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(LeanExtractor));
         #[cfg(feature = "lang-toml")]
         extractors.push(Box::new(TomlExtractor));
+        #[cfg(feature = "lang-gdscript")]
+        extractors.push(Box::new(GdScriptExtractor));
 
         Self { extractors }
     }
