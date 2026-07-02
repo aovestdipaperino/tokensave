@@ -12,6 +12,7 @@ pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod droid;
 pub mod gemini;
 pub mod grok;
 pub mod kilo;
@@ -38,6 +39,7 @@ pub use cline::ClineIntegration;
 pub use codex::CodexIntegration;
 pub use copilot::CopilotIntegration;
 pub use cursor::CursorIntegration;
+pub use droid::DroidIntegration;
 pub use gemini::GeminiIntegration;
 pub use grok::GrokIntegration;
 pub use kilo::KiloIntegration;
@@ -158,6 +160,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "qwen" => Ok(Box::new(QwenIntegration)),
         "copilot" => Ok(Box::new(CopilotIntegration)),
         "cursor" => Ok(Box::new(CursorIntegration)),
+        "droid" => Ok(Box::new(DroidIntegration)),
         "zed" => Ok(Box::new(ZedIntegration)),
         "cline" => Ok(Box::new(ClineIntegration)),
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
@@ -187,6 +190,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(QwenIntegration),
         Box::new(CopilotIntegration),
         Box::new(CursorIntegration),
+        Box::new(DroidIntegration),
         Box::new(ZedIntegration),
         Box::new(ClineIntegration),
         Box::new(RooCodeIntegration),
@@ -210,6 +214,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "qwen",
         "copilot",
         "cursor",
+        "droid",
         "zed",
         "cline",
         "roo-code",

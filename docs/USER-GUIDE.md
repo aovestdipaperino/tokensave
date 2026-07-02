@@ -181,7 +181,7 @@ This is the default. It registers the MCP server in `~/.claude/settings.json`, g
 
 ### Other agents
 
-Tokensave supports fourteen agents. Pass `--agent` to install for a specific one:
+Tokensave supports many agents. Pass `--agent` to install for a specific one:
 
 ```bash
 tokensave install --agent claude      # Claude Code (default)
@@ -191,6 +191,7 @@ tokensave install --agent gemini      # Gemini CLI
 tokensave install --agent qwen        # Qwen Code
 tokensave install --agent copilot     # GitHub Copilot CLI
 tokensave install --agent cursor      # Cursor
+tokensave install --agent droid       # Factory Droid
 tokensave install --agent zed         # Zed
 tokensave install --agent cline       # Cline
 tokensave install --agent roo-code    # Roo Code

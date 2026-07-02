@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Factory Droid agent integration (`tokensave install --agent droid`).** Registers the tokensave MCP server in `~/.factory/mcp.json` under `mcpServers.tokensave` (stdio transport) and appends the tokensave rules to `~/.factory/AGENTS.md`. `--local` writes `<project>/.factory/mcp.json` and a repo-root `<project>/AGENTS.md`. Auto-detected by `tokensave install` (and `reinstall`/`doctor`) when `~/.factory` exists.
 
 ## [7.0.3] - 2026-06-30
 
