@@ -15,13 +15,11 @@ fn sample() -> ExtractionResult {
     FStarExtractor.extract("Demo.fst", SAMPLE)
 }
 
+mod common;
+
+/// Sorted names of extracted nodes of the given kind.
 fn names_of(result: &ExtractionResult, kind: NodeKind) -> Vec<String> {
-    let mut v: Vec<String> = result
-        .nodes
-        .iter()
-        .filter(|n| n.kind == kind)
-        .map(|n| n.name.clone())
-        .collect();
+    let mut v = common::names_of(result, kind);
     v.sort();
     v
 }

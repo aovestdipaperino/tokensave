@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tempfile::TempDir;
-use tokensave::agents::{
-    expected_tool_perms, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    PiIntegration,
-};
+use tokensave::agents::{AgentIntegration, DoctorCounters, HealthcheckContext, PiIntegration};
+
+mod common;
+use common::{make_install_ctx as make_ctx, read_json};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,20 +16,6 @@ use tokensave::agents::{
 // test in this file must hold this lock to avoid one test's env-var mutation
 // leaking into another's config-path resolution.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn make_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    let contents = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&contents).unwrap()
-}
 
 /// Default (no env override) Pi config path under a fake home.
 fn pi_config_path(home: &Path) -> PathBuf {

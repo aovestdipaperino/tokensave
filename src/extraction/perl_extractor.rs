@@ -1,73 +1,18 @@
 /// Tree-sitter based Perl source code extractor.
 ///
 /// Parses Perl source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PERL_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Perl source files using tree-sitter.
 pub struct PerlExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of package nesting. > 0 means we are inside a package.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl PerlExtractor {
     /// Extract code graph nodes and edges from a Perl source file.
@@ -82,7 +27,7 @@ impl PerlExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl PerlExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -247,7 +192,7 @@ impl PerlExtractor {
     /// we handle them by scanning ahead through siblings until the next
     /// `package_statement` or end of the `source_file` children.
     fn visit_package(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "package_name")
+        let name = find_child_by_kind(node, "package_name")
             .map_or_else(|| "<anonymous>".to_string(), |pn| state.node_text(pn));
 
         // Skip `package main;` — it just returns to the top-level scope.
@@ -418,7 +363,7 @@ impl PerlExtractor {
         let left = node.child_by_field_name("variable");
         if let Some(left_node) = left {
             if left_node.kind() == "variable_declaration" {
-                let scope_node = Self::find_child_by_kind(left_node, "scope");
+                let scope_node = find_child_by_kind(left_node, "scope");
                 let is_our = scope_node.is_some_and(|s| state.node_text(s) == "our");
 
                 if is_our {
@@ -550,7 +495,7 @@ impl PerlExtractor {
                         // These contain a call_expression_with_bareword child
                         // with a function_name field.
                         let callee_name =
-                            Self::find_child_by_kind(child, "call_expression_with_bareword")
+                            find_child_by_kind(child, "call_expression_with_bareword")
                                 .and_then(|ceb| ceb.child_by_field_name("function_name"))
                                 .map(|n| state.node_text(n));
 
@@ -569,7 +514,7 @@ impl PerlExtractor {
                         }
                         // Also check for qualified calls (e.g., main::log_message)
                         if let Some(ceb) =
-                            Self::find_child_by_kind(child, "call_expression_with_bareword")
+                            find_child_by_kind(child, "call_expression_with_bareword")
                         {
                             if let Some(pkg) = ceb.child_by_field_name("package_name") {
                                 let pkg_name = state.node_text(pkg);
@@ -689,34 +634,6 @@ impl PerlExtractor {
                 | "ref"
                 | "bless"
         )
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

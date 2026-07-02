@@ -195,7 +195,7 @@ mod tests {
         )
         .unwrap();
         // Need at least one project file to satisfy the detect() check.
-        fs::write(dir.path().join("dummy.csproj"), r#"<Project />"#).unwrap();
+        fs::write(dir.path().join("dummy.csproj"), r"<Project />").unwrap();
         let ws = parse(dir.path()).unwrap();
         assert_eq!(ws.patches.len(), 2);
         assert!(ws.patches.iter().any(|p| p.name == "xunit"));

@@ -1,11 +1,9 @@
-use serde_json::Value;
 use tempfile::TempDir;
 use tokensave::agents::get_integration;
 use tokensave::agents::{DoctorCounters, HealthcheckContext, InstallContext, InstallScope};
 
-fn read_json(p: &std::path::Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
-}
+mod common;
+use common::read_json;
 
 #[test]
 fn codex_does_not_support_local() {

@@ -2,27 +2,11 @@ use std::path::Path;
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    expected_tool_perms, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    OpenCodeIntegration,
+    AgentIntegration, DoctorCounters, HealthcheckContext, OpenCodeIntegration,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn make_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    let contents = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&contents).unwrap()
-}
+mod common;
+use common::{make_install_ctx as make_ctx, read_json};
 
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     home.join(".config/opencode/opencode.json")

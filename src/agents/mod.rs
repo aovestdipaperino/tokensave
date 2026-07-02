@@ -1141,9 +1141,8 @@ pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>)
 
     match mode {
         GitHookMode::Default if atty_stdin() => HookAction::Prompt,
-        GitHookMode::Default => HookAction::Skip,
+        GitHookMode::Default | GitHookMode::No => HookAction::Skip,
         GitHookMode::Yes => HookAction::Install,
-        GitHookMode::No => HookAction::Skip,
     }
 }
 

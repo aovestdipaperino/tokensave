@@ -3,6 +3,7 @@
 /// Parses Dockerfile source files and emits nodes and edges for the code graph.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::extraction::ts_state::find_child_by_kind;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::types::{
@@ -186,7 +187,7 @@ impl DockerfileExtractor {
         let alias = node.child_by_field_name("as").map(|n| state.node_text(n));
 
         // Get the image spec text.
-        let image_spec = Self::find_child_by_kind(node, "image_spec")
+        let image_spec = find_child_by_kind(node, "image_spec")
             .map(|n| state.node_text(n))
             .unwrap_or_default();
 
@@ -624,23 +625,6 @@ impl DockerfileExtractor {
     // ----------------------------
     // Helper methods
     // ----------------------------
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
 
     /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {

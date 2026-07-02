@@ -193,7 +193,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("pom.xml"),
-            r#"<project>
+            r"<project>
   <artifactId>parent</artifactId>
   <dependencyManagement>
     <dependencies>
@@ -204,7 +204,7 @@ mod tests {
       </dependency>
     </dependencies>
   </dependencyManagement>
-</project>"#,
+</project>",
         )
         .unwrap();
         let ws = parse(dir.path()).unwrap();

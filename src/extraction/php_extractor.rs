@@ -1,73 +1,18 @@
 /// Tree-sitter based PHP source code extractor.
 ///
 /// Parses PHP source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PHP_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from PHP source files using tree-sitter.
 pub struct PhpExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of class nesting. > 0 means we are inside a class/interface/trait.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl PhpExtractor {
     /// Extract code graph nodes and edges from a PHP source file.
@@ -82,7 +27,7 @@ impl PhpExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl PhpExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -176,7 +121,7 @@ impl PhpExtractor {
 
     /// Extract a top-level function definition.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -235,14 +180,14 @@ impl PhpExtractor {
         Self::extract_annotations(state, node, &id);
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
 
     /// Extract a class method declaration.
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::extract_visibility(state, node);
@@ -301,14 +246,14 @@ impl PhpExtractor {
         Self::extract_annotations(state, node, &id);
 
         // Extract call sites from the method body.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
 
     /// Extract a class declaration.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -372,7 +317,7 @@ impl PhpExtractor {
         // Visit class body members.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.class_depth -= 1;
@@ -381,7 +326,7 @@ impl PhpExtractor {
 
     /// Extract an interface declaration.
     fn visit_interface(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -438,7 +383,7 @@ impl PhpExtractor {
         // Visit interface body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.class_depth -= 1;
@@ -447,7 +392,7 @@ impl PhpExtractor {
 
     /// Extract a trait declaration.
     fn visit_trait(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -504,7 +449,7 @@ impl PhpExtractor {
         // Visit trait body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.class_depth -= 1;
@@ -513,7 +458,7 @@ impl PhpExtractor {
 
     /// Extract an enum declaration.
     fn visit_enum(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -570,7 +515,7 @@ impl PhpExtractor {
         // Visit enum body for cases.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "enum_declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "enum_declaration_list") {
             Self::visit_enum_body(state, body);
         }
         state.class_depth -= 1;
@@ -598,7 +543,7 @@ impl PhpExtractor {
 
     /// Extract an enum case as an `EnumVariant`.
     fn visit_enum_case(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -652,7 +597,7 @@ impl PhpExtractor {
 
     /// Extract a namespace definition.
     fn visit_namespace(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "namespace_name")
+        let name = find_child_by_kind(node, "namespace_name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -707,7 +652,7 @@ impl PhpExtractor {
 
         // Visit namespace body (braced namespace) or siblings (unbraced).
         state.node_stack.push((name.clone(), id));
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::visit_children(state, body);
         }
         state.node_stack.pop();
@@ -742,8 +687,8 @@ impl PhpExtractor {
 
     /// Extract a single use clause (e.g., `Foo\Bar as Baz`).
     fn visit_use_clause(state: &mut ExtractionState, clause: TsNode<'_>, use_node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(clause, "qualified_name")
-            .or_else(|| Self::find_child_by_kind(clause, "name"))
+        let name = find_child_by_kind(clause, "qualified_name")
+            .or_else(|| find_child_by_kind(clause, "name"))
             .map_or_else(|| state.node_text(clause), |n| state.node_text(n));
         Self::create_use_node(state, &name, use_node);
     }
@@ -751,7 +696,7 @@ impl PhpExtractor {
     /// Extract a grouped use declaration (e.g., `use Foo\{Bar, Baz}`).
     fn visit_use_group(state: &mut ExtractionState, group: TsNode<'_>, use_node: TsNode<'_>) {
         // The group has a prefix and individual clauses.
-        let prefix = Self::find_child_by_kind(group, "namespace_name")
+        let prefix = find_child_by_kind(group, "namespace_name")
             .map(|n| state.node_text(n))
             .unwrap_or_default();
 
@@ -760,8 +705,8 @@ impl PhpExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "namespace_use_clause" {
-                    let item = Self::find_child_by_kind(child, "name")
-                        .or_else(|| Self::find_child_by_kind(child, "qualified_name"))
+                    let item = find_child_by_kind(child, "name")
+                        .or_else(|| find_child_by_kind(child, "qualified_name"))
                         .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                     let full_name = if prefix.is_empty() {
                         item
@@ -858,7 +803,7 @@ impl PhpExtractor {
 
     /// Extract a single const element.
     fn visit_const_element(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "name")
+        let name = find_child_by_kind(node, "name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -921,7 +866,7 @@ impl PhpExtractor {
                 let child = cursor.node();
                 if child.kind() == "property_element" || child.kind() == "variable_name" {
                     let name = if child.kind() == "property_element" {
-                        Self::find_child_by_kind(child, "variable_name")
+                        find_child_by_kind(child, "variable_name")
                             .map_or_else(|| state.node_text(child), |n| state.node_text(n))
                     } else {
                         state.node_text(child)
@@ -1014,7 +959,7 @@ impl PhpExtractor {
 
     /// Extract the visibility modifier from a node (looks for `visibility_modifier` child).
     fn extract_visibility(state: &ExtractionState, node: TsNode<'_>) -> Visibility {
-        if let Some(vis_node) = Self::find_child_by_kind(node, "visibility_modifier") {
+        if let Some(vis_node) = find_child_by_kind(node, "visibility_modifier") {
             let text = state.node_text(vis_node);
             match text.trim() {
                 "protected" | "private" => Visibility::Private,
@@ -1029,9 +974,9 @@ impl PhpExtractor {
     /// Extract base class from a class declaration (extends clause).
     fn extract_class_extends(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         // Look for base_clause child containing a qualified_name or name.
-        if let Some(base_clause) = Self::find_child_by_kind(node, "base_clause") {
-            let base_name = Self::find_child_by_kind(base_clause, "qualified_name")
-                .or_else(|| Self::find_child_by_kind(base_clause, "name"))
+        if let Some(base_clause) = find_child_by_kind(node, "base_clause") {
+            let base_name = find_child_by_kind(base_clause, "qualified_name")
+                .or_else(|| find_child_by_kind(base_clause, "name"))
                 .map(|n| state.node_text(n));
             if let Some(name) = base_name {
                 let line = base_clause.start_position().row as u32;
@@ -1050,7 +995,7 @@ impl PhpExtractor {
 
     /// Extract implemented interfaces from a class declaration (implements clause).
     fn extract_class_implements(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(impl_list) = Self::find_child_by_kind(node, "class_implements") {
+        if let Some(impl_list) = find_child_by_kind(node, "class_implements") {
             let mut cursor = impl_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -1079,7 +1024,7 @@ impl PhpExtractor {
     /// Extract the function/method signature (everything up to the body).
     fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         // Use the compound_statement body's start byte to find where the body begins.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             let text = state.node_text(node);
             let body_offset = body.start_byte() - node.start_byte();
             if body_offset <= text.len() {
@@ -1092,7 +1037,7 @@ impl PhpExtractor {
 
     /// Extract the class signature (class Name extends Base implements Iface).
     fn extract_class_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             let text = state.node_text(node);
             let body_offset = body.start_byte() - node.start_byte();
             if body_offset <= text.len() {
@@ -1352,43 +1297,15 @@ impl PhpExtractor {
     /// Extract the name from a PHP attribute node.
     fn extract_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // PHP attributes have a "name" or "qualified_name" child.
-        if let Some(name) = Self::find_child_by_kind(node, "name") {
+        if let Some(name) = find_child_by_kind(node, "name") {
             return state.node_text(name);
         }
-        if let Some(qn) = Self::find_child_by_kind(node, "qualified_name") {
+        if let Some(qn) = find_child_by_kind(node, "qualified_name") {
             return state.node_text(qn);
         }
         // Fallback: full text before '('
         let text = state.node_text(node);
         text.split('(').next().unwrap_or(&text).trim().to_string()
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

@@ -52,8 +52,10 @@ fn test_default_last_indexed_version_is_empty() {
 #[test]
 fn test_last_indexed_version_persists() {
     let dir = TempDir::new().unwrap();
-    let mut config = TokenSaveConfig::default();
-    config.last_indexed_version = "7.0.0".to_string();
+    let config = TokenSaveConfig {
+        last_indexed_version: "7.0.0".to_string(),
+        ..TokenSaveConfig::default()
+    };
     save_config(dir.path(), &config).unwrap();
     let loaded = load_config(dir.path()).unwrap();
     assert_eq!(loaded.last_indexed_version, "7.0.0");

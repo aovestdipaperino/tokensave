@@ -2,65 +2,18 @@
 ///
 /// Parses WGSL source files and emits nodes and edges for the code graph.
 /// Handles `.wgsl` files.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, C_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from WGSL source files using tree-sitter.
 pub struct WgslExtractor;
-
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl WgslExtractor {
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
@@ -71,7 +24,7 @@ impl WgslExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -113,7 +66,7 @@ impl WgslExtractor {
         Self::visit_children(&mut state, root);
 
         state.node_stack.pop();
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     fn parse_source(source: &str) -> Result<Tree, String> {
@@ -155,10 +108,10 @@ impl WgslExtractor {
     // -------------------------------------------------------
 
     fn visit_function_decl(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(header) = Self::find_child_by_kind(node, "function_header") else {
+        let Some(header) = find_child_by_kind(node, "function_header") else {
             return;
         };
-        let name = Self::find_child_by_kind(header, "ident")
+        let name = find_child_by_kind(header, "ident")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Collect stage attributes (@vertex, @fragment, @compute).
@@ -177,7 +130,7 @@ impl WgslExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
 
-        let body = Self::find_child_by_kind(node, "compound_statement");
+        let body = find_child_by_kind(node, "compound_statement");
         let metrics = body
             .map(|b| count_complexity(b, &C_COMPLEXITY, &state.source))
             .unwrap_or_default();
@@ -245,7 +198,7 @@ impl WgslExtractor {
                 let child = cursor.node();
                 if child.kind() == "attribute" {
                     // attribute children: "@", ident, optional "(…)"
-                    if let Some(ident) = Self::find_child_by_kind(child, "ident") {
+                    if let Some(ident) = find_child_by_kind(child, "ident") {
                         attrs.push(format!("@{}", state.node_text(ident)));
                     }
                 }
@@ -262,7 +215,7 @@ impl WgslExtractor {
     // -------------------------------------------------------
 
     fn visit_struct_decl(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "ident")
+        let name = find_child_by_kind(node, "ident")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -314,7 +267,7 @@ impl WgslExtractor {
         }
 
         // Visit struct members.
-        if let Some(body) = Self::find_child_by_kind(node, "struct_body_decl") {
+        if let Some(body) = find_child_by_kind(node, "struct_body_decl") {
             state.node_stack.push((name, id));
             Self::visit_struct_members(state, body);
             state.node_stack.pop();
@@ -338,7 +291,7 @@ impl WgslExtractor {
 
     fn visit_struct_member(state: &mut ExtractionState, node: TsNode<'_>) {
         // struct_member: attribute* ident ":" type_decl
-        let Some(ident) = Self::find_child_by_kind(node, "ident") else {
+        let Some(ident) = find_child_by_kind(node, "ident") else {
             return;
         };
         let name = state.node_text(ident);
@@ -401,7 +354,7 @@ impl WgslExtractor {
         // variable_decl: "var" variable_qualifier? variable_ident_decl
         // variable_ident_decl: ident (":" type_decl)?
         let name = Self::find_descendant_by_kind(node, "variable_ident_decl")
-            .and_then(|vid| Self::find_child_by_kind(vid, "ident"))
+            .and_then(|vid| find_child_by_kind(vid, "ident"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         Self::emit_variable_node(state, node, name, NodeKind::Static);
@@ -410,8 +363,8 @@ impl WgslExtractor {
     fn visit_global_constant(state: &mut ExtractionState, node: TsNode<'_>) {
         // global_constant_decl: attribute* ("const"|"override") (ident | variable_ident_decl) "=" expression
         let name = Self::find_descendant_by_kind(node, "variable_ident_decl")
-            .and_then(|vid| Self::find_child_by_kind(vid, "ident"))
-            .or_else(|| Self::find_child_by_kind(node, "ident"))
+            .and_then(|vid| find_child_by_kind(vid, "ident"))
+            .or_else(|| find_child_by_kind(node, "ident"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         Self::emit_variable_node(state, node, name, NodeKind::Const);
@@ -479,7 +432,7 @@ impl WgslExtractor {
 
     fn visit_type_alias(state: &mut ExtractionState, node: TsNode<'_>) {
         // type_alias_decl: "type" ident "=" type_decl
-        let name = Self::find_child_by_kind(node, "ident")
+        let name = find_child_by_kind(node, "ident")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -568,22 +521,6 @@ impl WgslExtractor {
     // Utility helpers
     // -------------------------------------------------------
 
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
     fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -601,16 +538,6 @@ impl WgslExtractor {
             }
         }
         None
-    }
-
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 
