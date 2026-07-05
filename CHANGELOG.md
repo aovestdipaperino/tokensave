@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Transparent branch tracking — auto-track the current git branch when it is untracked.** Previously an untracked branch fell back to the nearest-ancestor DB (queries still worked, but the index was the ancestor's and the branch needed a manual `tokensave branch add`). Now: the `post-checkout` git hook runs `tokensave branch add` on a branch checkout (no-op if already tracked/default), and `TokenSave::open` best-effort auto-tracks an untracked branch by copying the ancestor DB (no sync — the `post-commit` hook keeps it fresh). Off by default; opt in via the `auto_track` config field or the `TOKENSAVE_AUTO_TRACK` env var. Never fails `open()`.
+
 ### Fixed
 - **`tokensave_context` preserves exhaustive qualified-expression matches.** Source-shaped task terms and keywords such as `Type::Variant` now seed their exact literal-hit enclosing symbols ahead of generic semantic matches. These exact seeds may exceed the small semantic `search_limit` when they fit within `max_nodes`, while still respecting path filters, query-ignore rules, explicit node exclusions, and the global context budget.
 - **Production paths named `test` can be classified as source code.** Add `source_path_overrides` globs to `.tokensave/config.json` when a product route or feature directory matches the default test-path heuristic. Explicit markers such as `__tests__/`, `*.test.*`, and `*.spec.*` remain tests inside overridden paths.
