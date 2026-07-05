@@ -337,16 +337,23 @@ pub(crate) async fn query_kind_counts(
         message: format!("failed to read kind count row: {e}"),
         operation: "get_stats".to_string(),
     })? {
-        let kind: String = row.get(0).map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read kind: {e}"),
-            operation: "get_stats".to_string(),
-        })?;
+        // Coalesce a NULL `kind` to "unknown" instead of hard-failing the whole
+        // aggregate. get_stats is a read-only aggregate the monitor depends on;
+        // one malformed row must not blind it (see nodes_by_kind/edges_by_kind).
+        let kind: String = row
+            .get::<Option<String>>(0)
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read kind: {e}"),
+                operation: "get_stats".to_string(),
+            })?
+            .unwrap_or_else(|| "unknown".to_string());
         let count: i64 = row.get(1).map_err(|e| TokenSaveError::Database {
             message: format!("failed to read count: {e}"),
             operation: "get_stats".to_string(),
         })?;
         if count > 0 {
-            map.insert(kind, count as u64);
+            // Merge in case NULL and a literal "unknown" both appear.
+            *map.entry(kind).or_insert(0) += count as u64;
         }
     }
     Ok(map)
@@ -385,6 +392,7 @@ pub(crate) async fn query_scalar_i64(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::display_language_for_path;
 
@@ -416,5 +424,32 @@ mod tests {
     fn extension_match_is_case_insensitive() {
         assert_eq!(display_language_for_path("Foo.RS"), "Rust");
         assert_eq!(display_language_for_path("Foo.PY"), "Python");
+    }
+
+    /// Regression: a single NULL `kind` row used to abort the whole `get_stats`
+    /// aggregate (`failed to read kind: Null value`), blinding the monitor
+    /// (0 savings shown) on untracked branches that fall back to an
+    /// older-schema parent DB. It must coalesce to "unknown" instead.
+    #[tokio::test]
+    async fn query_kind_counts_coalesces_null_kind() {
+        let db = libsql::Builder::new_local(":memory:")
+            .build()
+            .await
+            .expect("build in-memory db");
+        let conn = db.connect().expect("connect");
+        // No NOT NULL constraint here, mirroring an older-schema attached DB.
+        conn.execute("CREATE TABLE t (kind TEXT)", ())
+            .await
+            .unwrap();
+        conn.execute("INSERT INTO t (kind) VALUES ('function'), (NULL)", ())
+            .await
+            .unwrap();
+
+        let counts = super::query_kind_counts(&conn, "SELECT kind, COUNT(*) FROM t GROUP BY kind")
+            .await
+            .expect("get_stats must not hard-fail on a NULL kind row");
+
+        assert_eq!(counts.get("function"), Some(&1));
+        assert_eq!(counts.get("unknown"), Some(&1), "NULL kind → \"unknown\"");
     }
 }
