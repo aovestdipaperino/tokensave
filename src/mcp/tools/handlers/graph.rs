@@ -431,24 +431,35 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
     let node_id = require_node_id(&args)?;
     ensure_node_exists(cg, node_id).await?;
 
+    // Default to direct callers only. `get_callers` is a transitive BFS, so a
+    // larger default silently mixed 2-/3-hop callers into the same flat list
+    // with no way to tell them apart (#171). Callers who want transitive
+    // results opt in with max_depth > 1 and read the per-item `depth`.
     let max_depth = args
         .get("max_depth")
         .and_then(serde_json::Value::as_u64)
-        .map_or(3, |v| v.min(10) as usize);
+        .map_or(1, |v| v.clamp(1, 10) as usize);
 
-    let results = cg.get_callers(node_id, max_depth).await?;
+    let results = cg.get_callers_with_depth(node_id, max_depth).await?;
 
-    let touched_files = unique_file_paths(results.iter().map(|(n, _)| n.file_path.as_str()));
+    let touched_files = unique_file_paths(results.iter().map(|(n, _, _)| n.file_path.as_str()));
 
     let items: Vec<Value> = results
         .iter()
-        .map(|(node, edge)| {
+        .map(|(node, edge, depth)| {
             json!({
                 "node_id": node.id,
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                // The call-site line (where the caller invokes the target),
+                // taken from the edge. Older edges predating call-site tracking
+                // have no line; fall back to the caller's declaration line.
+                "line": edge.line.unwrap_or(node.start_line),
+                // The caller's own declaration line, kept so both are available.
+                "def_line": node.start_line,
+                // BFS hop count: 1 = direct caller, 2+ = transitive.
+                "depth": depth,
                 "edge_kind": edge.kind.as_str(),
             })
         })

@@ -263,9 +263,28 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows incoming `Calls` edges to find callers transitively.
     pub async fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        Ok(self
+            .get_callers_with_depth(node_id, max_depth)
+            .await?
+            .into_iter()
+            .map(|(node, edge, _depth)| (node, edge))
+            .collect())
+    }
+
+    /// Like [`get_callers`], but each result carries the BFS depth at which the
+    /// caller was reached: `1` for a direct caller, `2` for a caller of a direct
+    /// caller, and so on. Lets callers distinguish direct from transitive
+    /// results instead of flattening every hop into one undifferentiated list.
+    ///
+    /// [`get_callers`]: Self::get_callers
+    pub async fn get_callers_with_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize)>> {
         debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
         debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
-        let mut results: Vec<(Node, Edge)> = Vec::new();
+        let mut results: Vec<(Node, Edge, usize)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
@@ -307,7 +326,9 @@ impl<'a> GraphTraverser<'a> {
                 if let Some(caller_node) = caller_map.get(caller_id) {
                     visited.insert(caller_id.clone());
                     queue.push_back((caller_id.clone(), depth + 1));
-                    results.push((caller_node.clone(), edge));
+                    // `depth` is the hop count of `current_id`; the caller we
+                    // just found is one hop further out.
+                    results.push((caller_node.clone(), edge, depth + 1));
                 }
             }
         }
