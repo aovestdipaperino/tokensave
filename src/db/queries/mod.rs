@@ -315,6 +315,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "bat" | "cmd" => "Batch",
         "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" => "GLSL",
         "qnt" => "Quint",
+        "gd" => "GDScript",
         _ => "Other",
     }
 }
@@ -418,6 +419,11 @@ mod tests {
         assert_eq!(display_language_for_path("Makefile"), "Makefile");
         assert_eq!(display_language_for_path("readme.txt"), "Other");
         assert_eq!(display_language_for_path("noext"), "Other");
+        assert_eq!(
+            display_language_for_path("player.gd"),
+            "GDScript",
+            "GDScript files must not fall into the Other bucket in `status`'s files_by_language"
+        );
     }
 
     #[test]

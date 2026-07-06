@@ -33,4 +33,18 @@ fn main() {
             .compile("tree_sitter_actionscript");
         println!("cargo::rerun-if-changed=vendor/tree-sitter-actionscript/src/parser.c");
     }
+
+    // Vendored GDScript grammar (tree-sitter-gdscript, PrestonKnopp).
+    // parser.c + scanner.c — the grammar has an external scanner.
+    if std::env::var("CARGO_FEATURE_LANG_GDSCRIPT").is_ok() {
+        let gdscript_dir = Path::new("vendor/tree-sitter-gdscript/src");
+        cc::Build::new()
+            .include(gdscript_dir)
+            .file(gdscript_dir.join("parser.c"))
+            .file(gdscript_dir.join("scanner.c"))
+            .warnings(false)
+            .compile("tree_sitter_gdscript");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-gdscript/src/parser.c");
+        println!("cargo::rerun-if-changed=vendor/tree-sitter-gdscript/src/scanner.c");
+    }
 }

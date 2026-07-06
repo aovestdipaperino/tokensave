@@ -58,6 +58,10 @@ pub(crate) fn kind_tier(kind: &NodeKind) -> u8 {
         // Proto definitions (feature-gated)
         #[cfg(feature = "lang-protobuf")]
         NodeKind::ProtoMessage | NodeKind::ProtoService | NodeKind::ProtoRpc => 0,
+        // GDScript signal declarations (feature-gated) — a definition, same
+        // tier as the closest analog, C#'s `NodeKind::Event`.
+        #[cfg(feature = "lang-gdscript")]
+        NodeKind::Signal => 0,
         // Tier 1: impl blocks — between definitions and references.
         NodeKind::Impl => 1,
         // Tier 2: values, macros, members of types.
@@ -130,6 +134,9 @@ pub(crate) fn kind_rank_bonus(kind: &NodeKind) -> f64 {
         // Proto definitions
         #[cfg(feature = "lang-protobuf")]
         NodeKind::ProtoMessage | NodeKind::ProtoService | NodeKind::ProtoRpc => 2.5,
+        // GDScript signal declarations (feature-gated)
+        #[cfg(feature = "lang-gdscript")]
+        NodeKind::Signal => 2.5,
         // Impl blocks (between defs and refs)
         NodeKind::Impl => 2.0,
         // Values, macros, preprocessor defs
