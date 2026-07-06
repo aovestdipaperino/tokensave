@@ -1129,6 +1129,68 @@ fn chain_repo_hook_snippet(hook_name: &str) -> String {
     )
 }
 
+/// Client-side git hooks that tokensave does **not** itself install, but whose
+/// per-repository copies would be silently disabled the moment tokensave claims
+/// a global `core.hooksPath` (issue #164 follow-up).
+///
+/// A global `core.hooksPath` makes git resolve **every** hook type from that one
+/// directory, with no fallback to `.git/hooks/`. The #164 fix only re-chained
+/// the two hooks tokensave owns (`post-commit`, `post-checkout`), so a repo's
+/// own `pre-commit`, `pre-push`, `commit-msg`, … (as delivered by
+/// `init.templateDir`, husky, pre-commit, lefthook, …) still stopped running.
+/// tokensave drops a pure forwarder for each of these so they keep firing.
+///
+/// `post-commit`/`post-checkout` are intentionally excluded — they are written
+/// separately with the chaining preamble **plus** tokensave's own action. The
+/// list is the client-side set from `githooks(5)`; server-side hooks
+/// (`pre-receive`, `update`, `post-receive`, `post-update`, `proc-receive`) and
+/// the config-driven `fsmonitor-watchman` are omitted.
+const FORWARDED_REPO_HOOKS: &[&str] = &[
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "pre-rebase",
+    "post-merge",
+    "pre-push",
+    "post-rewrite",
+    "pre-auto-gc",
+    "post-index-change",
+    "push-to-checkout",
+    "sendemail-validate",
+    "reference-transaction",
+];
+
+/// Install pure forwarders for every [`FORWARDED_REPO_HOOKS`] hook so that a
+/// repository's own hooks of those types keep running after tokensave claims a
+/// global `core.hooksPath`.
+///
+/// Only acts when tokensave owns the global hooks directory (it is claiming
+/// `core.hooksPath` right now, or the configured dir is tokensave's default),
+/// mirroring [`should_chain_repo_hooks`]; a user-managed `core.hooksPath` is
+/// left untouched. Each forwarder is written only when no file of that name
+/// already exists, so a hook the user placed in the directory — or a forwarder
+/// from a previous run — is never clobbered.
+fn install_repo_hook_forwarders(
+    hooks_dir: &Path,
+    claiming_hookspath: bool,
+    hooks_dir_is_default: bool,
+) {
+    if !(claiming_hookspath || hooks_dir_is_default) {
+        return;
+    }
+    for name in FORWARDED_REPO_HOOKS {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        write_global_hook(&path, &chain_repo_hook_snippet(name));
+    }
+}
+
 /// Whether the chaining preamble should be added to a global hook file.
 ///
 /// Chain only when tokensave owns the global hooks directory — either it
@@ -1390,6 +1452,12 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             checkout_path.display()
         );
     }
+
+    // Issue #164 follow-up: claiming a global core.hooksPath disables *every*
+    // hook type in each repo's .git/hooks/, not just the two tokensave owns.
+    // Drop pure forwarders for the remaining client-side hooks so a repo's own
+    // pre-commit / pre-push / commit-msg / … keep running.
+    install_repo_hook_forwarders(&hooks_dir, need_set_hookspath, hooks_dir_is_default);
 }
 
 /// Reads `core.hooksPath` from the global gitconfig files.
@@ -1815,6 +1883,64 @@ mod git_hook_tests {
 
         let array_shape = serde_json::json!([abs, "serve"]);
         assert_eq!(preserve_mcp_command(Some(&array_shape), "/new/bin"), abs);
+    }
+
+    #[test]
+    fn forwarded_hooks_cover_common_types_but_not_tokensave_owned() {
+        // The two hooks tokensave installs itself carry the chain preamble
+        // plus tokensave's action, so they must NOT be in the pure-forwarder
+        // list (that would double-write / conflict).
+        assert!(!FORWARDED_REPO_HOOKS.contains(&"post-commit"));
+        assert!(!FORWARDED_REPO_HOOKS.contains(&"post-checkout"));
+        // The high-value client-side hooks must be forwarded — these are where
+        // husky / pre-commit / lefthook live.
+        for h in ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"] {
+            assert!(
+                FORWARDED_REPO_HOOKS.contains(&h),
+                "{h} must be forwarded or a global hooksPath silently disables it"
+            );
+        }
+        // Server-side hooks are irrelevant to a client `core.hooksPath` and
+        // must not be written.
+        for h in ["pre-receive", "update", "post-receive", "proc-receive"] {
+            assert!(!FORWARDED_REPO_HOOKS.contains(&h));
+        }
+    }
+
+    #[test]
+    fn install_repo_hook_forwarders_writes_when_claiming_and_skips_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A hook the user already placed in the dir must be preserved verbatim.
+        let user_pre_commit = dir.path().join("pre-commit");
+        std::fs::write(&user_pre_commit, "#!/bin/sh\n# user's own\n").unwrap();
+
+        install_repo_hook_forwarders(dir.path(), true, true);
+
+        // Existing file untouched.
+        assert_eq!(
+            std::fs::read_to_string(&user_pre_commit).unwrap(),
+            "#!/bin/sh\n# user's own\n",
+            "an existing hook must never be clobbered"
+        );
+        // A forwarder was created for a type that had no file, and it chains
+        // to the repo's own hook of the same name.
+        let created = std::fs::read_to_string(dir.path().join("pre-push")).unwrap();
+        assert!(created.starts_with("#!/bin/sh\n"));
+        assert!(created.contains(HOOK_MARKER_CHAIN));
+        assert!(created.contains("/hooks/pre-push"));
+        assert!(created.contains("git rev-parse --git-dir"));
+    }
+
+    #[test]
+    fn install_repo_hook_forwarders_noop_for_user_managed_hookspath() {
+        // Not claiming, and the dir is not tokensave's default → user-managed
+        // core.hooksPath. tokensave must not write anything into it.
+        let dir = tempfile::tempdir().unwrap();
+        install_repo_hook_forwarders(dir.path(), false, false);
+        assert!(
+            !dir.path().join("pre-commit").exists(),
+            "must leave a user-managed hooksPath directory untouched"
+        );
     }
 
     #[test]
