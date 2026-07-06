@@ -1,73 +1,18 @@
 /// Tree-sitter based Ruby source code extractor.
 ///
 /// Parses Ruby source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, RUBY_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Ruby source files using tree-sitter.
 pub struct RubyExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of class/module nesting. > 0 means we are inside a class or module.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl RubyExtractor {
     /// Extract code graph nodes and edges from a Ruby source file.
@@ -82,7 +27,7 @@ impl RubyExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl RubyExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -175,7 +120,7 @@ impl RubyExtractor {
     /// `is_singleton` controls whether this becomes a Method regardless of class depth
     /// (singleton methods are always `NodeKind::Method`).
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>, is_singleton: bool) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0 || is_singleton;
@@ -309,7 +254,7 @@ impl RubyExtractor {
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
         // In tree-sitter-ruby, class node children include: "class", constant (name), superclass?, body
-        let name = Self::find_child_by_kind(node, "constant")
+        let name = find_child_by_kind(node, "constant")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -370,7 +315,7 @@ impl RubyExtractor {
         // Visit class body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "body_statement") {
+        if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
         state.class_depth -= 1;
@@ -379,7 +324,7 @@ impl RubyExtractor {
 
     /// Extract a module definition.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "constant")
+        let name = find_child_by_kind(node, "constant")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -444,7 +389,7 @@ impl RubyExtractor {
         // Visit module body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "body_statement") {
+        if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
         state.class_depth -= 1;
@@ -549,8 +494,8 @@ impl RubyExtractor {
                     if child.kind() == "superclass" {
                         // The superclass node contains "< ConstantName"
                         // Find the constant child inside superclass
-                        if let Some(const_node) = Self::find_child_by_kind(child, "constant")
-                            .or_else(|| Self::find_child_by_kind(child, "scope_resolution"))
+                        if let Some(const_node) = find_child_by_kind(child, "constant")
+                            .or_else(|| find_child_by_kind(child, "scope_resolution"))
                         {
                             let base_name = state.node_text(const_node);
                             let line = const_node.start_position().row as u32;
@@ -711,34 +656,6 @@ impl RubyExtractor {
                     break;
                 }
             }
-        }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }

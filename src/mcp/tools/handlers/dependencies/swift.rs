@@ -1,4 +1,4 @@
-//! Swift / SwiftPM ecosystem parser — `Package.swift` (best-effort regex)
+//! Swift / `SwiftPM` ecosystem parser — `Package.swift` (best-effort regex)
 //! and `Package.resolved` lockfile.
 //!
 //! `Package.swift` is real Swift source — we don't evaluate it. The

@@ -1,73 +1,18 @@
 /// Tree-sitter based Zig source code extractor.
 ///
 /// Parses Zig source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, ZIG_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Zig source files using tree-sitter.
 pub struct ZigExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of struct/enum/union nesting. > 0 means we are inside a type body.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl ZigExtractor {
     /// Extract code graph nodes and edges from a Zig source file.
@@ -82,7 +27,7 @@ impl ZigExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl ZigExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -177,7 +122,7 @@ impl ZigExtractor {
     /// We dispatch based on the value child.
     fn visit_variable_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // Get the name from the first identifier child.
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Check what the value is: struct, enum, union, @import, or plain const.
@@ -243,7 +188,7 @@ impl ZigExtractor {
 
     /// Check if a `builtin_function` node is @import.
     fn is_import_call(state: &ExtractionState, node: TsNode<'_>) -> bool {
-        Self::find_child_by_kind(node, "builtin_identifier")
+        find_child_by_kind(node, "builtin_identifier")
             .is_some_and(|n| state.node_text(n) == "@import")
     }
 
@@ -317,9 +262,9 @@ impl ZigExtractor {
     /// Looks for the string child inside the arguments: `@import("std")` -> `"std"`.
     fn extract_import_module(state: &ExtractionState, builtin_node: TsNode<'_>) -> Option<String> {
         // arguments -> string -> string_content
-        let args = Self::find_child_by_kind(builtin_node, "arguments")?;
-        let string_node = Self::find_child_by_kind(args, "string")?;
-        let content = Self::find_child_by_kind(string_node, "string_content")?;
+        let args = find_child_by_kind(builtin_node, "arguments")?;
+        let string_node = find_child_by_kind(args, "string")?;
+        let content = find_child_by_kind(string_node, "string_content")?;
         let text = state.node_text(content);
         if text.is_empty() {
             None
@@ -762,8 +707,8 @@ impl ZigExtractor {
     /// Extract a test declaration: `test "name" { ... }`.
     fn visit_test(state: &mut ExtractionState, node: TsNode<'_>) {
         // The test name is in a string child.
-        let name = Self::find_child_by_kind(node, "string")
-            .and_then(|s| Self::find_child_by_kind(s, "string_content"))
+        let name = find_child_by_kind(node, "string")
+            .and_then(|s| find_child_by_kind(s, "string_content"))
             .map_or_else(|| "<anonymous test>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -962,38 +907,10 @@ impl ZigExtractor {
         match node.kind() {
             "builtin_function" => {
                 // @sqrt, @as, etc.
-                Self::find_child_by_kind(node, "builtin_identifier")
+                find_child_by_kind(node, "builtin_identifier")
                     .map_or_else(|| state.node_text(node), |n| state.node_text(n))
             }
             _ => state.node_text(node),
-        }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }

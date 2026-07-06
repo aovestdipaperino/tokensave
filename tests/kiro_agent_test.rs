@@ -15,37 +15,9 @@ fn make_ctx(home: &Path) -> InstallContext {
     }
 }
 
-fn read_json(path: &Path) -> serde_json::Value {
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
-
-fn file_resource_uri(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
-    let path = percent_encode_file_uri_path(&path);
-    if path.starts_with('/') {
-        format!("file://{path}")
-    } else {
-        format!("file:///{path}")
-    }
-}
-
-fn percent_encode_file_uri_path(path: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push('%');
-                encoded.push(HEX[(byte >> 4) as usize] as char);
-                encoded.push(HEX[(byte & 0x0F) as usize] as char);
-            }
-        }
-    }
-    encoded
-}
+mod common;
+use common::read_json;
+use tokensave::agents::kiro::file_resource_uri;
 
 fn assert_hook(
     agent: &serde_json::Value,

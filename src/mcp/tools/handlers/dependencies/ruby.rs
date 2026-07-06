@@ -183,7 +183,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("Gemfile"),
-            r#"
+            r"
 source 'https://rubygems.org'
 
 gem 'rails', '~> 7.1'
@@ -197,7 +197,7 @@ end
 group :production do
   gem 'puma'
 end
-"#,
+",
         )
         .unwrap();
         let ws = parse(dir.path()).unwrap();

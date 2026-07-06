@@ -129,16 +129,36 @@ enum PatternShape {
 
 /// `PreToolUse` hook handler for Claude Code's Agent / Grep / Bash matchers.
 ///
-/// Reads the `TOOL_INPUT` environment variable (JSON), inspects the input,
-/// and prints a JSON decision to stdout. Blocks Explore agents,
-/// exploration-style prompts, and symbol-shaped grep/Grep calls against
-/// indexed code files — directing Claude to use tokensave MCP tools instead.
+/// Claude Code delivers the hook event as JSON on **stdin** with the tool
+/// arguments nested under `tool_input`; it sets no `TOOL_INPUT` env var.
+/// Reads stdin, inspects the input, and prints a JSON decision to stdout.
+/// Blocks Explore agents, exploration-style prompts, and symbol-shaped
+/// grep/Grep calls against indexed code files — directing Claude to use
+/// tokensave MCP tools instead. Falls back to the `TOOL_INPUT` env var when
+/// stdin is empty.
 pub fn hook_pre_tool_use() {
-    let tool_input = std::env::var("TOOL_INPUT").unwrap_or_default();
-    let decision = evaluate_hook_decision(&tool_input);
+    let raw = read_stdin_to_string();
+    let decision = if raw.trim().is_empty() {
+        evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
+    } else {
+        evaluate_claude_pre_tool_use(&raw)
+    };
     if !decision.is_empty() {
         println!("{decision}");
     }
+}
+
+/// Parse Claude Code's `PreToolUse` stdin JSON and return the decision string.
+///
+/// Unwraps the nested `tool_input` object before delegating to
+/// [`evaluate_hook_decision`]. If the payload isn't the expected wrapper shape,
+/// falls back to treating `raw` as a flat tool-input object.
+pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
+    let tool_input = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("tool_input").cloned())
+        .map_or_else(|| raw.to_string(), |ti| ti.to_string());
+    evaluate_hook_decision(&tool_input)
 }
 
 /// Pure decision logic for the `PreToolUse` hook, using the real process

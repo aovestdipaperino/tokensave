@@ -3,6 +3,9 @@ use std::path::Path;
 use tempfile::TempDir;
 use tokensave::agents::*;
 
+mod common;
+use common::{make_install_ctx, make_install_ctx_with_real_bin};
+
 // ---------------------------------------------------------------------------
 // 1. Registry tests
 // ---------------------------------------------------------------------------
@@ -10,7 +13,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 17);
+    assert_eq!(all.len(), 18);
 }
 
 #[test]
@@ -23,6 +26,7 @@ fn test_available_integrations() {
     assert!(ids.contains(&"qwen"));
     assert!(ids.contains(&"opencode"));
     assert!(ids.contains(&"cursor"));
+    assert!(ids.contains(&"droid"));
     assert!(ids.contains(&"zed"));
     assert!(ids.contains(&"cline"));
     assert!(ids.contains(&"roo-code"));
@@ -34,7 +38,7 @@ fn test_available_integrations() {
     assert!(ids.contains(&"grok"));
     assert!(ids.contains(&"pi"));
     assert!(ids.contains(&"qwen"));
-    assert_eq!(ids.len(), 17);
+    assert_eq!(ids.len(), 18);
 }
 
 #[test]
@@ -47,6 +51,7 @@ fn test_get_integration_valid() {
         "qwen",
         "copilot",
         "cursor",
+        "droid",
         "zed",
         "cline",
         "roo-code",
@@ -93,6 +98,7 @@ fn test_agent_names_are_human_readable() {
         ("qwen", "Qwen Code"),
         ("opencode", "OpenCode"),
         ("cursor", "Cursor"),
+        ("droid", "Factory Droid"),
         ("zed", "Zed"),
         ("cline", "Cline"),
         ("roo-code", "Roo Code"),
@@ -113,15 +119,6 @@ fn test_agent_names_are_human_readable() {
 // ---------------------------------------------------------------------------
 // 3. Install / config creation tests (with tempdir)
 // ---------------------------------------------------------------------------
-
-fn make_install_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
 
 #[test]
 fn test_claude_install_creates_config() {
@@ -1153,26 +1150,6 @@ fn test_vibe_install_then_uninstall() {
 // ---------------------------------------------------------------------------
 // 5. Healthcheck with tempdir
 // ---------------------------------------------------------------------------
-
-/// Creates a fake tokensave binary in a temp dir and returns the path string.
-/// This allows healthchecks to verify binary existence.
-fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
-    let bin_dir = home.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bin_path = bin_dir.join("tokensave");
-    std::fs::write(&bin_path, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
 
 #[test]
 fn test_healthcheck_claude_clean_install() {

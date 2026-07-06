@@ -1,70 +1,18 @@
 /// Tree-sitter based Fortran source code extractor.
 ///
 /// Parses Fortran source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, FORTRAN_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Fortran source files using tree-sitter.
 pub struct FortranExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl FortranExtractor {
     /// Extract code graph nodes and edges from a Fortran source file.
@@ -76,7 +24,7 @@ impl FortranExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -121,7 +69,7 @@ impl FortranExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -708,7 +656,7 @@ impl FortranExtractor {
 
     /// Extract a use statement.
     fn visit_use_statement(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "module_name")
+        let name = find_child_by_kind(node, "module_name")
             .map_or_else(|| "<unknown>".to_string(), |n| state.node_text(n));
 
         let start_line = node.start_position().row as u32;
@@ -768,23 +716,23 @@ impl FortranExtractor {
     /// Find the module name from a module node.
     /// Structure: module -> `module_statement` -> name
     fn find_module_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        Self::find_child_by_kind(node, "module_statement")
-            .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
+        find_child_by_kind(node, "module_statement")
+            .and_then(|stmt| find_child_by_kind(stmt, "name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the program name from a program node.
     /// Structure: program -> `program_statement` -> name
     fn find_program_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        Self::find_child_by_kind(node, "program_statement")
-            .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
+        find_child_by_kind(node, "program_statement")
+            .and_then(|stmt| find_child_by_kind(stmt, "name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Find the subroutine name from a subroutine node.
     /// Structure: subroutine -> `subroutine_statement` (field name="name")
     fn find_subroutine_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        Self::find_child_by_kind(node, "subroutine_statement")
+        find_child_by_kind(node, "subroutine_statement")
             .and_then(|stmt| stmt.child_by_field_name("name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
@@ -792,7 +740,7 @@ impl FortranExtractor {
     /// Find the function name from a function node.
     /// Structure: function -> `function_statement` (field name="name")
     fn find_function_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        Self::find_child_by_kind(node, "function_statement")
+        find_child_by_kind(node, "function_statement")
             .and_then(|stmt| stmt.child_by_field_name("name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
@@ -803,14 +751,14 @@ impl FortranExtractor {
         state: &ExtractionState,
         node: TsNode<'_>,
     ) -> (String, Option<String>) {
-        let stmt = Self::find_child_by_kind(node, "derived_type_statement");
+        let stmt = find_child_by_kind(node, "derived_type_statement");
         let name = stmt
-            .and_then(|s| Self::find_child_by_kind(s, "type_name"))
+            .and_then(|s| find_child_by_kind(s, "type_name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let base_type = stmt
             .and_then(|s| s.child_by_field_name("base"))
-            .and_then(|base_spec| Self::find_child_by_kind(base_spec, "identifier"))
+            .and_then(|base_spec| find_child_by_kind(base_spec, "identifier"))
             .map(|n| state.node_text(n));
 
         (name, base_type)
@@ -819,8 +767,8 @@ impl FortranExtractor {
     /// Find the interface name.
     /// Structure: interface -> `interface_statement` -> name
     fn find_interface_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        Self::find_child_by_kind(node, "interface_statement")
-            .and_then(|stmt| Self::find_child_by_kind(stmt, "name"))
+        find_child_by_kind(node, "interface_statement")
+            .and_then(|stmt| find_child_by_kind(stmt, "name"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
@@ -935,34 +883,6 @@ impl FortranExtractor {
                     break;
                 }
             }
-        }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }

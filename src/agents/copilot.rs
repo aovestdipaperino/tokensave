@@ -168,9 +168,13 @@ fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Resul
             return Err(e);
         }
     };
+    let bin = crate::agents::preserve_mcp_command(
+        settings.pointer("/mcp/servers/tokensave/command"),
+        tokensave_bin,
+    );
     settings["mcp"]["servers"]["tokensave"] = json!({
         "type": "stdio",
-        "command": tokensave_bin,
+        "command": bin,
         "args": ["serve"]
     });
 
@@ -198,9 +202,13 @@ fn install_cli_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<(
             return Err(e);
         }
     };
+    let bin = crate::agents::preserve_mcp_command(
+        settings.pointer("/mcpServers/tokensave/command"),
+        tokensave_bin,
+    );
     settings["mcpServers"]["tokensave"] = json!({
         "type": "stdio",
-        "command": tokensave_bin,
+        "command": bin,
         "args": ["serve"]
     });
 

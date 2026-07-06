@@ -1,5 +1,6 @@
 use tokensave::hooks::{
-    evaluate_hook_decision, evaluate_hook_decision_with_env, evaluate_kiro_pre_tool_use, HookEnv,
+    evaluate_claude_pre_tool_use, evaluate_hook_decision, evaluate_hook_decision_with_env,
+    evaluate_kiro_pre_tool_use, HookEnv,
 };
 
 fn env_indexed() -> HookEnv {
@@ -495,4 +496,56 @@ fn test_grep_existing_evaluate_hook_decision_still_works_for_agent() {
     let input = r#"{"subagent_type": "Explore"}"#;
     let result = evaluate_hook_decision(input);
     assert!(is_blocked(&result));
+}
+
+// ============================================================================
+// Claude Code PreToolUse stdin contract — event arrives as JSON on stdin with
+// the tool arguments nested under `tool_input` (no TOOL_INPUT env var).
+// ============================================================================
+
+#[test]
+fn test_claude_blocks_explore_agent_nested_stdin() {
+    let input = r#"{
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "Explore", "prompt": "find files"}
+    }"#;
+    let result = evaluate_claude_pre_tool_use(input);
+    assert!(is_blocked(&result), "nested Explore agent should redirect");
+}
+
+#[test]
+fn test_claude_blocks_research_prompt_nested_stdin() {
+    let input = r#"{
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "who calls the process_data function?"}
+    }"#;
+    let result = evaluate_claude_pre_tool_use(input);
+    assert!(is_blocked(&result));
+    assert!(get_block_reason(&result).contains("tokensave MCP tools"));
+}
+
+#[test]
+fn test_claude_allows_normal_tool_nested_stdin() {
+    let input = r#"{
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "cargo test"}
+    }"#;
+    let result = evaluate_claude_pre_tool_use(input);
+    assert!(result.is_empty(), "normal tool call should pass through");
+}
+
+#[test]
+fn test_claude_falls_back_to_flat_tool_input() {
+    // If the wrapper is absent, treat the payload as a flat tool_input object.
+    let input = r#"{"subagent_type": "Explore"}"#;
+    let result = evaluate_claude_pre_tool_use(input);
+    assert!(is_blocked(&result));
+}
+
+#[test]
+fn test_claude_allows_invalid_json() {
+    assert!(evaluate_claude_pre_tool_use("not json").is_empty());
 }

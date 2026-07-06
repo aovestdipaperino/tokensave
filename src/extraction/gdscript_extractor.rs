@@ -1,6 +1,6 @@
-//! Tree-sitter based GDScript (Godot 4.x) source code extractor.
+//! Tree-sitter based `GDScript` (Godot 4.x) source code extractor.
 //!
-//! Built on the vendored `tree-sitter-gdscript` grammar (PrestonKnopp, ABI
+//! Built on the vendored `tree-sitter-gdscript` grammar (`PrestonKnopp`, ABI
 //! 14, external `scanner.c`; key `"gdscript"`). Every `.gd` file is an
 //! implicit script class: the file root optionally carries a
 //! `class_name_statement` (-> a `Class` node) or falls back to a `Module`
@@ -33,7 +33,7 @@ use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
-/// Extracts code graph nodes and edges from GDScript source files.
+/// Extracts code graph nodes and edges from `GDScript` source files.
 pub struct GdScriptExtractor;
 
 /// Kind of lexical scope on the scope stack. Distinct from the emitted
@@ -183,7 +183,7 @@ impl ExtractionState {
 }
 
 impl GdScriptExtractor {
-    /// Extract code graph nodes and edges from a GDScript source file.
+    /// Extract code graph nodes and edges from a `GDScript` source file.
     pub fn extract_gdscript(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
@@ -270,7 +270,7 @@ impl GdScriptExtractor {
             signature,
             docstring,
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
         let Some(script_id) = script_id else {
             state.scope_stack.pop();
@@ -446,7 +446,7 @@ impl GdScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
     }
 
@@ -473,7 +473,7 @@ impl GdScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
         Self::push_type_ref(state, &id, node);
@@ -500,7 +500,7 @@ impl GdScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
         Self::push_type_ref(state, &id, node);
@@ -537,7 +537,7 @@ impl GdScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
 
@@ -587,7 +587,7 @@ impl GdScriptExtractor {
             signature,
             None,
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
     }
 
@@ -612,7 +612,7 @@ impl GdScriptExtractor {
             signature,
             Self::extract_docstring(state, node),
             Visibility::Pub,
-            Default::default(),
+            crate::extraction::complexity::ComplexityMetrics::default(),
         );
         let Some(id) = id else { return };
 
@@ -705,9 +705,13 @@ impl GdScriptExtractor {
     }
 
     /// Function/constructor signature: source text from the node start up to
-    /// (excluding) its body, trimmed. GDScript has no closing brace, so trim
+    /// (excluding) its body, trimmed. `GDScript` has no closing brace, so trim
     /// a trailing `:` instead.
-    fn signature_text(state: &ExtractionState, node: TsNode<'_>, body: Option<TsNode<'_>>) -> String {
+    fn signature_text(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        body: Option<TsNode<'_>>,
+    ) -> String {
         if let Some(body) = body {
             let start = node.start_byte();
             let end = body.start_byte().min(state.source.len());
@@ -757,8 +761,8 @@ impl GdScriptExtractor {
     }
 
     /// Walk a function body, recording `call` / `attribute_call` callees as
-    /// unresolved `Calls` references. GDScript has no nested named function
-    /// definitions (only `lambda` expressions), so unlike ActionScript there
+    /// unresolved `Calls` references. `GDScript` has no nested named function
+    /// definitions (only `lambda` expressions), so unlike `ActionScript` there
     /// is no nested-function guard needed here.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str) {
         let mut cursor = node.walk();

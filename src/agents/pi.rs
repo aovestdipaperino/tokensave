@@ -62,8 +62,12 @@ impl AgentIntegration for PiIntegration {
                 return Err(e);
             }
         };
+        let bin = crate::agents::preserve_mcp_command(
+            settings.pointer("/mcpServers/tokensave/command"),
+            &ctx.tokensave_bin,
+        );
         settings["mcpServers"]["tokensave"] = json!({
-            "command": ctx.tokensave_bin,
+            "command": bin,
             "args": ["serve"]
         });
 

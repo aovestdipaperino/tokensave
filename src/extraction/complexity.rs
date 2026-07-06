@@ -1655,7 +1655,7 @@ pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     operand_types: &[],
 };
 
-/// ActionScript 2/3 (tree-sitter-actionscript grammar).
+/// `ActionScript` 2/3 (tree-sitter-actionscript grammar).
 pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &[
         "if_statement",
@@ -1689,7 +1689,7 @@ pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     operand_types: &[],
 };
 
-/// GDScript (tree-sitter-gdscript grammar, PrestonKnopp). Python-like
+/// `GDScript` (tree-sitter-gdscript grammar, `PrestonKnopp`). Python-like
 /// control flow: `if`/`elif`, `for`/`while`, `match` (per-arm `pattern_section`),
 /// the `a if b else c` ternary (`conditional_expression`), and `assert(...)`.
 #[cfg(feature = "lang-gdscript")]

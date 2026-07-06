@@ -4,8 +4,9 @@
 /// COBOL programs have a fixed structure: IDENTIFICATION, ENVIRONMENT, DATA,
 /// and PROCEDURE divisions. Paragraphs in the PROCEDURE DIVISION act as
 /// subroutines, and PERFORM statements are the primary call mechanism.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::types::{
@@ -14,59 +15,7 @@ use crate::types::{
 
 /// Extracts code graph nodes and edges from COBOL source files using tree-sitter.
 pub struct CobolExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
 impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-
     /// Extracts the full source line at a given byte offset.
     ///
     /// COBOL comment nodes in tree-sitter-cobol have zero-width byte ranges,
@@ -97,7 +46,7 @@ impl CobolExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -142,7 +91,7 @@ impl CobolExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -199,7 +148,7 @@ impl CobolExtractor {
 
     /// Extract the PROGRAM-ID as a Module node.
     fn visit_identification_division(state: &mut ExtractionState, node: TsNode<'_>) {
-        let program_name_node = Self::find_child_by_kind(node, "program_name");
+        let program_name_node = find_child_by_kind(node, "program_name");
         if let Some(pn) = program_name_node {
             let name = state.node_text(pn);
             let start_line = node.start_position().row as u32;
@@ -322,7 +271,7 @@ impl CobolExtractor {
         docstring: Option<String>,
     ) {
         // Only extract 01-level items.
-        let level_node = Self::find_child_by_kind(node, "level_number");
+        let level_node = find_child_by_kind(node, "level_number");
         if let Some(ln) = level_node {
             let level_text = state.node_text(ln);
             if level_text.trim() != "01" {
@@ -332,14 +281,14 @@ impl CobolExtractor {
             return;
         }
 
-        let name_node = Self::find_child_by_kind(node, "entry_name");
+        let name_node = find_child_by_kind(node, "entry_name");
         let name = if let Some(n) = name_node {
             state.node_text(n)
         } else {
             return;
         };
 
-        let has_value = Self::find_child_by_kind(node, "value_clause").is_some();
+        let has_value = find_child_by_kind(node, "value_clause").is_some();
         let kind = if has_value {
             NodeKind::Const
         } else {
@@ -650,38 +599,10 @@ impl CobolExtractor {
     /// Extract the label name from a `perform_procedure` node.
     fn extract_label_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // perform_procedure -> label -> qualified_word -> WORD
-        let label = Self::find_child_by_kind(node, "label")?;
-        let qw = Self::find_child_by_kind(label, "qualified_word")?;
-        let word = Self::find_child_by_kind(qw, "WORD")?;
+        let label = find_child_by_kind(node, "label")?;
+        let qw = find_child_by_kind(label, "qualified_word")?;
+        let word = find_child_by_kind(qw, "WORD")?;
         Some(state.node_text(word))
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

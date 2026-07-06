@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PASCAL_COMPLEXITY};
+use crate::extraction::ts_state::find_child_by_kind;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -337,7 +338,7 @@ impl PascalExtractor {
 
     /// Extract a single uses reference as a Use node.
     fn visit_single_use(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| state.node_text(node), |n| state.node_text(n));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -418,18 +419,18 @@ impl PascalExtractor {
     /// Visit a single type declaration (declType).
     /// Dispatches based on whether it's a class, record, interface, or type alias.
     fn visit_type_decl(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Look for the type body: declClass, declIntf, or plain type.
-        if let Some(class_node) = Self::find_child_by_kind(node, "declClass") {
+        if let Some(class_node) = find_child_by_kind(node, "declClass") {
             // Check if it's a record or class.
-            if Self::find_child_by_kind(class_node, "kRecord").is_some() {
+            if find_child_by_kind(class_node, "kRecord").is_some() {
                 Self::visit_record_type(state, &name, class_node, node);
             } else {
                 Self::visit_class_type(state, &name, class_node, node);
             }
-        } else if let Some(intf_node) = Self::find_child_by_kind(node, "declIntf") {
+        } else if let Some(intf_node) = find_child_by_kind(node, "declIntf") {
             Self::visit_interface_type(state, &name, intf_node, node);
         } else {
             // Plain type alias (e.g., TMyAlias = Integer).
@@ -460,7 +461,7 @@ impl PascalExtractor {
         // Build signature: "TMyClass = class(TObject)"
         let mut sig = format!("{name} = class");
         // Check for parent class.
-        if let Some(parent_ref) = Self::find_child_by_kind(class_node, "typeref") {
+        if let Some(parent_ref) = find_child_by_kind(class_node, "typeref") {
             let parent_name = state.node_text(parent_ref);
             sig = format!("{name} = class({parent_name})");
         }
@@ -508,7 +509,7 @@ impl PascalExtractor {
         }
 
         // Extract parent class as Extends reference.
-        if let Some(parent_ref) = Self::find_child_by_kind(class_node, "typeref") {
+        if let Some(parent_ref) = find_child_by_kind(class_node, "typeref") {
             let parent_name = state.node_text(parent_ref);
             state.unresolved_refs.push(UnresolvedRef {
                 from_node_id: id.clone(),
@@ -804,7 +805,7 @@ impl PascalExtractor {
 
     /// Extract a field declaration.
     fn visit_field(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -972,7 +973,7 @@ impl PascalExtractor {
 
     /// Extract a property declaration.
     fn visit_property(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1043,7 +1044,7 @@ impl PascalExtractor {
 
     /// Extract a single constant declaration.
     fn visit_const(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1120,7 +1121,7 @@ impl PascalExtractor {
 
     /// Extract a single variable declaration.
     fn visit_var(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1181,8 +1182,8 @@ impl PascalExtractor {
 
     /// Visit a function/procedure definition (defProc), which has a declProc and block.
     fn visit_def_proc(state: &mut ExtractionState, node: TsNode<'_>) {
-        let decl = Self::find_child_by_kind(node, "declProc");
-        let block = Self::find_child_by_kind(node, "block");
+        let decl = find_child_by_kind(node, "declProc");
+        let block = find_child_by_kind(node, "block");
 
         if let Some(decl_node) = decl {
             let (kind_str, node_kind) = Self::determine_proc_kind(decl_node);
@@ -1290,8 +1291,8 @@ impl PascalExtractor {
 
     /// Find the module name from a program or unit node.
     fn find_module_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(mod_name) = Self::find_child_by_kind(node, "moduleName") {
-            if let Some(ident) = Self::find_child_by_kind(mod_name, "identifier") {
+        if let Some(mod_name) = find_child_by_kind(node, "moduleName") {
+            if let Some(ident) = find_child_by_kind(mod_name, "identifier") {
                 return state.node_text(ident);
             }
             return state.node_text(mod_name);
@@ -1302,13 +1303,13 @@ impl PascalExtractor {
     /// Determine the procedure kind from a declProc node.
     /// Returns (`kind_str`, `NodeKind`).
     fn determine_proc_kind(node: TsNode<'_>) -> (&'static str, NodeKind) {
-        if Self::find_child_by_kind(node, "kConstructor").is_some() {
+        if find_child_by_kind(node, "kConstructor").is_some() {
             ("constructor", NodeKind::Constructor)
-        } else if Self::find_child_by_kind(node, "kDestructor").is_some() {
+        } else if find_child_by_kind(node, "kDestructor").is_some() {
             ("destructor", NodeKind::Method)
-        } else if Self::find_child_by_kind(node, "kProcedure").is_some() {
+        } else if find_child_by_kind(node, "kProcedure").is_some() {
             ("procedure", NodeKind::Procedure)
-        } else if Self::find_child_by_kind(node, "kFunction").is_some() {
+        } else if find_child_by_kind(node, "kFunction").is_some() {
             ("function", NodeKind::Function)
         } else {
             ("unknown", NodeKind::Function)
@@ -1319,18 +1320,18 @@ impl PascalExtractor {
     /// Handles both simple names and dotted names (e.g., TMyClass.DoSomething).
     fn find_proc_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // Check for genericDot first (dotted name like TMyClass.DoSomething).
-        if let Some(dot_node) = Self::find_child_by_kind(node, "genericDot") {
+        if let Some(dot_node) = find_child_by_kind(node, "genericDot") {
             return state.node_text(dot_node);
         }
         // Otherwise look for a simple identifier.
-        Self::find_child_by_kind(node, "identifier")
+        find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
     }
 
     /// Parse a dotted name from a declProc node.
     /// Returns (`is_method`, `class_name`, `method_name`).
     fn parse_dotted_name(state: &ExtractionState, decl_node: TsNode<'_>) -> (bool, String, String) {
-        if let Some(dot_node) = Self::find_child_by_kind(decl_node, "genericDot") {
+        if let Some(dot_node) = find_child_by_kind(decl_node, "genericDot") {
             // genericDot has identifiers separated by kDot.
             let mut identifiers = Vec::new();
             let mut cursor = dot_node.walk();
@@ -1386,8 +1387,7 @@ impl PascalExtractor {
                         if let Some(fc) = first_child {
                             if fc.kind() == "identifier" {
                                 // Check there's no exprCall - just a bare identifier.
-                                let has_call =
-                                    Self::find_child_by_kind(child, "exprCall").is_some();
+                                let has_call = find_child_by_kind(child, "exprCall").is_some();
                                 if !has_call {
                                     let callee_name = state.node_text(fc);
                                     // Skip some keywords that aren't calls.
@@ -1470,23 +1470,6 @@ impl PascalExtractor {
         } else {
             trimmed.to_string()
         }
-    }
-
-    /// Find the first named child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
     }
 
     /// Build the final `ExtractionResult` from the accumulated state.

@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, CPP_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, has_child_kind};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -282,7 +283,7 @@ impl CppExtractor {
         Self::extract_annotations(state, node, &id);
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
@@ -366,7 +367,7 @@ impl CppExtractor {
             });
         }
 
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
@@ -426,7 +427,7 @@ impl CppExtractor {
             });
         }
 
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
@@ -446,31 +447,31 @@ impl CppExtractor {
     fn extract_function_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
             // Check for destructor_name first
-            if let Some(dtor) = Self::find_child_by_kind(declarator, "destructor_name") {
+            if let Some(dtor) = find_child_by_kind(declarator, "destructor_name") {
                 return Some(state.node_text(dtor));
             }
             // The function name is the identifier child of the function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "identifier") {
                 return Some(state.node_text(ident));
             }
             // Could be a field_identifier (for methods)
-            if let Some(ident) = Self::find_child_by_kind(declarator, "field_identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "field_identifier") {
                 return Some(state.node_text(ident));
             }
             // Could be a qualified_identifier
-            if let Some(qi) = Self::find_child_by_kind(declarator, "qualified_identifier") {
-                if let Some(ident) = Self::find_child_by_kind(qi, "identifier") {
+            if let Some(qi) = find_child_by_kind(declarator, "qualified_identifier") {
+                if let Some(ident) = find_child_by_kind(qi, "identifier") {
                     return Some(state.node_text(ident));
                 }
             }
             // Could be inside a pointer_declarator -> function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "parenthesized_declarator") {
+            if let Some(ident) = find_child_by_kind(declarator, "parenthesized_declarator") {
                 if let Some(inner_ident) = Self::find_descendant_by_kind(ident, "identifier") {
                     return Some(state.node_text(inner_ident));
                 }
             }
             // type_identifier (for constructors, the name matches the class)
-            if let Some(ident) = Self::find_child_by_kind(declarator, "type_identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "type_identifier") {
                 return Some(state.node_text(ident));
             }
         }
@@ -496,10 +497,10 @@ impl CppExtractor {
         let in_class = state.class_depth > 0;
 
         // Check for class/struct/union/enum specifiers inside the declaration
-        if Self::has_child_kind(node, "class_specifier")
-            || Self::has_child_kind(node, "struct_specifier")
-            || Self::has_child_kind(node, "union_specifier")
-            || Self::has_child_kind(node, "enum_specifier")
+        if has_child_kind(node, "class_specifier")
+            || has_child_kind(node, "struct_specifier")
+            || has_child_kind(node, "union_specifier")
+            || has_child_kind(node, "enum_specifier")
         {
             Self::visit_children(state, node);
             return;
@@ -839,21 +840,21 @@ impl CppExtractor {
 
     /// Extract a variable name from a declaration node.
     fn extract_variable_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        if let Some(init_decl) = Self::find_child_by_kind(node, "init_declarator") {
-            if let Some(ident) = Self::find_child_by_kind(init_decl, "identifier") {
+        if let Some(init_decl) = find_child_by_kind(node, "init_declarator") {
+            if let Some(ident) = find_child_by_kind(init_decl, "identifier") {
                 return Some(state.node_text(ident));
             }
-            if let Some(ptr_decl) = Self::find_child_by_kind(init_decl, "pointer_declarator") {
-                if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
+            if let Some(ptr_decl) = find_child_by_kind(init_decl, "pointer_declarator") {
+                if let Some(ident) = find_child_by_kind(ptr_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
             }
         }
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+        if let Some(ident) = find_child_by_kind(node, "identifier") {
             return Some(state.node_text(ident));
         }
-        if let Some(ptr_decl) = Self::find_child_by_kind(node, "pointer_declarator") {
-            if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
+        if let Some(ptr_decl) = find_child_by_kind(node, "pointer_declarator") {
+            if let Some(ident) = find_child_by_kind(ptr_decl, "identifier") {
                 return Some(state.node_text(ident));
             }
         }
@@ -866,10 +867,10 @@ impl CppExtractor {
 
     /// Visit a class specifier (default visibility: Private).
     fn visit_class_specifier(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
@@ -882,10 +883,10 @@ impl CppExtractor {
 
     /// Visit a struct specifier (default visibility: Pub).
     fn visit_struct_specifier(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
@@ -973,7 +974,7 @@ impl CppExtractor {
 
         // Walk the class body
         state.node_stack.push((name.to_string(), id.clone()));
-        if let Some(body) = Self::find_child_by_kind(node, "field_declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "field_declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.node_stack.pop();
@@ -1056,7 +1057,7 @@ impl CppExtractor {
 
         // Walk the struct body
         state.node_stack.push((name.to_string(), id.clone()));
-        if let Some(body) = Self::find_child_by_kind(node, "field_declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "field_declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.node_stack.pop();
@@ -1185,8 +1186,8 @@ impl CppExtractor {
 
     /// Visit a namespace definition.
     fn visit_namespace(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .or_else(|| Self::find_child_by_kind(node, "namespace_identifier"))
+        let name = find_child_by_kind(node, "identifier")
+            .or_else(|| find_child_by_kind(node, "namespace_identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
@@ -1242,7 +1243,7 @@ impl CppExtractor {
 
         // Walk namespace body
         state.node_stack.push((name, id));
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             Self::visit_children(state, body);
         }
         state.node_stack.pop();
@@ -1312,8 +1313,8 @@ impl CppExtractor {
         }
 
         // If the template wraps a function, extract call sites
-        if let Some(func_def) = Self::find_child_by_kind(node, "function_definition") {
-            if let Some(body) = Self::find_child_by_kind(func_def, "compound_statement") {
+        if let Some(func_def) = find_child_by_kind(node, "function_definition") {
+            if let Some(body) = find_child_by_kind(func_def, "compound_statement") {
                 Self::extract_call_sites(state, body, &id);
             }
         }
@@ -1321,18 +1322,16 @@ impl CppExtractor {
 
     /// Extract the name of the inner declaration in a template.
     fn extract_template_inner_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        if let Some(func_def) = Self::find_child_by_kind(node, "function_definition") {
+        if let Some(func_def) = find_child_by_kind(node, "function_definition") {
             return Self::extract_function_name(state, func_def);
         }
-        if let Some(class_spec) = Self::find_child_by_kind(node, "class_specifier") {
-            return Self::find_child_by_kind(class_spec, "type_identifier")
-                .map(|n| state.node_text(n));
+        if let Some(class_spec) = find_child_by_kind(node, "class_specifier") {
+            return find_child_by_kind(class_spec, "type_identifier").map(|n| state.node_text(n));
         }
-        if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
-            return Self::find_child_by_kind(struct_spec, "type_identifier")
-                .map(|n| state.node_text(n));
+        if let Some(struct_spec) = find_child_by_kind(node, "struct_specifier") {
+            return find_child_by_kind(struct_spec, "type_identifier").map(|n| state.node_text(n));
         }
-        if let Some(decl) = Self::find_child_by_kind(node, "declaration") {
+        if let Some(decl) = find_child_by_kind(node, "declaration") {
             return Self::extract_function_name(state, decl);
         }
         None
@@ -1344,15 +1343,15 @@ impl CppExtractor {
 
     /// Visit a `type_definition` node (typedef).
     fn visit_type_definition(state: &mut ExtractionState, node: TsNode<'_>) {
-        if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
+        if let Some(struct_spec) = find_child_by_kind(node, "struct_specifier") {
             Self::visit_typedef_struct(state, node, struct_spec);
             return;
         }
-        if let Some(union_spec) = Self::find_child_by_kind(node, "union_specifier") {
+        if let Some(union_spec) = find_child_by_kind(node, "union_specifier") {
             Self::visit_typedef_union(state, node, union_spec);
             return;
         }
-        if let Some(enum_spec) = Self::find_child_by_kind(node, "enum_specifier") {
+        if let Some(enum_spec) = find_child_by_kind(node, "enum_specifier") {
             Self::visit_typedef_enum(state, node, enum_spec);
             return;
         }
@@ -1427,8 +1426,8 @@ impl CppExtractor {
             });
         }
 
-        if Self::find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
-            let struct_name = Self::find_child_by_kind(struct_spec, "type_identifier")
+        if find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
+            let struct_name = find_child_by_kind(struct_spec, "type_identifier")
                 .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_struct_node(state, &struct_name, struct_spec, docstring);
         }
@@ -1498,8 +1497,8 @@ impl CppExtractor {
             });
         }
 
-        if Self::find_child_by_kind(union_spec, "field_declaration_list").is_some() {
-            let union_name = Self::find_child_by_kind(union_spec, "type_identifier")
+        if find_child_by_kind(union_spec, "field_declaration_list").is_some() {
+            let union_name = find_child_by_kind(union_spec, "type_identifier")
                 .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_union_node(state, &union_name, union_spec, docstring);
         }
@@ -1569,8 +1568,8 @@ impl CppExtractor {
             });
         }
 
-        if Self::find_child_by_kind(enum_spec, "enumerator_list").is_some() {
-            let enum_name = Self::find_child_by_kind(enum_spec, "type_identifier")
+        if find_child_by_kind(enum_spec, "enumerator_list").is_some() {
+            let enum_name = find_child_by_kind(enum_spec, "type_identifier")
                 .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_enum_node(state, &enum_name, enum_spec, docstring);
         }
@@ -1639,9 +1638,7 @@ impl CppExtractor {
         node: TsNode<'_>,
     ) -> Option<String> {
         if let Some(func_decl) = Self::find_descendant_by_kind(node, "function_declarator") {
-            if let Some(paren_decl) =
-                Self::find_child_by_kind(func_decl, "parenthesized_declarator")
-            {
+            if let Some(paren_decl) = find_child_by_kind(func_decl, "parenthesized_declarator") {
                 if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
@@ -1733,10 +1730,10 @@ impl CppExtractor {
 
     /// Visit a standalone union specifier.
     fn visit_standalone_union(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
@@ -1749,10 +1746,10 @@ impl CppExtractor {
 
     /// Visit a standalone enum specifier.
     fn visit_standalone_enum(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "enumerator_list").is_none() {
+        if find_child_by_kind(node, "enumerator_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
+        let name = find_child_by_kind(node, "type_identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
@@ -1959,7 +1956,7 @@ impl CppExtractor {
 
     /// Extract a preprocessor #define.
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
@@ -2019,8 +2016,8 @@ impl CppExtractor {
 
     /// Extract a preprocessor #include.
     fn visit_preproc_include(state: &mut ExtractionState, node: TsNode<'_>) {
-        let path = Self::find_child_by_kind(node, "string_literal")
-            .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
+        let path = find_child_by_kind(node, "string_literal")
+            .or_else(|| find_child_by_kind(node, "system_lib_string"))
             .map_or_else(
                 || "<unknown>".to_string(),
                 |n| {
@@ -2086,7 +2083,7 @@ impl CppExtractor {
 
     /// Extract enum variants from an `enum_specifier` node.
     fn extract_enum_variants(state: &mut ExtractionState, enum_spec: TsNode<'_>) {
-        if let Some(enumerator_list) = Self::find_child_by_kind(enum_spec, "enumerator_list") {
+        if let Some(enumerator_list) = find_child_by_kind(enum_spec, "enumerator_list") {
             let mut cursor = enumerator_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -2104,7 +2101,7 @@ impl CppExtractor {
 
     /// Extract a single enumerator as an `EnumVariant` node.
     fn extract_single_enumerator(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
@@ -2163,7 +2160,7 @@ impl CppExtractor {
 
     /// Extract base classes from a class/struct specifier.
     fn extract_base_classes(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(base_clause) = Self::find_child_by_kind(node, "base_class_clause") {
+        if let Some(base_clause) = find_child_by_kind(node, "base_class_clause") {
             let mut cursor = base_clause.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -2317,28 +2314,6 @@ impl CppExtractor {
         text.contains("= 0")
     }
 
-    /// Check if a node has a direct child of the given kind.
-    fn has_child_kind(node: TsNode<'_>, kind: &str) -> bool {
-        Self::find_child_by_kind(node, kind).is_some()
-    }
-
-    /// Find the first direct child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
     /// Find the first descendant of a node with a given kind (recursive search).
     fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
         let mut cursor = node.walk();
@@ -2467,7 +2442,7 @@ impl CppExtractor {
 
     /// Extract the name from a C++ attribute node.
     fn extract_cpp_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+        if let Some(ident) = find_child_by_kind(node, "identifier") {
             return state.node_text(ident);
         }
         // Fallback: text before '('

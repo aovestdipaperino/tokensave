@@ -15,6 +15,7 @@ mod typescript_extractor;
 
 pub mod complexity;
 pub mod ts_provider;
+mod ts_state;
 
 #[cfg(feature = "lang-bash")]
 mod bash_extractor;

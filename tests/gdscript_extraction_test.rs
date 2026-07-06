@@ -52,7 +52,11 @@ fn names_of(result: &ExtractionResult, kind: NodeKind) -> Vec<String> {
 #[test]
 fn file_root_present() {
     let r = extract_sample();
-    let files: Vec<_> = r.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let files: Vec<_> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].name, "player.gd");
 }
@@ -119,7 +123,11 @@ fn class_level_field_extracted_but_not_local_var() {
 #[test]
 fn enum_and_variants_extracted() {
     let r = extract_sample();
-    let enums: Vec<_> = r.nodes.iter().filter(|n| n.kind == NodeKind::Enum).collect();
+    let enums: Vec<_> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Enum)
+        .collect();
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].name, "State");
 
@@ -137,7 +145,10 @@ fn top_level_functions_split_correctly() {
     // classified as Function, per the mapping table's file-scope row.
     let fns = names_of(&r, NodeKind::Function);
     for name in ["_ready", "spawn", "take_damage"] {
-        assert!(fns.contains(&name.to_string()), "missing function {name}: {fns:?}");
+        assert!(
+            fns.contains(&name.to_string()),
+            "missing function {name}: {fns:?}"
+        );
     }
 }
 
@@ -230,6 +241,10 @@ fn empty_source() {
     let extractor = GdScriptExtractor;
     let result = extractor.extract("empty.gd", "");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let files: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let files: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(files.len(), 1);
 }

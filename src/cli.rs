@@ -100,7 +100,7 @@ pub enum Commands {
         git_hook: GitHookMode,
         /// Install into the current project's config instead of the user's
         /// global config. Only supported for agents with a project-scoped
-        /// config (claude, cursor, gemini, zed, opencode, roo-code, kiro).
+        /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro).
         #[arg(long)]
         local: bool,
     },

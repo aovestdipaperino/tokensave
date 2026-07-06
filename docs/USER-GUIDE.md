@@ -181,7 +181,7 @@ This is the default. It registers the MCP server in `~/.claude/settings.json`, g
 
 ### Other agents
 
-Tokensave supports fourteen agents. Pass `--agent` to install for a specific one:
+Tokensave supports many agents. Pass `--agent` to install for a specific one:
 
 ```bash
 tokensave install --agent claude      # Claude Code (default)
@@ -191,6 +191,7 @@ tokensave install --agent gemini      # Gemini CLI
 tokensave install --agent qwen        # Qwen Code
 tokensave install --agent copilot     # GitHub Copilot CLI
 tokensave install --agent cursor      # Cursor
+tokensave install --agent droid       # Factory Droid
 tokensave install --agent zed         # Zed
 tokensave install --agent cline       # Cline
 tokensave install --agent roo-code    # Roo Code
@@ -242,7 +243,7 @@ By default `tokensave install` registers the MCP server in your **global** agent
 tokensave install --local --agent claude
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
 
