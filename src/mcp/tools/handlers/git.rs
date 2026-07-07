@@ -96,7 +96,11 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
 }
 
 /// Handles `tokensave_diff_context` tool calls.
-pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+/// Structured diff-context payload (value + touched files), shared by the public
+/// `handle_diff_context` tool and the `handle_diff` aggregator. Returning the raw
+/// `Value` instead of a pre-formatted, truncated string lets `handle_diff` nest
+/// structured data without re-parsing.
+async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
     debug_assert!(
         args.is_object(),
         "handle_diff_context expects an object argument"
@@ -240,6 +244,11 @@ pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<T
         "affected_tests": tests_sorted,
     });
 
+    Ok((output, touched_files))
+}
+
+pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (output, touched_files) = diff_context_value(cg, args).await?;
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
     Ok(ToolResult {
         value: json!({
@@ -542,7 +551,9 @@ fn classify_file_role(path: &str, _files_with_inline_tests: &HashSet<String>) ->
 }
 
 /// Handles `tokensave_changelog` tool calls.
-pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+/// Structured changelog payload (value + touched files), shared by the public
+/// `handle_changelog` tool and the `handle_diff` aggregator.
+async fn changelog_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
     debug_assert!(
         args.is_object(),
         "handle_changelog expects an object argument"
@@ -565,12 +576,7 @@ pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<Tool
     let changed_files: Vec<String> = match git_diff_files(cg.project_root(), from_ref, to_ref) {
         Ok(files) => files,
         Err(e) => {
-            return Ok(ToolResult {
-                value: json!({
-                    "content": [{ "type": "text", "text": format!("git diff failed: {}", e) }]
-                }),
-                touched_files: vec![],
-            });
+            return Ok((json!({ "error": format!("git diff failed: {e}") }), vec![]));
         }
     };
 
@@ -620,6 +626,11 @@ pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<Tool
         "files_not_indexed": modified,
     });
 
+    Ok((result, touched_files))
+}
+
+pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (result, touched_files) = changelog_value(cg, args).await?;
     let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
     Ok(ToolResult {
         value: json!({
@@ -630,7 +641,10 @@ pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<Tool
 }
 
 /// Handles `tokensave_commit_context` tool calls.
-pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+/// Structured commit-context payload (value + touched files), shared by the
+/// public `handle_commit_context` tool and the `handle_diff` aggregator so the
+/// latter can nest structured data without re-parsing a formatted string.
+async fn commit_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
     let staged_only = args
         .get("staged_only")
         .and_then(serde_json::Value::as_bool)
@@ -639,18 +653,12 @@ pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result
     let changed_files = match git_changed_files(cg.project_root(), staged_only) {
         Ok(files) => files,
         Err(e) => {
-            return Ok(ToolResult {
-                value: json!({"content": [{"type": "text", "text": format!("git error: {}", e)}]}),
-                touched_files: vec![],
-            });
+            return Ok((json!({ "error": format!("git error: {e}") }), vec![]));
         }
     };
 
     if changed_files.is_empty() {
-        return Ok(ToolResult {
-            value: json!({"content": [{"type": "text", "text": "No changes detected."}]}),
-            touched_files: vec![],
-        });
+        return Ok((json!({ "message": "No changes detected." }), vec![]));
     }
 
     // Pre-compute files with inline test modules.
@@ -709,10 +717,15 @@ pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result
         "summary": format!("{} file(s) changed, {} symbol(s) affected", changed_files.len(), total_symbols),
     });
 
+    Ok((output, changed_files))
+}
+
+pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (output, touched_files) = commit_context_value(cg, args).await?;
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
     Ok(ToolResult {
         value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
-        touched_files: changed_files,
+        touched_files,
     })
 }
 
@@ -1145,21 +1158,30 @@ pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResul
     //  - `from` + `to`   → changelog
     //  - `from` only     → changelog with to=HEAD
     //  - none of above   → commit_context (working tree vs HEAD)
+    //
+    // Each delegate returns its structured `Value` directly. We deliberately do
+    // NOT route through the public `handle_*` wrappers: those format their
+    // payload with `to_string_pretty` and then `truncate_response`, so re-parsing
+    // the returned text back into JSON (the old `extract_value` path) blew up with
+    // "delegated tool returned non-JSON text" whenever the inner payload exceeded
+    // MAX_RESPONSE_CHARS — or was a plain status line like "No changes detected.".
+    // Composing the raw `Value` and truncating exactly once, here at the edge, is
+    // the fix.
     let (delegated, payload): (String, Value) = if let Some(path) = &path {
         let inner_args = json!({"files": [path]});
-        let inner = handle_diff_context(cg, inner_args).await?;
-        ("diff_context".to_string(), extract_value(&inner)?)
+        let (value, _) = diff_context_value(cg, inner_args).await?;
+        ("diff_context".to_string(), value)
     } else if let (Some(from), Some(to)) = (from.clone(), to.clone()) {
         let inner_args = json!({"from_ref": from, "to_ref": to});
-        let inner = handle_changelog(cg, inner_args).await?;
-        ("changelog".to_string(), extract_value(&inner)?)
+        let (value, _) = changelog_value(cg, inner_args).await?;
+        ("changelog".to_string(), value)
     } else if let Some(from) = from.clone() {
         let inner_args = json!({"from_ref": from, "to_ref": "HEAD"});
-        let inner = handle_changelog(cg, inner_args).await?;
-        ("changelog".to_string(), extract_value(&inner)?)
+        let (value, _) = changelog_value(cg, inner_args).await?;
+        ("changelog".to_string(), value)
     } else {
-        let inner = handle_commit_context(cg, json!({})).await?;
-        ("commit_context".to_string(), extract_value(&inner)?)
+        let (value, _) = commit_context_value(cg, json!({})).await?;
+        ("commit_context".to_string(), value)
     };
 
     let envelope = json!({
@@ -1175,25 +1197,9 @@ pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResul
     })
 }
 
-/// Extract the inner JSON value from a `ToolResult`. Handlers wrap their
-/// payload in `{ content: [{ type: "text", text: "<json>" }] }`; we
-/// re-parse the text here so the envelope nests structured data, not a
-/// stringified blob.
-fn extract_value(tool_result: &ToolResult) -> Result<Value> {
-    let text = tool_result
-        .value
-        .pointer("/content/0/text")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "delegated tool returned no text payload".to_string(),
-        })?;
-    serde_json::from_str(text).map_err(|e| TokenSaveError::Config {
-        message: format!("delegated tool returned non-JSON text: {e}"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1221,5 +1227,32 @@ mod tests {
         let empty: HashSet<String> = HashSet::new();
         assert_eq!(classify_file_role("tests/integration.rs", &empty), "test");
         assert_eq!(classify_file_role("src/foo_test.rs", &empty), "test");
+    }
+
+    /// Regression: `handle_diff` used to re-parse each delegate's already
+    /// formatted-and-`truncate_response`d text back into JSON via the old
+    /// `extract_value`. When a delegate emitted non-JSON text — a status line
+    /// like "No changes detected." / "git error: …", or a payload truncated past
+    /// `MAX_RESPONSE_CHARS` — the re-parse failed with "delegated tool returned
+    /// non-JSON text" and the whole call errored. Composing the delegate's
+    /// structured `Value` directly must always yield a parseable envelope, even
+    /// when the underlying git query itself fails (here: a non-git temp dir).
+    #[tokio::test]
+    async fn handle_diff_composes_valid_json_without_reparse() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cg = TokenSave::init(dir.path()).await.unwrap();
+
+        let result = handle_diff(&cg, serde_json::json!({})).await.unwrap();
+        let text = result
+            .value
+            .pointer("/content/0/text")
+            .and_then(|v| v.as_str())
+            .expect("tool result must carry text");
+        let envelope: serde_json::Value =
+            serde_json::from_str(text).expect("handle_diff envelope must be valid JSON");
+        assert_eq!(envelope["delegated_to"], "commit_context");
+        assert!(envelope
+            .get("changes")
+            .is_some_and(serde_json::Value::is_object));
     }
 }
