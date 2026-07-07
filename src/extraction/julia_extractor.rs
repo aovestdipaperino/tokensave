@@ -3,7 +3,7 @@ use std::time::Instant;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, ComplexityMetrics, JULIA_COMPLEXITY};
-use crate::extraction::ts_state::ExtractionState;
+use crate::extraction::ts_state::{find_child_by_kind, find_descendant_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -100,10 +100,10 @@ impl JuliaExtractor {
     }
 
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(name_node) = node.child_by_field_name("name") else {
+        let Some(name) = Self::definition_name(state, node) else {
+            Self::visit_children(state, node);
             return;
         };
-        let name = state.node_text(name_node);
         let docstring = Self::extract_docstring(state, node);
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
@@ -132,16 +132,15 @@ impl JuliaExtractor {
             metrics.assertions,
         );
 
-        if let Some(body) = node.child_by_field_name("body") {
-            Self::extract_calls(state, body, &id);
-        }
+        Self::extract_function_calls(state, node, &id);
     }
 
     fn visit_macro(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(name_node) = node.child_by_field_name("name") else {
+        let Some(name) = Self::definition_name(state, node) else {
+            Self::visit_children(state, node);
             return;
         };
-        let name = format!("@{}", state.node_text(name_node));
+        let name = format!("@{name}");
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
@@ -165,10 +164,10 @@ impl JuliaExtractor {
     }
 
     fn visit_struct(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(name_node) = node.child_by_field_name("name") else {
+        let Some(name) = Self::definition_name(state, node) else {
+            Self::visit_children(state, node);
             return;
         };
-        let name = state.node_text(name_node);
         let docstring = Self::extract_docstring(state, node);
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
@@ -195,10 +194,10 @@ impl JuliaExtractor {
     }
 
     fn visit_abstract_type(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(name_node) = node.child_by_field_name("name") else {
+        let Some(name) = Self::definition_name(state, node) else {
+            Self::visit_children(state, node);
             return;
         };
-        let name = state.node_text(name_node);
         let sig = Self::first_line(state, node);
         let start_line = node.start_position().row as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
@@ -223,6 +222,7 @@ impl JuliaExtractor {
 
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>) {
         let Some(name_node) = node.child_by_field_name("name") else {
+            Self::visit_children(state, node);
             return;
         };
         let name = state.node_text(name_node);
@@ -247,9 +247,7 @@ impl JuliaExtractor {
         );
 
         state.node_stack.push((name, id));
-        if let Some(body) = node.child_by_field_name("body") {
-            Self::visit_children(state, body);
-        }
+        Self::visit_children(state, node);
         state.node_stack.pop();
     }
 
@@ -367,7 +365,7 @@ impl JuliaExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "call_expression" {
-                    if let Some(callee) = child.child_by_field_name("function") {
+                    if let Some(callee) = Self::call_callee(child) {
                         let name = state.node_text(callee);
                         state.unresolved_refs.push(UnresolvedRef {
                             from_node_id: fn_id.to_string(),
@@ -390,6 +388,54 @@ impl JuliaExtractor {
                 }
             }
         }
+    }
+
+    fn extract_function_calls(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() != "signature" {
+                    Self::extract_calls(state, child, fn_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn definition_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        node.child_by_field_name("name")
+            .or_else(|| find_child_by_kind(node, "signature").and_then(Self::first_identifier))
+            .or_else(|| find_child_by_kind(node, "type_head").and_then(Self::first_identifier))
+            .map(|name_node| state.node_text(name_node))
+    }
+
+    fn first_identifier(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        find_child_by_kind(node, "identifier")
+            .or_else(|| find_descendant_by_kind(node, "identifier"))
+    }
+
+    fn call_callee(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        node.child_by_field_name("function")
+            .or_else(|| Self::first_call_child(node))
+    }
+
+    fn first_call_child(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.is_named() && !matches!(child.kind(), "argument_list" | "do_clause") {
+                    return Some(child);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
     }
 
     fn first_line(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
