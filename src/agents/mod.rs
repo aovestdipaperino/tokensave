@@ -7,6 +7,7 @@
 //! plumbing (registering the MCP server, permissions, hooks, prompt rules).
 
 pub mod antigravity;
+pub mod augment;
 pub mod claude;
 pub mod cline;
 pub mod codex;
@@ -34,6 +35,7 @@ use crate::errors::TokenSaveError;
 use crate::mcp::tools::get_tool_definitions;
 
 pub use antigravity::AntigravityIntegration;
+pub use augment::AugmentIntegration;
 pub use claude::ClaudeIntegration;
 pub use cline::ClineIntegration;
 pub use codex::CodexIntegration;
@@ -171,6 +173,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "vibe" => Ok(Box::new(VibeIntegration)),
         "grok" => Ok(Box::new(GrokIntegration)),
         "pi" => Ok(Box::new(PiIntegration)),
+        "auggie" => Ok(Box::new(AugmentIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
                 "unknown agent: \"{id}\". Available agents: {}",
@@ -201,6 +204,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(VibeIntegration),
         Box::new(GrokIntegration),
         Box::new(PiIntegration),
+        Box::new(AugmentIntegration),
     ]
 }
 
@@ -225,6 +229,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "vibe",
         "grok",
         "pi",
+        "auggie",
     ]
 }
 

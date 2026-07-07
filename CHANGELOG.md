@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AugmentCode (`auggie`) agent integration (`tokensave install --agent auggie`).** Registers the tokensave MCP server in `~/.augment/settings.json` under `mcpServers.tokensave` (stdio transport) without disturbing the file's other keys (`model`, `hooks`, `indexingAllowDirs`, `vimMode`, …), and writes tokensave's prompt rules as a dedicated `~/.augment/rules/tokensave.md` file rather than appending to a shared file — matching how Augment discovers individual `*.md` rules. `--local` writes `<project>/.augment/settings.json` and `<project>/.augment/rules/tokensave.md`. Auto-detected by `tokensave install` (and `reinstall`/`doctor`) when `~/.augment` exists. Augment's Claude-style `hooks` support is left for a follow-up PR.
+
 ## [7.1.0] - 2026-07-09
 
 ### Added

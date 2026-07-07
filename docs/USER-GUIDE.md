@@ -201,6 +201,7 @@ tokensave install --agent kiro        # AWS Kiro
 tokensave install --agent kimi        # Moonshot Kimi CLI
 tokensave install --agent vibe        # Mistral Vibe
 tokensave install --agent grok        # Grok Build (xAI)
+tokensave install --agent auggie      # AugmentCode
 ```
 
 You can also pre-decide the global git `post-commit` hook prompt — useful in
@@ -243,7 +244,7 @@ By default `tokensave install` registers the MCP server in your **global** agent
 tokensave install --local --agent claude
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
 

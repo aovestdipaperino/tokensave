@@ -13,7 +13,7 @@ use common::{make_install_ctx, make_install_ctx_with_real_bin};
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 18);
+    assert_eq!(all.len(), 19);
 }
 
 #[test]
@@ -38,7 +38,8 @@ fn test_available_integrations() {
     assert!(ids.contains(&"grok"));
     assert!(ids.contains(&"pi"));
     assert!(ids.contains(&"qwen"));
-    assert_eq!(ids.len(), 18);
+    assert!(ids.contains(&"auggie"));
+    assert_eq!(ids.len(), 19);
 }
 
 #[test]
@@ -62,6 +63,7 @@ fn test_get_integration_valid() {
         "vibe",
         "grok",
         "pi",
+        "auggie",
     ] {
         let agent = get_integration(id).unwrap();
         assert_eq!(agent.id(), *id);
@@ -109,6 +111,7 @@ fn test_agent_names_are_human_readable() {
         ("vibe", "Mistral Vibe"),
         ("grok", "Grok Build"),
         ("pi", "Pi"),
+        ("auggie", "AugmentCode"),
     ];
     for (id, expected_name) in expected_names {
         let agent = get_integration(id).unwrap();
