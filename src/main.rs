@@ -1175,6 +1175,17 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             // big home-dir trees (#84). Skip them; the same maintenance
             // runs on the user's next interactive `tokensave …` invocation.
             | Commands::Serve { .. }
+            // Hook handlers are on the per-tool-call hot path (Cursor fires
+            // `preToolUse` before every Grep/Shell). They must not run the HTTP
+            // flush, install-stale scans, or the silent-reinstall loop — and
+            // stdout must stay JSON-only for the permission gate (see hooks.rs
+            // `hook_pre_tool_use`).
+            | Commands::HookPreToolUse
+            | Commands::HookPromptSubmit
+            | Commands::HookStop
+            | Commands::HookKiroPreToolUse
+            | Commands::HookKiroPromptSubmit
+            | Commands::HookKiroPostToolUse
     )
 }
 

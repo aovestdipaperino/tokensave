@@ -143,7 +143,14 @@ pub fn hook_pre_tool_use() {
     } else {
         evaluate_claude_pre_tool_use(&raw)
     };
-    if !decision.is_empty() {
+    // Cursor's permission-gating `preToolUse` hook treats any stdout that lacks
+    // a `permission` field as fail-closed and reports `Hook ... returned invalid
+    // JSON`, silently blocking every Grep/Shell call. An empty decision means
+    // "allow", so emit the explicit allow object; Claude Code ignores the
+    // unknown flat field and falls through to its normal permission flow.
+    if decision.is_empty() {
+        println!("{}", build_allow_message());
+    } else {
         println!("{decision}");
     }
 }
@@ -206,8 +213,24 @@ pub fn evaluate_hook_decision_with_env(tool_input: &str, env: &HookEnv) -> Strin
     String::new()
 }
 
+/// Cross-harness "allow" decision for the stdout `PreToolUse` contract.
+///
+/// Cursor gates the tool on the flat `permission` field and treats a missing one
+/// as a fail-closed block; Claude Code ignores the unknown field and falls
+/// through to its normal permission flow. One object therefore allows the call
+/// under Cursor without changing Claude's behaviour.
+fn build_allow_message() -> String {
+    serde_json::json!({ "permission": "allow" }).to_string()
+}
+
 fn build_block_message(reason: &str) -> String {
+    // Cursor-native fields (`permission` + user/agent messages) gate the tool
+    // and surface the reason without any Claude-compat mapping; the nested
+    // `hookSpecificOutput` keeps Claude Code (and the hook tests) working.
     serde_json::json!({
+        "permission": "deny",
+        "user_message": reason,
+        "agent_message": reason,
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
@@ -697,6 +720,39 @@ pub async fn hook_stop() {
         eprintln!(
             "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
             stats.cost_usd
+        );
+    }
+}
+
+#[cfg(test)]
+mod cursor_decision_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::{build_allow_message, build_block_message};
+    use serde_json::Value;
+
+    #[test]
+    fn allow_message_carries_cursor_permission_field() {
+        // Cursor gates the tool on the flat `permission` field; a payload
+        // without it fails closed and reports "returned invalid JSON".
+        let v: Value = serde_json::from_str(&build_allow_message()).unwrap();
+        assert_eq!(v["permission"].as_str(), Some("allow"));
+    }
+
+    #[test]
+    fn block_message_is_cross_harness() {
+        let v: Value = serde_json::from_str(&build_block_message("use tokensave instead")).unwrap();
+        // Cursor-native gate + surfaced reason.
+        assert_eq!(v["permission"].as_str(), Some("deny"));
+        assert_eq!(v["user_message"].as_str(), Some("use tokensave instead"));
+        assert_eq!(v["agent_message"].as_str(), Some("use tokensave instead"));
+        // Claude Code's nested contract stays intact.
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecision"].as_str(),
+            Some("deny")
+        );
+        assert_eq!(
+            v["hookSpecificOutput"]["permissionDecisionReason"].as_str(),
+            Some("use tokensave instead")
         );
     }
 }
