@@ -1655,7 +1655,7 @@ pub static FSHARP_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     operand_types: &[],
 };
 
-/// ActionScript 2/3 (tree-sitter-actionscript grammar).
+/// `ActionScript` 2/3 (tree-sitter-actionscript grammar).
 pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     branch_types: &[
         "if_statement",
@@ -1684,6 +1684,31 @@ pub static ACTIONSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
     call_expression_types: &["call_expression"],
     call_method_field: "function",
     assertion_names: &["assert", "assertEquals", "assertTrue", "assertFalse"],
+    macro_invocation_types: &[],
+    operator_types: &[],
+    operand_types: &[],
+};
+
+/// `GDScript` (tree-sitter-gdscript grammar, `PrestonKnopp`). Python-like
+/// control flow: `if`/`elif`, `for`/`while`, `match` (per-arm `pattern_section`),
+/// the `a if b else c` ternary (`conditional_expression`), and `assert(...)`.
+#[cfg(feature = "lang-gdscript")]
+pub static GDSCRIPT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
+    branch_types: &[
+        "if_statement",
+        "elif_clause",
+        "pattern_section",
+        "conditional_expression",
+    ],
+    loop_types: &["for_statement", "while_statement"],
+    return_types: &["return_statement", "break_statement", "continue_statement"],
+    nesting_types: &["body"],
+    unsafe_types: &[],
+    unchecked_types: &[],
+    unchecked_methods: &[],
+    call_expression_types: &["call", "attribute_call"],
+    call_method_field: "",
+    assertion_names: &["assert"],
     macro_invocation_types: &[],
     operator_types: &[],
     operand_types: &[],

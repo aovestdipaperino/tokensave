@@ -73,7 +73,8 @@ pub fn propagate_variant_edges(nodes: &[Node], edges: &[Edge]) -> Vec<Edge> {
         if !is_callable(&n.kind) {
             continue;
         }
-        if n.file_path.ends_with(".rs") {
+        let ext = std::path::Path::new(&n.file_path).extension();
+        if ext.is_some_and(|e| e.eq_ignore_ascii_case("rs")) {
             // Rust variants share a qualified_name and are both cfg-gated.
             if cfg_gated.contains(n.id.as_str()) {
                 groups
@@ -81,7 +82,8 @@ pub fn propagate_variant_edges(nodes: &[Node], edges: &[Edge]) -> Vec<Edge> {
                     .or_default()
                     .push(n.id.as_str());
             }
-        } else if n.file_path.ends_with(".go") && n.kind == NodeKind::Function {
+        } else if ext.is_some_and(|e| e.eq_ignore_ascii_case("go")) && n.kind == NodeKind::Function
+        {
             // Go package-level funcs: same package directory + name. Two such
             // declarations can only coexist under build constraints (the
             // compiler forbids redeclaration otherwise), so >=2 members across

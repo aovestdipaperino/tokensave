@@ -12,6 +12,7 @@ pub mod cline;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod droid;
 pub mod gemini;
 pub mod grok;
 pub mod kilo;
@@ -38,6 +39,7 @@ pub use cline::ClineIntegration;
 pub use codex::CodexIntegration;
 pub use copilot::CopilotIntegration;
 pub use cursor::CursorIntegration;
+pub use droid::DroidIntegration;
 pub use gemini::GeminiIntegration;
 pub use grok::GrokIntegration;
 pub use kilo::KiloIntegration;
@@ -158,6 +160,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "qwen" => Ok(Box::new(QwenIntegration)),
         "copilot" => Ok(Box::new(CopilotIntegration)),
         "cursor" => Ok(Box::new(CursorIntegration)),
+        "droid" => Ok(Box::new(DroidIntegration)),
         "zed" => Ok(Box::new(ZedIntegration)),
         "cline" => Ok(Box::new(ClineIntegration)),
         "roo-code" => Ok(Box::new(RooCodeIntegration)),
@@ -187,6 +190,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(QwenIntegration),
         Box::new(CopilotIntegration),
         Box::new(CursorIntegration),
+        Box::new(DroidIntegration),
         Box::new(ZedIntegration),
         Box::new(ClineIntegration),
         Box::new(RooCodeIntegration),
@@ -210,6 +214,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "qwen",
         "copilot",
         "cursor",
+        "droid",
         "zed",
         "cline",
         "roo-code",
@@ -543,6 +548,61 @@ pub fn which_tokensave() -> Option<String> {
 /// contexts on Windows. No-op on Unix where paths already use `/`.
 fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// Keeps the user's existing MCP command when it still resolves (issue #161).
+///
+/// Reinstalls used to overwrite whatever command the config held with this
+/// install's absolute binary path, clobbering deliberate choices like a bare
+/// `tokensave` resolved via `PATH` (portable across machines with different
+/// install locations). If the previous command still resolves to a tokensave
+/// binary, keep it verbatim; otherwise use `new_bin`.
+pub fn preserve_mcp_command_str(previous: Option<&str>, new_bin: &str) -> String {
+    match previous {
+        Some(prev) if command_resolves_to_tokensave(prev) => prev.to_string(),
+        _ => new_bin.to_string(),
+    }
+}
+
+/// JSON variant of [`preserve_mcp_command_str`]: accepts the previous
+/// command as either a string (`"command": "tokensave"`) or an array whose
+/// first element is the binary (`"command": ["tokensave", "serve"]`).
+pub fn preserve_mcp_command(previous: Option<&serde_json::Value>, new_bin: &str) -> String {
+    let prev_str = previous.and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s.as_str()),
+        serde_json::Value::Array(a) => a.first().and_then(serde_json::Value::as_str),
+        _ => None,
+    });
+    preserve_mcp_command_str(prev_str, new_bin)
+}
+
+/// True when `cmd` names a tokensave binary that exists: an absolute or
+/// relative path that is on disk, or a bare name found on `PATH`.
+fn command_resolves_to_tokensave(cmd: &str) -> bool {
+    command_resolves_to_tokensave_in(cmd, std::env::var("PATH").ok().as_deref())
+}
+
+/// [`command_resolves_to_tokensave`] with the `PATH` value injected so tests
+/// don't have to mutate process-global environment.
+fn command_resolves_to_tokensave_in(cmd: &str, path_var: Option<&str>) -> bool {
+    let name_ok = Path::new(cmd)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.starts_with("tokensave"));
+    if !name_ok {
+        return false;
+    }
+    if cmd.contains('/') || cmd.contains('\\') {
+        return Path::new(cmd).exists();
+    }
+    let Some(path_var) = path_var else {
+        return false;
+    };
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    path_var.split(separator).any(|dir| {
+        let base = PathBuf::from(dir).join(cmd);
+        base.exists() || (cfg!(windows) && base.with_extension("exe").exists())
+    })
 }
 
 /// Maps a Homebrew Cellar executable path to its version-stable `bin` symlink.
@@ -1048,6 +1108,110 @@ const HOOK_MARKER: &str = "# tokensave: auto-sync";
 /// Marker comment identifying tokensave's section in the post-checkout hook.
 const HOOK_MARKER_CHECKOUT: &str = "# tokensave: auto-init";
 
+/// Marker comment identifying the repo-hook chaining preamble (issue #164).
+const HOOK_MARKER_CHAIN: &str = "# tokensave: chain-repo-hook";
+
+/// Preamble that forwards a global hook to the repository's own hook.
+///
+/// A global `core.hooksPath` makes git ignore every repository's
+/// `.git/hooks/` — including hooks copied there by `init.templateDir` —
+/// so a tokensave-owned global hook must delegate to the repo's hook or
+/// pre-existing user hooks silently stop running (issue #164). Uses
+/// `git rev-parse --git-dir` (not `--git-path hooks`, which resolves
+/// through `core.hooksPath` and would re-enter this very script).
+fn chain_repo_hook_snippet(hook_name: &str) -> String {
+    format!(
+        "{HOOK_MARKER_CHAIN}\n\
+         repo_hook=\"$(git rev-parse --git-dir 2>/dev/null)/hooks/{hook_name}\"\n\
+         if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
+         \t\"$repo_hook\" \"$@\"\n\
+         fi\n"
+    )
+}
+
+/// Client-side git hooks that tokensave does **not** itself install, but whose
+/// per-repository copies would be silently disabled the moment tokensave claims
+/// a global `core.hooksPath` (issue #164 follow-up).
+///
+/// A global `core.hooksPath` makes git resolve **every** hook type from that one
+/// directory, with no fallback to `.git/hooks/`. The #164 fix only re-chained
+/// the two hooks tokensave owns (`post-commit`, `post-checkout`), so a repo's
+/// own `pre-commit`, `pre-push`, `commit-msg`, … (as delivered by
+/// `init.templateDir`, husky, pre-commit, lefthook, …) still stopped running.
+/// tokensave drops a pure forwarder for each of these so they keep firing.
+///
+/// `post-commit`/`post-checkout` are intentionally excluded — they are written
+/// separately with the chaining preamble **plus** tokensave's own action. The
+/// list is the client-side set from `githooks(5)`; server-side hooks
+/// (`pre-receive`, `update`, `post-receive`, `post-update`, `proc-receive`) and
+/// the config-driven `fsmonitor-watchman` are omitted.
+const FORWARDED_REPO_HOOKS: &[&str] = &[
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "pre-rebase",
+    "post-merge",
+    "pre-push",
+    "post-rewrite",
+    "pre-auto-gc",
+    "post-index-change",
+    "push-to-checkout",
+    "sendemail-validate",
+    "reference-transaction",
+];
+
+/// Install pure forwarders for every [`FORWARDED_REPO_HOOKS`] hook so that a
+/// repository's own hooks of those types keep running after tokensave claims a
+/// global `core.hooksPath`.
+///
+/// Only acts when tokensave owns the global hooks directory (it is claiming
+/// `core.hooksPath` right now, or the configured dir is tokensave's default),
+/// mirroring [`should_chain_repo_hooks`]; a user-managed `core.hooksPath` is
+/// left untouched. Each forwarder is written only when no file of that name
+/// already exists, so a hook the user placed in the directory — or a forwarder
+/// from a previous run — is never clobbered.
+fn install_repo_hook_forwarders(
+    hooks_dir: &Path,
+    claiming_hookspath: bool,
+    hooks_dir_is_default: bool,
+) {
+    if !(claiming_hookspath || hooks_dir_is_default) {
+        return;
+    }
+    for name in FORWARDED_REPO_HOOKS {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        write_global_hook(&path, &chain_repo_hook_snippet(name));
+    }
+}
+
+/// Whether the chaining preamble should be added to a global hook file.
+///
+/// Chain only when tokensave owns the global hooks directory — either it
+/// is claiming `core.hooksPath` right now, or the configured hooks dir is
+/// tokensave's default and the hook file is absent or tokensave-created.
+/// A user-managed `core.hooksPath` setup is left alone: the user may
+/// deliberately not forward to per-repo hooks.
+fn should_chain_repo_hooks(
+    claiming_hookspath: bool,
+    hooks_dir_is_default: bool,
+    existing_contents: Option<&str>,
+) -> bool {
+    if existing_contents.is_some_and(|c| c.contains(HOOK_MARKER_CHAIN)) {
+        return false;
+    }
+    claiming_hookspath
+        || (hooks_dir_is_default
+            && existing_contents
+                .is_none_or(|c| c.contains(HOOK_MARKER) || c.contains(HOOK_MARKER_CHECKOUT)))
+}
+
 /// The hook snippet appended to (or written as) the post-commit script.
 fn post_commit_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
@@ -1141,9 +1305,8 @@ pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>)
 
     match mode {
         GitHookMode::Default if atty_stdin() => HookAction::Prompt,
-        GitHookMode::Default => HookAction::Skip,
+        GitHookMode::Default | GitHookMode::No => HookAction::Skip,
         GitHookMode::Yes => HookAction::Install,
-        GitHookMode::No => HookAction::Skip,
     }
 }
 
@@ -1159,10 +1322,33 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
     // the global gitconfig file(s). Falls back to ~/.config/git/hooks/.
     let hooks_dir = read_global_hooks_path(&home);
 
+    let default_hooks_dir = home.join(".config").join("git").join("hooks");
     let (hooks_dir, need_set_hookspath) = match hooks_dir {
         Some(dir) => (dir, false),
-        None => (home.join(".config").join("git").join("hooks"), true),
+        None => (default_hooks_dir.clone(), true),
     };
+    let hooks_dir_is_default = hooks_dir == default_hooks_dir;
+
+    // Issue #164: a global core.hooksPath makes git ignore every repo's
+    // .git/hooks/, where init.templateDir hooks are copied. tokensave's
+    // hooks chain to the repo's own hooks (below) so nothing stops
+    // running, but if we're about to claim core.hooksPath and the user
+    // relies on a hook template, say so up front.
+    if need_set_hookspath {
+        let template_dir = [
+            home.join(".gitconfig"),
+            home.join(".config").join("git").join("config"),
+        ]
+        .iter()
+        .find_map(|p| parse_gitconfig_value(p, "init", "templatedir"));
+        if let Some(dir) = template_dir {
+            eprintln!(
+                "  \x1b[33m⚠\x1b[0m git init.templateDir is set ({dir}). Installing sets a global \
+                 core.hooksPath, which makes git skip each repository's .git/hooks/. tokensave's \
+                 global hooks forward to the repository's own hooks so they keep running."
+            );
+        }
+    }
 
     let hook_path = hooks_dir.join("post-commit");
 
@@ -1228,6 +1414,17 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         );
     }
 
+    // Issue #164: chain to the repo's own hook before tokensave's snippet
+    // so hooks in .git/hooks/ (e.g. from init.templateDir) keep running.
+    // Also retrofits tokensave-owned hook files from earlier versions.
+    if should_chain_repo_hooks(
+        need_set_hookspath,
+        hooks_dir_is_default,
+        existing_contents.as_deref(),
+    ) {
+        write_global_hook(&hook_path, &chain_repo_hook_snippet("post-commit"));
+    }
+
     if install_post_commit && write_global_hook(&hook_path, &post_commit_snippet(tokensave_bin)) {
         eprintln!(
             "\x1b[32m✔\x1b[0m Installed global git post-commit hook at {}",
@@ -1239,9 +1436,15 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
     // marker is independent of post-commit's, so this is skipped only when the
     // post-checkout hook itself is already present.
     let checkout_path = hooks_dir.join("post-checkout");
-    let checkout_present = std::fs::read_to_string(&checkout_path)
-        .ok()
-        .is_some_and(|c| c.contains(HOOK_MARKER_CHECKOUT));
+    let checkout_contents = std::fs::read_to_string(&checkout_path).ok();
+    if should_chain_repo_hooks(
+        need_set_hookspath,
+        hooks_dir_is_default,
+        checkout_contents.as_deref(),
+    ) {
+        write_global_hook(&checkout_path, &chain_repo_hook_snippet("post-checkout"));
+    }
+    let checkout_present = checkout_contents.is_some_and(|c| c.contains(HOOK_MARKER_CHECKOUT));
     if !checkout_present && write_global_hook(&checkout_path, &post_checkout_snippet(tokensave_bin))
     {
         eprintln!(
@@ -1249,6 +1452,12 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             checkout_path.display()
         );
     }
+
+    // Issue #164 follow-up: claiming a global core.hooksPath disables *every*
+    // hook type in each repo's .git/hooks/, not just the two tokensave owns.
+    // Drop pure forwarders for the remaining client-side hooks so a repo's own
+    // pre-commit / pre-push / commit-msg / … keep running.
+    install_repo_hook_forwarders(&hooks_dir, need_set_hookspath, hooks_dir_is_default);
 }
 
 /// Reads `core.hooksPath` from the global gitconfig files.
@@ -1618,6 +1827,173 @@ mod git_hook_tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o111, 0o111, "hook must be executable");
         }
+    }
+
+    #[test]
+    fn bare_name_resolves_through_injected_path() {
+        // A bare `tokensave` that resolves via PATH must survive reinstall
+        // (issue #161).
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("tokensave"), "").unwrap();
+        let path_var = dir.path().to_string_lossy().to_string();
+        assert!(command_resolves_to_tokensave_in(
+            "tokensave",
+            Some(&path_var)
+        ));
+        assert!(!command_resolves_to_tokensave_in(
+            "tokensave",
+            Some("/nonexistent")
+        ));
+        assert!(!command_resolves_to_tokensave_in("tokensave", None));
+        // Foreign bare names never match regardless of PATH.
+        assert!(!command_resolves_to_tokensave_in(
+            "othertool",
+            Some(&path_var)
+        ));
+    }
+
+    #[test]
+    fn preserve_mcp_command_replaces_stale_or_foreign_commands() {
+        // Nonexistent absolute path: replace.
+        assert_eq!(
+            preserve_mcp_command_str(Some("/nonexistent/dir/tokensave"), "/new/tokensave"),
+            "/new/tokensave"
+        );
+        // Not a tokensave binary at all: replace.
+        assert_eq!(
+            preserve_mcp_command_str(Some("/bin/sh"), "/new/tokensave"),
+            "/new/tokensave"
+        );
+        // No previous entry: use the new path.
+        assert_eq!(
+            preserve_mcp_command_str(None, "/new/tokensave"),
+            "/new/tokensave"
+        );
+    }
+
+    #[test]
+    fn preserve_mcp_command_reads_string_and_array_shapes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let abs = dir.path().join("tokensave");
+        std::fs::write(&abs, "").unwrap();
+        let abs = abs.to_string_lossy().to_string();
+
+        let string_shape = serde_json::json!(abs);
+        assert_eq!(preserve_mcp_command(Some(&string_shape), "/new/bin"), abs);
+
+        let array_shape = serde_json::json!([abs, "serve"]);
+        assert_eq!(preserve_mcp_command(Some(&array_shape), "/new/bin"), abs);
+    }
+
+    #[test]
+    fn forwarded_hooks_cover_common_types_but_not_tokensave_owned() {
+        // The two hooks tokensave installs itself carry the chain preamble
+        // plus tokensave's action, so they must NOT be in the pure-forwarder
+        // list (that would double-write / conflict).
+        assert!(!FORWARDED_REPO_HOOKS.contains(&"post-commit"));
+        assert!(!FORWARDED_REPO_HOOKS.contains(&"post-checkout"));
+        // The high-value client-side hooks must be forwarded — these are where
+        // husky / pre-commit / lefthook live.
+        for h in ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"] {
+            assert!(
+                FORWARDED_REPO_HOOKS.contains(&h),
+                "{h} must be forwarded or a global hooksPath silently disables it"
+            );
+        }
+        // Server-side hooks are irrelevant to a client `core.hooksPath` and
+        // must not be written.
+        for h in ["pre-receive", "update", "post-receive", "proc-receive"] {
+            assert!(!FORWARDED_REPO_HOOKS.contains(&h));
+        }
+    }
+
+    #[test]
+    fn install_repo_hook_forwarders_writes_when_claiming_and_skips_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A hook the user already placed in the dir must be preserved verbatim.
+        let user_pre_commit = dir.path().join("pre-commit");
+        std::fs::write(&user_pre_commit, "#!/bin/sh\n# user's own\n").unwrap();
+
+        install_repo_hook_forwarders(dir.path(), true, true);
+
+        // Existing file untouched.
+        assert_eq!(
+            std::fs::read_to_string(&user_pre_commit).unwrap(),
+            "#!/bin/sh\n# user's own\n",
+            "an existing hook must never be clobbered"
+        );
+        // A forwarder was created for a type that had no file, and it chains
+        // to the repo's own hook of the same name.
+        let created = std::fs::read_to_string(dir.path().join("pre-push")).unwrap();
+        assert!(created.starts_with("#!/bin/sh\n"));
+        assert!(created.contains(HOOK_MARKER_CHAIN));
+        assert!(created.contains("/hooks/pre-push"));
+        assert!(created.contains("git rev-parse --git-dir"));
+    }
+
+    #[test]
+    fn install_repo_hook_forwarders_noop_for_user_managed_hookspath() {
+        // Not claiming, and the dir is not tokensave's default → user-managed
+        // core.hooksPath. tokensave must not write anything into it.
+        let dir = tempfile::tempdir().unwrap();
+        install_repo_hook_forwarders(dir.path(), false, false);
+        assert!(
+            !dir.path().join("pre-commit").exists(),
+            "must leave a user-managed hooksPath directory untouched"
+        );
+    }
+
+    #[test]
+    fn chain_snippet_forwards_to_repo_hook_via_git_dir() {
+        let s = chain_repo_hook_snippet("post-checkout");
+        assert!(s.contains(HOOK_MARKER_CHAIN));
+        // Must use --git-dir, not --git-path hooks: the latter resolves
+        // through core.hooksPath and would re-enter the global hook.
+        assert!(s.contains("git rev-parse --git-dir"));
+        assert!(!s.contains("--git-path"));
+        assert!(s.contains("/hooks/post-checkout"));
+        // Args must be forwarded (post-checkout receives old/new/flag).
+        assert!(s.contains("\"$@\""));
+    }
+
+    #[test]
+    fn should_chain_when_claiming_hookspath() {
+        assert!(should_chain_repo_hooks(true, true, None));
+        assert!(should_chain_repo_hooks(true, false, None));
+    }
+
+    #[test]
+    fn should_chain_retrofits_tokensave_owned_default_dir() {
+        // Existing tokensave-created hook in the default dir gains chaining.
+        assert!(should_chain_repo_hooks(
+            false,
+            true,
+            Some("#!/bin/sh\n# tokensave: auto-sync\ntokensave sync &\n")
+        ));
+        // Absent file in the default dir also chains.
+        assert!(should_chain_repo_hooks(false, true, None));
+    }
+
+    #[test]
+    fn should_not_chain_user_managed_hookspath_or_twice() {
+        // User configured their own core.hooksPath with their own hook.
+        assert!(!should_chain_repo_hooks(
+            false,
+            false,
+            Some("#!/bin/sh\nmy-own-hook\n")
+        ));
+        // Non-tokensave hook file in the default dir is user content too.
+        assert!(!should_chain_repo_hooks(
+            false,
+            true,
+            Some("#!/bin/sh\nmy-own-hook\n")
+        ));
+        // Already chained: never append a second preamble.
+        assert!(!should_chain_repo_hooks(
+            true,
+            true,
+            Some("#!/bin/sh\n# tokensave: chain-repo-hook\n")
+        ));
     }
 
     #[test]

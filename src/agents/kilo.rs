@@ -52,9 +52,13 @@ impl AgentIntegration for KiloIntegration {
             }
         };
 
+        let bin = crate::agents::preserve_mcp_command(
+            settings.pointer("/mcp/tokensave/command"),
+            &ctx.tokensave_bin,
+        );
         settings["mcp"]["tokensave"] = json!({
             "type": "local",
-            "command": [ctx.tokensave_bin, "serve"],
+            "command": [bin, "serve"],
             "enabled": true
         });
 

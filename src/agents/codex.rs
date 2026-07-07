@@ -113,11 +113,15 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
             message: "mcp_servers is not a table in config.toml".to_string(),
         })?;
 
-    let mut server_table = toml::map::Map::new();
-    server_table.insert(
-        "command".to_string(),
-        toml::Value::String(tokensave_bin.to_string()),
+    let bin = crate::agents::preserve_mcp_command_str(
+        servers
+            .get("tokensave")
+            .and_then(|t| t.get("command"))
+            .and_then(toml::Value::as_str),
+        tokensave_bin,
     );
+    let mut server_table = toml::map::Map::new();
+    server_table.insert("command".to_string(), toml::Value::String(bin));
     server_table.insert(
         "args".to_string(),
         toml::Value::Array(vec![toml::Value::String("serve".to_string())]),

@@ -505,7 +505,7 @@ dependencies {
         write(
             dir.path(),
             "build.gradle",
-            r#"
+            r"
 plugins {
     id 'java'
 }
@@ -515,7 +515,7 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     annotationProcessor 'org.projectlombok:lombok:1.18.30'
 }
-"#,
+",
         );
         let ws = parse(dir.path()).unwrap();
         let m = &ws.members[0];

@@ -48,10 +48,10 @@ fn parse_opam(root: &Path, path: &Path) -> Result<Workspace> {
         ecosystem: ECOSYSTEM,
         root: root.to_path_buf(),
         members: vec![Member {
-            path: path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "package.opam".to_string()),
+            path: path.file_name().map_or_else(
+                || "package.opam".to_string(),
+                |s| s.to_string_lossy().into_owned(),
+            ),
             name: pkg_name,
             license: None,
             deps,

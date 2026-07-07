@@ -163,9 +163,13 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
         }
     };
 
+    let bin = crate::agents::preserve_mcp_command(
+        config.pointer("/mcp/tokensave/command"),
+        tokensave_bin,
+    );
     config["mcp"]["tokensave"] = json!({
         "type": "local",
-        "command": [tokensave_bin, "serve"]
+        "command": [bin, "serve"]
     });
 
     safe_write_json_file(config_path, &config, backup.as_deref())?;

@@ -202,7 +202,10 @@ fn hook_command(tokensave_bin: &str, subcommand: &str) -> String {
     format!("{tokensave_bin} {subcommand}")
 }
 
-fn file_resource_uri(path: &Path) -> String {
+/// Converts a filesystem path to a percent-encoded `file://` URI.
+///
+/// Public so integration tests can assert against the exact URI format.
+pub fn file_resource_uri(path: &Path) -> String {
     let path = path.to_string_lossy().replace('\\', "/");
     let path = percent_encode_file_uri_path(&path);
     if path.starts_with('/') {
@@ -283,7 +286,11 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
 
     ensure_json_object(&config, path)?;
     ensure_child_object(&mut config, "mcpServers", path)?;
-    config["mcpServers"]["tokensave"] = mcp_server_entry(tokensave_bin);
+    let bin = crate::agents::preserve_mcp_command(
+        config.pointer("/mcpServers/tokensave/command"),
+        tokensave_bin,
+    );
+    config["mcpServers"]["tokensave"] = mcp_server_entry(&bin);
 
     safe_write_json_file(path, &config, backup.as_deref())?;
     eprintln!(

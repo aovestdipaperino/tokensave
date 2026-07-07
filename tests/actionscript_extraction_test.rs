@@ -5,21 +5,15 @@ use tokensave::extraction::ActionScriptExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;
 
+mod common;
+use common::names_of;
+
 fn extract_fixture() -> ExtractionResult {
     let source = std::fs::read_to_string("tests/fixtures/sample.as").unwrap();
     let extractor = ActionScriptExtractor;
     let result = extractor.extract("sample.as", &source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     result
-}
-
-fn names_of(result: &ExtractionResult, kind: NodeKind) -> Vec<String> {
-    result
-        .nodes
-        .iter()
-        .filter(|n| n.kind == kind)
-        .map(|n| n.name.clone())
-        .collect()
 }
 
 #[test]

@@ -53,10 +53,10 @@ pub fn parse(root: &Path) -> Result<Workspace> {
         }
     }
 
-    let manifest_name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "package.cabal".to_string());
+    let manifest_name = path.file_name().map_or_else(
+        || "package.cabal".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
 
     Ok(Workspace {
         ecosystem: ECOSYSTEM,

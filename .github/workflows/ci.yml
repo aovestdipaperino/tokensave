@@ -51,6 +51,10 @@ jobs:
           prefix-key: v1-rust-test
 
       - name: Run tests
+        env:
+          # Match macOS/Linux's 8 MB thread-stack default; Windows MSVC's 1 MB
+          # default overflows async-heavy tests with STATUS_ACCESS_VIOLATION.
+          RUST_MIN_STACK: "8388608"
         run: cargo test --workspace
 
   clippy:

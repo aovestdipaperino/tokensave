@@ -110,8 +110,12 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
         }
     };
 
+    let bin = crate::agents::preserve_mcp_command(
+        settings.pointer("/mcpServers/tokensave/command"),
+        tokensave_bin,
+    );
     settings["mcpServers"]["tokensave"] = json!({
-        "command": tokensave_bin,
+        "command": bin,
         "args": ["serve"],
         "trust": true
     });

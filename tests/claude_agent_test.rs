@@ -1,48 +1,10 @@
-use std::path::Path;
-
 use tempfile::TempDir;
 use tokensave::agents::{
     expected_tool_perms, AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext,
-    InstallContext,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn make_install_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-/// Creates a fake tokensave binary in a temp dir so healthcheck binary-exists
-/// checks pass.
-fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
-    let bin_dir = home.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bin_path = bin_dir.join("tokensave");
-    std::fs::write(&bin_path, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: expected_tool_perms(),
-        scope: tokensave::agents::InstallScope::Global,
-    }
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    let contents = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&contents).unwrap()
-}
+mod common;
+use common::{make_install_ctx, make_install_ctx_with_real_bin, read_json};
 
 // ===========================================================================
 // Install content verification
@@ -70,6 +32,64 @@ fn test_install_creates_claude_json_with_mcp_server() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(args, vec!["serve"], "args should be [\"serve\"]");
+}
+
+#[test]
+fn test_reinstall_preserves_existing_resolvable_command() {
+    // Issue #161: a user-chosen MCP command that still resolves to a
+    // tokensave binary must survive reinstall instead of being overwritten
+    // with this install's absolute path.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // A fake tokensave binary at a user-chosen location.
+    let user_bin = home.join("mybin").join("tokensave");
+    std::fs::create_dir_all(user_bin.parent().unwrap()).unwrap();
+    std::fs::write(&user_bin, "").unwrap();
+    let user_bin = user_bin.to_string_lossy().to_string();
+
+    // Pre-seed .claude.json with the user's command. Built with serde so
+    // Windows backslash paths are escaped correctly.
+    let seeded = serde_json::json!({
+        "mcpServers": {"tokensave": {"command": user_bin, "args": ["serve"]}}
+    });
+    std::fs::write(home.join(".claude.json"), seeded.to_string()).unwrap();
+
+    let ctx = make_install_ctx(home); // installs with /usr/local/bin/tokensave
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        user_bin,
+        "existing resolvable command should be preserved on reinstall"
+    );
+}
+
+#[test]
+fn test_reinstall_replaces_stale_command() {
+    // A previous command that no longer exists must be replaced.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers": {"tokensave": {"command": "/gone/tokensave", "args": ["serve"]}}}"#,
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        "/usr/local/bin/tokensave",
+        "stale command should be replaced with the new bin path"
+    );
 }
 
 #[test]

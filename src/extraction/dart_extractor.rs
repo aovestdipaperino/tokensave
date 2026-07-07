@@ -1,73 +1,18 @@
 /// Tree-sitter based Dart source code extractor.
 ///
 /// Parses Dart source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, ComplexityMetrics, DART_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Dart source files using tree-sitter.
 pub struct DartExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Tracks depth inside class/mixin/extension/enum bodies.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl DartExtractor {
     /// Extract code graph nodes and edges from a Dart source file.
@@ -82,7 +27,7 @@ impl DartExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl DartExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -170,8 +115,8 @@ impl DartExtractor {
                 "function_declaration" => {
                     // tree-sitter-dart 0.2 wraps top-level functions in
                     // `function_declaration { function_signature, function_body }`.
-                    if let Some(sig) = Self::find_child_by_kind(child, "function_signature") {
-                        let body = Self::find_child_by_kind(child, "function_body");
+                    if let Some(sig) = find_child_by_kind(child, "function_signature") {
+                        let body = find_child_by_kind(child, "function_body");
                         Self::visit_top_level_function(state, sig, body);
                     }
                 }
@@ -194,23 +139,23 @@ impl DartExtractor {
     /// `top_level_variable_declaration` whose declared "type" is the
     /// `library` keyword.
     fn is_library_directive(state: &ExtractionState, node: TsNode<'_>) -> bool {
-        let Some(ty) = Self::find_child_by_kind(node, "type") else {
+        let Some(ty) = find_child_by_kind(node, "type") else {
             return false;
         };
-        let Some(type_id) = Self::find_child_by_kind(ty, "type_identifier") else {
+        let Some(type_id) = find_child_by_kind(ty, "type_identifier") else {
             return false;
         };
         state.node_text(type_id) == "library"
     }
 
     fn visit_library_misparse(state: &mut ExtractionState, node: TsNode<'_>) {
-        let Some(list) = Self::find_child_by_kind(node, "initialized_identifier_list") else {
+        let Some(list) = find_child_by_kind(node, "initialized_identifier_list") else {
             return;
         };
-        let Some(init) = Self::find_child_by_kind(list, "initialized_identifier") else {
+        let Some(init) = find_child_by_kind(list, "initialized_identifier") else {
             return;
         };
-        let Some(ident) = Self::find_child_by_kind(init, "identifier") else {
+        let Some(ident) = find_child_by_kind(init, "identifier") else {
             return;
         };
         let name = state.node_text(ident);
@@ -222,7 +167,7 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_library(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "dotted_identifier_list").map_or_else(
+        let name = find_child_by_kind(node, "dotted_identifier_list").map_or_else(
             || state.node_text(node).trim().to_string(),
             |n| state.node_text(n),
         );
@@ -464,7 +409,7 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        let is_abstract = Self::find_child_by_kind(node, "abstract").is_some();
+        let is_abstract = find_child_by_kind(node, "abstract").is_some();
 
         let name = node
             .child_by_field_name("name")
@@ -529,7 +474,7 @@ impl DartExtractor {
 
         // Extract superclass extends reference.
         if let Some(superclass) = node.child_by_field_name("superclass") {
-            if let Some(type_id) = Self::find_child_by_kind(superclass, "type_identifier") {
+            if let Some(type_id) = find_child_by_kind(superclass, "type_identifier") {
                 let type_name = state.node_text(type_id);
                 state.unresolved_refs.push(UnresolvedRef {
                     from_node_id: id.clone(),
@@ -560,7 +505,7 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_mixin(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
@@ -618,7 +563,7 @@ impl DartExtractor {
         Self::extract_annotations_from_modifiers(state, node, &id);
 
         // Visit mixin body (it uses class_body).
-        if let Some(body) = Self::find_child_by_kind(node, "class_body") {
+        if let Some(body) = find_child_by_kind(node, "class_body") {
             state.node_stack.push((name, id.clone()));
             state.class_depth += 1;
             Self::visit_class_body(state, body);
@@ -632,7 +577,7 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_extension(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
+        let name = find_child_by_kind(node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
@@ -846,8 +791,8 @@ impl DartExtractor {
     // ----------------------------------
 
     fn visit_type_alias(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .or_else(|| Self::find_child_by_kind(node, "identifier"))
+        let name = find_child_by_kind(node, "type_identifier")
+            .or_else(|| find_child_by_kind(node, "identifier"))
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
@@ -950,7 +895,7 @@ impl DartExtractor {
     fn visit_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let sig = node
             .child_by_field_name("signature")
-            .or_else(|| Self::find_child_by_kind(node, "method_signature"));
+            .or_else(|| find_child_by_kind(node, "method_signature"));
         let Some(sig) = sig else {
             return;
         };
@@ -963,7 +908,7 @@ impl DartExtractor {
         }
         let body = node
             .child_by_field_name("body")
-            .or_else(|| Self::find_child_by_kind(node, "function_body"));
+            .or_else(|| find_child_by_kind(node, "function_body"));
         loop {
             let child = cursor.node();
             match child.kind() {
@@ -1279,7 +1224,7 @@ impl DartExtractor {
         decl_node: TsNode<'_>,
         sig_node: TsNode<'_>,
     ) {
-        let name = Self::find_child_by_kind(sig_node, "identifier")
+        let name = find_child_by_kind(sig_node, "identifier")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::dart_visibility(&name);
@@ -1435,7 +1380,7 @@ impl DartExtractor {
     ) {
         let name = var_def.child_by_field_name("name").map_or_else(
             || {
-                Self::find_child_by_kind(var_def, "identifier")
+                find_child_by_kind(var_def, "identifier")
                     .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n))
             },
             |n| state.node_text(n),
@@ -1457,7 +1402,7 @@ impl DartExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "initialized_identifier" {
-                    if let Some(ident) = Self::find_child_by_kind(child, "identifier") {
+                    if let Some(ident) = find_child_by_kind(child, "identifier") {
                         let name = state.node_text(ident);
                         Self::emit_field(state, decl_node, &name);
                     }
@@ -1480,7 +1425,7 @@ impl DartExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "static_final_declaration" {
-                    if let Some(ident) = Self::find_child_by_kind(child, "identifier") {
+                    if let Some(ident) = find_child_by_kind(child, "identifier") {
                         let name = state.node_text(ident);
                         Self::emit_field(state, decl_node, &name);
                     }
@@ -1612,7 +1557,7 @@ impl DartExtractor {
                 // sibling pairs (still kept below for compatibility with method
                 // calls of the form `obj.method()`).
                 "call_expression" => {
-                    if let Some(ident) = Self::find_child_by_kind(child, "identifier") {
+                    if let Some(ident) = find_child_by_kind(child, "identifier") {
                         state.unresolved_refs.push(UnresolvedRef {
                             from_node_id: fn_node_id.to_string(),
                             reference_name: state.node_text(ident),
@@ -1631,8 +1576,8 @@ impl DartExtractor {
                     // Check if the next sibling is a selector containing argument_part.
                     if let Some(next) = child.next_named_sibling() {
                         if next.kind() == "selector"
-                            && (Self::find_child_by_kind(next, "argument_part").is_some()
-                                || Self::find_child_by_kind(next, "arguments").is_some())
+                            && (find_child_by_kind(next, "argument_part").is_some()
+                                || find_child_by_kind(next, "arguments").is_some())
                         {
                             state.unresolved_refs.push(UnresolvedRef {
                                 from_node_id: fn_node_id.to_string(),
@@ -1647,14 +1592,14 @@ impl DartExtractor {
                 }
                 // A selector that contains an identifier and argument_part: method call.
                 "selector" => {
-                    if Self::find_child_by_kind(child, "argument_part").is_some()
-                        || Self::find_child_by_kind(child, "arguments").is_some()
+                    if find_child_by_kind(child, "argument_part").is_some()
+                        || find_child_by_kind(child, "arguments").is_some()
                     {
                         // Look for identifier inside unconditional_assignable_selector.
                         if let Some(uas) =
-                            Self::find_child_by_kind(child, "unconditional_assignable_selector")
+                            find_child_by_kind(child, "unconditional_assignable_selector")
                         {
-                            if let Some(ident) = Self::find_child_by_kind(uas, "identifier") {
+                            if let Some(ident) = find_child_by_kind(uas, "identifier") {
                                 let callee_name = state.node_text(ident);
                                 state.unresolved_refs.push(UnresolvedRef {
                                     from_node_id: fn_node_id.to_string(),
@@ -1667,7 +1612,7 @@ impl DartExtractor {
                             }
                         }
                     } else if let Some(uas) =
-                        Self::find_child_by_kind(child, "unconditional_assignable_selector")
+                        find_child_by_kind(child, "unconditional_assignable_selector")
                     {
                         // tree-sitter-dart 0.2 splits a receiver method call
                         // `recv.method(args)` into two *sibling* selectors: one
@@ -1682,11 +1627,11 @@ impl DartExtractor {
                             .next_named_sibling()
                             .filter(|s| s.kind() == "selector")
                             .is_some_and(|s| {
-                                Self::find_child_by_kind(s, "argument_part").is_some()
-                                    || Self::find_child_by_kind(s, "arguments").is_some()
+                                find_child_by_kind(s, "argument_part").is_some()
+                                    || find_child_by_kind(s, "arguments").is_some()
                             });
                         if is_call {
-                            if let Some(ident) = Self::find_child_by_kind(uas, "identifier") {
+                            if let Some(ident) = find_child_by_kind(uas, "identifier") {
                                 let callee_name = state.node_text(ident);
                                 state.unresolved_refs.push(UnresolvedRef {
                                     from_node_id: fn_node_id.to_string(),
@@ -1818,23 +1763,6 @@ impl DartExtractor {
         }
     }
 
-    /// Find the first named child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
     /// Walk previous siblings and children of a declaration looking for
     /// `annotation` or `marker_annotation` nodes and extract annotation usages.
     fn extract_annotations_from_modifiers(
@@ -1945,7 +1873,7 @@ impl DartExtractor {
     ///
     /// Looks for an `identifier` child, or falls back to text after `@`, before `(`.
     fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+        if let Some(ident) = find_child_by_kind(node, "identifier") {
             return state.node_text(ident);
         }
         // Fallback: text after '@', before '('.
@@ -1958,17 +1886,6 @@ impl DartExtractor {
             .unwrap_or(&text)
             .trim()
             .to_string()
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

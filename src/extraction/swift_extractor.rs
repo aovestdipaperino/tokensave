@@ -1,73 +1,18 @@
 /// Tree-sitter based Swift source code extractor.
 ///
 /// Parses Swift source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, SWIFT_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Swift source files using tree-sitter.
 pub struct SwiftExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of class/struct/enum/protocol/extension nesting. > 0 means inside a type body.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl SwiftExtractor {
     /// Extract code graph nodes and edges from a Swift source file.
@@ -82,7 +27,7 @@ impl SwiftExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -127,7 +72,7 @@ impl SwiftExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -176,7 +121,7 @@ impl SwiftExtractor {
 
     /// Extract an import declaration (e.g. `import Foundation`).
     fn visit_import(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier").map_or_else(
+        let name = find_child_by_kind(node, "identifier").map_or_else(
             || {
                 // Fallback: get everything after "import "
                 let text = state.node_text(node);
@@ -504,9 +449,7 @@ impl SwiftExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| state.node_text(n))
-            .or_else(|| {
-                Self::find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n))
-            })
+            .or_else(|| find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n)))
             .unwrap_or_else(|| {
                 // Fallback: parse text after "case "
                 let text = state.node_text(node);
@@ -573,7 +516,7 @@ impl SwiftExtractor {
             || "<anonymous>".to_string(),
             |n| {
                 // Could be a user_type wrapping a type_identifier.
-                Self::find_child_by_kind(n, "type_identifier")
+                find_child_by_kind(n, "type_identifier")
                     .map_or_else(|| state.node_text(n), |ti| state.node_text(ti))
             },
         );
@@ -738,9 +681,7 @@ impl SwiftExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| state.node_text(n))
-            .or_else(|| {
-                Self::find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n))
-            })
+            .or_else(|| find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n)))
             .unwrap_or_else(|| "<anonymous>".to_string());
 
         let start_line = node.start_position().row as u32;
@@ -805,9 +746,7 @@ impl SwiftExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| state.node_text(n))
-            .or_else(|| {
-                Self::find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n))
-            })
+            .or_else(|| find_child_by_kind(node, "simple_identifier").map(|n| state.node_text(n)))
             .unwrap_or_else(|| "<anonymous>".to_string());
 
         let in_class = state.class_depth > 0;
@@ -1023,9 +962,7 @@ impl SwiftExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| state.node_text(n))
-            .or_else(|| {
-                Self::find_child_by_kind(node, "type_identifier").map(|n| state.node_text(n))
-            })
+            .or_else(|| find_child_by_kind(node, "type_identifier").map(|n| state.node_text(n)))
             .unwrap_or_else(|| "<anonymous>".to_string());
 
         let start_line = node.start_position().row as u32;
@@ -1093,7 +1030,7 @@ impl SwiftExtractor {
                 // For class/struct/enum, this is a type_identifier directly.
                 // For extension, it may be a user_type wrapping type_identifier.
                 if n.kind() == "user_type" {
-                    Self::find_child_by_kind(n, "type_identifier")
+                    find_child_by_kind(n, "type_identifier")
                         .map_or_else(|| state.node_text(n), |ti| state.node_text(ti))
                 } else {
                     state.node_text(n)
@@ -1114,7 +1051,7 @@ impl SwiftExtractor {
                     // The inheritance_specifier has a child with field "inherits_from"
                     // which is a user_type containing the parent type name.
                     if let Some(inherits_from) = child.child_by_field_name("inherits_from") {
-                        let base_name = Self::find_child_by_kind(inherits_from, "type_identifier")
+                        let base_name = find_child_by_kind(inherits_from, "type_identifier")
                             .map_or_else(
                                 || state.node_text(inherits_from),
                                 |ti| state.node_text(ti),
@@ -1147,14 +1084,14 @@ impl SwiftExtractor {
                 return state.node_text(ident);
             }
             // Fallback: find simple_identifier in pattern.
-            if let Some(ident) = Self::find_child_by_kind(pattern, "simple_identifier") {
+            if let Some(ident) = find_child_by_kind(pattern, "simple_identifier") {
                 return state.node_text(ident);
             }
             return state.node_text(pattern);
         }
         // Fallback: find pattern child then simple_identifier.
-        if let Some(pattern) = Self::find_child_by_kind(node, "pattern") {
-            if let Some(ident) = Self::find_child_by_kind(pattern, "simple_identifier") {
+        if let Some(pattern) = find_child_by_kind(node, "pattern") {
+            if let Some(ident) = find_child_by_kind(pattern, "simple_identifier") {
                 return state.node_text(ident);
             }
         }
@@ -1170,7 +1107,7 @@ impl SwiftExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "modifiers" {
-                    if let Some(vis_mod) = Self::find_child_by_kind(child, "visibility_modifier") {
+                    if let Some(vis_mod) = find_child_by_kind(child, "visibility_modifier") {
                         let text = state.node_text(vis_mod);
                         return match text.as_str() {
                             "private" | "fileprivate" => Visibility::Private,
@@ -1303,9 +1240,7 @@ impl SwiftExtractor {
                     loop {
                         let child = cursor.node();
                         if child.kind() == "navigation_suffix" {
-                            if let Some(ident) =
-                                Self::find_child_by_kind(child, "simple_identifier")
-                            {
+                            if let Some(ident) = find_child_by_kind(child, "simple_identifier") {
                                 last_name = Some(state.node_text(ident));
                             }
                         } else if child.kind() == "simple_identifier" && last_name.is_none() {
@@ -1320,23 +1255,6 @@ impl SwiftExtractor {
             }
             _ => Some(state.node_text(first_child)),
         }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
     }
 
     /// Walk previous siblings of a declaration looking for `attribute` nodes
@@ -1458,8 +1376,8 @@ impl SwiftExtractor {
     /// Looks for a `user_type` child, or falls back to text after `@`, before `(`.
     fn extract_annotation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // Try user_type -> type_identifier path.
-        if let Some(ut) = Self::find_child_by_kind(node, "user_type") {
-            if let Some(ti) = Self::find_child_by_kind(ut, "type_identifier") {
+        if let Some(ut) = find_child_by_kind(node, "user_type") {
+            if let Some(ti) = find_child_by_kind(ut, "type_identifier") {
                 return state.node_text(ti);
             }
             return state.node_text(ut);
@@ -1474,17 +1392,6 @@ impl SwiftExtractor {
             .unwrap_or(&text)
             .trim()
             .to_string()
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 

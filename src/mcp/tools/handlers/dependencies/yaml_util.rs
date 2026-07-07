@@ -28,18 +28,16 @@ pub fn node_field<'a>(node: &'a Yaml, key: &str) -> Option<&'a Yaml> {
 
 pub fn yaml_to_string(node: &Yaml) -> Option<String> {
     match node {
-        Yaml::String(s) => Some(s.clone()),
+        Yaml::String(s) | Yaml::Real(s) => Some(s.clone()),
         Yaml::Integer(i) => Some(i.to_string()),
-        Yaml::Real(s) => Some(s.clone()),
         Yaml::Boolean(b) => Some(b.to_string()),
-        Yaml::Null => None,
         _ => None,
     }
 }
 
 /// Iterate the entries of a hash node, returning `(key, value)` pairs where
 /// the key is a string. Non-string keys are skipped.
-pub fn hash_entries<'a>(node: &'a Yaml) -> impl Iterator<Item = (String, &'a Yaml)> + 'a {
+pub fn hash_entries(node: &Yaml) -> impl Iterator<Item = (String, &Yaml)> + '_ {
     node.as_hash().into_iter().flat_map(|m| {
         m.iter().filter_map(|(k, v)| {
             let key = match k {

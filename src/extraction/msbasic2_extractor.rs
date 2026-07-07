@@ -6,8 +6,9 @@
 /// from REM-labelled sections that end with RETURN, and extracts LET
 /// assignments as constants, GOSUB/GOTO as call references, and REM
 /// lines as docstrings.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::types::{
@@ -16,59 +17,6 @@ use crate::types::{
 
 /// Extracts code graph nodes and edges from MS BASIC 2.0 source files using tree-sitter.
 pub struct MsBasic2Extractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, `node_id`) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 /// Represents a collected line from the BASIC program for subroutine synthesis.
 struct BasicLine<'a> {
@@ -95,7 +43,7 @@ impl MsBasic2Extractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -149,7 +97,7 @@ impl MsBasic2Extractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -186,13 +134,13 @@ impl MsBasic2Extractor {
 
     /// Parse a single `line` node into a `BasicLine` struct.
     fn parse_line<'a>(state: &ExtractionState, node: TsNode<'a>) -> Option<BasicLine<'a>> {
-        let line_number_node = Self::find_child_by_kind(node, "line_number")?;
+        let line_number_node = find_child_by_kind(node, "line_number")?;
         let line_number_text = state.node_text(line_number_node);
         let line_number: u32 = line_number_text.trim().parse().unwrap_or(0);
 
         // Navigate: line -> statement_list -> statement -> specific_kind
-        let statement_list = Self::find_child_by_kind(node, "statement_list")?;
-        let statement = Self::find_child_by_kind(statement_list, "statement")?;
+        let statement_list = find_child_by_kind(node, "statement_list")?;
+        let statement = find_child_by_kind(statement_list, "statement")?;
 
         // Get the first named child of statement (the actual statement type).
         let mut stmt_cursor = statement.walk();
@@ -246,22 +194,21 @@ impl MsBasic2Extractor {
 
     /// Extract a LET statement as a Const node.
     fn visit_let_statement(state: &mut ExtractionState, basic_line: &BasicLine<'_>) {
-        let Some(statement_list) = Self::find_child_by_kind(basic_line.node, "statement_list")
-        else {
+        let Some(statement_list) = find_child_by_kind(basic_line.node, "statement_list") else {
             return;
         };
-        let Some(statement) = Self::find_child_by_kind(statement_list, "statement") else {
+        let Some(statement) = find_child_by_kind(statement_list, "statement") else {
             return;
         };
-        let Some(let_stmt) = Self::find_child_by_kind(statement, "let_statement") else {
+        let Some(let_stmt) = find_child_by_kind(statement, "let_statement") else {
             return;
         };
 
         // Extract the variable name from: let_statement -> variable -> identifier
-        let Some(var_node) = Self::find_child_by_kind(let_stmt, "variable") else {
+        let Some(var_node) = find_child_by_kind(let_stmt, "variable") else {
             return;
         };
-        let Some(id_node) = Self::find_child_by_kind(var_node, "identifier") else {
+        let Some(id_node) = find_child_by_kind(var_node, "identifier") else {
             return;
         };
         let name = state.node_text(id_node);
@@ -391,9 +338,9 @@ impl MsBasic2Extractor {
                     let mut returns: u32 = 0;
                     for line in &lines[body_start..body_end] {
                         // Try count_complexity on each line node that has children.
-                        let stmt_list = Self::find_child_by_kind(line.node, "statement_list");
+                        let stmt_list = find_child_by_kind(line.node, "statement_list");
                         if let Some(sl) = stmt_list {
-                            let stmt = Self::find_child_by_kind(sl, "statement");
+                            let stmt = find_child_by_kind(sl, "statement");
                             if let Some(s) = stmt {
                                 let mut sc = s.walk();
                                 if sc.goto_first_child() {
@@ -544,7 +491,7 @@ impl MsBasic2Extractor {
         match kind {
             "gosub_statement" | "goto_statement" => {
                 // Extract the target line number.
-                if let Some(ln_node) = Self::find_child_by_kind(node, "line_number") {
+                if let Some(ln_node) = find_child_by_kind(node, "line_number") {
                     let target = state.node_text(ln_node);
                     state.unresolved_refs.push(UnresolvedRef {
                         from_node_id: from_node_id.to_string(),
@@ -610,34 +557,6 @@ impl MsBasic2Extractor {
             "UNNAMED_SUB".to_string()
         } else {
             trimmed
-        }
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final `ExtractionResult` from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }
