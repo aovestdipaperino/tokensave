@@ -1,9 +1,10 @@
-//! Hook handlers for Claude Code and Kiro integrations.
+//! Hook handlers for Claude Code, Kiro, and Factory Droid integrations.
 //!
 //! These functions are invoked by Claude Code's hook system to intercept
 //! tool calls, redirect exploration work to tokensave MCP tools, and
-//! track per-session token savings. Kiro invokes its own handlers with hook
-//! events on stdin and expects blocking decisions through process exit codes.
+//! track per-session token savings. Kiro and Factory Droid invoke their own
+//! handlers with hook events on stdin and expect blocking decisions through
+//! process exit codes rather than Claude's stdout JSON decision.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -180,37 +181,50 @@ pub fn evaluate_hook_decision(tool_input: &str) -> String {
 /// Pure decision logic for the `PreToolUse` hook with an explicit environment
 /// snapshot. Tests use this to avoid touching the real process state.
 pub fn evaluate_hook_decision_with_env(tool_input: &str, env: &HookEnv) -> String {
+    match evaluate_hook_decision_core(tool_input, env) {
+        Some(reason) => build_block_message(&reason),
+        // Empty string = no output -> Claude Code implicitly allows the tool call.
+        None => String::new(),
+    }
+}
+
+/// Shared decision core behind every `PreToolUse`-style hook (Claude's
+/// stdout-JSON path, and the exit-code path used by Kiro and Factory Droid).
+/// Returns `Some(reason)` when the call should be redirected to tokensave MCP
+/// tools, `None` to allow it through unchanged. Per-agent adapters only
+/// differ in how they deliver the event and how they signal the decision —
+/// the classification logic here is identical for all of them.
+fn evaluate_hook_decision_core(tool_input: &str, env: &HookEnv) -> Option<String> {
     let parsed: serde_json::Value =
         serde_json::from_str(tool_input).unwrap_or_else(|_| serde_json::json!({}));
 
     // Block Explore agents outright.
     if parsed.get("subagent_type").and_then(|v| v.as_str()) == Some("Explore") {
-        return build_block_message(TOKENSAVE_RESEARCH_BLOCK_REASON);
+        return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
     }
 
     // Block exploration-style Agent prompts.
     if let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) {
         if is_code_research_prompt(prompt) {
-            return build_block_message(TOKENSAVE_RESEARCH_BLOCK_REASON);
+            return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
         }
     }
 
     // Grep tool — `pattern` is the discriminating field.
     if parsed.get("pattern").is_some() {
         if let Some(reason) = evaluate_grep_tool_input(&parsed, env) {
-            return build_block_message(&reason);
+            return Some(reason);
         }
     }
 
-    // Bash tool — `command` is the discriminating field.
+    // Bash/Execute tool — `command` is the discriminating field.
     if let Some(command) = parsed.get("command").and_then(|v| v.as_str()) {
         if let Some(reason) = evaluate_bash_command(command, env) {
-            return build_block_message(&reason);
+            return Some(reason);
         }
     }
 
-    // Empty string = no output -> Claude Code implicitly allows the tool call.
-    String::new()
+    None
 }
 
 /// Cross-harness "allow" decision for the stdout `PreToolUse` contract.
@@ -549,6 +563,50 @@ pub fn evaluate_kiro_pre_tool_use(event_json: &str) -> Option<&'static str> {
 
 fn is_kiro_delegation_tool(tool_name: &str) -> bool {
     matches!(tool_name, "delegate" | "subagent" | "use_subagent")
+}
+
+/// Factory Droid `PreToolUse` hook handler.
+///
+/// Droid delivers the hook event as JSON on stdin with the tool payload
+/// nested under `tool_input` — the same envelope shape Claude Code uses —
+/// but blocks a tool call via **exit code 2 + stderr**, the same mechanism
+/// Kiro uses (not Claude's stdout JSON decision). The install side only
+/// registers this hook for the `Execute` matcher (Droid's shell tool), so
+/// grep/bash-shaped commands are the only calls that ever reach this
+/// handler; sub-agent/task launches are never routed here because Droid's
+/// sub-agent tool name is unconfirmed in Factory's public docs,
+/// and this hook fails open for anything it isn't told to inspect.
+pub fn hook_droid_pre_tool_use() -> i32 {
+    let event = read_stdin_to_string();
+    if let Some(reason) = evaluate_droid_pre_tool_use(&event) {
+        eprintln!("{reason}");
+        2
+    } else {
+        0
+    }
+}
+
+/// Pure decision logic for Droid `PreToolUse` hook events, using the real
+/// process environment.
+pub fn evaluate_droid_pre_tool_use(raw: &str) -> Option<String> {
+    evaluate_droid_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+}
+
+/// Pure decision logic for Droid `PreToolUse` hook events with an explicit
+/// environment snapshot. Tests use this to avoid touching the real process
+/// state.
+///
+/// Unwraps the nested `tool_input` object (falling back to treating the
+/// whole payload as the tool input if it isn't wrapped) and delegates to the
+/// same [`evaluate_hook_decision_core`] the Claude and Kiro adapters share.
+/// Returns the raw block reason text for the caller to print to stderr —
+/// Droid's channel is exit code + stderr, not a stdout decision object.
+pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<String> {
+    let tool_input = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("tool_input").cloned())
+        .map_or_else(|| raw.to_string(), |ti| ti.to_string());
+    evaluate_hook_decision_core(&tool_input, env)
 }
 
 fn kiro_event_has_research_text(value: &Value) -> bool {

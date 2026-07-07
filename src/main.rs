@@ -828,6 +828,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 process::exit(code);
             }
         }
+        Commands::HookDroidPreToolUse => {
+            let code = tokensave::hooks::hook_droid_pre_tool_use();
+            if code != 0 {
+                process::exit(code);
+            }
+        }
         Commands::Serve { path, timings } => {
             if std::env::var("DISABLE_TOKENSAVE").as_deref() == Ok("true") {
                 // Allow users to opt out per-project by setting

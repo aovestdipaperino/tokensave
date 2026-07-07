@@ -43,6 +43,10 @@ fn agents_md_path(home: &Path) -> PathBuf {
     home.join(".factory/AGENTS.md")
 }
 
+fn settings_path(home: &Path) -> PathBuf {
+    home.join(".factory/settings.json")
+}
+
 // ===========================================================================
 // Install content verification
 // ===========================================================================
@@ -402,4 +406,236 @@ fn test_has_tokensave_before_and_after_install() {
 fn test_name_and_id() {
     assert_eq!(DroidIntegration.name(), "Factory Droid");
     assert_eq!(DroidIntegration.id(), "droid");
+}
+
+// ===========================================================================
+// PreToolUse hook install/uninstall/healthcheck
+// ===========================================================================
+
+#[test]
+fn test_install_writes_pre_tool_use_hook() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+
+    let path = settings_path(home);
+    assert!(path.exists(), "settings.json should be created");
+
+    let config = read_json(&path);
+    let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e["matcher"].as_str() == Some("Execute"))
+        .expect("an Execute-matcher entry should be present");
+    let command = entry["hooks"][0]["command"].as_str().unwrap();
+    assert!(
+        command.contains("/usr/local/bin/tokensave"),
+        "hook command should reference the tokensave binary"
+    );
+    assert!(
+        command.contains("hook-droid-pre-tool-use"),
+        "hook command should invoke the droid PreToolUse subcommand"
+    );
+}
+
+#[test]
+fn test_install_preserves_existing_hooks_and_settings() {
+    // Mirrors the owner's live ~/.factory/settings.json: Factory ships its own
+    // Stop/Notification/PreToolUse/UserPromptSubmit wrappers plus unrelated
+    // top-level keys. Installing tokensave's hook must not disturb any of it.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "enabledPlugins": {"core@factory-plugins": true},
+            "includeCoAuthoredByDroid": false,
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "/opt/owner/permission.sh"}]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "/opt/owner/stop.sh"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&path);
+    assert!(
+        config["enabledPlugins"]["core@factory-plugins"]
+            .as_bool()
+            .unwrap(),
+        "unrelated top-level key should be preserved"
+    );
+    assert!(
+        !config["includeCoAuthoredByDroid"].as_bool().unwrap(),
+        "unrelated top-level key should be preserved"
+    );
+
+    let pre_tool_use = config["hooks"]["PreToolUse"].as_array().unwrap();
+    assert!(
+        pre_tool_use
+            .iter()
+            .any(|e| e["hooks"][0]["command"].as_str() == Some("/opt/owner/permission.sh")),
+        "owner's existing PreToolUse wrapper should be preserved"
+    );
+    assert!(
+        pre_tool_use
+            .iter()
+            .any(|e| e["matcher"].as_str() == Some("Execute")
+                && e["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("tokensave"))),
+        "tokensave's Execute-matcher hook should be added"
+    );
+    assert_eq!(
+        config["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap(),
+        "/opt/owner/stop.sh",
+        "unrelated hook event should be untouched"
+    );
+}
+
+#[test]
+fn test_install_hook_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+
+    DroidIntegration.install(&ctx).unwrap();
+    DroidIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&settings_path(home));
+    let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
+    let count = entries
+        .iter()
+        .filter(|e| {
+            e["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("tokensave"))
+        })
+        .count();
+    assert_eq!(
+        count, 1,
+        "tokensave's hook entry should appear exactly once"
+    );
+}
+
+#[test]
+fn test_local_install_writes_project_settings() {
+    let home_dir = TempDir::new().unwrap();
+    let proj_dir = TempDir::new().unwrap();
+    let home = home_dir.path();
+    let project = proj_dir.path();
+
+    let ctx = make_local_ctx(home, project);
+    DroidIntegration.install(&ctx).unwrap();
+
+    assert!(
+        project.join(".factory/settings.json").exists(),
+        "--local should write <project>/.factory/settings.json"
+    );
+    assert!(
+        !settings_path(home).exists(),
+        "global ~/.factory/settings.json should not be written for --local"
+    );
+}
+
+#[test]
+fn test_uninstall_removes_only_tokensave_hook() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": "/opt/owner/permission.sh"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+    DroidIntegration.uninstall(&ctx).unwrap();
+
+    let config = read_json(&path);
+    let pre_tool_use = config["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(
+        pre_tool_use.len(),
+        1,
+        "only tokensave's entry should be removed"
+    );
+    assert_eq!(
+        pre_tool_use[0]["hooks"][0]["command"].as_str().unwrap(),
+        "/opt/owner/permission.sh",
+        "owner's PreToolUse wrapper should survive uninstall"
+    );
+}
+
+#[test]
+fn test_uninstall_hook_without_install_does_not_crash() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    DroidIntegration.uninstall(&ctx).unwrap();
+}
+
+#[test]
+fn test_healthcheck_detects_missing_hook() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"hooks": {}}"#).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    DroidIntegration.healthcheck(&mut dc, &hctx);
+    assert!(dc.issues > 0, "healthcheck should detect missing hook");
+}
+
+#[test]
+fn test_healthcheck_passes_after_install() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    DroidIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(
+        dc.issues, 0,
+        "clean droid install (including the hook) should have no issues"
+    );
 }

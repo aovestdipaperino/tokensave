@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Factory Droid `PreToolUse` guardrail hook (follow-up to the Droid MCP integration, #163).** `tokensave install --agent droid` now also registers a `PreToolUse` hook under the `hooks` object in `~/.factory/settings.json` (`<project>/.factory/settings.json` for `--local`) — the same file Factory's own hook wrappers live in, a separate file from `mcp.json`. Droid delivers the hook event as JSON on stdin with the tool payload nested under `tool_input` (the Claude/Kiro shape) and blocks a tool call via **exit code 2 + stderr**, the same mechanism as the Kiro hook. The install only registers the `Execute` matcher (Droid's confirmed shell tool) and reuses the same shared decision core as the Claude and Kiro hooks, so symbol-shaped `grep`/`rg`/`ag` calls against indexed code files redirect to tokensave MCP tools while arbitrary shell, `git grep`, non-code files, and specialized sub-agent tasks pass through untouched; `TOKENSAVE_DISABLE_GREP_HOOK=1` opts out per-call. Install/uninstall preserve every other key and hook entry already in `settings.json` (including hooks the user manages themselves); `doctor --agent droid` reports the hook's status.
+
 ## [7.1.0] - 2026-07-09
 
 ### Added
