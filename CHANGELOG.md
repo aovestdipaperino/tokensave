@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The `PreToolUse` guardrail no longer hard-blocks explicitly-typed non-Explore agents, and it honors the opt-out.** The Agent/Task redirection blocked Claude Code's built-in `Explore` agent (correct) but *also* blocked any Agent call whose prompt text merely looked like research — regardless of `subagent_type`. That meant a deliberate delegation to a `general-purpose` worker, an implementer, a custom agent, or another harness's own task type was denied with no override, since the agent path (unlike the Grep/Bash paths) ignored `TOKENSAVE_DISABLE_GREP_HOOK`. Prompt keywords cannot distinguish research from implementation, and the guardrail's intent is to *steer* toward the MCP tools, not to wall off agent delegation. Now: the built-in `Explore` agent is still steered; an explicitly-typed non-Explore agent is never blocked on prompt text; an *untyped* Agent/Task call is still steered by prompt shape (it may be an Explore-style fan-out); and the existing opt-out env var suppresses agent redirection too, giving an explicit "continue" override.
+
 ## [7.1.0] - 2026-07-09
 
 ### Added

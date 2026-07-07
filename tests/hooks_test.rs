@@ -52,6 +52,60 @@ fn test_allows_non_explore_agent() {
 }
 
 #[test]
+fn test_allows_typed_non_explore_agent_even_with_research_prompt() {
+    // An explicitly typed non-Explore agent is a deliberate delegation (an
+    // implementer, a custom agent, another harness's task type). Prompt
+    // keywords must not turn it into a hard block, even when the prompt reads
+    // like research — the caller chose a specific worker on purpose.
+    let input = r#"{"subagent_type": "general-purpose", "prompt": "explore the codebase and find all callers of handle_request, then implement the fix"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a typed non-Explore agent must not be blocked on prompt text, got: {result}"
+    );
+}
+
+#[test]
+fn test_blank_subagent_type_is_treated_as_untyped() {
+    // A caller that sets subagent_type to "" is not a deliberate typed
+    // delegation; a research-shaped prompt must still be steered, and it must
+    // not slip past both branches.
+    let research = r#"{"subagent_type": "", "prompt": "explore the codebase and map every caller of handle_request"}"#;
+    assert!(is_blocked(&evaluate_hook_decision_with_env(
+        research,
+        &env_indexed()
+    )));
+    // ...while a blank type with a non-research prompt is allowed, same as any
+    // untyped call.
+    let impl_task = r#"{"subagent_type": "", "prompt": "write a unit test for the parser"}"#;
+    assert!(evaluate_hook_decision_with_env(impl_task, &env_indexed()).is_empty());
+}
+
+#[test]
+fn test_still_blocks_untyped_research_task() {
+    // With no subagent_type the call is ambiguous and may be an Explore-style
+    // fan-out, so the prompt heuristic still steers it to the MCP tools.
+    let input = r#"{"prompt": "explore the codebase and map the call graph"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(is_blocked(&result));
+}
+
+#[test]
+fn test_explore_agent_respects_opt_out() {
+    // The opt-out that suppresses Grep/Bash redirection now also suppresses
+    // agent redirection, so an explicit "continue" override exists.
+    let input = r#"{"subagent_type": "Explore", "prompt": "find files"}"#;
+    assert!(is_blocked(&evaluate_hook_decision_with_env(
+        input,
+        &env_indexed()
+    )));
+    assert!(
+        evaluate_hook_decision_with_env(input, &env_disabled()).is_empty(),
+        "the disable opt-out must let an Explore agent through"
+    );
+}
+
+#[test]
 fn test_blocks_exploration_prompt_explore() {
     let input = r#"{"prompt": "Explore the codebase and find all API endpoints"}"#;
     let result = evaluate_hook_decision(input);
