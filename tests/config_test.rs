@@ -175,6 +175,86 @@ fn test_add_to_gitignore_adds_newline_if_missing() {
     assert!(content.contains("target/\n.tokensave\n"));
 }
 
+// ── add_to_git_info_exclude ─────────────────────────────────────────────────
+
+fn git_init(path: &std::path::Path) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("init")
+        .arg("-q")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn test_add_to_git_info_exclude_creates_entry() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    let content = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    assert!(content.contains(".tokensave/"));
+    assert!(content.ends_with('\n'));
+    // The tracked .gitignore must be left untouched.
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn test_add_to_git_info_exclude_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    add_to_git_info_exclude(dir.path());
+    let content = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    assert_eq!(content.matches(".tokensave/").count(), 1);
+}
+
+#[test]
+fn test_add_to_git_info_exclude_appends_to_existing() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    // git init already seeds info/exclude with comment lines; append after them.
+    add_to_git_info_exclude(dir.path());
+    let exclude = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains(".tokensave/\n"));
+}
+
+#[test]
+fn test_add_to_git_info_exclude_makes_git_ignore_it() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    // Verify git honors the entry, isolated from the developer's global
+    // excludes file (which may already ignore .tokensave) via an empty
+    // GIT_CONFIG_GLOBAL, so the assertion is deterministic.
+    let empty_global = dir.path().join("empty_gitconfig");
+    std::fs::write(&empty_global, "").unwrap();
+    let status = std::process::Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", &empty_global)
+        .arg("-C")
+        .arg(dir.path())
+        .arg("check-ignore")
+        .arg("-q")
+        .arg(".tokensave/")
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "info/exclude entry should make git ignore .tokensave/"
+    );
+}
+
+#[test]
+fn test_add_to_git_info_exclude_outside_repo_is_noop() {
+    let dir = TempDir::new().unwrap();
+    // No `git init` — not a repository.
+    add_to_git_info_exclude(dir.path());
+    assert!(!dir.path().join(".git").exists());
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
 // ── resolve_path ────────────────────────────────────────────────────────────
 
 #[test]

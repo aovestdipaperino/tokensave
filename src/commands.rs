@@ -492,16 +492,23 @@ pub(crate) async fn init_and_index(
     } else {
         let cg = TokenSave::init(project_path).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
-        // Offer to add .tokensave to .gitignore if not already there
+        // Offer to exclude .tokensave from git if it isn't already. Default to
+        // the local, untracked .git/info/exclude so we don't leave a committable
+        // diff; offer the tracked .gitignore as an explicit opt-in.
         if !tokensave::config::is_in_gitignore(project_path) {
-            eprint!("Add .tokensave to .gitignore? [Y/n] ");
+            eprint!(
+                "Exclude .tokensave from git? [Y] .git/info/exclude (local) / [g] .gitignore (tracked) / [n] no "
+            );
             io::stderr().flush().ok();
             let mut answer = String::new();
             if io::stdin().lock().read_line(&mut answer).is_ok() {
                 let answer = answer.trim();
-                if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+                if answer.eq_ignore_ascii_case("g") {
                     tokensave::config::add_to_gitignore(project_path);
                     eprintln!("Added .tokensave to .gitignore");
+                } else if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+                    tokensave::config::add_to_git_info_exclude(project_path);
+                    eprintln!("Added .tokensave/ to .git/info/exclude (local, untracked)");
                 }
             }
         }
