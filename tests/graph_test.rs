@@ -120,6 +120,53 @@ async fn test_get_callers() {
 }
 
 #[tokio::test]
+async fn test_get_callers_with_depth_distinguishes_hops() {
+    // Chain: main -> process -> validate. Callers of "validate" are the direct
+    // caller "process" (depth 1) and the transitive caller "main" (depth 2).
+    let (db, _dir) = setup_call_chain().await;
+    let traverser = GraphTraverser::new(&db);
+
+    let callers = traverser
+        .get_callers_with_depth("n-validate", 5)
+        .await
+        .expect("get_callers_with_depth failed");
+
+    let by_name: std::collections::HashMap<&str, (usize, Option<u32>)> = callers
+        .iter()
+        .map(|(n, e, d)| (n.name.as_str(), (*d, e.line)))
+        .collect();
+
+    assert_eq!(
+        by_name.get("process").map(|(d, _)| *d),
+        Some(1),
+        "process is a direct caller (depth 1)"
+    );
+    assert_eq!(
+        by_name.get("main").map(|(d, _)| *d),
+        Some(2),
+        "main is a transitive caller (depth 2)"
+    );
+    // The direct edge carries the call-site line (process calls validate at 10).
+    assert_eq!(
+        by_name.get("process").and_then(|(_, line)| *line),
+        Some(10),
+        "direct caller edge should carry the call-site line, not the declaration line"
+    );
+
+    // max_depth = 1 must return only the direct caller.
+    let direct = traverser
+        .get_callers_with_depth("n-validate", 1)
+        .await
+        .expect("get_callers_with_depth failed");
+    let names: Vec<&str> = direct.iter().map(|(n, _, _)| n.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["process"],
+        "max_depth=1 should yield only direct callers"
+    );
+}
+
+#[tokio::test]
 async fn test_get_callees() {
     let (db, _dir) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);

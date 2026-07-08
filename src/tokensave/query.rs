@@ -101,6 +101,19 @@ impl TokenSave {
         traverser.get_callers(node_id, max_depth).await
     }
 
+    /// Like [`get_callers`], but each result carries the BFS depth (1 = direct
+    /// caller, 2 = transitive, …) so callers can distinguish the hops.
+    ///
+    /// [`get_callers`]: Self::get_callers
+    pub async fn get_callers_with_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize)>> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser.get_callers_with_depth(node_id, max_depth).await
+    }
+
     /// Returns all nodes that the given node transitively calls, up to `max_depth`.
     pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let traverser = GraphTraverser::new(&self.db);

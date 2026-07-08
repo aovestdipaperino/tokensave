@@ -441,7 +441,11 @@ fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find all callers of a given node (function, method, etc.) up to a specified depth.",
+        "Find callers of a given node (function, method, etc.). Returns direct \
+         callers by default; pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
+         transitive), `line` (the call-site line where the caller invokes the \
+         target), and `def_line` (the caller's own declaration line).",
         json!({
             "type": "object",
             "properties": {
@@ -451,7 +455,7 @@ fn def_callers() -> ToolDefinition {
                 },
                 "max_depth": {
                     "type": "number",
-                    "description": "Maximum traversal depth (default: 3)"
+                    "description": "Maximum traversal depth, 1-10 (default: 1 = direct callers only). Higher values also return transitive callers, each tagged with its `depth`."
                 }
             },
             "required": ["node_id"]

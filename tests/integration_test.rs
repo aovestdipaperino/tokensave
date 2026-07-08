@@ -631,6 +631,52 @@ async fn test_gitignore_scan_follows_symlinked_directories() {
     );
 }
 
+/// #170: a symlink living inside a `config.exclude`d directory must not be
+/// followed by the gitignore-aware walker. Before the fix the walker pruned
+/// only `.gitignore` entries, so an excluded dir was still descended into and
+/// its symlinks (e.g. a Wine prefix's `dosdevices/z: -> /`) escaped the project
+/// root and walked the whole filesystem.
+#[tokio::test]
+async fn test_gitignore_scan_prunes_excluded_dir_with_symlink() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    // A real source file that should be indexed.
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "pub fn real_symbol() {}\n").unwrap();
+
+    // An external tree the excluded symlink points at — must never be reached.
+    let external = TempDir::new().unwrap();
+    fs::write(
+        external.path().join("escaped.rs"),
+        "pub fn escaped_symbol() {}\n",
+    )
+    .unwrap();
+
+    // build-output/nested/link -> external, with build-output excluded.
+    let excluded = project.join("build-output/nested");
+    fs::create_dir_all(&excluded).unwrap();
+    symlink(external.path(), excluded.join("link")).unwrap();
+
+    TokenSave::init(project).await.unwrap();
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    config.exclude.push("build-output/**".to_string());
+    save_config(project, &config).unwrap();
+
+    let cg = TokenSave::open(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let real = cg.search("real_symbol", 10).await.unwrap();
+    assert!(!real.is_empty(), "the real source file should be indexed");
+
+    let escaped = cg.search("escaped_symbol", 10).await.unwrap();
+    assert!(
+        escaped.is_empty(),
+        "symbols behind a symlink inside an excluded dir must not be indexed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Call edge regression tests
 // ---------------------------------------------------------------------------

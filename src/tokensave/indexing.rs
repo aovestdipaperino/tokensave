@@ -795,6 +795,15 @@ impl TokenSave {
     pub(crate) fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Vec<String> {
         let has_includes = !self.config.include.is_empty();
         let mut files = Vec::new();
+        // Prune directories covered by an `exclude` glob *before* descending.
+        // The `ignore` crate honors `.gitignore` but not our `config.exclude`,
+        // so without this a symlink inside an excluded directory (e.g. a Wine
+        // prefix's `dosdevices/z: -> /`) is followed and the whole filesystem
+        // gets walked (#170). Mirrors the `is_excluded_dir` prune in
+        // `scan_files_walkdir` and applies equally to `--skip-folder`, which
+        // feeds the same exclude list.
+        let root = self.project_root.clone();
+        let config = self.config.clone();
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
             .hidden(!has_includes) // disable when we need to check includes
@@ -802,6 +811,18 @@ impl TokenSave {
             .git_global(true)
             .git_exclude(true)
             .add_custom_ignore_filename(".gitignore")
+            .filter_entry(move |e| {
+                // Only prune directories; files are filtered later by accept_file.
+                if e.file_type().is_some_and(|ft| ft.is_dir()) {
+                    if let Ok(rel) = e.path().strip_prefix(&root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if is_excluded_dir(&rel_str, &config) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .build();
 
         for entry in walker {
