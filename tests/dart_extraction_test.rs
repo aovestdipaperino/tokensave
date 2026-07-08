@@ -533,3 +533,70 @@ class OldWidget {
         "each AnnotationUsage should have an Annotates unresolved ref"
     );
 }
+
+#[test]
+fn test_dart_type_annotation_uses_refs() {
+    // A class referenced only through type annotations (params, returns,
+    // generic args, fields) must emit Uses refs so impact analysis reports
+    // its dependents (#172).
+    let result = extract(
+        "class RecordDefinition {\n  final String id;\n  const RecordDefinition(this.id);\n}\n\
+         class RuntimeRecord {\n  final String id;\n  const RuntimeRecord(this.id);\n}\n\
+         List<RecordDefinition> parseRecords(List<String> ids) {\n  return ids.map(RecordDefinition.new).toList();\n}\n\
+         RuntimeRecord mapRecord(RecordDefinition definition) {\n  return RuntimeRecord(definition.id);\n}\n\
+         void validateRecords(List<RecordDefinition> records) {\n  for (final record in records) {\n    if (record.id.isEmpty) throw FormatException('empty id');\n  }\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "RecordDefinition")
+        .collect();
+    // parseRecords (return generic arg), mapRecord (param), validateRecords
+    // (param generic arg) — three distinct declarations reference the class.
+    let from_ids: std::collections::HashSet<_> = uses.iter().map(|r| &r.from_node_id).collect();
+    assert!(
+        from_ids.len() >= 3,
+        "Expected Uses refs to RecordDefinition from >=3 declarations, got {}: {:?}",
+        from_ids.len(),
+        uses
+    );
+
+    // Constructor invocation `RuntimeRecord(definition.id)` must emit a Uses
+    // ref (Calls cannot resolve to a class node).
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "RuntimeRecord"),
+        "Expected a Uses ref to RuntimeRecord from its constructor call, refs: {:?}",
+        result.unresolved_refs
+    );
+
+    // Core types must not be emitted as Uses refs.
+    assert!(
+        !result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses
+                && (r.reference_name == "String" || r.reference_name == "List")),
+        "Core types should be filtered from type refs"
+    );
+}
+
+#[test]
+fn test_dart_field_type_uses_ref() {
+    let result = extract(
+        "class Config {\n  final String name;\n}\nclass Holder {\n  final Config config;\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "Config"),
+        "Expected a Uses ref to Config from the field declaration, refs: {:?}",
+        result.unresolved_refs
+    );
+}

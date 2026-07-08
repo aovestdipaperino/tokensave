@@ -402,6 +402,9 @@ impl DartExtractor {
 
         // Extract annotation usages from preceding siblings of the signature.
         Self::extract_annotations_from_modifiers(state, sig_node, &id);
+
+        // Type annotations in the signature (params, return, generic args).
+        Self::extract_type_refs(state, sig_node, &id);
     }
 
     // ----------------------------------
@@ -1123,6 +1126,9 @@ impl DartExtractor {
             Self::extract_call_sites(state, body_node, &id);
         }
 
+        // Type annotations in the signature (params, return, generic args).
+        Self::extract_type_refs(state, sig_node, &id);
+
         // Extract annotation usages from the signature node and its parent
         // (method_signature or declaration wrapper).
         Self::extract_annotations_from_modifiers(state, sig_node, &id);
@@ -1484,16 +1490,57 @@ impl DartExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // The declared type of the field (`RecordDefinition definition;`).
+        Self::extract_type_refs(state, decl_node, &id);
     }
 
     // ----------------------------
     // Call site extraction
     // ----------------------------
+
+    /// Push a `Calls` ref for a bare-callee call site; when the callee is
+    /// `UpperCamelCase` (Dart's type convention) also push a companion `Uses`
+    /// ref. A constructor invocation like `RecordDefinition(id)` names the
+    /// *class*, but the resolver's `Calls` kind filter only accepts callables,
+    /// so the ref silently dropped and the class showed no dependents in
+    /// `tokensave_impact` (#172). The `Uses` ref resolves to the class node.
+    fn push_bare_call_ref(
+        state: &mut ExtractionState,
+        callee_name: String,
+        fn_node_id: &str,
+        line: u32,
+        column: u32,
+    ) {
+        let ctor_like = callee_name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+            && !Self::is_dart_core_type(&callee_name);
+        if ctor_like {
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: fn_node_id.to_string(),
+                reference_name: callee_name.clone(),
+                reference_kind: EdgeKind::Uses,
+                line,
+                column,
+                file_path: state.file_path.clone(),
+            });
+        }
+        state.unresolved_refs.push(UnresolvedRef {
+            from_node_id: fn_node_id.to_string(),
+            reference_name: callee_name,
+            reference_kind: EdgeKind::Calls,
+            line,
+            column,
+            file_path: state.file_path.clone(),
+        });
+    }
 
     /// Recursively find call expressions inside a given node and create unresolved Calls references.
     /// Dart AST structure for calls: `identifier` followed by `selector` siblings containing
@@ -1558,14 +1605,14 @@ impl DartExtractor {
                 // calls of the form `obj.method()`).
                 "call_expression" => {
                     if let Some(ident) = find_child_by_kind(child, "identifier") {
-                        state.unresolved_refs.push(UnresolvedRef {
-                            from_node_id: fn_node_id.to_string(),
-                            reference_name: state.node_text(ident),
-                            reference_kind: EdgeKind::Calls,
-                            line: ident.start_position().row as u32,
-                            column: ident.start_position().column as u32,
-                            file_path: state.file_path.clone(),
-                        });
+                        let callee_name = state.node_text(ident);
+                        Self::push_bare_call_ref(
+                            state,
+                            callee_name,
+                            fn_node_id,
+                            ident.start_position().row as u32,
+                            ident.start_position().column as u32,
+                        );
                     }
                     // Recurse into arguments to catch nested calls.
                     Self::extract_call_sites(state, child, fn_node_id);
@@ -1579,14 +1626,13 @@ impl DartExtractor {
                             && (find_child_by_kind(next, "argument_part").is_some()
                                 || find_child_by_kind(next, "arguments").is_some())
                         {
-                            state.unresolved_refs.push(UnresolvedRef {
-                                from_node_id: fn_node_id.to_string(),
-                                reference_name: callee_name,
-                                reference_kind: EdgeKind::Calls,
-                                line: child.start_position().row as u32,
-                                column: child.start_position().column as u32,
-                                file_path: state.file_path.clone(),
-                            });
+                            Self::push_bare_call_ref(
+                                state,
+                                callee_name,
+                                fn_node_id,
+                                child.start_position().row as u32,
+                                child.start_position().column as u32,
+                            );
                         }
                     }
                 }
@@ -1662,6 +1708,81 @@ impl DartExtractor {
                 break;
             }
         }
+    }
+
+    /// Emit `Uses` refs for every `type_identifier` in the subtree rooted at
+    /// `node` (a function/method signature or a field declaration).
+    ///
+    /// Type annotations — parameter types, return types, field types, and
+    /// generic type arguments like `List<RecordDefinition>` — previously
+    /// produced no references at all, so a Dart class used purely as a type
+    /// had zero incoming edges and `tokensave_impact` reported no dependents
+    /// (#172). Dart core types that would never resolve to a project node are
+    /// skipped, and each distinct name is emitted once per declaration.
+    fn extract_type_refs(state: &mut ExtractionState, node: TsNode<'_>, from_node_id: &str) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "type_identifier" {
+                let name = state.node_text(n);
+                if !Self::is_dart_core_type(&name) && seen.insert(name.clone()) {
+                    state.unresolved_refs.push(UnresolvedRef {
+                        from_node_id: from_node_id.to_string(),
+                        reference_name: name,
+                        reference_kind: EdgeKind::Uses,
+                        line: n.start_position().row as u32,
+                        column: n.start_position().column as u32,
+                        file_path: state.file_path.clone(),
+                    });
+                }
+                continue;
+            }
+            let mut cursor = n.walk();
+            stack.extend(n.named_children(&mut cursor));
+        }
+    }
+
+    /// `dart:core` types that can never resolve to a project-defined node.
+    /// Skipping them keeps signature type refs from flooding the unresolved
+    /// table with names like `String` and `int` on every declaration.
+    fn is_dart_core_type(name: &str) -> bool {
+        matches!(
+            name,
+            "String"
+                | "int"
+                | "double"
+                | "num"
+                | "bool"
+                | "Object"
+                | "Null"
+                | "Never"
+                | "List"
+                | "Map"
+                | "Set"
+                | "Iterable"
+                | "Iterator"
+                | "Future"
+                | "FutureOr"
+                | "Stream"
+                | "Function"
+                | "Symbol"
+                | "Type"
+                | "Duration"
+                | "DateTime"
+                | "Uri"
+                | "RegExp"
+                | "StringBuffer"
+                | "Exception"
+                | "Error"
+                | "StackTrace"
+                | "Comparable"
+                | "Record"
+                | "Enum"
+                | "BigInt"
+                | "Runes"
+                | "Pattern"
+                | "Match"
+        )
     }
 
     // ----------------------------
