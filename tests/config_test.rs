@@ -4,8 +4,8 @@ use tokensave::config::*;
 #[test]
 fn test_default_config_has_exclude_patterns() {
     let config = TokenSaveConfig::default();
-    assert!(config.exclude.iter().any(|p| p == "target/**"));
-    assert!(config.exclude.iter().any(|p| p == ".git/**"));
+    assert!(config.exclude.iter().any(|p| p == "**/target/**"));
+    assert!(config.exclude.iter().any(|p| p == "**/.git/**"));
 }
 
 #[test]

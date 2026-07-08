@@ -636,6 +636,7 @@ async fn test_gitignore_scan_follows_symlinked_directories() {
 /// only `.gitignore` entries, so an excluded dir was still descended into and
 /// its symlinks (e.g. a Wine prefix's `dosdevices/z: -> /`) escaped the project
 /// root and walked the whole filesystem.
+#[cfg(unix)]
 #[tokio::test]
 async fn test_gitignore_scan_prunes_excluded_dir_with_symlink() {
     let dir = TempDir::new().unwrap();
