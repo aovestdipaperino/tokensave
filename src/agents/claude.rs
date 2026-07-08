@@ -6,7 +6,7 @@
 //! the `PreToolUse` hook, CLAUDE.md prompt rules, and health checks.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -58,15 +58,15 @@ impl AgentIntegration for ClaudeIntegration {
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".claude").is_dir()
+        claude_config_dir(home).is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".claude.json"))
+        Some(claude_json_path(home))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let claude_json = home.join(".claude.json");
+        let claude_json = claude_json_path(home);
         if !claude_json.exists() {
             return false;
         }
@@ -77,10 +77,53 @@ impl AgentIntegration for ClaudeIntegration {
     }
 }
 
+/// Resolves Claude Code's user-level config directory (normally `~/.claude`).
+///
+/// Claude Code honors `CLAUDE_CONFIG_DIR` to relocate its entire user-level
+/// config; when set, `settings.json`, `CLAUDE.md`, and `.claude.json` all live
+/// under that directory rather than `~/.claude` / `~/.claude.json`. Writing to
+/// the hardcoded home paths meant the install silently landed in a directory
+/// Claude Code never reads (#191). A comma-separated value takes the first
+/// entry. An empty value is treated as unset.
+fn claude_config_dir(home: &Path) -> PathBuf {
+    claude_config_dir_override().unwrap_or_else(|| home.join(".claude"))
+}
+
+/// Resolves the path to Claude Code's `.claude.json` (MCP registrations).
+///
+/// Normally `~/.claude.json`; under `CLAUDE_CONFIG_DIR` it moves to
+/// `$CLAUDE_CONFIG_DIR/.claude.json` (#191).
+fn claude_json_path(home: &Path) -> PathBuf {
+    match claude_config_dir_override() {
+        Some(dir) => dir.join(".claude.json"),
+        None => home.join(".claude.json"),
+    }
+}
+
+/// The directory named by `CLAUDE_CONFIG_DIR`, or `None` when unset/empty.
+fn claude_config_dir_override() -> Option<PathBuf> {
+    let raw = std::env::var_os("CLAUDE_CONFIG_DIR")?;
+    parse_config_dir_value(&raw.to_string_lossy())
+}
+
+/// Parses a raw `CLAUDE_CONFIG_DIR` value into the primary config directory.
+///
+/// Empty/whitespace → `None`. ccusage-style comma-separated lists are
+/// unverified for Claude Code itself, so the primary, writable dir is taken as
+/// the first entry.
+fn parse_config_dir_value(raw: &str) -> Option<PathBuf> {
+    let first = raw.split(',').next().unwrap_or("").trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(first))
+    }
+}
+
 fn install_global(ctx: &InstallContext) -> Result<()> {
-    let claude_dir = ctx.home.join(".claude");
+    let claude_dir = claude_config_dir(&ctx.home);
     let settings_path = claude_dir.join("settings.json");
-    let claude_json_path = ctx.home.join(".claude.json");
+    let claude_json_path = claude_json_path(&ctx.home);
     let claude_md_path = claude_dir.join("CLAUDE.md");
 
     install_mcp_server(&claude_json_path, &ctx.tokensave_bin)?;
@@ -131,9 +174,9 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
 }
 
 fn uninstall_global(ctx: &InstallContext) {
-    let claude_dir = ctx.home.join(".claude");
+    let claude_dir = claude_config_dir(&ctx.home);
     let settings_path = claude_dir.join("settings.json");
-    let claude_json_path = ctx.home.join(".claude.json");
+    let claude_json_path = claude_json_path(&ctx.home);
     let claude_md_path = claude_dir.join("CLAUDE.md");
 
     uninstall_mcp_server(&claude_json_path);
@@ -754,7 +797,7 @@ fn uninstall_claude_md_rules(claude_md_path: &Path) {
 
 /// Check ~/.claude.json MCP server registration.
 fn doctor_check_claude_json(dc: &mut DoctorCounters, home: &Path) {
-    let claude_json_path = home.join(".claude.json");
+    let claude_json_path = claude_json_path(home);
     if !claude_json_path.exists() {
         dc.fail("~/.claude.json not found — run `tokensave install`");
         return;
@@ -825,7 +868,7 @@ fn doctor_check_mcp_binary(dc: &mut DoctorCounters, mcp_entry: &serde_json::Valu
 /// Check ~/.claude/settings.json for hook, permissions, and stale entries.
 /// Auto-repairs missing hooks when a tokensave binary can be determined.
 fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
-    let settings_path = home.join(".claude").join("settings.json");
+    let settings_path = claude_config_dir(home).join("settings.json");
 
     // Check for stale MCP server in old location
     if settings_path.exists() {
@@ -1053,7 +1096,7 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
 
 /// Check CLAUDE.md contains tokensave rules.
 fn doctor_check_claude_md(dc: &mut DoctorCounters, home: &Path) {
-    let claude_md_path = home.join(".claude").join("CLAUDE.md");
+    let claude_md_path = claude_config_dir(home).join("CLAUDE.md");
     if claude_md_path.exists() {
         let has_rules = std::fs::read_to_string(&claude_md_path)
             .unwrap_or_default()
@@ -1166,7 +1209,7 @@ pub fn check_install_stale() {
     };
 
     // --- user-level settings: permissions warning + hook backfill ---
-    let user_settings_path = home.join(".claude").join("settings.json");
+    let user_settings_path = claude_config_dir(&home).join("settings.json");
     if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
         if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
             warn_missing_permissions(&settings);
@@ -1303,6 +1346,25 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_dir_override_parsing() {
+        assert_eq!(parse_config_dir_value(""), None);
+        assert_eq!(parse_config_dir_value("   "), None);
+        assert_eq!(
+            parse_config_dir_value("/home/me/.claude-work"),
+            Some(PathBuf::from("/home/me/.claude-work"))
+        );
+        // Whitespace trimmed; comma-separated takes the first entry.
+        assert_eq!(
+            parse_config_dir_value("  /a/b  "),
+            Some(PathBuf::from("/a/b"))
+        );
+        assert_eq!(
+            parse_config_dir_value("/first,/second"),
+            Some(PathBuf::from("/first"))
+        );
+    }
 
     /// Build a settings value with the three tokensave hooks installed
     /// (modern `{command, args}` shape).

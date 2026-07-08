@@ -1,7 +1,7 @@
 // Rust guideline compliant 2025-10-17
 // Updated 2026-03-23: compact bordered table for status output
 use clap::Parser;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
 use tokensave::tokensave::TokenSave;
@@ -231,6 +231,34 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     project_path.display()
                 );
                 std::process::exit(1);
+            }
+            // Guard against indexing a large non-project tree (e.g. a home dir).
+            // Outside a git working tree, `git_ignore` filtering is inert, so
+            // toolchain trees (site-packages, conda envs, caches) get indexed
+            // wholesale and the DB grows unbounded (#174). Confirm before
+            // proceeding; skip the prompt when stdin isn't a TTY (CI/scripts).
+            if !tokensave::config::is_inside_git_repo(&project_path) {
+                eprintln!(
+                    "\x1b[33mwarning:\x1b[0m '{}' is not inside a git repository.\n  \
+                     `.gitignore` filtering will not apply, so large non-project trees \
+                     (e.g. site-packages, virtualenvs, caches) may be indexed and the \
+                     index can grow very large.",
+                    project_path.display()
+                );
+                if std::io::stdin().is_terminal() {
+                    eprint!("Continue initializing here anyway? [y/N] ");
+                    io::stderr().flush().ok();
+                    let mut answer = String::new();
+                    io::stdin().lock().read_line(&mut answer).map_err(|e| {
+                        tokensave::errors::TokenSaveError::Config {
+                            message: format!("failed to read stdin: {}", e),
+                        }
+                    })?;
+                    if !answer.trim().eq_ignore_ascii_case("y") {
+                        eprintln!("Aborted.");
+                        std::process::exit(1);
+                    }
+                }
             }
             // Check for updates in parallel with indexing
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);

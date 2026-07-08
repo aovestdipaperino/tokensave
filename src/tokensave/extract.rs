@@ -60,7 +60,7 @@ pub(crate) fn extract_files_isolated(
     files: Vec<String>,
 ) -> (Vec<ExtractTuple>, Vec<(String, String)>) {
     if should_use_subprocess() {
-        let workers = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        let workers = worker_count();
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
@@ -105,6 +105,37 @@ pub(crate) fn extract_files_in_process(
 /// Subprocess extraction is the production path. Tests and any environment
 /// where `current_exe()` does not point at the real `tokensave` binary
 /// transparently fall back to in-process extraction.
+/// Number of subprocess extraction workers to spawn.
+///
+/// Defaults to `available_parallelism()` (all cores). `TOKENSAVE_WORKERS=N`
+/// caps it, clamped to `1..=available_parallelism()`, so users on a loaded box
+/// can keep syncs polite (#183). An unset or unparseable value keeps the
+/// all-cores default.
+fn worker_count() -> usize {
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+    clamp_workers(std::env::var("TOKENSAVE_WORKERS").ok().as_deref(), cores)
+}
+
+/// Pure resolution of the worker count from a raw `TOKENSAVE_WORKERS` value.
+///
+/// `None` (unset) → `cores`. A positive integer clamps to `1..=cores`. Anything
+/// else warns and falls back to `cores`.
+fn clamp_workers(raw: Option<&str>, cores: usize) -> usize {
+    match raw {
+        None => cores,
+        Some(v) => match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => n.min(cores),
+            _ => {
+                eprintln!(
+                    "[tokensave] ignoring invalid TOKENSAVE_WORKERS={v:?} \
+                     (expected a positive integer); using {cores} workers"
+                );
+                cores
+            }
+        },
+    }
+}
+
 pub(crate) fn should_use_subprocess() -> bool {
     if std::env::var_os("TOKENSAVE_DISABLE_SUBPROCESS").is_some() {
         return false;
@@ -113,6 +144,35 @@ pub(crate) fn should_use_subprocess() -> bool {
         return false;
     };
     matches!(path.file_stem().and_then(|s| s.to_str()), Some("tokensave"))
+}
+
+#[cfg(test)]
+mod worker_count_tests {
+    use super::clamp_workers;
+
+    #[test]
+    fn unset_uses_all_cores() {
+        assert_eq!(clamp_workers(None, 8), 8);
+    }
+
+    #[test]
+    fn valid_value_is_honored() {
+        assert_eq!(clamp_workers(Some("3"), 8), 3);
+        assert_eq!(clamp_workers(Some("  2 "), 8), 2);
+    }
+
+    #[test]
+    fn value_is_clamped_to_cores() {
+        assert_eq!(clamp_workers(Some("100"), 8), 8);
+    }
+
+    #[test]
+    fn zero_and_garbage_fall_back_to_cores() {
+        assert_eq!(clamp_workers(Some("0"), 8), 8);
+        assert_eq!(clamp_workers(Some("-1"), 8), 8);
+        assert_eq!(clamp_workers(Some("abc"), 8), 8);
+        assert_eq!(clamp_workers(Some(""), 8), 8);
+    }
 }
 
 #[cfg(test)]

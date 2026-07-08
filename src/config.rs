@@ -68,16 +68,25 @@ impl Default for TokenSaveConfig {
             version: 1,
             root_dir: String::new(),
             exclude: vec![
-                "target/**".to_string(),
-                ".git/**".to_string(),
-                ".tokensave/**".to_string(),
+                // Tool/output/state dirs are matched at any depth (`**/`), so a
+                // parent root_dir with nested projects still excludes each
+                // project's own build/state dirs (#173).
+                "**/target/**".to_string(),
+                "**/.git/**".to_string(),
+                "**/.tokensave/**".to_string(),
                 "**/node_modules/**".to_string(),
-                "vendor/**".to_string(),
+                "**/vendor/**".to_string(),
                 "**/*.min.*".to_string(),
+                "**/build/**".to_string(),
+                "**/out/**".to_string(),
+                "**/.gradle/**".to_string(),
+                // Large language-toolchain trees that aren't project source and
+                // aren't covered by `.gitignore` outside a repo (#174).
+                "**/site-packages/**".to_string(),
+                "**/.venv/**".to_string(),
+                "**/venv/**".to_string(),
+                "**/__pycache__/**".to_string(),
                 "bin/**".to_string(),
-                "build/**".to_string(),
-                "out/**".to_string(),
-                ".gradle/**".to_string(),
             ],
             include: Vec::new(),
             max_file_size: 1_048_576,
@@ -273,6 +282,15 @@ pub fn add_to_git_info_exclude(project_path: &Path) {
     if let Err(e) = fs::write(&exclude, content) {
         eprintln!("warning: failed to update .git/info/exclude: {e}");
     }
+}
+
+/// Returns `true` when `project_path` is inside a Git working tree.
+///
+/// Used to warn before indexing a non-repo tree (e.g. a home directory), where
+/// `git_ignore` filtering is inert and large toolchain trees would be indexed
+/// wholesale — see issue #174.
+pub fn is_inside_git_repo(project_path: &Path) -> bool {
+    gix::discover(project_path).is_ok()
 }
 
 /// Resolves the absolute path to this repository's `info/exclude` file via
