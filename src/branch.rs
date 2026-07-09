@@ -268,15 +268,17 @@ mod tests {
         use crate::branch_meta;
         let dir = tempfile::TempDir::new().unwrap();
         let ts = dir.path(); // use as both project_root and tokensave_dir
-        // Seed default-branch metadata + its DB (no git repo → ancestor lookup
-        // falls back to the default branch).
+                             // Seed default-branch metadata + its DB (no git repo → ancestor lookup
+                             // falls back to the default branch).
         branch_meta::save_branch_meta(ts, &branch_meta::BranchMeta::new("main")).unwrap();
         std::fs::write(ts.join("tokensave.db"), b"DBDATA").unwrap();
 
         // First call tracks the branch by copying the ancestor DB.
         assert!(track_branch_copy(ts, ts, "feature-x").unwrap());
         assert!(ts.join("branches").join("feature-x.db").exists());
-        assert!(branch_meta::load_branch_meta(ts).unwrap().is_tracked("feature-x"));
+        assert!(branch_meta::load_branch_meta(ts)
+            .unwrap()
+            .is_tracked("feature-x"));
 
         // Idempotent: already tracked, default branch, and no-metadata are no-ops.
         assert!(!track_branch_copy(ts, ts, "feature-x").unwrap());

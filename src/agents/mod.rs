@@ -1914,7 +1914,8 @@ mod git_hook_tests {
             "must guard on the fresh-clone sentinel so branch switches re-route to branch add, got: {s}"
         );
         assert!(
-            s.contains("elif [ \"$3\" = \"1\" ]") && s.contains("/usr/local/bin/tokensave branch add"),
+            s.contains("elif [ \"$3\" = \"1\" ]")
+                && s.contains("/usr/local/bin/tokensave branch add"),
             "must transparently track the branch on a branch checkout (flag $3==1), got: {s}"
         );
     }
