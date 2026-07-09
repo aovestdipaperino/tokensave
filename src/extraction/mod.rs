@@ -101,6 +101,8 @@ mod sql_extractor;
 mod toml_extractor;
 #[cfg(feature = "lang-wgsl")]
 mod wgsl_extractor;
+#[cfg(feature = "lang-xaml")]
+mod xaml_extractor;
 #[cfg(feature = "lang-zig")]
 mod zig_extractor;
 
@@ -202,6 +204,8 @@ pub use sql_extractor::SqlExtractor;
 pub use toml_extractor::TomlExtractor;
 #[cfg(feature = "lang-wgsl")]
 pub use wgsl_extractor::WgslExtractor;
+#[cfg(feature = "lang-xaml")]
+pub use xaml_extractor::XamlExtractor;
 #[cfg(feature = "lang-zig")]
 pub use zig_extractor::ZigExtractor;
 
@@ -306,6 +310,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(GlslExtractor));
         #[cfg(feature = "lang-wgsl")]
         extractors.push(Box::new(WgslExtractor));
+        #[cfg(feature = "lang-xaml")]
+        extractors.push(Box::new(XamlExtractor));
         #[cfg(feature = "lang-hlsl")]
         extractors.push(Box::new(HlslExtractor));
         #[cfg(feature = "lang-metal")]
