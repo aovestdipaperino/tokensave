@@ -357,6 +357,82 @@ fn test_cursor_install_creates_config() {
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
+
+    let hooks_path = home.join(".cursor/hooks.json");
+    assert!(hooks_path.exists(), "hooks.json should exist after install");
+    let hooks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
+    assert!(pre.iter().any(|e| {
+        e["matcher"].as_str() == Some("Grep|Shell")
+            && e["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("hook-pre-tool-use"))
+    }));
+}
+
+#[test]
+fn test_cursor_install_preserves_foreign_hooks() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let hooks_path = home.join(".cursor/hooks.json");
+    std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hooks_path,
+        r#"{
+            "version": 1,
+            "hooks": {
+                "preToolUse": [
+                    {"command": "rtk hook cursor", "matcher": "Shell"},
+                    {"command": "/opt/custom/limit.py", "matcher": "Task"}
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home);
+    CursorIntegration.install(&ctx).unwrap();
+
+    let hooks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 3, "should append tokensave, keep rtk + custom");
+    assert!(pre
+        .iter()
+        .any(|e| e["command"].as_str() == Some("rtk hook cursor")));
+    assert!(pre.iter().any(|e| {
+        e["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("hook-pre-tool-use"))
+    }));
+}
+
+#[test]
+fn test_cursor_uninstall_removes_only_tokensave_hooks() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    CursorIntegration.install(&ctx).unwrap();
+    CursorIntegration.uninstall(&ctx).unwrap();
+
+    let hooks_path = home.join(".cursor/hooks.json");
+    assert!(
+        !hooks_path.exists() || {
+            let hooks: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+            hooks["hooks"]["preToolUse"]
+                .as_array()
+                .map(|a| {
+                    !a.iter().any(|e| {
+                        e["command"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("tokensave"))
+                    })
+                })
+                .unwrap_or(true)
+        }
+    );
 }
 
 #[test]
