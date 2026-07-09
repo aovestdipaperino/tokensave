@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-07-09
+
 ### Added
 - **XAML / AXAML files are now indexed (#167).** WPF, Avalonia, MAUI, and WinUI markup was invisible to search and impact analysis. A lightweight hand-rolled scanner (no new tree-sitter grammar — the binary is already dominated by grammar tables) now emits: a `Class` node from the root `x:Class` (same qualified name as the code-behind partial class), `Field` nodes for `x:Name`/`Name`d elements, `Uses` refs for namespace-prefixed custom controls (`controls:TitleBar`), and `Calls` refs for event-handler attributes (`Click="OnSaveClicked"`) that resolve to the code-behind method. Binding expressions and unprefixed framework controls are excluded to keep the graph clean.
 - **`TOKENSAVE_WORKERS=N` caps subprocess extraction parallelism (#183).** Extraction spawned one worker per core (`available_parallelism()`) with no ceiling, so N concurrent server instances each assumed they owned every core — amplifying pressure on an already-loaded box. Setting `TOKENSAVE_WORKERS` now clamps the worker count to `1..=available_parallelism()`; unset keeps the all-cores default, and an invalid value warns and falls back.
