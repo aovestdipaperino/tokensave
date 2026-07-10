@@ -979,22 +979,56 @@ impl TokenSave {
         Some(rel_str)
     }
 
-    /// Resolves a path to a relative path string.
-    /// If the path is already relative, returns it as-is.
-    /// If absolute, strips the `project_root` prefix.
-    pub(crate) fn resolve_path(&self, path: &str) -> Option<String> {
-        let path = Path::new(path);
-        if path.is_absolute() {
-            let relative = path.strip_prefix(&self.project_root).ok()?;
-            Some(relative.to_string_lossy().replace('\\', "/"))
-        } else {
-            Some(path.to_string_lossy().replace('\\', "/"))
-        }
-    }
-
     /// Gets the absolute path for a relative path.
     pub(crate) fn absolute_path(&self, relative_path: &str) -> PathBuf {
         self.project_root.join(relative_path)
+    }
+
+    /// Resolves an edit tool's `path` (or a symbol's DB-recorded relative
+    /// path) to the absolute filesystem location that should actually be
+    /// read/written, plus — when that location falls under the *indexed*
+    /// project root — the root-relative path used as the DB reindex key.
+    ///
+    /// Resolution rules (fixes the "wrong-tree write" bug where a caller
+    /// working in a git worktree got edits silently redirected into the
+    /// primary checkout):
+    ///
+    /// - An **absolute** `path` is honored verbatim, even when it points
+    ///   outside the indexed project root. Passing an absolute path is
+    ///   itself the caller's explicit, deliberate statement of where the
+    ///   write should land, so no separate opt-out flag is needed. The
+    ///   previous behavior rejected out-of-root absolute paths with a "path
+    ///   is not within the project" error, which is safe but unhelpful for
+    ///   worktree callers; verbatim honoring plus the `resolved_path` echoed
+    ///   back in every result is the cheaper, equally-safe guard (caller can
+    ///   verify the target instead of being blocked from a legitimate one).
+    /// - A **relative** `path` resolves against `root_override` when given
+    ///   (a worktree caller's per-call retarget), falling back to the
+    ///   indexed project root otherwise — unchanged default behavior.
+    /// - The DB reindex key is only populated when the resolved absolute
+    ///   path is actually under the indexed project root; writes that land
+    ///   elsewhere (verbatim absolute path, or a `root_override` pointing
+    ///   outside the index) skip reindexing since the DB has no record of
+    ///   that tree.
+    pub(crate) fn resolve_edit_target(
+        &self,
+        path: &str,
+        root_override: Option<&str>,
+    ) -> (PathBuf, Option<String>) {
+        let p = Path::new(path);
+        let abs_path = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            match root_override {
+                Some(root) => Path::new(root).join(p),
+                None => self.project_root.join(p),
+            }
+        };
+        let rel_for_index = abs_path
+            .strip_prefix(&self.project_root)
+            .ok()
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+        (abs_path, rel_for_index)
     }
 
     /// Re-indexes a single file after an edit.
@@ -1051,21 +1085,24 @@ impl TokenSave {
 
     /// Performs a single string replacement.
     /// Fails if `old_str` is not found or matches more than once.
+    ///
+    /// `root_override` retargets resolution of a *relative* `path` to a
+    /// directory other than the indexed project root (e.g. a git worktree).
+    /// An absolute `path` is always honored verbatim regardless of this
+    /// parameter. See [`Self::resolve_edit_target`] for full semantics.
     pub async fn str_replace(
         &self,
         path: &str,
         old_str: &str,
         new_str: &str,
+        root_override: Option<&str>,
     ) -> Result<EditResult> {
-        let rel_path = self
-            .resolve_path(path)
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "path is not within the project".to_string(),
-            })?;
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
-        let abs_path = self.absolute_path(&rel_path);
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read {path}: {e}"),
+            message: format!("failed to read {resolved_path}: {e}"),
         })?;
 
         let matches: Vec<_> = source.match_indices(old_str).collect();
@@ -1073,7 +1110,8 @@ impl TokenSave {
             0 => {
                 return Ok(EditResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     matched_str: old_str.to_string(),
                     new_str: new_str.to_string(),
                     message: format!("old_str not found in {path}"),
@@ -1083,7 +1121,8 @@ impl TokenSave {
             n => {
                 return Ok(EditResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     matched_str: old_str.to_string(),
                     new_str: new_str.to_string(),
                     message: format!("old_str matches {n} times, must match exactly once"),
@@ -1096,14 +1135,17 @@ impl TokenSave {
         tokio::fs::write(&abs_path, &modified)
             .await
             .map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {path}: {e}"),
+                message: format!("failed to write {resolved_path}: {e}"),
             })?;
 
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
 
         Ok(EditResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             matched_str: old_str.to_string(),
             new_str: new_str.to_string(),
             message: "replacement successful".to_string(),
@@ -1112,20 +1154,23 @@ impl TokenSave {
 
     /// Applies multiple string replacements atomically.
     /// Fails if any `old_str` doesn't match exactly once.
+    ///
+    /// `root_override` retargets resolution of a *relative* `path` to a
+    /// directory other than the indexed project root (e.g. a git worktree).
+    /// An absolute `path` is always honored verbatim regardless of this
+    /// parameter. See [`Self::resolve_edit_target`] for full semantics.
     pub async fn multi_str_replace(
         &self,
         path: &str,
         replacements: &[(&str, &str)],
+        root_override: Option<&str>,
     ) -> Result<MultiEditResult> {
-        let rel_path = self
-            .resolve_path(path)
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "path is not within the project".to_string(),
-            })?;
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
-        let abs_path = self.absolute_path(&rel_path);
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read {path}: {e}"),
+            message: format!("failed to read {resolved_path}: {e}"),
         })?;
 
         for (old, _) in replacements {
@@ -1133,7 +1178,8 @@ impl TokenSave {
             if count != 1 {
                 return Ok(MultiEditResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     applied_count: 0,
                     message: format!(
                         "replacement '{}' matches {} times, must match exactly once",
@@ -1152,14 +1198,17 @@ impl TokenSave {
         tokio::fs::write(&abs_path, &modified)
             .await
             .map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {path}: {e}"),
+                message: format!("failed to write {resolved_path}: {e}"),
             })?;
 
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
 
         Ok(MultiEditResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             applied_count: replacements.len(),
             message: format!("applied {} replacements", replacements.len()),
         })
@@ -1167,22 +1216,25 @@ impl TokenSave {
 
     /// Inserts content before or after a unique anchor.
     /// Anchor can be a string or 1-indexed line number.
+    ///
+    /// `root_override` retargets resolution of a *relative* `path` to a
+    /// directory other than the indexed project root (e.g. a git worktree).
+    /// An absolute `path` is always honored verbatim regardless of this
+    /// parameter. See [`Self::resolve_edit_target`] for full semantics.
     pub async fn insert_at(
         &self,
         path: &str,
         anchor: &str,
         content: &str,
         before: bool,
+        root_override: Option<&str>,
     ) -> Result<InsertResult> {
-        let rel_path = self
-            .resolve_path(path)
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "path is not within the project".to_string(),
-            })?;
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
-        let abs_path = self.absolute_path(&rel_path);
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read {path}: {e}"),
+            message: format!("failed to read {resolved_path}: {e}"),
         })?;
 
         let lines: Vec<&str> = source.lines().collect();
@@ -1194,7 +1246,8 @@ impl TokenSave {
             if line_num == 0 || line_num > lines.len() {
                 return Ok(InsertResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     anchor_line: line_num as u32,
                     content: content.to_string(),
                     before,
@@ -1217,7 +1270,8 @@ impl TokenSave {
             if matching_lines.is_empty() {
                 return Ok(InsertResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     anchor_line: 0,
                     content: content.to_string(),
                     before,
@@ -1227,7 +1281,8 @@ impl TokenSave {
             if matching_lines.len() > 1 {
                 return Ok(InsertResult {
                     success: false,
-                    file_path: rel_path.clone(),
+                    file_path: display_path,
+                    resolved_path,
                     anchor_line: matching_lines.len() as u32,
                     content: content.to_string(),
                     before,
@@ -1252,14 +1307,17 @@ impl TokenSave {
         tokio::fs::write(&abs_path, &modified)
             .await
             .map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {path}: {e}"),
+                message: format!("failed to write {resolved_path}: {e}"),
             })?;
 
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
 
         Ok(InsertResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             anchor_line: (anchor_line + 1) as u32,
             content: content.to_string(),
             before,
@@ -1272,12 +1330,23 @@ impl TokenSave {
     /// match — if the name is ambiguous, callable definitions win; if still
     /// ambiguous after that filter, the edit is refused so we don't clobber
     /// the wrong site.
-    pub async fn replace_symbol(&self, symbol: &str, new_source: &str) -> Result<EditResult> {
+    ///
+    /// `root_override` retargets where the symbol's (index-relative) file
+    /// path is written to — e.g. a git worktree that shares the same
+    /// relative layout as the indexed project root but lives at a different
+    /// absolute location. See [`Self::resolve_edit_target`] for semantics.
+    pub async fn replace_symbol(
+        &self,
+        symbol: &str,
+        new_source: &str,
+        root_override: Option<&str>,
+    ) -> Result<EditResult> {
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let rel_path = target.file_path.clone();
-        let abs_path = self.absolute_path(&rel_path);
+        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read {rel_path}: {e}"),
+            message: format!("failed to read {resolved_path}: {e}"),
         })?;
         let lines: Vec<&str> = source.lines().collect();
         let start = target.start_line as usize;
@@ -1285,7 +1354,8 @@ impl TokenSave {
         if start >= lines.len() || start > end_inclusive {
             return Ok(EditResult {
                 success: false,
-                file_path: rel_path,
+                file_path: display_path,
+                resolved_path,
                 matched_str: symbol.to_string(),
                 new_str: String::new(),
                 message: format!(
@@ -1308,12 +1378,15 @@ impl TokenSave {
         tokio::fs::write(&abs_path, &modified)
             .await
             .map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {rel_path}: {e}"),
+                message: format!("failed to write {resolved_path}: {e}"),
             })?;
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
         Ok(EditResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             matched_str: format!("{} ({})", target.name, target.kind.as_str()),
             new_str: new_source.to_string(),
             message: format!(
@@ -1328,11 +1401,15 @@ impl TokenSave {
     /// Inserts `content` immediately before or after a named symbol. `position`
     /// is one of `"before"` or `"after"`. Uses the same resolution logic as
     /// `replace_symbol`.
+    ///
+    /// `root_override` retargets where the symbol's (index-relative) file
+    /// path is written to. See [`Self::resolve_edit_target`] for semantics.
     pub async fn insert_at_symbol(
         &self,
         symbol: &str,
         content: &str,
         position: &str,
+        root_override: Option<&str>,
     ) -> Result<InsertResult> {
         let before = match position {
             "before" => true,
@@ -1344,10 +1421,11 @@ impl TokenSave {
             }
         };
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let rel_path = target.file_path.clone();
-        let abs_path = self.absolute_path(&rel_path);
+        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read {rel_path}: {e}"),
+            message: format!("failed to read {resolved_path}: {e}"),
         })?;
         let lines: Vec<&str> = source.lines().collect();
         let anchor_line = if before {
@@ -1358,7 +1436,8 @@ impl TokenSave {
         if anchor_line > lines.len() {
             return Ok(InsertResult {
                 success: false,
-                file_path: rel_path,
+                file_path: display_path,
+                resolved_path,
                 anchor_line: anchor_line as u32,
                 content: content.to_string(),
                 before,
@@ -1377,12 +1456,15 @@ impl TokenSave {
         tokio::fs::write(&abs_path, &modified)
             .await
             .map_err(|e| TokenSaveError::Config {
-                message: format!("failed to write {rel_path}: {e}"),
+                message: format!("failed to write {resolved_path}: {e}"),
             })?;
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
         Ok(InsertResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             anchor_line: (anchor_line + 1) as u32,
             content: content.to_string(),
             before,
@@ -1397,21 +1479,23 @@ impl TokenSave {
     }
 
     /// Performs structural rewrite using ast-grep CLI.
+    ///
+    /// `root_override` retargets resolution of a *relative* `path` to a
+    /// directory other than the indexed project root (e.g. a git worktree).
+    /// An absolute `path` is always honored verbatim regardless of this
+    /// parameter. See [`Self::resolve_edit_target`] for full semantics.
     pub async fn ast_grep_rewrite(
         &self,
         path: &str,
         pattern: &str,
         rewrite: &str,
+        root_override: Option<&str>,
     ) -> Result<AstGrepResult> {
         use std::process::Command;
 
-        let rel_path = self
-            .resolve_path(path)
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "path is not within the project".to_string(),
-            })?;
-
-        let abs_path = self.absolute_path(&rel_path);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
         let check_output = Command::new("ast-grep").args(["--version"]).output();
 
@@ -1421,7 +1505,8 @@ impl TokenSave {
                 if !source.contains(pattern) {
                     return Ok(AstGrepResult {
                         success: false,
-                        file_path: rel_path.clone(),
+                        file_path: display_path,
+                        resolved_path,
                         pattern: pattern.to_string(),
                         rewrite: rewrite.to_string(),
                         message: "pattern not found (built-in literal fallback)".to_string(),
@@ -1429,10 +1514,13 @@ impl TokenSave {
                 }
                 source = source.replace(pattern, rewrite);
                 std::fs::write(&abs_path, source).map_err(TokenSaveError::Io)?;
-                self.reindex_file(&rel_path).await?;
+                if let Some(rel) = &rel_path {
+                    self.reindex_file(rel).await?;
+                }
                 return Ok(AstGrepResult {
                     success: true,
-                    file_path: rel_path,
+                    file_path: display_path,
+                    resolved_path,
                     pattern: pattern.to_string(),
                     rewrite: rewrite.to_string(),
                     message: "literal rewrite completed using built-in fallback".to_string(),
@@ -1440,7 +1528,8 @@ impl TokenSave {
             }
             return Ok(AstGrepResult {
                 success: false,
-                file_path: rel_path.clone(),
+                file_path: display_path,
+                resolved_path,
                 pattern: pattern.to_string(),
                 rewrite: rewrite.to_string(),
                 message: "ast-grep is not installed and this pattern needs SGPattern matching. Simple literal rewrites are handled by the built-in fallback.".to_string(),
@@ -1480,23 +1569,27 @@ impl TokenSave {
                     "ast-grep failed (exit {exit}) with no output. Likely causes: \
                      pattern matched 0 nodes, language not inferred from file extension \
                      (e.g. .txt has no parser), or invalid pattern syntax. \
-                     File: {rel_path}, pattern: {pattern:?}"
+                     File: {display_path}, pattern: {pattern:?}"
                 )
             };
             return Ok(AstGrepResult {
                 success: false,
-                file_path: rel_path.clone(),
+                file_path: display_path,
+                resolved_path,
                 pattern: pattern.to_string(),
                 rewrite: rewrite.to_string(),
                 message,
             });
         }
 
-        self.reindex_file(&rel_path).await?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
 
         Ok(AstGrepResult {
             success: true,
-            file_path: rel_path,
+            file_path: display_path,
+            resolved_path,
             pattern: pattern.to_string(),
             rewrite: rewrite.to_string(),
             message: "ast-grep rewrite completed".to_string(),

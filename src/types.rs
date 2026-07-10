@@ -663,6 +663,11 @@ pub struct ResolvedRef {
 pub struct EditResult {
     pub success: bool,
     pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    /// Callers (e.g. a worktree caller passing `project_root`) should verify
+    /// this to confirm the edit landed where they intended, since `file_path`
+    /// may be project-relative and ambiguous across trees.
+    pub resolved_path: String,
     pub matched_str: String,
     pub new_str: String,
     pub message: String,
@@ -673,6 +678,8 @@ pub struct EditResult {
 pub struct MultiEditResult {
     pub success: bool,
     pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
     pub applied_count: usize,
     pub message: String,
 }
@@ -682,6 +689,8 @@ pub struct MultiEditResult {
 pub struct InsertResult {
     pub success: bool,
     pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
     pub anchor_line: u32,
     pub content: String,
     pub before: bool,
@@ -693,6 +702,8 @@ pub struct InsertResult {
 pub struct AstGrepResult {
     pub success: bool,
     pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
     pub pattern: String,
     pub rewrite: String,
     pub message: String,
