@@ -138,6 +138,9 @@ pub enum Commands {
     /// Kiro PostToolUse hook handler for incremental sync
     #[command(name = "hook-kiro-post-tool-use", hide = true)]
     HookKiroPostToolUse,
+    /// Factory Droid PreToolUse hook handler (called by Droid, not by users directly)
+    #[command(name = "hook-droid-pre-tool-use", hide = true)]
+    HookDroidPreToolUse,
     /// Start MCP server over stdio
     Serve {
         /// Project path

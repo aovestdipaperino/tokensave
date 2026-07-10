@@ -1,6 +1,6 @@
 use tokensave::hooks::{
-    evaluate_claude_pre_tool_use, evaluate_hook_decision, evaluate_hook_decision_with_env,
-    evaluate_kiro_pre_tool_use, HookEnv,
+    evaluate_claude_pre_tool_use, evaluate_droid_pre_tool_use_with_env, evaluate_hook_decision,
+    evaluate_hook_decision_with_env, evaluate_kiro_pre_tool_use, HookEnv,
 };
 
 fn env_indexed() -> HookEnv {
@@ -548,4 +548,128 @@ fn test_claude_falls_back_to_flat_tool_input() {
 #[test]
 fn test_claude_allows_invalid_json() {
     assert!(evaluate_claude_pre_tool_use("not json").is_empty());
+}
+
+// ============================================================================
+// Factory Droid PreToolUse stdin contract — event arrives as JSON on stdin
+// with the tool payload nested under `tool_input` (the Claude/Kiro shape),
+// but the block is signaled via the raw reason text (`hook_droid_pre_tool_use`
+// prints it to stderr and exits 2 — the Kiro mechanism), not a stdout JSON
+// object. Only the `Execute` matcher is installed (§ANALYSIS-droid-hooks.md
+// GAP 2), so only grep/bash-shaped `command` payloads reach this handler in
+// practice; the shared decision core is still exercised directly below for
+// the sub-agent-shaped payload in case that matcher ever widens.
+// ============================================================================
+
+#[test]
+fn test_droid_blocks_grep_shaped_execute_command_on_rust_file() {
+    let input = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "grep -rn FooBar src/main.rs"}
+    }"#;
+    let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed());
+    assert!(
+        reason.is_some(),
+        "a symbol-shaped grep on a Rust file should redirect"
+    );
+    assert!(reason.unwrap().contains("tokensave"));
+}
+
+#[test]
+fn test_droid_allows_terminal_launched_tools() {
+    // Regression: tools the owner runs via a shell (Plannotator, builds, git)
+    // are ordinary Execute commands that don't start with grep/rg/ag and must
+    // pass untouched.
+    let plannotator = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "npx plannotator review"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(plannotator, &env_indexed()).is_none());
+
+    let build = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "cargo build --release"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(build, &env_indexed()).is_none());
+
+    let git_commit = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "git commit -am \"fix bug\""}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(git_commit, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_allows_git_grep() {
+    // git grep searches history, which tokensave does not index.
+    let input = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "git grep FooBar"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_allows_when_not_indexed() {
+    let input = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "grep -rn FooBar src/main.rs"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_not_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_respects_disable_grep_hook_escape_hatch() {
+    let input = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "grep -rn FooBar src/main.rs"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some());
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_disabled()).is_none(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 must let the grep call through"
+    );
+}
+
+#[test]
+fn test_droid_specialized_subagent_with_normal_task_passes() {
+    // A specialized sub-agent given a normal (non-research) task must not be
+    // blocked. Droid's own sub-agent/task launch tool name is unconfirmed in
+    // Factory's public docs, so today such a call never reaches this hook at
+    // all (only "Execute" is a registered matcher) — this test guards the
+    // shared decision core directly in case that matcher scope ever widens to
+    // cover a delegation tool.
+    let input = r#"{
+        "subagent_type": "implementer",
+        "prompt": "Implement the retry logic for the sync client and add tests"
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_falls_back_to_flat_tool_input() {
+    // If the wrapper is absent, treat the payload as a flat tool_input object
+    // (matches the Claude adapter's fallback for the same reason).
+    let input = r#"{"command": "grep -rn FooBar src/main.rs"}"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some());
+}
+
+#[test]
+fn test_droid_allows_empty_input() {
+    assert!(evaluate_droid_pre_tool_use_with_env("", &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_allows_invalid_json() {
+    assert!(evaluate_droid_pre_tool_use_with_env("not json", &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_block_reason_documents_escape_hatch() {
+    let input = r#"{
+        "tool_name": "Execute",
+        "tool_input": {"command": "grep -rn FooBar src/main.rs"}
+    }"#;
+    let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).unwrap();
+    assert!(reason.contains("TOKENSAVE_DISABLE_GREP_HOOK"));
 }
