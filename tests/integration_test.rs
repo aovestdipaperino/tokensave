@@ -966,3 +966,169 @@ async fn test_concurrent_sync_is_rejected() {
     fs::remove_file(&lock_path).unwrap();
     cg.sync().await.unwrap();
 }
+
+/// Regression test for the incremental-sync edge-resolution gap: when a
+/// *callee* file changes, `delete_nodes_by_file` cascades away every edge
+/// that touches its (about-to-be-replaced) node ids — including inbound
+/// `Calls` edges from *other, untouched* caller files. Those edges only
+/// get re-created if the callers' original cross-file references were
+/// durably persisted somewhere `sync`'s resolution step can replay them
+/// from. A full `index_all()` resolves everything in one in-memory pass
+/// and (before this fix) never wrote that bookkeeping to the
+/// `unresolved_refs` table, so a later `sync()` had no record of
+/// "caller_a/caller_b call `target_fn`" and silently dropped both edges
+/// forever once `callee.rs` was ever touched again.
+#[tokio::test]
+async fn test_sync_reresolves_inbound_edges_after_callee_change() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // A callee whose own file will change, plus two callers in different
+    // files that are never touched again after the initial full index.
+    fs::write(
+        project.join("src/callee.rs"),
+        "pub fn target_fn() -> u32 { 42 }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/caller_a.rs"),
+        "pub fn caller_a() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/caller_b.rs"),
+        "pub fn caller_b() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    async fn calls_into_target_fn(cg: &TokenSave) -> usize {
+        let nodes = cg.db().get_all_nodes().await.unwrap();
+        let edges = cg.db().get_all_edges().await.unwrap();
+        let Some(target_id) = nodes
+            .iter()
+            .find(|n| n.name == "target_fn")
+            .map(|n| n.id.clone())
+        else {
+            return 0;
+        };
+        edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls && e.target == target_id)
+            .count()
+    }
+
+    assert_eq!(
+        calls_into_target_fn(&cg).await,
+        2,
+        "full index should resolve both cross-file calls into target_fn"
+    );
+
+    // Change ONLY the callee — neither caller file is touched again.
+    fs::write(
+        project.join("src/callee.rs"),
+        "pub fn target_fn() -> u32 { 43 }\npub fn unrelated() -> u32 { 0 }\n",
+    )
+    .unwrap();
+
+    let sync_result = cg.sync().await.unwrap();
+    assert_eq!(
+        sync_result.files_modified, 1,
+        "only callee.rs should be detected as stale"
+    );
+
+    assert_eq!(
+        calls_into_target_fn(&cg).await,
+        2,
+        "sync must re-resolve inbound call edges from untouched callers \
+         after the callee they reference is reindexed — a full reindex \
+         would keep both edges, so incremental sync must too"
+    );
+}
+
+/// Broader parity check: an incrementally-synced graph (several `sync()`
+/// calls, each touching a different single file — ordinary dev churn)
+/// must end up with the same edge count as a fresh full `index_all()` of
+/// the identical final source tree. A gap here means `sync` is
+/// systematically losing cross-file edges relative to a full reindex.
+#[tokio::test]
+async fn test_incremental_sync_edge_count_matches_full_reindex() {
+    let synced_dir = TempDir::new().unwrap();
+    let synced_project = synced_dir.path();
+    let full_dir = TempDir::new().unwrap();
+    let full_project = full_dir.path();
+
+    fs::create_dir_all(synced_project.join("src")).unwrap();
+    fs::create_dir_all(full_project.join("src")).unwrap();
+
+    let callee_v1 = "pub fn target_fn() -> u32 { 42 }\n";
+    let caller_a_v1 = "pub fn caller_a() -> u32 { target_fn() }\n";
+    let caller_b_v1 = "pub fn caller_b() -> u32 { target_fn() }\n";
+    let caller_c_v1 = "pub fn caller_c() -> u32 { target_fn() }\n";
+
+    fs::write(synced_project.join("src/callee.rs"), callee_v1).unwrap();
+    fs::write(synced_project.join("src/caller_a.rs"), caller_a_v1).unwrap();
+    fs::write(synced_project.join("src/caller_b.rs"), caller_b_v1).unwrap();
+    fs::write(synced_project.join("src/caller_c.rs"), caller_c_v1).unwrap();
+
+    let cg = TokenSave::init(synced_project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Ordinary dev churn: touch callee, then caller_a, then caller_b —
+    // each in its own separate sync. caller_c.rs is never touched again
+    // after the initial full index.
+    let callee_v2 = "pub fn target_fn() -> u32 { 43 }\npub fn extra_1() {}\n";
+    fs::write(synced_project.join("src/callee.rs"), callee_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    let caller_a_v2 = "pub fn caller_a() -> u32 { target_fn() + 1 }\n";
+    fs::write(synced_project.join("src/caller_a.rs"), caller_a_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    let caller_b_v2 = "pub fn caller_b() -> u32 { target_fn() + 2 }\n";
+    fs::write(synced_project.join("src/caller_b.rs"), caller_b_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    // Build the identical final state fresh and index it once.
+    fs::write(full_project.join("src/callee.rs"), callee_v2).unwrap();
+    fs::write(full_project.join("src/caller_a.rs"), caller_a_v2).unwrap();
+    fs::write(full_project.join("src/caller_b.rs"), caller_b_v2).unwrap();
+    fs::write(full_project.join("src/caller_c.rs"), caller_c_v1).unwrap();
+
+    let cg_full = TokenSave::init(full_project).await.unwrap();
+    cg_full.index_all().await.unwrap();
+
+    let synced_stats = cg.get_stats().await.unwrap();
+    let full_stats = cg_full.get_stats().await.unwrap();
+
+    assert_eq!(
+        synced_stats.edge_count, full_stats.edge_count,
+        "incrementally-synced graph ({} edges) must match a full reindex \
+         of identical final source ({} edges) — a gap means sync is \
+         silently dropping cross-file edges that a full reindex would keep",
+        synced_stats.edge_count, full_stats.edge_count
+    );
+
+    // All three callers — including caller_c, never touched after the
+    // initial full index — must still resolve into target_fn.
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let edges = cg.db().get_all_edges().await.unwrap();
+    let target_id = nodes
+        .iter()
+        .find(|n| n.name == "target_fn")
+        .map(|n| n.id.clone())
+        .expect("target_fn node must exist");
+    let calls_into_target = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.target == target_id)
+        .count();
+    assert_eq!(
+        calls_into_target, 3,
+        "all three callers (including untouched caller_c) must resolve \
+         into target_fn after incremental sync"
+    );
+}
