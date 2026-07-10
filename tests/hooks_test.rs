@@ -317,14 +317,25 @@ fn test_kiro_allows_invalid_json() {
 
 #[test]
 fn test_grep_blocks_bare_symbol_on_rust_file() {
-    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "bare symbol on .rs should redirect");
 }
 
 #[test]
+fn test_grep_allows_omitted_output_mode() {
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "the harness default is path-only, so only explicit content mode should redirect"
+    );
+}
+
+#[test]
 fn test_grep_blocks_alternation_on_rust_file() {
-    let input = r#"{"pattern": "Foo\\|Bar\\|Baz", "path": "src/main.rs"}"#;
+    let input =
+        r#"{"pattern": "Foo\\|Bar\\|Baz", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(
         is_blocked(&result),
@@ -334,7 +345,8 @@ fn test_grep_blocks_alternation_on_rust_file() {
 
 #[test]
 fn test_grep_blocks_word_boundary_symbol() {
-    let input = r#"{"pattern": "\\bhandle_request\\b", "path": "src/main.rs"}"#;
+    let input =
+        r#"{"pattern": "\\bhandle_request\\b", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "\\bsymbol\\b should redirect");
 }
@@ -380,7 +392,7 @@ fn test_grep_allows_count_mode() {
 
 #[test]
 fn test_grep_blocks_on_directory_path_when_indexed() {
-    let input = r#"{"pattern": "FooBar", "path": "src/"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(
         is_blocked(&result),
@@ -390,7 +402,7 @@ fn test_grep_blocks_on_directory_path_when_indexed() {
 
 #[test]
 fn test_grep_blocks_when_only_glob_set() {
-    let input = r#"{"pattern": "FooBar", "glob": "**/*.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "glob": "**/*.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "glob over .rs should redirect");
 }
@@ -404,14 +416,14 @@ fn test_grep_allows_glob_for_non_code() {
 
 #[test]
 fn test_grep_blocks_with_type_filter_rust() {
-    let input = r#"{"pattern": "FooBar", "type": "rust"}"#;
+    let input = r#"{"pattern": "FooBar", "type": "rust", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "type=rust should redirect");
 }
 
 #[test]
 fn test_grep_block_message_names_tokensave_tool() {
-    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     let reason = get_block_reason(&result);
     assert!(
@@ -570,7 +582,7 @@ fn test_bash_allows_when_env_override() {
 #[test]
 fn test_disable_env_bypasses_every_redirect_path() {
     let cases = [
-        r#"{"pattern": "FooBar", "path": "src/main.rs"}"#,
+        r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#,
         r#"{"command": "grep -n FooBar src/main.rs"}"#,
         r#"{"subagent_type": "Explore", "prompt": "find all API endpoints"}"#,
         r#"{"prompt": "explore the codebase and map the call graph"}"#,
@@ -677,10 +689,10 @@ fn test_claude_allows_invalid_json() {
 // with the tool payload nested under `tool_input` (the Claude/Kiro shape),
 // but the block is signaled via the raw reason text (`hook_droid_pre_tool_use`
 // prints it to stderr and exits 2 — the Kiro mechanism), not a stdout JSON
-// object. Only the `Execute` matcher is installed (§ANALYSIS-droid-hooks.md
-// GAP 2), so only grep/bash-shaped `command` payloads reach this handler in
-// practice; the shared decision core is still exercised directly below for
-// the sub-agent-shaped payload in case that matcher ever widens.
+// object. The `^(Execute|Grep)$` matcher is installed, so grep/bash-shaped
+// `command` payloads and Droid's native `Grep` `pattern` payloads reach this
+// handler; the shared decision core is still exercised directly below for the
+// sub-agent-shaped payload, which no installed matcher routes here.
 // ============================================================================
 
 #[test]
@@ -757,10 +769,10 @@ fn test_droid_respects_disable_grep_hook_escape_hatch() {
 fn test_droid_specialized_subagent_with_normal_task_passes() {
     // A specialized sub-agent given a normal (non-research) task must not be
     // blocked. Droid's own sub-agent/task launch tool name is unconfirmed in
-    // Factory's public docs, so today such a call never reaches this hook at
-    // all (only "Execute" is a registered matcher) — this test guards the
-    // shared decision core directly in case that matcher scope ever widens to
-    // cover a delegation tool.
+    // Factory's public docs, so today such a call never reaches this hook
+    // (`^(Execute|Grep)$` is the registered matcher). This test guards the
+    // shared decision core directly in case that matcher scope widens to cover
+    // a delegation tool.
     let input = r#"{
         "subagent_type": "implementer",
         "prompt": "Implement the retry logic for the sync client and add tests"
@@ -794,4 +806,93 @@ fn test_droid_block_reason_documents_escape_hatch() {
     }"#;
     let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).unwrap();
     assert!(reason.contains("TOKENSAVE_DISABLE_GREP_HOOK"));
+}
+
+// ---------------------------------------------------------------------------
+// Droid native `Grep` tool payloads. The `Grep` matcher routes these through
+// the same shared decision core as the Claude `Grep` tool, but Droid names two
+// fields differently (`glob_pattern` not `glob`; `file_paths` not
+// `files_with_matches`), so these guard that the classifier reads both shapes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_droid_native_grep_omitted_output_mode_passes() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src"}
+    }"#;
+    let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed());
+    assert!(
+        reason.is_none(),
+        "omitted output_mode uses Droid's path-only default and should pass"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_uses_glob_pattern_field() {
+    // Droid's Grep field is `glob_pattern`, not Claude's `glob`.
+    let on_code = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "FooBar", "glob_pattern": "**/*.rs", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(on_code, &env_indexed()).is_some(),
+        "glob_pattern over .rs should redirect"
+    );
+
+    let on_docs = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "FooBar", "glob_pattern": "**/*.md", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(on_docs, &env_indexed()).is_none(),
+        "glob_pattern over .md should pass through"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_file_paths_mode_passes() {
+    // `file_paths` returns only names (Droid's cheap mode) — nothing to save.
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "file_paths"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none(),
+        "file_paths output mode should pass through"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_content_mode_blocks() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some(),
+        "content output mode over code should redirect"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_non_code_target_passes() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "TODO", "glob_pattern": "**/*.md", "output_mode": "content"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_native_grep_respects_escape_hatch() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some());
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_disabled()).is_none(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 must let the native Grep call through"
+    );
 }

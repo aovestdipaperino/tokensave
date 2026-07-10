@@ -292,15 +292,19 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
     if pattern.is_empty() || pattern.len() > MAX_PATTERN_LEN {
         return None;
     }
-    let output_mode = parsed
-        .get("output_mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("content");
-    if matches!(output_mode, "files_with_matches" | "count") {
+    // Both harnesses default an omitted mode to a cheap path-only result.
+    // Redirect only explicit content searches; missing, malformed, cheap, or
+    // unknown modes fail open.
+    if parsed.get("output_mode").and_then(|v| v.as_str()) != Some("content") {
         return None;
     }
     let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    let glob = parsed.get("glob").and_then(|v| v.as_str()).unwrap_or("");
+    // Claude names this field `glob`; Droid names it `glob_pattern`.
+    let glob = parsed
+        .get("glob")
+        .or_else(|| parsed.get("glob_pattern"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if !target_looks_like_code(path, glob, ty) {
         return None;
@@ -613,12 +617,13 @@ fn is_kiro_delegation_tool(tool_name: &str) -> bool {
 /// Droid delivers the hook event as JSON on stdin with the tool payload
 /// nested under `tool_input` — the same envelope shape Claude Code uses —
 /// but blocks a tool call via **exit code 2 + stderr**, the same mechanism
-/// Kiro uses (not Claude's stdout JSON decision). The install side only
-/// registers this hook for the `Execute` matcher (Droid's shell tool), so
-/// grep/bash-shaped commands are the only calls that ever reach this
-/// handler; sub-agent/task launches are never routed here because Droid's
-/// sub-agent tool name is unconfirmed in Factory's public docs,
-/// and this hook fails open for anything it isn't told to inspect.
+/// Kiro uses (not Claude's stdout JSON decision). The install side registers
+/// this hook for the `^(Execute|Grep)$` matcher, so a symbol-shaped shell
+/// `grep`/`rg`/`ag` (`Execute`) and a symbol-shaped `Grep` `pattern` on a code
+/// target are the only calls that ever reach this handler; `Read`/`LS`/`Glob`
+/// and sub-agent/task launches are never routed here (see the matcher doc in
+/// `agents/droid.rs`), and this hook fails open for anything it isn't told to
+/// inspect.
 pub fn hook_droid_pre_tool_use() -> i32 {
     let event = read_stdin_to_string();
     if let Some(reason) = evaluate_droid_pre_tool_use(&event) {
