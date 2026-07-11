@@ -120,6 +120,7 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 ```bash
 tokensave install                         # auto-detects installed agents
 tokensave install --agent antigravity     # Google Antigravity (formerly Windsurf)
+tokensave install --agent auggie          # AugmentCode
 tokensave install --agent claude          # Claude Code
 tokensave install --agent cline           # Cline
 tokensave install --agent codex           # OpenAI Codex CLI
@@ -153,7 +154,7 @@ By default `tokensave install` registers the MCP server in your **global** agent
 tokensave install --local --agent claude
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
 

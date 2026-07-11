@@ -616,9 +616,37 @@ pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
     let mut symbols: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
+    let mut plain_words: Vec<Option<String>> = Vec::new();
     for token in query.split_whitespace() {
         let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
         classify_token(clean, &stop_words, &mut symbols, &mut seen);
+        // Track plain lowercase words in order for bigram synthesis below.
+        let is_plain = clean.len() >= 3
+            && clean.chars().all(|c| c.is_ascii_lowercase())
+            && !stop_words.contains(clean.to_lowercase().as_str());
+        plain_words.push(is_plain.then(|| clean.to_string()));
+    }
+
+    // Adjacent plain words often name a CamelCase symbol in spaced form:
+    // "promo banner" → `PromoBanner` (#202). Synthesize Pascal/camelCase
+    // bigrams so the exact-name supplement can surface those symbols.
+    for pair in plain_words.windows(2) {
+        if let [Some(a), Some(b)] = pair {
+            let cap = |w: &str| {
+                let mut c = w.chars();
+                c.next().map_or_else(String::new, |f| {
+                    f.to_ascii_uppercase().to_string() + c.as_str()
+                })
+            };
+            let pascal = format!("{}{}", cap(a), cap(b));
+            if seen.insert(pascal.clone()) {
+                symbols.push(pascal);
+            }
+            let camel = format!("{a}{}", cap(b));
+            if seen.insert(camel.clone()) {
+                symbols.push(camel);
+            }
+        }
     }
 
     symbols
@@ -1000,6 +1028,14 @@ fn apply_per_file_cap(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_spaced_words_generate_camel_bigrams() {
+        // #202: "promo banner" should surface the CamelCase symbol PromoBanner.
+        let symbols = extract_symbols_from_query("redesign the promo banner layout");
+        assert!(symbols.contains(&"PromoBanner".to_string()), "{symbols:?}");
+        assert!(symbols.contains(&"promoBanner".to_string()), "{symbols:?}");
+    }
 
     #[test]
     fn test_extract_snake_case() {

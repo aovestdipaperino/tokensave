@@ -3,6 +3,49 @@ use std::fmt::Write as _;
 
 use crate::types::TaskContext;
 
+/// Markdown fence language for a source file path, derived from its extension.
+/// Unknown extensions produce an unlabeled fence.
+fn fence_language(file_path: &str) -> &'static str {
+    let ext = file_path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "rs" => "rust",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "py" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "rb" => "ruby",
+        "php" => "php",
+        "cs" => "csharp",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "swift" => "swift",
+        "dart" => "dart",
+        "scala" => "scala",
+        "sh" | "bash" | "zsh" => "bash",
+        "sql" => "sql",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "json" => "json",
+        "html" => "html",
+        "css" => "css",
+        "lua" => "lua",
+        "ex" | "exs" => "elixir",
+        "hs" => "haskell",
+        "zig" => "zig",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        _ => "",
+    }
+}
+
 /// Formats a `TaskContext` as a Markdown document suitable for LLM consumption.
 ///
 /// The output includes sections for the query, entry points, related symbols
@@ -93,7 +136,9 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                 "#### {} ({}:{})",
                 label, block.file_path, block.start_line,
             );
-            out.push_str("```rust\n");
+            // Fence language from the block's file extension, not a hardcoded
+            // `rust` (#208).
+            let _ = writeln!(out, "```{}", fence_language(&block.file_path));
             out.push_str(&block.content);
             if !block.content.ends_with('\n') {
                 out.push('\n');
@@ -251,5 +296,14 @@ mod tests {
         assert!(md.contains("#### my_fn (src/main.rs:1)"));
         assert!(md.contains("```rust"));
         assert!(md.contains("fn my_fn()"));
+    }
+
+    #[test]
+    fn test_fence_language_from_extension() {
+        // #208
+        assert_eq!(super::fence_language("a/b.tsx"), "tsx");
+        assert_eq!(super::fence_language("a/b.ts"), "typescript");
+        assert_eq!(super::fence_language("a/b.rs"), "rust");
+        assert_eq!(super::fence_language("a/b.unknownext"), "");
     }
 }

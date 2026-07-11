@@ -39,6 +39,7 @@ pub mod graph;
 pub mod hooks;
 pub mod mcp;
 pub mod monitor;
+pub mod project_manifest;
 pub mod redundancy;
 pub mod resolution;
 pub mod runtime_telemetry;

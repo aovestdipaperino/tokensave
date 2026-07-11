@@ -51,6 +51,9 @@ impl TokenSave {
             "project root is not a directory"
         );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        // Fail loudly on a broken project.json (unknown language, bad glob)
+        // instead of silently indexing without the manifest (#194).
+        self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
@@ -426,6 +429,7 @@ impl TokenSave {
             "sync: project root is not a directory"
         );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
@@ -691,6 +695,19 @@ impl TokenSave {
     ///
     /// Supported extensions are derived from the `LanguageRegistry` so that
     /// adding a new extractor automatically picks up its files.
+    /// Validates `.tokensave/project.json` (when present), surfacing parse
+    /// errors, invalid globs, and unknown languages as hard sync errors (#194).
+    pub(crate) fn validate_manifest(&self) -> Result<()> {
+        crate::project_manifest::load_manifest(&self.project_root, &self.registry).map(|_| ())
+    }
+
+    /// Cached `.tokensave/project.json` manifest, if one is configured.
+    pub(crate) fn manifest(
+        &self,
+    ) -> Option<std::sync::Arc<crate::project_manifest::CompiledManifest>> {
+        crate::project_manifest::manifest_for(&self.project_root, &self.registry)
+    }
+
     pub(crate) fn scan_files(&self) -> Vec<String> {
         debug_assert!(
             self.project_root.is_dir(),
@@ -702,8 +719,20 @@ impl TokenSave {
             "scan_files: no supported extensions registered"
         );
 
+        let mut files = self.scan_project_files(&supported_exts);
+        // Manifest external entries (absolute / `~` paths) are additive
+        // opt-ins indexed under their resolved absolute path (#194).
+        if let Some(manifest) = self.manifest() {
+            files.extend(manifest.expand_external_files(self.config.max_file_size));
+            files.sort();
+            files.dedup();
+        }
+        files
+    }
+
+    fn scan_project_files(&self, supported_exts: &[&str]) -> Vec<String> {
         if self.config.git_ignore {
-            let files = self.scan_files_with_gitignore(&supported_exts);
+            let files = self.scan_files_with_gitignore(supported_exts);
             if files.is_empty() {
                 // The project directory may be gitignored by a parent repo,
                 // causing the ignore-aware walker to skip everything. Fall
@@ -722,12 +751,12 @@ impl TokenSave {
                     });
                 if has_source {
                     eprintln!("warning: gitignore-aware scan found no files; falling back to plain walk (project may be gitignored by parent repo)");
-                    return self.scan_files_walkdir(&supported_exts);
+                    return self.scan_files_walkdir(supported_exts);
                 }
             }
             files
         } else {
-            self.scan_files_walkdir(&supported_exts)
+            self.scan_files_walkdir(supported_exts)
         }
     }
 
@@ -739,6 +768,7 @@ impl TokenSave {
         let mut files = Vec::new();
         let root = &self.project_root;
         let config = &self.config;
+        let manifest = self.manifest();
         for entry in WalkDir::new(root)
             .follow_links(true)
             .into_iter()
@@ -748,10 +778,14 @@ impl TokenSave {
                 }
                 let name = e.file_name().to_string_lossy();
                 if name.starts_with('.') || name == "target" {
-                    // Allow if the relative path matches an include glob.
+                    // Allow if the relative path matches an include glob or a
+                    // manifest entry (#194).
                     if let Ok(rel) = e.path().strip_prefix(root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        return is_included(&rel_str, config);
+                        return is_included(&rel_str, config)
+                            || manifest.as_deref().is_some_and(|m| {
+                                m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+                            });
                     }
                     return false;
                 }
@@ -793,7 +827,10 @@ impl TokenSave {
     /// is disabled and hidden entries are filtered manually so that included
     /// dot-paths can pass through.
     pub(crate) fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Vec<String> {
-        let has_includes = !self.config.include.is_empty();
+        let manifest = self.manifest();
+        // Manifest entries behave like include globs for hidden-path
+        // filtering, so disable the crate's hidden filter when either exists.
+        let has_includes = !self.config.include.is_empty() || manifest.is_some();
         let mut files = Vec::new();
         // Prune directories covered by an `exclude` glob *before* descending.
         // The `ignore` crate honors `.gitignore` but not our `config.exclude`,
@@ -838,7 +875,10 @@ impl TokenSave {
                 if name.starts_with('.') {
                     if let Ok(rel) = entry.path().strip_prefix(&self.project_root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        if !is_included(&rel_str, &self.config) {
+                        let manifest_allows = manifest.as_deref().is_some_and(|m| {
+                            m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+                        });
+                        if !is_included(&rel_str, &self.config) && !manifest_allows {
                             continue;
                         }
                     } else {
@@ -860,14 +900,21 @@ impl TokenSave {
     /// Checks whether a file should be included: correct extension, not
     /// excluded by config globs, and within the max file size.
     pub(crate) fn accept_file(&self, path: &Path, supported_exts: &[&str]) -> Option<String> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !supported_exts.contains(&ext) {
-            return None;
-        }
         let relative = path.strip_prefix(&self.project_root).ok()?;
         // Normalize to forward slashes so paths are consistent across
         // platforms and between different directory walkers on Windows.
         let rel_str = relative.to_string_lossy().replace('\\', "/");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            // Extensionless / oddly-named files are still indexable when a
+            // manifest entry explicitly lists them (#194).
+            let manifest_match = self
+                .manifest()
+                .is_some_and(|m| m.matches_local_file(&rel_str));
+            if !manifest_match {
+                return None;
+            }
+        }
         if is_excluded(&rel_str, &self.config) {
             return None;
         }
@@ -903,7 +950,11 @@ impl TokenSave {
             message: format!("failed to read file {file_path}: {e}"),
         })?;
 
-        let Some(extractor) = self.registry.extractor_for_file(file_path) else {
+        let Some(extractor) = crate::project_manifest::resolve_extractor(
+            &self.registry,
+            &self.project_root,
+            file_path,
+        ) else {
             return Ok(());
         };
 

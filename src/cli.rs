@@ -100,7 +100,7 @@ pub enum Commands {
         git_hook: GitHookMode,
         /// Install into the current project's config instead of the user's
         /// global config. Only supported for agents with a project-scoped
-        /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro).
+        /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie).
         #[arg(long)]
         local: bool,
     },
@@ -138,6 +138,9 @@ pub enum Commands {
     /// Kiro PostToolUse hook handler for incremental sync
     #[command(name = "hook-kiro-post-tool-use", hide = true)]
     HookKiroPostToolUse,
+    /// Factory Droid PreToolUse hook handler (called by Droid, not by users directly)
+    #[command(name = "hook-droid-pre-tool-use", hide = true)]
+    HookDroidPreToolUse,
     /// Start MCP server over stdio
     Serve {
         /// Project path

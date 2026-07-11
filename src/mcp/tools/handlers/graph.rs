@@ -197,9 +197,13 @@ async fn handle_literal_search(
             }
             let line_no = (idx as u32) + 1;
             // Innermost node whose [start_line, end_line] covers the match.
+            // Node spans are stored 0-based, so compare with the 0-based index
+            // — comparing the 1-based display line attributed hits to the
+            // *next* adjacent symbol (#203).
+            let line0 = idx as u32;
             let enclosing = nodes
                 .iter()
-                .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
                 .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
 
             matches.push(json!({
