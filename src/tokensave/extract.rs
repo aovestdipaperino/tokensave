@@ -91,7 +91,8 @@ pub(crate) fn extract_files_in_process(
         .filter_map(|file_path| {
             let abs_path = project_root.join(file_path);
             let source = sync::read_source_file(&abs_path).ok()?;
-            let extractor = registry.extractor_for_file(file_path)?;
+            let extractor =
+                crate::project_manifest::resolve_extractor(registry, project_root, file_path)?;
             let mut result = safe_extract(extractor, file_path, &source)?;
             result.sanitize();
             let hash = sync::content_hash(&source);

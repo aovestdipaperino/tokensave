@@ -141,7 +141,9 @@ async fn ensure_fingerprints(
 
     for (file_path, file_nodes) in by_file {
         // Figure out which tree-sitter language this file maps to.
-        let Some(extractor) = registry.extractor_for_file(&file_path) else {
+        let Some(extractor) =
+            crate::project_manifest::resolve_extractor(&registry, &project_root, &file_path)
+        else {
             continue;
         };
         let lang_key = extractor_to_language_key(extractor.language_name());

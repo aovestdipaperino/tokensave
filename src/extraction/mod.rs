@@ -357,6 +357,24 @@ impl LanguageRegistry {
             .map(std::convert::AsRef::as_ref)
     }
 
+    /// Returns the extractor matching a language name (case-insensitive).
+    /// A registered extension (e.g. `"py"`) is accepted as an alias.
+    pub fn extractor_for_language(&self, language: &str) -> Option<&dyn LanguageExtractor> {
+        let lang = language.trim();
+        self.extractors
+            .iter()
+            .find(|e| {
+                e.language_name().eq_ignore_ascii_case(lang)
+                    || e.extensions().iter().any(|x| x.eq_ignore_ascii_case(lang))
+            })
+            .map(std::convert::AsRef::as_ref)
+    }
+
+    /// Returns all registered extractors.
+    pub fn extractors(&self) -> &[Box<dyn LanguageExtractor>] {
+        &self.extractors
+    }
+
     /// Returns all supported file extensions across all extractors.
     pub fn supported_extensions(&self) -> Vec<&str> {
         self.extractors

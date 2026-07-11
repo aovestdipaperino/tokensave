@@ -692,6 +692,33 @@ Created inside each project you index. Contains:
 
 Add `.tokensave` to your `.gitignore`.
 
+### Optional: `.tokensave/project.json` — explicit index entries
+
+Alongside `config.json` (walker policy: excludes, size limits, gitignore), you can add a `project.json` manifest listing files or globs to index explicitly, each with an optional `language` override that forces a specific extractor:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "homedir/.bash_profile", "language": "bash" },
+    { "path": "homedir/.bashrc.d/*.shrc", "language": "bash" },
+    { "path": "~/.bash_aliases", "language": "bash" }
+  ]
+}
+```
+
+This solves two problems that extension-based dispatch cannot:
+
+- **Extensionless or oddly-named files.** `.bash_profile`, `.bashrc`, `*.shrc` and friends are valid Bash but have no `.sh`/`.bash` extension, so they are normally skipped. A manifest entry makes them indexable and the `language` override picks the extractor. This works for any language, not just shell.
+- **Files outside the project root.** Absolute and `~/…` paths (glob-capable) opt in external files — for example your real dotfiles under `$HOME` while the git project only documents them. External files are stored in the graph under their resolved absolute path.
+
+Semantics:
+
+- Entries are **additive**: the normal project walk still happens; `project.json` never removes files. `config.json` excludes and `max_file_size` still apply to in-project entries.
+- `language` accepts any supported language name (case-insensitive; a registered extension like `sh` also works). An unknown language fails the sync with an error listing the valid names.
+- Hidden (dot-prefixed) paths matched by an entry are walked automatically — no separate `include` glob needed.
+- External paths are opt-in and project-local; only add paths you trust, since their content is parsed and indexed.
+
 ### Per-user: `~/.tokensave/`
 
 Created in your home directory. Contains:
