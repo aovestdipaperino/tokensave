@@ -162,11 +162,16 @@ pub fn hook_pre_tool_use() {
 /// [`evaluate_hook_decision`]. If the payload isn't the expected wrapper shape,
 /// falls back to treating `raw` as a flat tool-input object.
 pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
+    evaluate_claude_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+}
+
+/// [`evaluate_claude_pre_tool_use`] with an explicit environment snapshot.
+pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
     let tool_input = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|v| v.get("tool_input").cloned())
         .map_or_else(|| raw.to_string(), |ti| ti.to_string());
-    evaluate_hook_decision(&tool_input)
+    evaluate_hook_decision_with_env(&tool_input, env)
 }
 
 /// Pure decision logic for the `PreToolUse` hook, using the real process
@@ -198,10 +203,11 @@ fn evaluate_hook_decision_core(tool_input: &str, env: &HookEnv) -> Option<String
     let parsed: serde_json::Value =
         serde_json::from_str(tool_input).unwrap_or_else(|_| serde_json::json!({}));
 
-    // Agent/Task redirection is suppressed by the same opt-out that covers the
-    // Grep/Bash paths, so a user who deliberately wants to delegate has an
-    // explicit override instead of a hard wall.
-    if !env.disable_grep_hook {
+    // Agent/Task redirection is gated the same way as the Grep/Bash paths:
+    // without a `.tokensave` index there are no MCP tools to redirect to, and
+    // the opt-out gives a user who deliberately wants to delegate an explicit
+    // override instead of a hard wall.
+    if env.cwd_has_tokensave_db && !env.disable_grep_hook {
         // A blank `subagent_type` is treated as absent: a caller that
         // initializes the field to "" is no more a deliberate typed delegation
         // than one that omits it, so it must not slip past both the Explore
@@ -557,7 +563,7 @@ fn is_code_research_prompt(prompt: &str) -> bool {
 /// from Claude's hook handler because Claude expects a JSON decision on stdout.
 pub fn hook_kiro_pre_tool_use() -> i32 {
     let event = read_stdin_to_string();
-    if let Some(reason) = evaluate_kiro_pre_tool_use(&event) {
+    if let Some(reason) = evaluate_kiro_pre_tool_use_with_env(&event, &HookEnv::from_runtime()) {
         eprintln!("{reason}");
         2
     } else {
@@ -571,6 +577,20 @@ pub fn hook_kiro_pre_tool_use() -> i32 {
 /// task text looks like codebase research that tokensave MCP tools should
 /// answer first.
 pub fn evaluate_kiro_pre_tool_use(event_json: &str) -> Option<&'static str> {
+    evaluate_kiro_pre_tool_use_with_env(event_json, &HookEnv::from_runtime())
+}
+
+/// [`evaluate_kiro_pre_tool_use`] with an explicit environment snapshot.
+///
+/// Gated like the Claude agent path: no `.tokensave` index means there is
+/// nothing to redirect to, and the opt-out env var suppresses the block.
+pub fn evaluate_kiro_pre_tool_use_with_env(
+    event_json: &str,
+    env: &HookEnv,
+) -> Option<&'static str> {
+    if !env.cwd_has_tokensave_db || env.disable_grep_hook {
+        return None;
+    }
     let parsed: Value = serde_json::from_str(event_json).ok()?;
     let tool_name = parsed.get("tool_name").and_then(Value::as_str)?;
     if !is_kiro_delegation_tool(tool_name) {
