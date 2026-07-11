@@ -170,6 +170,73 @@ fn identifier_from_segment(seg: &str) -> String {
         .to_string()
 }
 
+/// Parses the identifiers bound by a TypeScript/JavaScript import statement
+/// from its source text (#207).
+///
+/// Handles `import Default from 'm'`, `import { a, b as c } from 'm'`,
+/// `import * as ns from 'm'`, `import type { T } from 'm'`, mixed
+/// default+named forms, and side-effect imports (`import 'm'` → no
+/// identifiers, never reported).
+fn ts_import_identifiers(signature: &str) -> Vec<String> {
+    let text = signature.trim();
+    let Some(rest) = text.strip_prefix("import") else {
+        return Vec::new();
+    };
+    // Clause is everything before ` from ` (side-effect imports have none).
+    let clause = match rest.find(" from ") {
+        Some(pos) => &rest[..pos],
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    // Split the clause into default part and braced part.
+    let (outside, braced) = match (clause.find('{'), clause.rfind('}')) {
+        (Some(o), Some(c)) if c > o => (
+            format!("{}{}", &clause[..o], &clause[c + 1..]),
+            Some(&clause[o + 1..c]),
+        ),
+        _ => (clause.to_string(), None),
+    };
+    // Outside the braces: `type`, a default import, and/or `* as ns`.
+    for seg in outside.split(',') {
+        let seg = seg.trim().trim_start_matches("type ").trim();
+        // `import type { ... }` leaves a bare `type` keyword outside the braces.
+        if seg.is_empty() || seg == "type" {
+            continue;
+        }
+        if let Some(star) = seg.strip_prefix('*') {
+            if let Some(ns) = star.trim().strip_prefix("as ") {
+                out.push(ns.trim().to_string());
+            }
+            continue;
+        }
+        if seg
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+        {
+            out.push(seg.to_string());
+        }
+    }
+    // Inside the braces: named imports, possibly aliased or `type`-qualified.
+    if let Some(braced) = braced {
+        for seg in braced.split(',') {
+            let seg = seg.trim().trim_start_matches("type ").trim();
+            if seg.is_empty() {
+                continue;
+            }
+            let name = match seg.split_whitespace().collect::<Vec<_>>() {
+                ref w if w.len() >= 3 && w[1] == "as" => w[2].to_string(),
+                ref w if !w.is_empty() => w[0].to_string(),
+                _ => continue,
+            };
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 /// Handles `tokensave_dead_code` tool calls.
 pub(super) async fn handle_dead_code(
     cg: &TokenSave,
@@ -487,11 +554,23 @@ pub(super) async fn handle_unused_imports(
         // codebases lean heavily on grouped imports.
         // Go imports are slash-separated paths; the generic `::`-based parser
         // would never recover the package identifier (#148).
-        let is_go = std::path::Path::new(&use_node.file_path)
+        let ext = std::path::Path::new(&use_node.file_path)
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("go"));
-        let identifiers = if is_go {
+            .map(|e| e.to_ascii_lowercase().to_string_lossy().to_string())
+            .unwrap_or_default();
+        let is_go = ext == "go";
+        // TS/JS Use nodes are named after the *module path* (e.g.
+        // `@testing-library/react`), so the `::`-based parser can never
+        // recover the bound identifiers — it flagged every used import as
+        // unused (#207). Parse the import clause from the stored signature.
+        let is_ts_js = matches!(
+            ext.as_str(),
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs"
+        );
+        let identifiers: Vec<String> = if is_go {
             go_import_identifier(&use_node.name).into_iter().collect()
+        } else if is_ts_js {
+            ts_import_identifiers(use_node.signature.as_deref().unwrap_or(""))
         } else {
             identifiers_from_use_path(&use_node.name)
         };
@@ -1575,11 +1654,13 @@ pub(super) async fn handle_unsafe_patterns(
 
         for (idx, line) in source.lines().enumerate() {
             let line_no = (idx as u32) + 1;
+            // Node spans are 0-based; compare against the 0-based index (#203).
+            let line0 = idx as u32;
             for kind in &kinds {
                 if line_matches_unsafe_kind(line, kind) {
                     let enclosing = nodes
                         .iter()
-                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
                         .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
                         .map(|n| n.qualified_name.clone());
                     *by_kind.entry(kind.clone()).or_insert(0) += 1;
@@ -2352,7 +2433,31 @@ fn line_is_comment(source: &str, byte: usize) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::go_import_identifier;
+    use super::{go_import_identifier, ts_import_identifiers};
+
+    #[test]
+    fn ts_import_identifiers_named_and_aliased() {
+        // #207
+        let ids = ts_import_identifiers(
+            "import { render, screen as scr } from \"@testing-library/react\";",
+        );
+        assert_eq!(ids, vec!["render", "scr"]);
+    }
+
+    #[test]
+    fn ts_import_identifiers_default_namespace_and_type() {
+        let ids = ts_import_identifiers("import React, { type FC } from 'react';");
+        assert_eq!(ids, vec!["React", "FC"]);
+        let ids = ts_import_identifiers("import * as path from 'node:path';");
+        assert_eq!(ids, vec!["path"]);
+        let ids = ts_import_identifiers("import type { Config } from './config';");
+        assert_eq!(ids, vec!["Config"]);
+    }
+
+    #[test]
+    fn ts_import_identifiers_side_effect_import_is_empty() {
+        assert!(ts_import_identifiers("import './styles.css';").is_empty());
+    }
 
     #[test]
     fn go_import_identifier_plain_last_segment() {
