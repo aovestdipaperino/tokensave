@@ -100,6 +100,12 @@ where
     if include.is_empty() && exclude.is_empty() {
         return items;
     }
+    // Normalize the filter substrings as well as the item paths: a Windows
+    // caller passing `apps\admin` must match the canonical forward-slash
+    // stored path (#204). Config-level defaults reach this function without
+    // going through the dispatcher's arg normalization.
+    let include: Vec<String> = include.iter().map(|s| s.replace('\\', "/")).collect();
+    let exclude: Vec<String> = exclude.iter().map(|s| s.replace('\\', "/")).collect();
     items
         .into_iter()
         .filter(|item| {
@@ -167,6 +173,40 @@ pub(crate) fn truncate_response(s: &str) -> String {
     }
 }
 
+/// Normalizes Windows backslash separators to `/` in the path-shaped tool
+/// arguments (`file`, `path`, `file_path`, and the `path_include` /
+/// `path_exclude` arrays) so they match the DB's canonical forward-slash
+/// stored paths (#204). Verbatim/UNC paths (leading `\\`) are left alone —
+/// rewriting their prefix would break them on Windows.
+fn normalize_path_args(args: &mut Value) {
+    fn normalize(s: &str) -> Option<String> {
+        if s.contains('\\') && !s.starts_with("\\\\") {
+            Some(s.replace('\\', "/"))
+        } else {
+            None
+        }
+    }
+    let Some(map) = args.as_object_mut() else {
+        return;
+    };
+    for key in ["file", "path", "file_path"] {
+        if let Some(v) = map.get_mut(key) {
+            if let Some(fixed) = v.as_str().and_then(normalize) {
+                *v = Value::String(fixed);
+            }
+        }
+    }
+    for key in ["path_include", "path_exclude"] {
+        if let Some(arr) = map.get_mut(key).and_then(|v| v.as_array_mut()) {
+            for v in arr {
+                if let Some(fixed) = v.as_str().and_then(normalize) {
+                    *v = Value::String(fixed);
+                }
+            }
+        }
+    }
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
@@ -175,10 +215,11 @@ pub(crate) fn truncate_response(s: &str) -> String {
 pub async fn handle_tool_call(
     cg: &TokenSave,
     tool_name: &str,
-    args: Value,
+    mut args: Value,
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
+    normalize_path_args(&mut args);
     debug_assert!(
         !tool_name.is_empty(),
         "handle_tool_call called with empty tool_name"
@@ -580,5 +621,48 @@ mod tests {
         let items = vec!["src\\a.rs", "vendor\\b.rs"];
         let out = filter_by_path_lists(items, &["src/".to_string()], &[], |s| s);
         assert_eq!(out, vec!["src\\a.rs"]);
+    }
+
+    #[test]
+    fn filter_by_path_lists_normalizes_backslash_substrings() {
+        // Windows caller passes backslash filters against canonical
+        // forward-slash stored paths (#204).
+        let items = vec!["apps/admin/src/x.tsx", "apps/web/src/y.tsx"];
+        let out = filter_by_path_lists(items, &["apps\\admin\\src".to_string()], &[], |s| s);
+        assert_eq!(out, vec!["apps/admin/src/x.tsx"]);
+        let items = vec!["apps/admin/src/x.tsx", "apps/web/src/y.tsx"];
+        let out = filter_by_path_lists(items, &[], &["apps\\web".to_string()], |s| s);
+        assert_eq!(out, vec!["apps/admin/src/x.tsx"]);
+    }
+
+    #[test]
+    fn normalize_path_args_rewrites_path_shaped_keys() {
+        let mut args = serde_json::json!({
+            "file": "apps\\admin\\src\\StatCard.tsx",
+            "path": "apps\\admin",
+            "path_include": ["apps\\admin\\src", "already/fine"],
+            "path_exclude": ["node_modules\\x"],
+            "query": "leave\\alone",
+        });
+        normalize_path_args(&mut args);
+        assert_eq!(args["file"], "apps/admin/src/StatCard.tsx");
+        assert_eq!(args["path"], "apps/admin");
+        assert_eq!(args["path_include"][0], "apps/admin/src");
+        assert_eq!(args["path_include"][1], "already/fine");
+        assert_eq!(args["path_exclude"][0], "node_modules/x");
+        // Non-path keys are untouched.
+        assert_eq!(args["query"], "leave\\alone");
+    }
+
+    #[test]
+    fn normalize_path_args_leaves_verbatim_unc_paths_alone() {
+        let mut args = serde_json::json!({
+            "path": "\\\\?\\C:\\repo\\src",
+            "file": "C:\\repo\\src\\a.rs",
+        });
+        normalize_path_args(&mut args);
+        // Verbatim prefix must not be rewritten; drive-letter paths are.
+        assert_eq!(args["path"], "\\\\?\\C:\\repo\\src");
+        assert_eq!(args["file"], "C:/repo/src/a.rs");
     }
 }
