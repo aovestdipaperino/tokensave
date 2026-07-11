@@ -5077,10 +5077,23 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
         !stale.is_empty(),
         "find_stale_files should detect newly written b.rs"
     );
-    server.cg().sync_if_stale_silent(&stale).await.unwrap();
-    server.refresh_file_token_map().await;
 
-    let after_count = server.file_token_map_snapshot().len();
+    // Await-condition, not await-duration (#134): `sync_if_stale_silent` is
+    // best-effort by design (it swallows extraction errors and gives up if a
+    // peer holds the sync lock too long), so a single-shot attempt flakes
+    // under full-suite parallel load. Re-drive the same lazy pipeline until
+    // the token map reflects b.rs, bounded by a generous deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let after_count = loop {
+        let stale = server.cg().find_stale_files().await;
+        server.cg().sync_if_stale_silent(&stale).await.unwrap();
+        server.refresh_file_token_map().await;
+        let count = server.file_token_map_snapshot().len();
+        if count > initial_count || std::time::Instant::now() >= deadline {
+            break count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
     assert!(
         after_count > initial_count,
         "lazy sync should have refreshed map ({initial_count} -> {after_count})"
