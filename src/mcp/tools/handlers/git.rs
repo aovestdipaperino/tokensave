@@ -166,7 +166,7 @@ async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<S
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
             }));
             modified_ids.push(node.id.clone());
         }
@@ -191,7 +191,7 @@ async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<S
             "name": impacted_node.name,
             "kind": impacted_node.kind.as_str(),
             "file": impacted_node.file_path,
-            "line": impacted_node.start_line,
+            "line": super::display_line(impacted_node.start_line),
         }));
         if has_tests(&impacted_node.file_path) {
             affected_tests.insert(impacted_node.file_path.clone());
@@ -595,7 +595,7 @@ async fn changelog_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<Stri
                     "name": n.name,
                     "kind": n.kind.as_str(),
                     "file": n.file_path,
-                    "line": n.start_line,
+                    "line": super::display_line(n.start_line),
                     "signature": n.signature,
                 })
             })
@@ -692,7 +692,7 @@ async fn commit_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
             }));
         }
     }
@@ -790,7 +790,7 @@ pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<Too
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
             });
 
             // Check if this symbol has callers outside changed files — if so, it's
@@ -936,7 +936,7 @@ pub(super) async fn handle_branch_search(cg: &TokenSave, args: Value) -> Result<
                 "name": r.node.name,
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
-                "line": r.node.start_line,
+                "line": super::display_line(r.node.start_line),
                 "signature": r.node.signature,
                 "score": r.score,
                 "branch": branch,
@@ -1066,7 +1066,7 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
                     "qualified_name": node.qualified_name,
                     "kind": node.kind.as_str(),
                     "file": node.file_path,
-                    "line": node.start_line,
+                    "line": super::display_line(node.start_line),
                     "signature": node.signature,
                 }));
                 touched.push(node.file_path.clone());
@@ -1086,7 +1086,7 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
                     "qualified_name": node.qualified_name,
                     "kind": node.kind.as_str(),
                     "file": node.file_path,
-                    "line": node.start_line,
+                    "line": super::display_line(node.start_line),
                     "signature": node.signature,
                 }));
                 touched.push(node.file_path.clone());
@@ -1107,7 +1107,7 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
                         "qualified_name": head_node.qualified_name,
                         "kind": head_node.kind.as_str(),
                         "file": head_node.file_path,
-                        "line": head_node.start_line,
+                        "line": super::display_line(head_node.start_line),
                         "base_signature": base_node.signature,
                         "head_signature": head_node.signature,
                     }));

@@ -361,13 +361,13 @@ fn find_redundant_pairs(
                 "overlap_kind": kind,
                 "a": {
                     "file": na.file_path,
-                    "line": na.start_line,
+                    "line": super::display_line(na.start_line),
                     "name": na.name,
                     "id": na.id,
                 },
                 "b": {
                     "file": nb.file_path,
-                    "line": nb.start_line,
+                    "line": super::display_line(nb.start_line),
                     "name": nb.name,
                     "id": nb.id,
                 },

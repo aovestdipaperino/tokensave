@@ -287,7 +287,7 @@ pub(super) async fn handle_dead_code(
                 "name": n.name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
+                "line": super::display_line(n.start_line),
                 "signature": n.signature,
             })
         })
@@ -350,7 +350,7 @@ pub(super) async fn handle_module_api(
                 "name": n.name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
+                "line": super::display_line(n.start_line),
                 "signature": n.signature,
             })
         })
@@ -431,7 +431,7 @@ pub(super) async fn handle_hotspots(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "incoming": incoming,
                 "outgoing": outgoing,
                 "total": incoming + outgoing,
@@ -611,7 +611,7 @@ pub(super) async fn handle_unused_imports(
                     "name": use_node.name,
                     "unused": identifier,
                     "file": use_node.file_path,
-                    "line": use_node.start_line,
+                    "line": super::display_line(use_node.start_line),
                 }));
             }
         }
@@ -698,7 +698,7 @@ pub(super) async fn handle_rank(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "count": count,
             })
         })
@@ -753,8 +753,8 @@ pub(super) async fn handle_largest(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "start_line": node.start_line,
-                "end_line": node.end_line,
+                "start_line": super::display_line(node.start_line),
+                "end_line": super::display_line(node.end_line),
                 "lines": lines,
             })
         })
@@ -855,7 +855,7 @@ pub(super) async fn handle_inheritance_depth(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "depth": depth,
             })
         })
@@ -1020,7 +1020,7 @@ pub(super) async fn handle_recursion(
                     "name": node.name,
                     "kind": node.kind.as_str(),
                     "file": node.file_path,
-                    "line": node.start_line,
+                    "line": super::display_line(node.start_line),
                 }));
             } else {
                 chain.push(json!({ "id": node_id }));
@@ -1359,7 +1359,7 @@ pub(super) async fn handle_complexity(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "lines": lines,
                 "cyclomatic_complexity": cyclomatic,
                 "cognitive_complexity": node.cognitive_complexity,
@@ -1428,7 +1428,7 @@ pub(super) async fn handle_doc_coverage(
                 "id": node.id,
                 "name": node.name,
                 "kind": node.kind.as_str(),
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "signature": node.signature,
             }));
     }
@@ -1486,7 +1486,7 @@ pub(super) async fn handle_god_class(
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "methods": methods,
                 "fields": fields,
                 "total_members": total,
@@ -1766,7 +1766,11 @@ pub(super) async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<To
         };
         let enclosing = nodes
             .iter()
-            .filter(|n| n.start_line <= diag.line_start && diag.line_start <= n.end_line)
+            .filter(|n| {
+                // diag lines are 1-based, node spans 0-based (#203)
+                let l0 = diag.line_start.saturating_sub(1);
+                n.start_line <= l0 && l0 <= n.end_line
+            })
             .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
             .map(|n| n.qualified_name.clone());
         if !touched.contains(&diag.file) {
@@ -2241,7 +2245,11 @@ pub(super) async fn handle_field_sites(
             let line_text = line_at(&source, site.byte).unwrap_or("");
             let enclosing = nodes
                 .iter()
-                .filter(|n| n.start_line <= site.line && site.line <= n.end_line)
+                .filter(|n| {
+                    // field sites are 1-based, node spans 0-based (#203)
+                    let l0 = site.line.saturating_sub(1);
+                    n.start_line <= l0 && l0 <= n.end_line
+                })
                 .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
                 .map(|n| n.qualified_name.clone());
             let entry = json!({

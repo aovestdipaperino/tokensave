@@ -323,7 +323,7 @@ pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<To
                 .push(json!({
                     "name": src_node.name,
                     "kind": src_node.kind.as_str(),
-                    "line": src_node.start_line,
+                    "line": super::display_line(src_node.start_line),
                 }));
         }
     }
@@ -337,7 +337,7 @@ pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<To
                 "name": n.name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
+                "line": super::display_line(n.start_line),
             })
         })
         .collect();
@@ -645,7 +645,7 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
                     "name": node.name,
                     "kind": node.kind.as_str(),
                     "file": node.file_path,
-                    "line": node.start_line,
+                    "line": super::display_line(node.start_line),
                     "in_cycle_out_degree": out_deg,
                     "in_cycle_in_degree": in_deg,
                 }))
@@ -678,10 +678,10 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
             "files": files_json,
             "symbols": symbols_detailed,
             "entry_point": entry_point.map(|n| json!({
-                "name": n.name, "file": n.file_path, "line": n.start_line,
+                "name": n.name, "file": n.file_path, "line": super::display_line(n.start_line),
             })),
             "break_point_candidate": hub.map(|n| json!({
-                "name": n.name, "file": n.file_path, "line": n.start_line,
+                "name": n.name, "file": n.file_path, "line": super::display_line(n.start_line),
                 "rationale": "Highest in-cycle in-degree — refactoring its callers is the most effective way to fragment this SCC.",
             })),
             "note": "Mutual dependency — port together, starting at `entry_point` and refactoring `break_point_candidate` to split the cycle.",
@@ -717,7 +717,7 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
                         "name": node.name,
                         "kind": node.kind.as_str(),
                         "file": node.file_path,
-                        "line": node.start_line,
+                        "line": super::display_line(node.start_line),
                     });
                     if !deps.is_empty() {
                         sym["depends_on"] = json!(deps);
@@ -792,7 +792,7 @@ pub(super) async fn handle_simplify_scan(
                         json!({
                             "name": d.node.name,
                             "file": d.node.file_path,
-                            "line": d.node.start_line,
+                            "line": super::display_line(d.node.start_line),
                             "score": d.score,
                         })
                     })
@@ -801,7 +801,7 @@ pub(super) async fn handle_simplify_scan(
                     duplications.push(json!({
                         "symbol": node.name,
                         "file": node.file_path,
-                        "line": node.start_line,
+                        "line": super::display_line(node.start_line),
                         "similar_to": dupes,
                     }));
                 }
@@ -818,7 +818,7 @@ pub(super) async fn handle_simplify_scan(
                     dead_introductions.push(json!({
                         "symbol": node.name,
                         "file": node.file_path,
-                        "line": node.start_line,
+                        "line": super::display_line(node.start_line),
                         "reason": "no incoming edges (unreferenced)",
                     }));
                 }
@@ -839,7 +839,7 @@ pub(super) async fn handle_simplify_scan(
                     complexity_warnings.push(json!({
                         "symbol": node.name,
                         "file": node.file_path,
-                        "line": node.start_line,
+                        "line": super::display_line(node.start_line),
                         "lines": lines,
                         "fan_out": fan_out,
                         "score": score,
@@ -893,7 +893,7 @@ pub(super) async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result
         root.name,
         root.kind.as_str(),
         root.file_path,
-        root.start_line
+        super::display_line(root.start_line)
     );
     let mut all_files: Vec<String> = vec![root.file_path.clone()];
 
@@ -940,7 +940,7 @@ fn build_type_tree<'a>(
                     child.name,
                     child.kind.as_str(),
                     child.file_path,
-                    child.start_line,
+                    super::display_line(child.start_line),
                 );
                 all_files.push(child.file_path.clone());
                 build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
@@ -1190,7 +1190,11 @@ pub(super) async fn handle_todos(
                 if contains_marker_word(line, kind).is_some() {
                     let enclosing = nodes
                         .iter()
-                        .filter(|n| n.start_line <= line_no && line_no <= n.end_line)
+                        .filter(|n| {
+                            // marker lines are 1-based, node spans 0-based (#203)
+                            let l0 = line_no.saturating_sub(1);
+                            n.start_line <= l0 && l0 <= n.end_line
+                        })
                         .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
                         .map(|n| n.qualified_name.clone());
                     *by_kind.entry(kind.clone()).or_insert(0) += 1;
@@ -1697,7 +1701,7 @@ pub(super) async fn handle_signature_search(
             "qualified_name": node.qualified_name,
             "kind": node.kind.as_str(),
             "file": node.file_path,
-            "line": node.start_line,
+            "line": super::display_line(node.start_line),
             "is_async": node.is_async,
             "signature": sig,
         }));

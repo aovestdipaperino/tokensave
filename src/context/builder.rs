@@ -115,7 +115,9 @@ impl<'a> ContextBuilder<'a> {
             "get_code called with empty file_path"
         );
         debug_assert!(!node.id.is_empty(), "get_code called with empty node id");
-        if node.start_line == 0 || node.end_line == 0 {
+        // Node spans are stored 0-based (tree-sitter rows), so 0 is a valid
+        // first-line start — only an inverted span is malformed (#203).
+        if node.end_line < node.start_line {
             return None;
         }
 
@@ -142,8 +144,11 @@ impl<'a> ContextBuilder<'a> {
         let content = content?;
 
         let lines: Vec<&str> = content.lines().collect();
-        let start = (node.start_line as usize).saturating_sub(1);
-        let end = node.end_line as usize;
+        // 0-based inclusive span -> slice [start, end] (#203). The previous
+        // 1-based interpretation shifted every snippet up a line: it pulled
+        // in the line above the symbol and dropped the closing line.
+        let start = node.start_line as usize;
+        let end = (node.end_line as usize).saturating_add(1);
         if start >= lines.len() {
             return None;
         }

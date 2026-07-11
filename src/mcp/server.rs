@@ -57,7 +57,7 @@ client. WAL mode is used, so readers do not block writers.
 - `name` TEXT — local identifier
 - `qualified_name` TEXT — language-style path (e.g. `crate::module::Type::method`)
 - `file_path` TEXT — relative to the project root
-- `start_line`, `end_line` INTEGER — 1-based inclusive line range of the symbol
+- `start_line`, `end_line` INTEGER — 0-based inclusive line range of the symbol (raw tree-sitter rows; MCP tool responses convert to 1-based editor lines)
 - `start_column`, `end_column` INTEGER — 0-based column range
 - `attrs_start_line` INTEGER — first line of leading doc-comments / attributes (or `start_line` if none)
 - `signature` TEXT NULL — extracted source-level signature

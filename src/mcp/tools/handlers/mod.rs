@@ -25,6 +25,14 @@ use crate::tokensave::TokenSave;
 
 use super::{ToolResult, MAX_RESPONSE_CHARS};
 
+/// Converts a stored 0-based line (tree-sitter row, the convention every
+/// extractor writes to the DB) into the 1-based editor line used in every
+/// user-facing response (#203). Internal span comparisons stay 0-based;
+/// apply this only at the presentation edge.
+pub(crate) fn display_line(stored: u32) -> u32 {
+    stored + 1
+}
+
 /// Extracts the `node_id` parameter from tool arguments, accepting `id` as a
 /// fallback alias. LLMs occasionally shorten `node_id` to `id`; this avoids a
 /// confusing error when that happens.
