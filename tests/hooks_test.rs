@@ -1,6 +1,6 @@
 use tokensave::hooks::{
-    evaluate_claude_pre_tool_use, evaluate_droid_pre_tool_use_with_env, evaluate_hook_decision,
-    evaluate_hook_decision_with_env, evaluate_kiro_pre_tool_use, HookEnv,
+    evaluate_claude_pre_tool_use_with_env, evaluate_droid_pre_tool_use_with_env,
+    evaluate_hook_decision_with_env, evaluate_kiro_pre_tool_use_with_env, HookEnv,
 };
 
 fn env_indexed() -> HookEnv {
@@ -40,14 +40,14 @@ fn get_block_reason(json: &str) -> String {
 #[test]
 fn test_blocks_explore_agent() {
     let input = r#"{"subagent_type": "Explore", "prompt": "find files"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_allows_non_explore_agent() {
     let input = r#"{"subagent_type": "general-purpose", "prompt": "write a function"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(result.is_empty(), "allow should produce no output");
 }
 
@@ -106,105 +106,134 @@ fn test_explore_agent_respects_opt_out() {
 }
 
 #[test]
+fn test_agent_block_requires_index() {
+    // Like the Grep/Bash paths, the agent redirection is pointless without a
+    // .tokensave index: there are no MCP tools to redirect to, so both the
+    // Explore deny and the untyped-prompt deny must no-op.
+    let explore = r#"{"subagent_type": "Explore", "prompt": "find files"}"#;
+    assert!(
+        evaluate_hook_decision_with_env(explore, &env_not_indexed()).is_empty(),
+        "Explore agent must pass through when no index exists"
+    );
+    let untyped = r#"{"prompt": "explore the codebase and map the call graph"}"#;
+    assert!(
+        evaluate_hook_decision_with_env(untyped, &env_not_indexed()).is_empty(),
+        "untyped research task must pass through when no index exists"
+    );
+}
+
+#[test]
+fn test_kiro_delegation_block_requires_index_and_honors_opt_out() {
+    let input = r#"{
+        "hook_event_name": "preToolUse",
+        "tool_name": "delegate",
+        "tool_input": {"task": "Explore the codebase architecture and call graph"}
+    }"#;
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_indexed()).is_some());
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_not_indexed()).is_none());
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_disabled()).is_none());
+}
+
+#[test]
 fn test_blocks_exploration_prompt_explore() {
     let input = r#"{"prompt": "Explore the codebase and find all API endpoints"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_codebase_structure_prompt() {
     let input = r#"{"prompt": "Understand the codebase structure"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_call_graph_prompt() {
     let input = r#"{"prompt": "Show me the call graph for this function"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_who_calls_prompt() {
     let input = r#"{"prompt": "who calls the process_data function?"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_callers_of_prompt() {
     let input = r#"{"prompt": "find callers of handle_request"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_callees_of_prompt() {
     let input = r#"{"prompt": "what are the callees of main?"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_symbol_lookup_prompt() {
     let input = r#"{"prompt": "do a symbol lookup for TokenSave"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_read_every_prompt() {
     let input = r#"{"prompt": "read every file in src/"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_blocks_entire_codebase_prompt() {
     let input = r#"{"prompt": "scan the entire codebase for patterns"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_allows_normal_prompt() {
     let input = r#"{"prompt": "write a unit test for the parse function"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(result.is_empty(), "allow should produce no output");
 }
 
 #[test]
 fn test_allows_empty_input() {
-    let result = evaluate_hook_decision("");
+    let result = evaluate_hook_decision_with_env("", &env_indexed());
     assert!(result.is_empty(), "allow should produce no output");
 }
 
 #[test]
 fn test_allows_invalid_json() {
-    let result = evaluate_hook_decision("not json at all");
+    let result = evaluate_hook_decision_with_env("not json at all", &env_indexed());
     assert!(result.is_empty(), "allow should produce no output");
 }
 
 #[test]
 fn test_allows_no_prompt_no_subagent() {
     let input = r#"{"foo": "bar"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(result.is_empty(), "allow should produce no output");
 }
 
 #[test]
 fn test_case_insensitive_blocking() {
     let input = r#"{"prompt": "EXPLORE the Codebase Architecture"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_block_response_has_reason() {
     let input = r#"{"subagent_type": "Explore"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     let reason = get_block_reason(&result);
     assert!(reason.contains("tokensave MCP tools"));
 }
@@ -212,7 +241,7 @@ fn test_block_response_has_reason() {
 #[test]
 fn test_block_response_uses_correct_hook_schema() {
     let input = r#"{"subagent_type": "Explore"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     let v: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert_eq!(
         v["hookSpecificOutput"]["hookEventName"].as_str(),
@@ -236,7 +265,7 @@ fn test_kiro_blocks_delegate_code_research_task() {
             "task": "Explore the codebase architecture and call graph"
         }
     }"#;
-    let reason = evaluate_kiro_pre_tool_use(input).unwrap();
+    let reason = evaluate_kiro_pre_tool_use_with_env(input, &env_indexed()).unwrap();
     assert!(reason.contains("tokensave MCP tools"));
 }
 
@@ -249,7 +278,7 @@ fn test_kiro_blocks_subagent_research_prompt() {
             "prompt": "who calls the process_data function?"
         }
     }"#;
-    assert!(evaluate_kiro_pre_tool_use(input).is_some());
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_indexed()).is_some());
 }
 
 #[test]
@@ -261,7 +290,7 @@ fn test_kiro_allows_delegate_execution_task() {
             "task": "Run the full test suite and report failures"
         }
     }"#;
-    assert!(evaluate_kiro_pre_tool_use(input).is_none());
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_indexed()).is_none());
 }
 
 #[test]
@@ -273,12 +302,12 @@ fn test_kiro_allows_non_delegation_tool() {
             "prompt": "Explore the entire codebase"
         }
     }"#;
-    assert!(evaluate_kiro_pre_tool_use(input).is_none());
+    assert!(evaluate_kiro_pre_tool_use_with_env(input, &env_indexed()).is_none());
 }
 
 #[test]
 fn test_kiro_allows_invalid_json() {
-    assert!(evaluate_kiro_pre_tool_use("not json").is_none());
+    assert!(evaluate_kiro_pre_tool_use_with_env("not json", &env_indexed()).is_none());
 }
 
 // ============================================================================
@@ -548,7 +577,7 @@ fn test_grep_allows_empty_pattern() {
 fn test_grep_existing_evaluate_hook_decision_still_works_for_agent() {
     // Sanity: the legacy entrypoint should still handle Agent
     let input = r#"{"subagent_type": "Explore"}"#;
-    let result = evaluate_hook_decision(input);
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
@@ -564,7 +593,7 @@ fn test_claude_blocks_explore_agent_nested_stdin() {
         "tool_name": "Agent",
         "tool_input": {"subagent_type": "Explore", "prompt": "find files"}
     }"#;
-    let result = evaluate_claude_pre_tool_use(input);
+    let result = evaluate_claude_pre_tool_use_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "nested Explore agent should redirect");
 }
 
@@ -575,7 +604,7 @@ fn test_claude_blocks_research_prompt_nested_stdin() {
         "tool_name": "Agent",
         "tool_input": {"prompt": "who calls the process_data function?"}
     }"#;
-    let result = evaluate_claude_pre_tool_use(input);
+    let result = evaluate_claude_pre_tool_use_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
     assert!(get_block_reason(&result).contains("tokensave MCP tools"));
 }
@@ -587,7 +616,7 @@ fn test_claude_allows_normal_tool_nested_stdin() {
         "tool_name": "Bash",
         "tool_input": {"command": "cargo test"}
     }"#;
-    let result = evaluate_claude_pre_tool_use(input);
+    let result = evaluate_claude_pre_tool_use_with_env(input, &env_indexed());
     assert!(result.is_empty(), "normal tool call should pass through");
 }
 
@@ -595,13 +624,13 @@ fn test_claude_allows_normal_tool_nested_stdin() {
 fn test_claude_falls_back_to_flat_tool_input() {
     // If the wrapper is absent, treat the payload as a flat tool_input object.
     let input = r#"{"subagent_type": "Explore"}"#;
-    let result = evaluate_claude_pre_tool_use(input);
+    let result = evaluate_claude_pre_tool_use_with_env(input, &env_indexed());
     assert!(is_blocked(&result));
 }
 
 #[test]
 fn test_claude_allows_invalid_json() {
-    assert!(evaluate_claude_pre_tool_use("not json").is_empty());
+    assert!(evaluate_claude_pre_tool_use_with_env("not json", &env_indexed()).is_empty());
 }
 
 // ============================================================================
