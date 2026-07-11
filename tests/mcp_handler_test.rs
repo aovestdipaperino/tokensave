@@ -5072,17 +5072,16 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
     // doesn't have to wait through the 30 s cooldown gate in
     // `maybe_sync_if_stale`.
     std::fs::write(project.join("b.rs"), "fn b() {}").unwrap();
-    let stale = server.cg().find_stale_files().await;
-    assert!(
-        !stale.is_empty(),
-        "find_stale_files should detect newly written b.rs"
-    );
 
     // Await-condition, not await-duration (#134): `sync_if_stale_silent` is
     // best-effort by design (it swallows extraction errors and gives up if a
     // peer holds the sync lock too long), so a single-shot attempt flakes
-    // under full-suite parallel load. Re-drive the same lazy pipeline until
-    // the token map reflects b.rs, bounded by a generous deadline.
+    // under full-suite parallel load. There is deliberately no standalone
+    // "find_stale_files detected b.rs" assert either — the server's startup
+    // catch-up sync runs in the background and can index b.rs first, making
+    // that snapshot legitimately empty. Re-drive the same lazy pipeline until
+    // the token map reflects b.rs, bounded by a generous deadline; the map
+    // growing is the observable outcome regardless of which sync won.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let after_count = loop {
         let stale = server.cg().find_stale_files().await;
