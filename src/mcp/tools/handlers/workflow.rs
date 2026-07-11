@@ -78,7 +78,7 @@ pub(super) async fn handle_diagnose(cg: &TokenSave, args: Value) -> Result<ToolR
                                 "name": caller.name,
                                 "kind": caller.kind.as_str(),
                                 "file": caller.file_path,
-                                "line": caller.start_line,
+                                "line": super::display_line(caller.start_line),
                             })
                         })
                         .collect();
@@ -102,8 +102,8 @@ pub(super) async fn handle_diagnose(cg: &TokenSave, args: Value) -> Result<ToolR
                 "name": n.name,
                 "kind": n.kind.as_str(),
                 "qualified_name": n.qualified_name,
-                "start_line": n.start_line,
-                "end_line": n.end_line,
+                "start_line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
             })),
             "callers": callers_json,
         }));

@@ -127,8 +127,8 @@ pub async fn render_map(db: &Database, file_path: &str, kinds: Option<&[String]>
             json!({
                 "kind": n.kind.as_str(),
                 "name": n.name,
-                "line": n.start_line,
-                "end_line": n.end_line,
+                "line": n.start_line + 1,
+                "end_line": n.end_line + 1,
                 "visibility": n.visibility.as_str(),
             })
         })
@@ -154,8 +154,8 @@ pub async fn render_signatures(db: &Database, file_path: &str) -> Result<Value> 
                 "kind": n.kind.as_str(),
                 "name": n.name,
                 "qualified_name": n.qualified_name,
-                "line": n.start_line,
-                "end_line": n.end_line,
+                "line": n.start_line + 1,
+                "end_line": n.end_line + 1,
                 "visibility": n.visibility.as_str(),
                 "signature": sig,
                 "is_async": n.is_async,

@@ -776,7 +776,7 @@ pub(super) async fn handle_test_risk(
                 id: n.id.clone(),
                 name: n.name.clone(),
                 file: n.file_path.clone(),
-                line: n.start_line,
+                line: super::display_line(n.start_line),
                 complexity,
                 fan_in: fi,
                 has_test,
@@ -902,7 +902,7 @@ pub(super) async fn handle_test_map(
                 json!({
                     "test_name": n.name,
                     "test_file": n.file_path,
-                    "test_line": n.start_line,
+                    "test_line": super::display_line(n.start_line),
                 })
             })
             .collect();
@@ -912,14 +912,14 @@ pub(super) async fn handle_test_map(
                 "id": node.id,
                 "name": node.name,
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
             }));
         } else {
             coverage_map.push(json!({
                 "source_name": node.name,
                 "source_id": node.id,
                 "source_file": node.file_path,
-                "source_line": node.start_line,
+                "source_line": super::display_line(node.start_line),
                 "tests": test_callers,
             }));
         }
@@ -1054,7 +1054,7 @@ async fn coverage_for_file(
                     "id": node.id,
                     "name": node.name,
                     "file": node.file_path,
-                    "line": node.start_line,
+                    "line": super::display_line(node.start_line),
                 }));
             }
         } else {
@@ -1065,7 +1065,7 @@ async fn coverage_for_file(
                     json!({
                         "test_name": n.name,
                         "test_file": n.file_path,
-                        "test_line": n.start_line,
+                        "test_line": super::display_line(n.start_line),
                     })
                 })
                 .collect();
@@ -1073,7 +1073,7 @@ async fn coverage_for_file(
                 "id": node.id,
                 "name": node.name,
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "tested_by": test_list,
             }));
         }
@@ -1127,8 +1127,8 @@ async fn coverage_for_symbol(cg: &TokenSave, symbol: &str, max_depth: usize) -> 
                 all_tests.push(json!({
                     "test_name": t.name,
                     "test_file": t.file_path,
-                    "test_line": t.start_line,
-                    "covers": { "name": n.name, "file": n.file_path, "line": n.start_line },
+                    "test_line": super::display_line(t.start_line),
+                    "covers": { "name": n.name, "file": n.file_path, "line": super::display_line(n.start_line) },
                 }));
             }
         }
@@ -1180,7 +1180,7 @@ async fn coverage_for_test_fn(
                 "name": callee.name,
                 "kind": callee.kind.as_str(),
                 "file": callee.file_path,
-                "line": callee.start_line,
+                "line": super::display_line(callee.start_line),
             }));
         }
     }

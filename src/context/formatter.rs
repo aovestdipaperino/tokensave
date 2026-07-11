@@ -76,7 +76,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                 node.name,
                 node.kind.as_str(),
                 node.file_path,
-                node.start_line,
+                node.start_line + 1,
             );
             if let Some(ref sig) = node.signature {
                 let _ = writeln!(out, "  `{sig}`");
@@ -96,7 +96,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
             by_file
                 .entry(&node.file_path)
                 .or_default()
-                .push((&node.name, node.start_line));
+                .push((&node.name, node.start_line + 1));
         }
 
         let mut files: Vec<&&str> = by_file.keys().collect();
@@ -134,7 +134,9 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
             let _ = writeln!(
                 out,
                 "#### {} ({}:{})",
-                label, block.file_path, block.start_line,
+                label,
+                block.file_path,
+                block.start_line + 1,
             );
             // Fence language from the block's file extension, not a hardcoded
             // `rust` (#208).
@@ -241,7 +243,7 @@ mod tests {
         let md = format_context_as_markdown(&ctx);
         assert!(md.contains("**process_data**"));
         assert!(md.contains("(function)"));
-        assert!(md.contains("src/lib.rs:10"));
+        assert!(md.contains("src/lib.rs:11"));
         assert!(md.contains("`pub fn process_data(input: &str) -> Result<()>`"));
     }
 
@@ -293,7 +295,7 @@ mod tests {
         };
 
         let md = format_context_as_markdown(&ctx);
-        assert!(md.contains("#### my_fn (src/main.rs:1)"));
+        assert!(md.contains("#### my_fn (src/main.rs:2)"));
         assert!(md.contains("```rust"));
         assert!(md.contains("fn my_fn()"));
     }

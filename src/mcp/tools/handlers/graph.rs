@@ -123,7 +123,7 @@ pub(super) async fn handle_search(
                 "name": r.node.name,
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
-                "line": r.node.start_line,
+                "line": super::display_line(r.node.start_line),
                 "signature": r.node.signature,
                 "score": r.score,
             })
@@ -361,7 +361,7 @@ pub(super) async fn handle_context(
                     node.name,
                     node.kind.as_str(),
                     node.file_path,
-                    node.start_line,
+                    super::display_line(node.start_line),
                     impl_count,
                 );
                 found_extension = true;
@@ -459,9 +459,9 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
                 // The call-site line (where the caller invokes the target),
                 // taken from the edge. Older edges predating call-site tracking
                 // have no line; fall back to the caller's declaration line.
-                "line": edge.line.unwrap_or(node.start_line),
+                "line": super::display_line(edge.line.unwrap_or(node.start_line)),
                 // The caller's own declaration line, kept so both are available.
-                "def_line": node.start_line,
+                "def_line": super::display_line(node.start_line),
                 // BFS hop count: 1 = direct caller, 2+ = transitive.
                 "depth": depth,
                 "edge_kind": edge.kind.as_str(),
@@ -513,7 +513,7 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                "line": node.start_line,
+                "line": super::display_line(node.start_line),
                 "edge_kind": edge.kind.as_str(),
                 "dispatch_via_trait": false,
             })
@@ -532,7 +532,7 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
                     "name": impl_method.name,
                     "kind": impl_method.kind.as_str(),
                     "file": impl_method.file_path,
-                    "line": impl_method.start_line,
+                    "line": super::display_line(impl_method.start_line),
                     "edge_kind": "calls",
                     "dispatch_via_trait": true,
                     "dispatch_from": callee.id.clone(),
@@ -594,7 +594,7 @@ pub(super) async fn handle_find_exact_symbol(
                 "qualified_name": n.qualified_name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
+                "line": super::display_line(n.start_line),
                 "signature": n.signature,
             })
         })
@@ -645,7 +645,7 @@ pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<Too
                     "name": n.name,
                     "kind": n.kind.as_str(),
                     "file": n.file_path,
-                    "line": n.start_line,
+                    "line": super::display_line(n.start_line),
                     "edge_kind": edge.as_ref().map(|e| e.kind.as_str()),
                 })
             })
@@ -726,7 +726,7 @@ pub(super) async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolRes
                 "name": n.name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
+                "line": super::display_line(n.start_line),
             })
         })
         .collect();
@@ -792,8 +792,8 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
                 "kind": n.kind.as_str(),
                 "qualified_name": n.qualified_name,
                 "file": n.file_path,
-                "start_line": n.start_line,
-                "end_line": n.end_line,
+                "start_line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
                 "signature": n.signature,
                 "docstring": n.docstring,
                 "visibility": n.visibility.as_str(),
@@ -898,7 +898,7 @@ pub(super) async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "name": r.node.name,
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
-                "line": r.node.start_line,
+                "line": super::display_line(r.node.start_line),
                 "signature": r.node.signature,
                 "score": r.score,
             })
@@ -926,7 +926,7 @@ pub(super) async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result
             "name": n.name,
             "kind": n.kind.as_str(),
             "file": n.file_path,
-            "line": n.start_line,
+            "line": super::display_line(n.start_line),
         }),
         None => {
             return Ok(ToolResult {
@@ -959,7 +959,7 @@ pub(super) async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result
                 "name": source_node.name,
                 "kind": source_node.kind.as_str(),
                 "file": source_node.file_path,
-                "line": source_node.start_line,
+                "line": super::display_line(source_node.start_line),
                 "edge_kind": edge.kind.as_str(),
                 "edge_line": edge.line,
             }));
@@ -976,7 +976,7 @@ pub(super) async fn handle_rename_preview(cg: &TokenSave, args: Value) -> Result
                 "name": target_node.name,
                 "kind": target_node.kind.as_str(),
                 "file": target_node.file_path,
-                "line": target_node.start_line,
+                "line": super::display_line(target_node.start_line),
                 "edge_kind": edge.kind.as_str(),
                 "edge_line": edge.line,
             }));
@@ -1093,9 +1093,9 @@ pub(super) async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Res
                 "qualified_name": n.qualified_name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "start_line": n.start_line,
-                "attrs_start_line": n.attrs_start_line,
-                "end_line": n.end_line,
+                "start_line": super::display_line(n.start_line),
+                "attrs_start_line": super::display_line(n.attrs_start_line),
+                "end_line": super::display_line(n.end_line),
             })
         })
         .collect();
@@ -1151,9 +1151,9 @@ pub(super) async fn handle_signature(cg: &TokenSave, args: Value) -> Result<Tool
             "signature": n.signature,
             "docstring": n.docstring,
             "file": n.file_path,
-            "start_line": n.start_line,
-            "attrs_start_line": n.attrs_start_line,
-            "end_line": n.end_line,
+            "start_line": super::display_line(n.start_line),
+            "attrs_start_line": super::display_line(n.attrs_start_line),
+            "end_line": super::display_line(n.end_line),
             "cost_to_expand": cost_to_expand(n, file_size_bytes),
         }));
     }
@@ -1201,8 +1201,8 @@ pub(super) async fn handle_impls(cg: &TokenSave, args: Value) -> Result<ToolResu
                 "trait_qualified_name": trait_node.as_ref().map(|t| t.qualified_name.clone()),
                 "trait_id": trait_node.as_ref().map(|t| t.id.clone()),
                 "file": impl_node.file_path,
-                "start_line": impl_node.start_line,
-                "end_line": impl_node.end_line,
+                "start_line": super::display_line(impl_node.start_line),
+                "end_line": super::display_line(impl_node.end_line),
                 "signature": impl_node.signature,
             })
         })
@@ -1272,7 +1272,7 @@ pub(super) async fn handle_derives(cg: &TokenSave, args: Value) -> Result<ToolRe
             "kind": n.kind.as_str(),
             "qualified_name": n.qualified_name,
             "file": n.file_path,
-            "start_line": n.start_line,
+            "start_line": super::display_line(n.start_line),
             "derives": derives,
         }));
     }
@@ -1454,7 +1454,7 @@ pub(super) async fn handle_implementations(
                     "qualified_name": impl_node.qualified_name,
                     "kind": impl_node.kind.as_str(),
                     "file": impl_node.file_path,
-                    "line": impl_node.start_line,
+                    "line": super::display_line(impl_node.start_line),
                     "trait": trait_node.qualified_name,
                     "methods": methods,
                 }));
@@ -1499,8 +1499,8 @@ pub(super) async fn handle_implementations(
                 "qualified_name": n.qualified_name,
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
-                "line": n.start_line,
-                "end_line": n.end_line,
+                "line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
                 "signature": n.signature,
                 "body": body,
             }));
@@ -1540,7 +1540,7 @@ async fn collect_method_bodies(
         out.push(json!({
             "name": child.name,
             "kind": child.kind.as_str(),
-            "line": child.start_line,
+            "line": super::display_line(child.start_line),
             "signature": child.signature,
             "body": body,
         }));
