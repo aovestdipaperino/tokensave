@@ -198,15 +198,38 @@ fn evaluate_hook_decision_core(tool_input: &str, env: &HookEnv) -> Option<String
     let parsed: serde_json::Value =
         serde_json::from_str(tool_input).unwrap_or_else(|_| serde_json::json!({}));
 
-    // Block Explore agents outright.
-    if parsed.get("subagent_type").and_then(|v| v.as_str()) == Some("Explore") {
-        return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
-    }
+    // Agent/Task redirection is suppressed by the same opt-out that covers the
+    // Grep/Bash paths, so a user who deliberately wants to delegate has an
+    // explicit override instead of a hard wall.
+    if !env.disable_grep_hook {
+        // A blank `subagent_type` is treated as absent: a caller that
+        // initializes the field to "" is no more a deliberate typed delegation
+        // than one that omits it, so it must not slip past both the Explore
+        // check and the untyped-prompt check below.
+        let subagent = parsed
+            .get("subagent_type")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
 
-    // Block exploration-style Agent prompts.
-    if let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) {
-        if is_code_research_prompt(prompt) {
+        // Block Claude Code's built-in `Explore` research agent outright — that
+        // is exactly the search/read fan-out tokensave's MCP tools replace.
+        if subagent == Some("Explore") {
             return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
+        }
+
+        // Only steer *untyped* Agent/Task calls by prompt shape: an untyped call
+        // may still be an Explore-style research fan-out. An explicitly typed
+        // non-Explore agent (`general-purpose`, an implementer, a custom agent,
+        // or another harness's own task/subagent type) is a deliberate
+        // delegation and must not be blocked on prompt text — the caller chose a
+        // specific worker, and prompt keywords cannot tell research from
+        // implementation.
+        if subagent.is_none() {
+            if let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) {
+                if is_code_research_prompt(prompt) {
+                    return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
+                }
+            }
         }
     }
 
