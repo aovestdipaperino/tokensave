@@ -842,6 +842,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 return Ok(());
             }
             let original_cwd = std::env::current_dir().ok();
+            // An explicit --path is a deliberate choice of project root
+            // (possibly a different repo than the CWD, #201); only
+            // CWD-discovered roots get the borrowed-worktree check.
+            let explicit_path = path.is_some();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             // Track the first stdin line if we need to peek at `initialize` roots.
             let mut peeked_line: Option<String> = None;
@@ -879,7 +883,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     .map(|rel| rel.to_string_lossy().into_owned())
             });
 
-            let server = tokensave::mcp::McpServer::new(cg, scope_prefix).await;
+            let server = if explicit_path {
+                tokensave::mcp::McpServer::new_explicit_root(cg, scope_prefix).await
+            } else {
+                tokensave::mcp::McpServer::new(cg, scope_prefix).await
+            };
             server.set_timings_enabled(timings);
             let mut transport = tokensave::mcp::StdioTransport::new();
             // If we peeked at stdin to read `initialize` roots, replay that line.
