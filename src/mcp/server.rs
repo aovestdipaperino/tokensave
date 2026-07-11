@@ -280,6 +280,25 @@ impl McpServer {
     /// `packages/*/target`) drove unbounded event traffic and `FileId`
     /// cache growth.
     pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
+        Self::new_inner(cg, scope_prefix, true).await
+    }
+
+    /// [`Self::new`] for a server whose project root was named explicitly
+    /// (`serve --path <dir>`) rather than discovered from the working
+    /// directory. Serving a different repo than the CWD is the *point* of
+    /// that mode, so the borrowed-worktree heads-up (#312) — which exists to
+    /// catch CWD discovery silently resolving another worktree's index — is
+    /// suppressed; its "run `tokensave init` here" remedy is wrong for a
+    /// deliberate cross-repo serve (#201).
+    pub async fn new_explicit_root(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
+        Self::new_inner(cg, scope_prefix, false).await
+    }
+
+    async fn new_inner(
+        cg: TokenSave,
+        scope_prefix: Option<String>,
+        check_worktree_mismatch: bool,
+    ) -> Arc<Self> {
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
@@ -292,7 +311,7 @@ impl McpServer {
         // tool can cheaply prefix a heads-up. Two git rev-parse spawns
         // worst case (#312). spawn_blocking because the underlying
         // `Command::output()` can sit on slow disks.
-        let worktree_mismatch = {
+        let worktree_mismatch = if check_worktree_mismatch {
             let project_root = cg.project_root().to_path_buf();
             tokio::task::spawn_blocking(move || {
                 let cwd = std::env::current_dir().ok()?;
@@ -301,6 +320,8 @@ impl McpServer {
             .await
             .ok()
             .flatten()
+        } else {
+            None
         };
 
         let server = Arc::new(Self {
