@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Writing agent config no longer destroys a symlinked config file.** `safe_write_json_file` (used by every agent's `install`/`uninstall`/`doctor --fix`, e.g. `~/.claude/settings.json`) staged a `.new` sibling and atomically renamed it over the target path. `rename(2)` replaces the target's directory entry, so when the target was a symlink — a common dotfiles pattern that tracks config in a repo and symlinks it into `~/.claude/` — the rename deleted the symlink and left a plain regular file in its place, silently detaching the live config from the dotfiles source it was meant to track. The write now resolves the symlink to its real target first and stages/renames there, so the dotfiles source gets updated and the symlink itself survives untouched. Non-symlink targets are unaffected. Resolution walks multi-hop and dangling symlink chains (`config -> intermediate -> not-yet-created target`) hop by hop rather than relying on `canonicalize`, which fails outright on a dangling chain. If a chain can't be resolved safely — a cycle, an unreadable link, or a chain deeper than 40 hops — the write is aborted and the original symlinks are left untouched instead of falling back to writing over the symlink itself, which would reproduce the same destructive bug for that case. A chain of exactly 40 hops that lands on a valid target still resolves; only a chain needing a 41st hop is rejected.
+
 ## [7.2.0] - 2026-07-11
 
 ### Added
