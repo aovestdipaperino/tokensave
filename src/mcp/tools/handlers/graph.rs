@@ -444,11 +444,15 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
         .and_then(serde_json::Value::as_u64)
         .map_or(1, |v| v.clamp(1, 10) as usize);
 
+    let resolve_dispatch = args
+        .get("resolve_dispatch")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
     let results = cg.get_callers_with_depth(node_id, max_depth).await?;
+    let mut seen: HashSet<String> = results.iter().map(|(node, _, _)| node.id.clone()).collect();
 
-    let touched_files = unique_file_paths(results.iter().map(|(n, _, _)| n.file_path.as_str()));
-
-    let items: Vec<Value> = results
+    let mut items: Vec<Value> = results
         .iter()
         .map(|(node, edge, depth)| {
             json!({
@@ -465,10 +469,54 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
                 // BFS hop count: 1 = direct caller, 2+ = transitive.
                 "depth": depth,
                 "edge_kind": edge.kind.as_str(),
+                "dispatch_via_trait": false,
             })
         })
         .collect();
 
+    if resolve_dispatch {
+        if let Some(target) = cg.get_node(node_id).await? {
+            for trait_method in cg.get_trait_dispatch_sources(&target).await? {
+                for (caller, edge, depth) in cg
+                    .get_callers_with_depth(&trait_method.id, max_depth)
+                    .await?
+                {
+                    if !seen.insert(caller.id.clone()) {
+                        // A resolver may conservatively emit both the static
+                        // trait edge and a concrete edge. Preserve one row but
+                        // annotate it as trait dispatch when the reverse path
+                        // confirms that relationship.
+                        if let Some(existing) = items
+                            .iter_mut()
+                            .find(|item| item.get("node_id") == Some(&json!(caller.id)))
+                        {
+                            existing["dispatch_via_trait"] = json!(true);
+                            existing["dispatch_from"] = json!(trait_method.id);
+                        }
+                        continue;
+                    }
+                    items.push(json!({
+                        "node_id": caller.id,
+                        "name": caller.name,
+                        "kind": caller.kind.as_str(),
+                        "file": caller.file_path,
+                        "line": super::display_line(edge.line.unwrap_or(caller.start_line)),
+                        "def_line": super::display_line(caller.start_line),
+                        "depth": depth,
+                        "edge_kind": edge.kind.as_str(),
+                        "dispatch_via_trait": true,
+                        "dispatch_from": trait_method.id,
+                    }));
+                }
+            }
+        }
+    }
+
+    let touched_files = unique_file_paths(
+        items
+            .iter()
+            .filter_map(|item| item.get("file").and_then(Value::as_str)),
+    );
     let output = serde_json::to_string_pretty(&items).unwrap_or_default();
     Ok(ToolResult {
         value: json!({

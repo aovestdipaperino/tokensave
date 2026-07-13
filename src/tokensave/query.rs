@@ -579,6 +579,75 @@ impl TokenSave {
         Ok(targets)
     }
 
+    /// Resolves a concrete method in `impl Trait for Type` back to the trait
+    /// method that generic call sites statically invoke.
+    pub async fn get_trait_dispatch_sources(&self, method: &Node) -> Result<Vec<Node>> {
+        use crate::types::EdgeKind;
+
+        if !matches!(method.kind, NodeKind::Method | NodeKind::Function) {
+            return Ok(Vec::new());
+        }
+        let Some(parent_id) = method.parent_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let Some(parent) = self.db.get_node_by_id(parent_id).await? else {
+            return Ok(Vec::new());
+        };
+        if parent.kind != NodeKind::Impl {
+            return Ok(Vec::new());
+        }
+
+        let mut trait_ids: Vec<String> = self
+            .db
+            .get_outgoing_edges(&parent.id, &[EdgeKind::Implements])
+            .await?
+            .into_iter()
+            .map(|edge| edge.target)
+            .collect();
+        // Keep reverse dispatch useful when an older or partially resolved
+        // index still has the impl relationship only in the Rust signature.
+        // The extractor records `impl Trait for Type` verbatim on the impl
+        // node, so an exact trait-name lookup is a safe fallback.
+        if trait_ids.is_empty() {
+            if let Some(trait_name) = parent.signature.as_deref().and_then(|signature| {
+                signature
+                    .trim_start()
+                    .strip_prefix("impl ")?
+                    .split_once(" for ")
+                    .map(|(trait_name, _)| trait_name.trim())
+            }) {
+                trait_ids.extend(
+                    self.db
+                        .get_nodes_by_name(trait_name)
+                        .await?
+                        .into_iter()
+                        .filter(|node| node.kind == NodeKind::Trait)
+                        .map(|node| node.id),
+                );
+            }
+        }
+        let mut sources = Vec::new();
+        for trait_id in trait_ids {
+            let Some(trait_node) = self.db.get_node_by_id(&trait_id).await? else {
+                continue;
+            };
+            if trait_node.kind != NodeKind::Trait {
+                continue;
+            }
+            sources.extend(
+                self.db
+                    .get_children_of(&trait_id)
+                    .await?
+                    .into_iter()
+                    .filter(|candidate| {
+                        matches!(candidate.kind, NodeKind::Method | NodeKind::Function)
+                            && candidate.name == method.name
+                    }),
+            );
+        }
+        Ok(sources)
+    }
+
     /// Returns file paths that depend on the given file.
     pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
         let qm = GraphQueryManager::new(&self.db);

@@ -445,7 +445,10 @@ fn def_callers() -> ToolDefinition {
          callers by default; pass max_depth > 1 to also follow the chain \
          transitively. Each result includes `depth` (1 = direct caller, 2+ = \
          transitive), `line` (the call-site line where the caller invokes the \
-         target), and `def_line` (the caller's own declaration line).",
+         target), and `def_line` (the caller's own declaration line). Generic \
+         callers through a trait are included for concrete impl methods and \
+         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
+         to disable reverse dispatch resolution.",
         json!({
             "type": "object",
             "properties": {
@@ -456,6 +459,10 @@ fn def_callers() -> ToolDefinition {
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum traversal depth, 1-10 (default: 1 = direct callers only). Higher values also return transitive callers, each tagged with its `depth`."
+                },
+                "resolve_dispatch": {
+                    "type": "boolean",
+                    "description": "If true (default), include generic callers that invoke the corresponding trait method."
                 }
             },
             "required": ["node_id"]

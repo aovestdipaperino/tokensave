@@ -5244,3 +5244,87 @@ async fn test_context_path_include_keeps_only_matching() {
         "context path_include should drop non-matching entry points, got: {text}"
     );
 }
+
+#[tokio::test]
+async fn callers_resolve_generic_trait_calls_for_concrete_impl_method() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"
+pub trait LinearOperator {
+    fn apply_into(&self, input: &[f64], output: &mut [f64]);
+}
+
+pub struct Matrix;
+
+impl LinearOperator for Matrix {
+    fn apply_into(&self, input: &[f64], output: &mut [f64]) {
+        output.copy_from_slice(input);
+    }
+}
+
+pub fn residual_vector<T: LinearOperator>(operator: &T, x: &[f64], ax: &mut [f64]) {
+    let _ = (operator, x, ax);
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let mut concrete_id = None;
+    for method in cg.get_nodes_by_name("apply_into").await.unwrap() {
+        let Some(parent_id) = method.parent_id.as_deref() else {
+            continue;
+        };
+        if cg
+            .get_node(parent_id)
+            .await
+            .unwrap()
+            .is_some_and(|parent| parent.kind == tokensave::types::NodeKind::Impl)
+        {
+            concrete_id = Some(method.id);
+            break;
+        }
+    }
+    let concrete_id = concrete_id.expect("concrete Matrix::apply_into method");
+    let concrete = cg.get_node(&concrete_id).await.unwrap().unwrap();
+    let sources = cg.get_trait_dispatch_sources(&concrete).await.unwrap();
+    assert!(
+        !sources.is_empty(),
+        "concrete method should resolve back to its trait method; concrete={concrete:#?} parent={:#?}",
+        cg.get_node(concrete.parent_id.as_deref().unwrap())
+            .await
+            .unwrap()
+    );
+    let residual_id = find_node_id(&cg, "residual_vector").await;
+    cg.db()
+        .insert_edges(&[tokensave::types::Edge {
+            source: residual_id,
+            target: sources[0].id.clone(),
+            kind: tokensave::types::EdgeKind::Calls,
+            line: Some(14),
+        }])
+        .await
+        .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": concrete_id, "max_depth": 1}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let callers: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let residual = callers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|caller| caller["name"] == "residual_vector")
+        .expect("generic caller should be connected to concrete impl method");
+    assert_eq!(residual["dispatch_via_trait"], true);
+}
