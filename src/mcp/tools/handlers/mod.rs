@@ -181,14 +181,38 @@ pub(crate) fn truncate_response(s: &str) -> String {
     }
 }
 
+/// Edit tools resolve an absolute `path` verbatim (see
+/// `TokenSave::resolve_edit_target`) rather than only matching it against
+/// the DB's canonical forward-slash paths, so they must keep a
+/// drive-letter-absolute Windows path (`C:\...`) exactly as the caller
+/// wrote it.
+const EDIT_TOOLS_HONORING_ABSOLUTE_PATHS_VERBATIM: &[&str] = &[
+    "tokensave_str_replace",
+    "tokensave_multi_str_replace",
+    "tokensave_insert_at",
+    "tokensave_replace_symbol",
+    "tokensave_insert_at_symbol",
+    "tokensave_ast_grep_rewrite",
+];
+
+fn is_drive_absolute(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':')
+}
+
 /// Normalizes Windows backslash separators to `/` in the path-shaped tool
 /// arguments (`file`, `path`, `file_path`, and the `path_include` /
 /// `path_exclude` arrays) so they match the DB's canonical forward-slash
 /// stored paths (#204). Verbatim/UNC paths (leading `\\`) are left alone —
-/// rewriting their prefix would break them on Windows.
-fn normalize_path_args(args: &mut Value) {
-    fn normalize(s: &str) -> Option<String> {
-        if s.contains('\\') && !s.starts_with("\\\\") {
+/// rewriting their prefix would break them on Windows. For the edit tools
+/// (`preserve_drive_absolute`), a drive-letter-absolute path is also left
+/// alone, since those tools honor an absolute `path` verbatim.
+fn normalize_path_args(args: &mut Value, preserve_drive_absolute: bool) {
+    fn normalize(s: &str, preserve_drive_absolute: bool) -> Option<String> {
+        if s.contains('\\')
+            && !s.starts_with("\\\\")
+            && !(preserve_drive_absolute && is_drive_absolute(s))
+        {
             Some(s.replace('\\', "/"))
         } else {
             None
@@ -199,7 +223,10 @@ fn normalize_path_args(args: &mut Value) {
     };
     for key in ["file", "path", "file_path"] {
         if let Some(v) = map.get_mut(key) {
-            if let Some(fixed) = v.as_str().and_then(normalize) {
+            if let Some(fixed) = v
+                .as_str()
+                .and_then(|s| normalize(s, preserve_drive_absolute))
+            {
                 *v = Value::String(fixed);
             }
         }
@@ -207,7 +234,10 @@ fn normalize_path_args(args: &mut Value) {
     for key in ["path_include", "path_exclude"] {
         if let Some(arr) = map.get_mut(key).and_then(|v| v.as_array_mut()) {
             for v in arr {
-                if let Some(fixed) = v.as_str().and_then(normalize) {
+                if let Some(fixed) = v
+                    .as_str()
+                    .and_then(|s| normalize(s, preserve_drive_absolute))
+                {
                     *v = Value::String(fixed);
                 }
             }
@@ -227,7 +257,10 @@ pub async fn handle_tool_call(
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    normalize_path_args(&mut args);
+    normalize_path_args(
+        &mut args,
+        EDIT_TOOLS_HONORING_ABSOLUTE_PATHS_VERBATIM.contains(&tool_name),
+    );
     debug_assert!(
         !tool_name.is_empty(),
         "handle_tool_call called with empty tool_name"
@@ -652,7 +685,7 @@ mod tests {
             "path_exclude": ["node_modules\\x"],
             "query": "leave\\alone",
         });
-        normalize_path_args(&mut args);
+        normalize_path_args(&mut args, false);
         assert_eq!(args["file"], "apps/admin/src/StatCard.tsx");
         assert_eq!(args["path"], "apps/admin");
         assert_eq!(args["path_include"][0], "apps/admin/src");
@@ -668,9 +701,19 @@ mod tests {
             "path": "\\\\?\\C:\\repo\\src",
             "file": "C:\\repo\\src\\a.rs",
         });
-        normalize_path_args(&mut args);
-        // Verbatim prefix must not be rewritten; drive-letter paths are.
+        normalize_path_args(&mut args, false);
+        // Verbatim prefix must not be rewritten; drive-letter paths are,
+        // since preserve_drive_absolute is false here.
         assert_eq!(args["path"], "\\\\?\\C:\\repo\\src");
         assert_eq!(args["file"], "C:/repo/src/a.rs");
+    }
+
+    #[test]
+    fn normalize_path_args_preserves_drive_absolute_for_edit_tools() {
+        let mut args = serde_json::json!({
+            "path": "C:\\Users\\dev\\notes.txt",
+        });
+        normalize_path_args(&mut args, true);
+        assert_eq!(args["path"], "C:\\Users\\dev\\notes.txt");
     }
 }

@@ -5669,7 +5669,8 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
     fs::create_dir_all(worktree_root.join("src")).unwrap();
     fs::write(worktree_root.join("src/lib.rs"), original_source).unwrap();
 
-    let new_source = "pub fn greet_widget_example() -> String {\n    \"hi from worktree\".to_string()\n}";
+    let new_source =
+        "pub fn greet_widget_example() -> String {\n    \"hi from worktree\".to_string()\n}";
 
     let result = handle_tool_call(
         &cg,

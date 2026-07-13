@@ -43,7 +43,9 @@ pub(super) async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<To
         })?;
 
     let root_override = project_root_arg(&args);
-    let result = cg.str_replace(path, old_str, new_str, root_override).await?;
+    let result = cg
+        .str_replace(path, old_str, new_str, root_override)
+        .await?;
     let touched_files = vec![result.file_path.clone()];
     Ok(ToolResult {
         value: json!({
@@ -155,9 +157,7 @@ pub(super) async fn handle_replace_symbol(cg: &TokenSave, args: Value) -> Result
         })?;
 
     let root_override = project_root_arg(&args);
-    let result = cg
-        .replace_symbol(symbol, new_source, root_override)
-        .await?;
+    let result = cg.replace_symbol(symbol, new_source, root_override).await?;
     let touched_files = if result.success {
         vec![result.file_path.clone()]
     } else {
