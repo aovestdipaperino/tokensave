@@ -932,6 +932,7 @@ pub fn execute(frequencies: &[f64]) {
         }
     }
 }
+
 "#,
     )
     .unwrap();
@@ -958,4 +959,61 @@ pub fn execute(frequencies: &[f64]) {
             .any(|node| node.name == "execute"),
         "local branch identifiers should retrieve their executable owner"
     );
+}
+
+#[tokio::test]
+async fn requested_type_expands_to_its_behavioral_api() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/source.rs"),
+        r#"
+pub struct Source {
+    gain: f64,
+}
+
+impl Source {
+    pub fn amplitude_towards(&self, angle: f64) -> f64 {
+        self.gain * angle.cos()
+    }
+
+    pub fn polar_weight(&self, angle: f64) -> f64 {
+        self.gain * angle.sin()
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "Source behavior",
+            &BuildContextOptions {
+                search_limit: 10,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let names: Vec<_> = context
+        .entry_points
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+
+    assert!(
+        names.contains(&"amplitude_towards"),
+        "entry points: {names:?}"
+    );
+    assert!(names.contains(&"polar_weight"), "entry points: {names:?}");
 }

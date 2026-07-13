@@ -312,6 +312,32 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
+        // --- Requested API-family supplement ---
+        // Conceptual architecture queries often name a type (`Source`,
+        // `BoundaryConfig`, `SimulationOutput`) and expect its behavior, not
+        // just the declaration. Promote executable children of strongly
+        // matched owner types so their methods remain discoverable even when
+        // method names use domain-specific vocabulary absent from the query.
+        let owner_candidates: Vec<SearchResult> = candidates
+            .iter()
+            .filter(|candidate| is_api_owner_kind(&candidate.node.kind))
+            .cloned()
+            .collect();
+        for owner in owner_candidates {
+            for child in self.db.get_children_of(&owner.node.id).await? {
+                if !is_executable_kind(&child.kind) || excluded.contains(&child.id) {
+                    continue;
+                }
+                let score = owner.score * 0.5;
+                if let Some(&idx) = index_of.get(&child.id) {
+                    candidates[idx].score = candidates[idx].score.max(score);
+                } else {
+                    index_of.insert(child.id.clone(), candidates.len());
+                    candidates.push(SearchResult { node: child, score });
+                }
+            }
+        }
+
         // --- path_prefix filter: restrict entry points to the given subdirectory ---
         if let Some(ref prefix) = options.path_prefix {
             let with_slash = if prefix.ends_with('/') {
@@ -1093,6 +1119,21 @@ fn is_executable_kind(kind: &NodeKind) -> bool {
             | NodeKind::AbstractMethod
             | NodeKind::Procedure
             | NodeKind::ArrowFunction
+    )
+}
+
+fn is_api_owner_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Struct
+            | NodeKind::Class
+            | NodeKind::Enum
+            | NodeKind::Trait
+            | NodeKind::Interface
+            | NodeKind::InterfaceType
+            | NodeKind::Impl
+            | NodeKind::DataClass
+            | NodeKind::Record
     )
 }
 
