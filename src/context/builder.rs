@@ -283,6 +283,33 @@ impl<'a> ContextBuilder<'a> {
             }
         }
 
+        // --- Executable-body supplement ---
+        // Symbol FTS intentionally stays compact (name/qname/docs/signature),
+        // but conceptual requests often describe behavior that appears only
+        // inside a function body: retry policy, cache rebuilds, residual
+        // calculations, and similar control-loop details. Search indexed
+        // source files for co-occurring query terms and associate each match
+        // with the smallest enclosing executable node. This gives context a
+        // path to the behavioral owner without promoting local variables to
+        // first-class graph nodes.
+        let body_terms = conceptual_query_terms(query, &options.extra_keywords);
+        if body_terms.len() >= 2 {
+            for sr in self
+                .find_executable_body_candidates(&body_terms, options)
+                .await?
+            {
+                if excluded.contains(&sr.node.id) {
+                    continue;
+                }
+                if let Some(&idx) = index_of.get(&sr.node.id) {
+                    candidates[idx].score = candidates[idx].score.max(sr.score);
+                } else {
+                    index_of.insert(sr.node.id.clone(), candidates.len());
+                    candidates.push(sr);
+                }
+            }
+        }
+
         // --- path_prefix filter: restrict entry points to the given subdirectory ---
         if let Some(ref prefix) = options.path_prefix {
             let with_slash = if prefix.ends_with('/') {
@@ -351,6 +378,84 @@ impl<'a> ContextBuilder<'a> {
             "entry_points exceeds max_nodes"
         );
         Ok(entry_points)
+    }
+
+    /// Finds executable symbols whose bodies contain several conceptual query
+    /// terms. Files are prefiltered before their nodes are loaded, and results
+    /// are bounded to the same candidate budget as the regular FTS channel.
+    async fn find_executable_body_candidates(
+        &self,
+        terms: &[String],
+        options: &BuildContextOptions,
+    ) -> Result<Vec<SearchResult>> {
+        let mut results = Vec::new();
+        let files = self.db.get_all_files().await?;
+
+        for file in files {
+            if results.len() >= options.max_nodes * 2 {
+                break;
+            }
+            if !path_lists_keep(&file.path, &options.path_include, &options.path_exclude)
+                || options.query_ignore.is_ignored(&file.path)
+                || options.path_prefix.as_ref().is_some_and(|prefix| {
+                    let with_slash = format!("{}/", prefix.trim_end_matches('/'));
+                    file.path != *prefix && !file.path.starts_with(&with_slash)
+                })
+            {
+                continue;
+            }
+
+            let Ok(source) = fs::read_to_string(self.project_root.join(&file.path)) else {
+                continue;
+            };
+            let source_lower = source.to_lowercase();
+            let file_hits = terms
+                .iter()
+                .filter(|term| source_lower.contains(term.as_str()))
+                .count();
+            if file_hits < 2 {
+                continue;
+            }
+
+            let lines: Vec<&str> = source.lines().collect();
+            for node in self.db.get_nodes_by_file(&file.path).await? {
+                if !is_executable_kind(&node.kind) {
+                    continue;
+                }
+                let start = node.start_line as usize;
+                let end = (node.end_line as usize).saturating_add(1).min(lines.len());
+                if start >= end {
+                    continue;
+                }
+                let body = lines[start..end].join("\n").to_lowercase();
+                let hits = terms
+                    .iter()
+                    .filter(|term| body.contains(term.as_str()))
+                    .count();
+                if hits < 2 {
+                    continue;
+                }
+                // Body matches are deliberately below exact-name matches (20)
+                // but strong enough to compete with ordinary BM25 results.
+                results.push(SearchResult {
+                    node,
+                    score: 1.5 + hits as f64,
+                });
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let a_span = a.node.end_line.saturating_sub(a.node.start_line);
+                    let b_span = b.node.end_line.saturating_sub(b.node.start_line);
+                    a_span.cmp(&b_span)
+                })
+        });
+        results.truncate(options.max_nodes * 2);
+        Ok(results)
     }
 
     /// Expands the subgraph around entry points using BFS traversal.
@@ -943,6 +1048,45 @@ fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
     }
 
     variants
+}
+
+/// Extracts lower-case concept words suitable for body co-occurrence search.
+/// This intentionally keeps identifier splitting for a separate stage: here
+/// ordinary prose terms are enough to discover behavior described in a task.
+fn conceptual_query_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "about", "after", "before", "code", "find", "from", "function", "harden", "into", "locate",
+        "near", "request", "source", "that", "their", "then", "this", "with",
+    ];
+    let mut seen = HashSet::new();
+    query
+        .split_whitespace()
+        .chain(extra_keywords.iter().flat_map(|s| s.split_whitespace()))
+        .filter_map(|word| {
+            let normalized: String = word
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_')
+                .flat_map(char::to_lowercase)
+                .collect();
+            (normalized.len() >= 4
+                && !STOP.contains(&normalized.as_str())
+                && seen.insert(normalized.clone()))
+            .then_some(normalized)
+        })
+        .collect()
+}
+
+fn is_executable_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function
+            | NodeKind::Method
+            | NodeKind::StructMethod
+            | NodeKind::Constructor
+            | NodeKind::AbstractMethod
+            | NodeKind::Procedure
+            | NodeKind::ArrowFunction
+    )
 }
 
 /// Boosts candidates whose file contains multiple query terms.

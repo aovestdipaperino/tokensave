@@ -849,3 +849,62 @@ async fn test_entry_points_capped_to_search_limit() {
         ctx.entry_points.len()
     );
 }
+
+#[tokio::test]
+async fn conceptual_context_discovers_executable_body_owner() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/solver.rs"),
+        r#"
+pub fn run_policy(frequencies: &[f64]) {
+    let mut preconditioner_cache = None;
+    for frequency in frequencies {
+        let retry = preconditioner_cache.is_none();
+        if retry {
+            preconditioner_cache = Some(*frequency);
+        }
+        let residual = frequency.abs();
+        record_diagnostics(residual);
+    }
+}
+
+fn record_diagnostics(_residual: f64) {}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "frequency retry preconditioner cache diagnostics residual",
+            &BuildContextOptions {
+                search_limit: 5,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        context
+            .entry_points
+            .iter()
+            .any(|node| node.name == "run_policy"),
+        "behavioral owner should be discoverable from body concepts; got {:?}",
+        context
+            .entry_points
+            .iter()
+            .map(|node| &node.name)
+            .collect::<Vec<_>>()
+    );
+}
