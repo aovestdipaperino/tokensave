@@ -438,17 +438,38 @@ pub fn safe_write_json_file(
         });
     }
 
-    // 3. Ensure parent dir
-    if let Some(parent) = path.parent() {
+    // 3. Resolve symlinks. If `path` (e.g. `~/.claude/settings.json`) is a
+    //    symlink — common for dotfiles setups that track config in a repo and
+    //    symlink it into place — `rename()` over `path` would delete the
+    //    symlink and drop a plain file in its stead, silently detaching the
+    //    live config from the dotfiles source. Write through the symlink to
+    //    its real target instead, so the target gets updated and the symlink
+    //    survives untouched. If the chain can't be resolved safely (cycle,
+    //    unreadable link, pathological depth), bail out here rather than
+    //    falling back to `path` — writing there would rename over the
+    //    symlink itself, the exact destruction this function exists to
+    //    prevent.
+    let real_path = resolve_symlink_target(path).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "cannot safely resolve symlink {}: {e}\n  \
+             Refusing to write — the symlink was left untouched.",
+            path.display()
+        ),
+    })?;
+
+    // 4. Ensure parent dir
+    if let Some(parent) = real_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
             message: format!("cannot create directory {}: {e}", parent.display()),
         })?;
     }
 
-    // 4. Write to a NEW sibling file — the original is never opened for
+    // 5. Write to a NEW sibling file — the original is never opened for
     //    writing, so an interrupted write or crash only affects the .new file.
+    //    Staged next to `real_path` (not `path`) so the rename in step 6 stays
+    //    on the same filesystem and remains atomic.
     let content = format!("{pretty}\n");
-    let new_path = PathBuf::from(format!("{}.new", path.display()));
+    let new_path = PathBuf::from(format!("{}.new", real_path.display()));
     if let Err(e) = std::fs::write(&new_path, &content) {
         std::fs::remove_file(&new_path).ok(); // clean up partial write
         return Err(TokenSaveError::Config {
@@ -459,10 +480,10 @@ pub fn safe_write_json_file(
         });
     }
 
-    // 5. Atomic rename: new → original.
+    // 6. Atomic rename: new → real target.
     //    On POSIX, rename(2) atomically replaces the target.
     //    If this fails the original file is still intact.
-    if let Err(e) = std::fs::rename(&new_path, path) {
+    if let Err(e) = std::fs::rename(&new_path, &real_path) {
         std::fs::remove_file(&new_path).ok(); // clean up
         let hint = if let Some(b) = backup {
             format!(
@@ -477,12 +498,96 @@ pub fn safe_write_json_file(
             message: format!(
                 "failed to rename {} → {}: {e}{hint}",
                 new_path.display(),
-                path.display()
+                real_path.display()
             ),
         });
     }
 
     Ok(())
+}
+
+/// Resolves `path` to the file it should actually be written to.
+///
+/// If `path` is not a symlink, returns it unchanged. If it is a symlink,
+/// resolves the full chain to its real target via [`std::fs::canonicalize`].
+/// `canonicalize` fails whenever any hop in the chain is dangling — including
+/// a *multi-hop* chain where an intermediate link (not just the final one)
+/// points at something that doesn't exist yet (e.g. a dotfiles repo cloned
+/// but not yet fully materialized). In that case, walk the chain manually,
+/// one `read_link` hop at a time, until reaching a path that is not itself a
+/// symlink — that terminal path is where the write should land, so every
+/// symlink in the chain survives untouched.
+///
+/// Returns `Err` on a cycle, an unreadable link, or a chain deeper than
+/// [`MAX_SYMLINK_HOPS`] — deliberately *not* falling back to `path` in that
+/// case. Falling back would make the caller write (and atomically rename)
+/// straight onto the symlink itself, destroying it — the exact bug this
+/// function exists to prevent, just reached through a different route.
+fn resolve_symlink_target(path: &Path) -> std::result::Result<PathBuf, String> {
+    let is_symlink = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    if !is_symlink {
+        return Ok(path.to_path_buf());
+    }
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+    walk_dangling_symlink_chain(path)
+}
+
+/// Matches the ELOOP hop limit most platforms enforce for real filesystem
+/// symlink resolution — a generous ceiling for pathological (but acyclic)
+/// chains, while `seen` below catches cycles long before this is reached.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// Follows a symlink chain hop by hop via `read_link`, resolving each
+/// relative target against its link's parent directory, until it reaches a
+/// path that is not itself a symlink (this includes a path that doesn't
+/// exist at all — the common "target not created yet" case, which is the
+/// terminal write destination). Returns `Err` on a cycle, an unresolvable
+/// hop, or exceeding [`MAX_SYMLINK_HOPS`].
+fn walk_dangling_symlink_chain(path: &Path) -> std::result::Result<PathBuf, String> {
+    let mut current = path.to_path_buf();
+    let mut seen = std::collections::HashSet::new();
+    let mut hops = 0usize;
+    loop {
+        if !seen.insert(current.clone()) {
+            return Err(format!(
+                "symlink cycle detected at {} while resolving {}",
+                current.display(),
+                path.display()
+            ));
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                // The hop budget is checked *before following*, not before
+                // checking terminality — so a chain of exactly
+                // MAX_SYMLINK_HOPS symlinks that lands on a terminal path
+                // still resolves; only a chain that needs one more hop past
+                // the budget is rejected.
+                if hops >= MAX_SYMLINK_HOPS {
+                    return Err(format!(
+                        "symlink chain from {} exceeds {MAX_SYMLINK_HOPS} hops",
+                        path.display()
+                    ));
+                }
+                hops += 1;
+                let link_target = std::fs::read_link(&current)
+                    .map_err(|e| format!("cannot read symlink {}: {e}", current.display()))?;
+                current = if link_target.is_absolute() {
+                    link_target
+                } else {
+                    current
+                        .parent()
+                        .ok_or_else(|| {
+                            format!("symlink {} has no parent directory", current.display())
+                        })?
+                        .join(&link_target)
+                };
+            }
+            // Not a symlink (regular file) or doesn't exist at all: terminal.
+            _ => return Ok(current),
+        }
+    }
 }
 
 /// Write a JSON value to a file with pretty formatting.
@@ -2358,6 +2463,241 @@ mod safe_config_tests {
         let path = dir.path().join("deep").join("nested").join("config.json");
         safe_write_json_file(&path, &serde_json::json!({"deep": true}), None).unwrap();
         assert!(path.exists());
+    }
+
+    // ----- symlink handling (dotfiles use case, issue: settings.json
+    //       symlinked into a dotfiles repo was replaced by a plain file) -----
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_symlink_preserves_link_and_updates_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        let target = dir.path().join("real_target.json");
+        fs::write(&target, r#"{"old": true}"#).unwrap();
+
+        let link = dir.path().join("settings.json");
+        symlink(&target, &link).unwrap();
+
+        safe_write_json_file(&link, &serde_json::json!({"new": true}), None).unwrap();
+
+        // The symlink itself must still be a symlink pointing at the target.
+        let meta = fs::symlink_metadata(&link).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "link.json should remain a symlink"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+
+        // The real target must contain the new content.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(parsed["new"], true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_symlink_target_in_other_dir() {
+        use std::os::unix::fs::symlink;
+
+        let link_dir = tmpdir();
+        let target_dir = tmpdir();
+        let target = target_dir.path().join("dotfiles_settings.json");
+        fs::write(&target, r#"{"old": true}"#).unwrap();
+
+        let link = link_dir.path().join("settings.json");
+        symlink(&target, &link).unwrap();
+
+        safe_write_json_file(&link, &serde_json::json!({"new": true}), None).unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(parsed["new"], true);
+
+        // No leftover staging file next to the symlink or the target.
+        assert!(!target_dir
+            .path()
+            .join("dotfiles_settings.json.new")
+            .exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_broken_symlink_creates_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        let target = dir.path().join("not_yet_created.json");
+        let link = dir.path().join("settings.json");
+        symlink(&target, &link).unwrap(); // target does not exist yet
+
+        safe_write_json_file(&link, &serde_json::json!({"created": true}), None).unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(parsed["created"], true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_multi_hop_dangling_chain_preserves_every_hop() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        let final_target = dir.path().join("final_target.json"); // never created
+        let intermediate = dir.path().join("intermediate.json");
+        let config = dir.path().join("config.json");
+
+        symlink(&final_target, &intermediate).unwrap(); // intermediate -> missing final_target
+        symlink(&intermediate, &config).unwrap(); // config -> intermediate
+
+        safe_write_json_file(&config, &serde_json::json!({"created": true}), None).unwrap();
+
+        // Every hop in the chain must survive as a symlink — only the
+        // terminal (previously missing) target becomes a regular file.
+        assert!(
+            fs::symlink_metadata(&config)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "config.json should remain a symlink"
+        );
+        assert_eq!(fs::read_link(&config).unwrap(), intermediate);
+        assert!(
+            fs::symlink_metadata(&intermediate)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "intermediate.json should remain a symlink, not be replaced by a regular file"
+        );
+        assert_eq!(fs::read_link(&intermediate).unwrap(), final_target);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&final_target).unwrap()).unwrap();
+        assert_eq!(parsed["created"], true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_cyclic_symlink_fails_safely_without_touching_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        symlink(&b, &a).unwrap(); // a -> b
+        symlink(&a, &b).unwrap(); // b -> a (cycle)
+
+        // Must terminate (cycle-detected) rather than hang, and must refuse
+        // to write rather than fall back to renaming over `a` itself — that
+        // fallback would silently destroy the symlink it's meant to protect.
+        let result = safe_write_json_file(&a, &serde_json::json!({"x": true}), None);
+        assert!(result.is_err(), "a cyclic symlink must be rejected");
+
+        assert!(
+            fs::symlink_metadata(&a).unwrap().file_type().is_symlink(),
+            "a.json must remain untouched after a failed resolution"
+        );
+        assert!(
+            fs::symlink_metadata(&b).unwrap().file_type().is_symlink(),
+            "b.json must remain untouched after a failed resolution"
+        );
+        assert_eq!(fs::read_link(&a).unwrap(), b);
+        assert_eq!(fs::read_link(&b).unwrap(), a);
+    }
+
+    /// Builds a chain of `hops` distinct (non-cyclic) symlinks:
+    /// `hop_0 -> hop_1 -> ... -> hop_{hops-1} -> hop_final_missing` (never
+    /// created). Returns `(entry_path, final_missing_target)`.
+    #[cfg(unix)]
+    fn build_dangling_chain(dir: &Path, hops: usize) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::symlink;
+
+        let final_target = dir.join("hop_final_missing.json");
+        let mut prev = final_target.clone();
+        for i in (0..hops).rev() {
+            let link = dir.join(format!("hop_{i}.json"));
+            symlink(&prev, &link).unwrap();
+            prev = link;
+        }
+        (prev, final_target)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_chain_of_exactly_max_hops_succeeds() {
+        let dir = tmpdir();
+        // A chain of exactly MAX_SYMLINK_HOPS symlinks landing on a terminal
+        // (missing) target must still resolve — the hop budget bounds how
+        // many links are *followed*, not how many are merely inspected, so
+        // the terminal check after the last followed hop must still run.
+        let (entry, final_target) = build_dangling_chain(dir.path(), MAX_SYMLINK_HOPS);
+
+        safe_write_json_file(&entry, &serde_json::json!({"x": true}), None).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&entry)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "entry point must remain a symlink"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&final_target).unwrap()).unwrap();
+        assert_eq!(parsed["x"], true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_chain_one_hop_past_max_fails_safely() {
+        let dir = tmpdir();
+        // One hop past the budget must still be rejected, and must not fall
+        // back to writing over the entry point.
+        let (entry, _final_target) = build_dangling_chain(dir.path(), MAX_SYMLINK_HOPS + 1);
+
+        let result = safe_write_json_file(&entry, &serde_json::json!({"x": true}), None);
+        assert!(
+            result.is_err(),
+            "a chain one hop past the budget must be rejected"
+        );
+        assert!(
+            fs::symlink_metadata(&entry)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "entry point must remain untouched after a failed resolution"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn safe_write_through_excessively_long_dangling_chain_fails_safely() {
+        let dir = tmpdir();
+        // Well past the limit — also must be rejected rather than falling
+        // back to writing over the entry point.
+        let (entry, _final_target) = build_dangling_chain(dir.path(), 50);
+
+        let result = safe_write_json_file(&entry, &serde_json::json!({"x": true}), None);
+        assert!(
+            result.is_err(),
+            "an overlong dangling chain must be rejected"
+        );
+        assert!(
+            fs::symlink_metadata(&entry)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "entry point must remain untouched after a failed resolution"
+        );
     }
 
     // ----- write_json_file (convenience wrapper) -----
