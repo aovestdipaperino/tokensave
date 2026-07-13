@@ -189,6 +189,53 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
     });
 }
 
+/// Applies an additional ranking signal when a task explicitly asks about
+/// runtime behavior. Imports can be excellent lexical matches for algorithm
+/// names, but they cannot explain retry, cache, convergence, or loop policy.
+pub fn apply_executable_intent_boost(candidates: &mut [SearchResult], query: &str) {
+    const BEHAVIOR_TERMS: &[&str] = &[
+        "branch",
+        "cache",
+        "converge",
+        "convergence",
+        "dispatch",
+        "failure",
+        "fallback",
+        "loop",
+        "rebuild",
+        "retry",
+        "retries",
+    ];
+    let query = query.to_lowercase();
+    if !BEHAVIOR_TERMS.iter().any(|term| query.contains(term)) {
+        return;
+    }
+
+    for candidate in candidates.iter_mut() {
+        if matches!(
+            candidate.node.kind,
+            NodeKind::Function
+                | NodeKind::Method
+                | NodeKind::StructMethod
+                | NodeKind::Constructor
+                | NodeKind::Procedure
+                | NodeKind::ArrowFunction
+        ) {
+            candidate.score *= 1.5;
+        } else if matches!(
+            candidate.node.kind,
+            NodeKind::Use | NodeKind::Export | NodeKind::Include
+        ) {
+            candidate.score *= 0.1;
+        }
+    }
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, clippy::uninlined_format_args)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -239,6 +286,22 @@ mod tests {
             make_result(NodeKind::Function, Visibility::Pub, "src/lib.rs", 10.0),
         ];
         rerank_candidates(&mut candidates);
+        assert_eq!(candidates[0].node.kind, NodeKind::Function);
+    }
+
+    #[test]
+    fn behavioral_query_prefers_executable_code_over_stronger_import_match() {
+        let mut candidates = vec![
+            make_result(NodeKind::Use, Visibility::Pub, "src/solver.rs", 10.0),
+            make_result(
+                NodeKind::Function,
+                Visibility::Private,
+                "src/solver.rs",
+                1.0,
+            ),
+        ];
+        rerank_candidates(&mut candidates);
+        apply_executable_intent_boost(&mut candidates, "retry cache convergence loop");
         assert_eq!(candidates[0].node.kind, NodeKind::Function);
     }
 

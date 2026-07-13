@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use crate::context::ranking::{apply_connectivity_boost, rerank_candidates};
+use crate::context::ranking::{
+    apply_connectivity_boost, apply_executable_intent_boost, rerank_candidates,
+};
 use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
@@ -341,6 +343,7 @@ impl<'a> ContextBuilder<'a> {
 
         // --- Re-rank with structural signals (kind, visibility, path) ---
         rerank_candidates(&mut candidates);
+        apply_executable_intent_boost(&mut candidates, query);
 
         // --- Connectivity boost (batch edge-count query) ---
         let node_ids: Vec<String> = candidates.iter().map(|c| c.node.id.clone()).collect();
