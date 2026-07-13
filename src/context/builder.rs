@@ -394,13 +394,15 @@ impl<'a> ContextBuilder<'a> {
         // roots over a 120-node budget gives ~3 nodes each). Capping the roots
         // to `search_limit` keeps each top-ranked root's traversal meaningful.
         // Candidates are score-sorted here (rerank + connectivity + cooccurrence
-        // boosts all re-sort), so truncation keeps the highest-scoring roots.
-        // Done before the per-file cap so the cap rebalances the retained set.
-        candidates.truncate(options.search_limit);
-
-        // --- Per-file diversity cap ---
+        // boosts all re-sort). Apply diversity before the final root limit so
+        // a large file's executable owner is still available to the cap.
+        // --- Per-file diversity cap + final BFS root limit ---
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
-        let entry_points = apply_per_file_cap(candidates, options.max_nodes, max_per_file);
+        let entry_points = apply_per_file_cap(
+            candidates,
+            options.max_nodes.min(options.search_limit),
+            max_per_file,
+        );
 
         debug_assert!(
             entry_points.len() <= options.max_nodes,
@@ -1221,14 +1223,29 @@ fn apply_per_file_cap(
     max_total: usize,
     max_per_file: usize,
 ) -> Vec<Node> {
+    let files_with_owner: HashSet<String> = candidates
+        .iter()
+        .filter(|candidate| is_executable_kind(&candidate.node.kind))
+        .map(|candidate| candidate.node.file_path.clone())
+        .collect();
     let mut file_counts: HashMap<String, usize> = HashMap::new();
+    let mut owner_accepted: HashSet<String> = HashSet::new();
     let mut accepted: Vec<Node> = Vec::new();
     let mut spillover: Vec<Node> = Vec::new();
 
     for sr in candidates {
-        let count = file_counts.entry(sr.node.file_path.clone()).or_insert(0);
-        if *count < max_per_file {
+        let file_path = sr.node.file_path.clone();
+        let is_owner = is_executable_kind(&sr.node.kind);
+        let count = file_counts.entry(file_path.clone()).or_insert(0);
+        let reserve_owner_slot = !is_owner
+            && files_with_owner.contains(&file_path)
+            && !owner_accepted.contains(&file_path)
+            && count.saturating_add(1) >= max_per_file;
+        if *count < max_per_file && !reserve_owner_slot {
             *count += 1;
+            if is_owner {
+                owner_accepted.insert(file_path);
+            }
             accepted.push(sr.node);
         } else {
             spillover.push(sr.node);
@@ -1437,5 +1454,20 @@ mod tests {
         ];
         let result = apply_per_file_cap(candidates, 2, 5);
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_per_file_cap_reserves_executable_owner() {
+        let mut import = make_search_result("solver_import", "src/big.rs", 10.0);
+        import.node.kind = NodeKind::Use;
+        let mut config = make_search_result("SolverConfig", "src/big.rs", 9.0);
+        config.node.kind = NodeKind::Struct;
+        let owner = make_search_result("run_solver", "src/big.rs", 8.0);
+        let other = make_search_result("helper", "src/other.rs", 7.0);
+
+        let result = apply_per_file_cap(vec![import, config, owner, other], 3, 2);
+        let names: Vec<_> = result.iter().map(|node| node.name.as_str()).collect();
+        assert!(names.contains(&"run_solver"), "selected roots: {names:?}");
+        assert!(names.contains(&"helper"), "selected roots: {names:?}");
     }
 }
