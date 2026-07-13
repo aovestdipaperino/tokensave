@@ -5328,3 +5328,134 @@ pub fn residual_vector<T: LinearOperator>(operator: &T, x: &[f64], ax: &mut [f64
         .expect("generic caller should be connected to concrete impl method");
     assert_eq!(residual["dispatch_via_trait"], true);
 }
+
+#[tokio::test]
+async fn affected_classifies_candidates_and_excludes_inline_sources_from_suite() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tests")).unwrap();
+    fs::create_dir_all(project.join("crates/consumer/src")).unwrap();
+    fs::create_dir_all(project.join("crates/consumer/tests")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='root'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("crates/consumer/Cargo.toml"),
+        "[package]\nname='consumer'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    fs::write(project.join("src/core.rs"), "pub fn changed_api() {}\n").unwrap();
+    fs::write(
+        project.join("src/inline.rs"),
+        "#[test]\nfn inline_check() {}\n",
+    )
+    .unwrap();
+    fs::write(project.join("src/facade.rs"), "pub fn facade_call() {}\n").unwrap();
+    fs::write(
+        project.join("tests/core_test.rs"),
+        "#[test]\nfn direct_check() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("tests/integration_test.rs"),
+        "#[test]\nfn integration_check() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("crates/consumer/src/lib.rs"),
+        "pub fn consumer_bridge() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("crates/consumer/tests/use_core.rs"),
+        "#[test]\nfn consumer_check() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let changed = find_node_id(&cg, "changed_api").await;
+    let inline = find_node_id(&cg, "inline_check").await;
+    let direct = find_node_id(&cg, "direct_check").await;
+    let facade = find_node_id(&cg, "facade_call").await;
+    let integration = find_node_id(&cg, "integration_check").await;
+    let bridge = find_node_id(&cg, "consumer_bridge").await;
+    let consumer = find_node_id(&cg, "consumer_check").await;
+    cg.db()
+        .insert_edges(&[
+            tokensave::types::Edge {
+                source: inline,
+                target: changed.clone(),
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(1),
+            },
+            tokensave::types::Edge {
+                source: direct,
+                target: changed.clone(),
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(1),
+            },
+            tokensave::types::Edge {
+                source: facade.clone(),
+                target: changed.clone(),
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(1),
+            },
+            tokensave::types::Edge {
+                source: integration,
+                target: facade,
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(3),
+            },
+            tokensave::types::Edge {
+                source: bridge.clone(),
+                target: changed,
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(1),
+            },
+            tokensave::types::Edge {
+                source: consumer,
+                target: bridge,
+                kind: tokensave::types::EdgeKind::Calls,
+                line: Some(1),
+            },
+        ])
+        .await
+        .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_affected",
+        json!({"files": ["src/core.rs"], "depth": 5}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let output: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let affected = output["affected_tests"].as_array().unwrap();
+    assert!(!affected.iter().any(|file| file == "src/inline.rs"));
+    assert!(output["inline_test_sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file"] == "src/inline.rs"));
+    assert!(output["classified_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "same_crate_integration"));
+    assert!(output["classified_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["category"] == "cross_crate_consumer"));
+    assert!(!output["recommended_tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file == "crates/consumer/tests/use_core.rs"));
+}

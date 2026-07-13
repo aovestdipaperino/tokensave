@@ -33,26 +33,44 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
     let custom_filter = args.get("filter").and_then(|v| v.as_str());
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
 
-    // Pre-compute files with inline test modules for test detection.
+    // Inline-test source files are useful evidence, but they are not runnable
+    // test targets and must not be mixed into the practical affected suite.
     let files_with_inline_tests = cg
         .get_files_with_test_annotations()
         .await
         .unwrap_or_default();
-    let matches_test = |path: &str| -> bool {
+    let matches_test_target = |path: &str| -> bool {
         if let Some(ref g) = custom_glob {
             g.matches(path)
         } else {
-            crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path)
+            crate::tokensave::is_test_file(path)
         }
     };
 
     let mut affected: HashSet<String> = HashSet::new();
+    let mut recommended: HashSet<String> = HashSet::new();
+    let mut classified: Vec<Value> = Vec::new();
+    let mut inline_sources: HashMap<String, usize> = HashMap::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
 
+    let changed_crates: HashSet<std::path::PathBuf> = files
+        .iter()
+        .filter_map(|file| cargo_package_root(cg.project_root(), file))
+        .collect();
+
     for file in &files {
-        if matches_test(file) {
+        if matches_test_target(file) {
             affected.insert(file.clone());
+            recommended.insert(file.clone());
+            classified.push(json!({
+                "file": file,
+                "category": "direct_changed_test",
+                "distance": 0,
+                "confidence": "high",
+            }));
+        } else if custom_glob.is_none() && files_with_inline_tests.contains(file) {
+            inline_sources.insert(file.clone(), 0);
         }
         if visited.insert(file.clone()) {
             queue.push_back((file.clone(), 0));
@@ -68,22 +86,69 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
             if !visited.insert(dep.clone()) {
                 continue;
             }
-            if matches_test(&dep) {
+            let distance = depth + 1;
+            if matches_test_target(&dep) {
                 affected.insert(dep.clone());
+                let same_crate = cargo_package_root(cg.project_root(), &dep)
+                    .is_some_and(|root| changed_crates.contains(&root));
+                let (category, confidence, is_recommended) = if !same_crate {
+                    ("cross_crate_consumer", "medium", false)
+                } else if distance == 1 {
+                    ("direct_symbol_test", "high", true)
+                } else if distance >= 3 {
+                    ("transitive_low_confidence", "low", false)
+                } else {
+                    ("same_crate_integration", "medium", true)
+                };
+                if is_recommended {
+                    recommended.insert(dep.clone());
+                }
+                classified.push(json!({
+                    "file": dep,
+                    "category": category,
+                    "distance": distance,
+                    "confidence": confidence,
+                }));
             } else {
-                queue.push_back((dep, depth + 1));
+                if custom_glob.is_none() && files_with_inline_tests.contains(&dep) {
+                    inline_sources.insert(dep.clone(), distance);
+                }
+                queue.push_back((dep, distance));
             }
         }
     }
 
     let mut result: Vec<String> = affected.into_iter().collect();
     result.sort();
+    let mut recommended_tests: Vec<String> = recommended.into_iter().collect();
+    recommended_tests.sort();
+    classified.sort_by(|a, b| {
+        a["distance"]
+            .as_u64()
+            .cmp(&b["distance"].as_u64())
+            .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
+    });
+    let mut inline_test_sources: Vec<Value> = inline_sources
+        .into_iter()
+        .map(|(file, distance)| json!({"file": file, "distance": distance}))
+        .collect();
+    inline_test_sources.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
 
-    let touched_files = result.clone();
+    let touched_files = unique_file_paths(
+        result.iter().map(String::as_str).chain(
+            inline_test_sources
+                .iter()
+                .filter_map(|item| item["file"].as_str()),
+        ),
+    );
+    let count = result.len();
     let output = json!({
         "changed_files": files,
         "affected_tests": result,
-        "count": result.len(),
+        "recommended_tests": recommended_tests,
+        "classified_candidates": classified,
+        "inline_test_sources": inline_test_sources,
+        "count": count,
     });
 
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
@@ -93,6 +158,22 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
         }),
         touched_files,
     })
+}
+
+/// Finds the nearest Cargo package containing a project-relative path.
+fn cargo_package_root(
+    project_root: &std::path::Path,
+    relative: &str,
+) -> Option<std::path::PathBuf> {
+    let mut directory = project_root.join(relative).parent()?.to_path_buf();
+    loop {
+        if directory.join("Cargo.toml").is_file() {
+            return Some(directory);
+        }
+        if directory == project_root || !directory.pop() {
+            return None;
+        }
+    }
 }
 
 /// Handles `tokensave_diff_context` tool calls.

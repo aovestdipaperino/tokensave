@@ -571,7 +571,7 @@ fn def_affected() -> ToolDefinition {
     def(
         "tokensave_affected",
         "Affected Tests",
-        "Find test files affected by changed source files via dependency graph traversal.",
+        "Find test files affected by changed source files via dependency graph traversal. Returns a practical recommended suite plus classified direct, same-crate, cross-crate, transitive, and inline-test candidates.",
         json!({
             "type": "object",
             "properties": {
