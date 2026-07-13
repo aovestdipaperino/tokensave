@@ -908,3 +908,54 @@ fn record_diagnostics(_residual: f64) {}
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn conceptual_context_associates_local_control_flow_with_owner() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/runner.rs"),
+        r#"
+pub fn execute(frequencies: &[f64]) {
+    let mut cached_precond = None;
+    let rebuild_every = 8;
+    for (freq_idx, frequency) in frequencies.iter().enumerate() {
+        let must_rebuild = cached_precond.is_none() || freq_idx % rebuild_every == 0;
+        if must_rebuild {
+            cached_precond = Some(*frequency);
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "preconditioner cache rebuild",
+            &BuildContextOptions {
+                search_limit: 5,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        context
+            .entry_points
+            .iter()
+            .any(|node| node.name == "execute"),
+        "local branch identifiers should retrieve their executable owner"
+    );
+}

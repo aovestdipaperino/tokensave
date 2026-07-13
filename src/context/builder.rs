@@ -409,9 +409,10 @@ impl<'a> ContextBuilder<'a> {
                 continue;
             };
             let source_lower = source.to_lowercase();
+            let source_identifiers = identifier_components(&source);
             let file_hits = terms
                 .iter()
-                .filter(|term| source_lower.contains(term.as_str()))
+                .filter(|term| term_matches_body(term, &source_lower, &source_identifiers))
                 .count();
             if file_hits < 2 {
                 continue;
@@ -427,19 +428,22 @@ impl<'a> ContextBuilder<'a> {
                 if start >= end {
                     continue;
                 }
-                let body = lines[start..end].join("\n").to_lowercase();
+                let body_source = lines[start..end].join("\n");
+                let body = body_source.to_lowercase();
+                let identifiers = identifier_components(&body_source);
                 let hits = terms
                     .iter()
-                    .filter(|term| body.contains(term.as_str()))
+                    .filter(|term| term_matches_body(term, &body, &identifiers))
                     .count();
                 if hits < 2 {
                     continue;
                 }
                 // Body matches are deliberately below exact-name matches (20)
                 // but strong enough to compete with ordinary BM25 results.
+                let control_flow_boost = ((node.branches + node.loops) as f64).min(4.0) * 0.25;
                 results.push(SearchResult {
                     node,
-                    score: 1.5 + hits as f64,
+                    score: 1.5 + hits as f64 + control_flow_boost,
                 });
             }
         }
@@ -1087,6 +1091,34 @@ fn is_executable_kind(kind: &NodeKind) -> bool {
             | NodeKind::Procedure
             | NodeKind::ArrowFunction
     )
+}
+
+/// Splits source identifiers into searchable components. Keeping this local to
+/// the body-search channel avoids graph noise from turning every local binding
+/// into a public symbol while still making `cached_precond` discoverable.
+fn identifier_components(source: &str) -> HashSet<String> {
+    source
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .flat_map(|identifier| identifier.split('_'))
+        .filter(|component| component.len() >= 4)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn term_matches_body(term: &str, body_lower: &str, identifiers: &HashSet<String>) -> bool {
+    if body_lower.contains(term) {
+        return true;
+    }
+    identifiers.iter().any(|identifier| {
+        let common = term
+            .bytes()
+            .zip(identifier.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        // Long shared prefixes cover conventional abbreviations (`precond` /
+        // `preconditioner`) without equating short, generic word fragments.
+        common >= 5 && (common == term.len() || common == identifier.len())
+    })
 }
 
 /// Boosts candidates whose file contains multiple query terms.
