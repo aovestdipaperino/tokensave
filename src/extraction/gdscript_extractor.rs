@@ -777,6 +777,7 @@ impl GdScriptExtractor {
     ///   reference passed by value, the shape `BaseDatabaseCache`'s
     ///   lazy-init pattern and similar dispatch tables use. See
     ///   `extract_bare_attribute_args`.
+    ///
     /// Both were previously invisible to this extractor: a callee referenced
     /// only this way had zero recorded edges, making `tokensave_dead_code`
     /// misreport it as unreachable even though it's genuinely live.
@@ -833,10 +834,11 @@ impl GdScriptExtractor {
     /// - `X.connect(callback)` — Godot's signal-connect API; `callback` is a
     ///   bare identifier or bare dotted-attribute function reference (no call
     ///   parens) naming the handler directly.
+    ///
     /// All three were previously invisible: a handler referenced only this
     /// way showed zero incoming edges and misreported as dead code by
     /// `tokensave_dead_code`. Matching is on method name only (not receiver
-    /// type — GDScript has no static typing strong enough to verify the
+    /// type — `GDScript` has no static typing strong enough to verify the
     /// receiver really is e.g. a `Signal`), so this is a heuristic, but a
     /// narrow one: these three names are Godot-API-reserved enough in
     /// practice that a same-named unrelated user method is very unlikely.
@@ -866,7 +868,9 @@ impl GdScriptExtractor {
 
         match method.as_str() {
             "Callable" if named.len() == 2 && named[1].kind() == "string" => {
-                Self::string_literal_text(state, named[1]).into_iter().collect()
+                Self::string_literal_text(state, named[1])
+                    .into_iter()
+                    .collect()
             }
             "call_deferred" => first
                 .filter(|n| n.kind() == "string")
@@ -965,15 +969,15 @@ impl GdScriptExtractor {
     /// convention the Python/TS/JS extractors already use for the same
     /// shape. Previously only the bare method name was emitted, silently
     /// discarding the receiver — a preload-alias (`XScript.some_method()`) or
-    /// direct class_name receiver (`EquipmentDatabase.get_equipment()`) gave
+    /// direct `class_name` receiver (`EquipmentDatabase.get_equipment()`) gave
     /// the resolver no qualifier to disambiguate a same-named method
     /// elsewhere. `call` (`foo()`) carries the callee as its first named
     /// child ahead of the `arguments` field.
     fn callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         match node.kind() {
             "attribute_call" => {
-                let method = Self::find_child_by_kind(node, "identifier")
-                    .map(|n| state.node_text(n))?;
+                let method =
+                    Self::find_child_by_kind(node, "identifier").map(|n| state.node_text(n))?;
                 if let Some(receiver) = node.prev_named_sibling() {
                     let receiver_text = state.node_text(receiver);
                     if !receiver_text.is_empty() {

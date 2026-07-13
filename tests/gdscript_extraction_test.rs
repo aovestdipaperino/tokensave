@@ -283,7 +283,8 @@ func run():
         result
             .unresolved_refs
             .iter()
-            .any(|u| u.reference_kind == EdgeKind::Calls && u.reference_name == "XScript.some_method"),
+            .any(|u| u.reference_kind == EdgeKind::Calls
+                && u.reference_name == "XScript.some_method"),
         "expected receiver-qualified XScript.some_method, got: {:?}",
         result
             .unresolved_refs
@@ -319,7 +320,8 @@ func _on_button_pressed():
         .filter(|u| u.reference_kind == EdgeKind::Calls && u.reference_name == "_on_button_pressed")
         .count();
     assert_eq!(
-        hits, 2,
+        hits,
+        2,
         "expected 2 Callable(...) string-target refs to _on_button_pressed, got: {:?}",
         result
             .unresolved_refs
@@ -382,7 +384,8 @@ func run():
         result
             .unresolved_refs
             .iter()
-            .any(|u| u.reference_kind == EdgeKind::Calls && u.reference_name == "Foo._load_from_registry"),
+            .any(|u| u.reference_kind == EdgeKind::Calls
+                && u.reference_name == "Foo._load_from_registry"),
         "expected a bare dotted-attribute call-argument ref to Foo._load_from_registry, got: {:?}",
         result
             .unresolved_refs
@@ -445,7 +448,8 @@ func _late_init():
         .filter(|u| u.reference_kind == EdgeKind::Calls && u.reference_name == "_late_init")
         .count();
     assert_eq!(
-        hits, 2,
+        hits,
+        2,
         "expected 2 call_deferred(...) string-target refs to _late_init, got: {:?}",
         result
             .unresolved_refs
