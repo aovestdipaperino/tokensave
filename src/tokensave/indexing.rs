@@ -84,6 +84,7 @@ impl TokenSave {
         let mut all_edges = Vec::new();
         let mut all_unresolved = Vec::new();
         let mut file_records = Vec::new();
+        let mut body_documents = Vec::new();
         let mut total_nodes = 0;
 
         for (idx, (file_path, result, hash, size, mtime)) in extractions.iter().enumerate() {
@@ -92,6 +93,13 @@ impl TokenSave {
             all_nodes.extend_from_slice(&result.nodes);
             all_edges.extend_from_slice(&result.edges);
             all_unresolved.extend_from_slice(&result.unresolved_refs);
+            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+                body_documents.extend(build_executable_body_documents(
+                    file_path,
+                    &source,
+                    &result.nodes,
+                ));
+            }
             file_records.push(FileRecord {
                 path: file_path.clone(),
                 content_hash: hash.clone(),
@@ -147,11 +155,15 @@ impl TokenSave {
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         let phase_start = Instant::now();
         self.db.insert_nodes(&all_nodes).await?;
+        self.db
+            .insert_executable_body_documents(&body_documents)
+            .await?;
         self.db.insert_edges(&all_edges).await?;
         self.db.upsert_files(&file_records).await?;
 
         // 8. Restore indexes and normal durability
         self.db.end_bulk_load().await?;
+        self.db.rebuild_trait_dispatch_callers().await?;
         on_verbose(&format!(
             "wrote to database in {:.1}s",
             phase_start.elapsed().as_secs_f64()
@@ -338,9 +350,17 @@ impl TokenSave {
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
         let mut queued_edges: Vec<&Edge> = Vec::new();
+        let mut body_documents = Vec::new();
         for (file_path, result, hash, size, mtime) in &sync_extractions {
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
+            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+                body_documents.extend(build_executable_body_documents(
+                    file_path,
+                    &source,
+                    &result.nodes,
+                ));
+            }
             queued_edges.extend(&result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
@@ -358,6 +378,9 @@ impl TokenSave {
             };
             self.db.upsert_file(&file_record).await?;
         }
+        self.db
+            .insert_executable_body_documents(&body_documents)
+            .await?;
 
         // Phase 2: insert all queued edges now that every node is present.
         // The conditional INSERT in `insert_edges` silently skips edges
@@ -389,6 +412,7 @@ impl TokenSave {
             }
         }
 
+        self.db.rebuild_trait_dispatch_callers().await?;
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
@@ -593,6 +617,7 @@ impl TokenSave {
         let mut total_nodes = 0usize;
         let mut total_edges = 0usize;
         let mut queued_edges: Vec<&Edge> = Vec::new();
+        let mut body_documents = Vec::new();
         for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
             on_progress(idx + 1, total, file_path);
 
@@ -601,6 +626,13 @@ impl TokenSave {
 
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
+            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+                body_documents.extend(build_executable_body_documents(
+                    file_path,
+                    &source,
+                    &result.nodes,
+                ));
+            }
             queued_edges.extend(&result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
@@ -618,6 +650,9 @@ impl TokenSave {
             };
             self.db.upsert_file(&file_record).await?;
         }
+        self.db
+            .insert_executable_body_documents(&body_documents)
+            .await?;
 
         // Phase 2: insert all queued edges now that every node is present.
         if !queued_edges.is_empty() {
@@ -665,6 +700,7 @@ impl TokenSave {
             ));
         }
 
+        self.db.rebuild_trait_dispatch_callers().await?;
         let duration_ms = start.elapsed().as_millis() as u64;
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
@@ -970,6 +1006,10 @@ impl TokenSave {
 
         self.db.delete_nodes_by_file(file_path).await?;
         self.db.insert_nodes(&result.nodes).await?;
+        let body_documents = build_executable_body_documents(file_path, &source, &result.nodes);
+        self.db
+            .insert_executable_body_documents(&body_documents)
+            .await?;
         self.db.insert_edges(&result.edges).await?;
         if !result.unresolved_refs.is_empty() {
             self.db
@@ -986,6 +1026,7 @@ impl TokenSave {
             node_count: result.nodes.len() as u32,
         };
         self.db.upsert_file(&file_record).await?;
+        self.db.rebuild_trait_dispatch_callers().await?;
 
         Ok(())
     }
@@ -1443,6 +1484,38 @@ impl TokenSave {
             message: "ast-grep rewrite completed".to_string(),
         })
     }
+}
+
+fn build_executable_body_documents(
+    file_path: &str,
+    source: &str,
+    nodes: &[Node],
+) -> Vec<ExecutableBodyDocument> {
+    let lines: Vec<&str> = source.lines().collect();
+    nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Function
+                    | NodeKind::Method
+                    | NodeKind::StructMethod
+                    | NodeKind::Constructor
+                    | NodeKind::AbstractMethod
+                    | NodeKind::Procedure
+                    | NodeKind::ArrowFunction
+            )
+        })
+        .filter_map(|node| {
+            let start = node.start_line as usize;
+            let end = (node.end_line as usize).saturating_add(1).min(lines.len());
+            (start < end).then(|| ExecutableBodyDocument {
+                node_id: node.id.clone(),
+                file_path: file_path.to_string(),
+                body: lines[start..end].join("\n"),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn can_use_literal_rewrite_fallback(pattern: &str) -> bool {

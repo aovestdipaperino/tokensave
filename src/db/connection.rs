@@ -1,11 +1,16 @@
 // Rust guideline compliant 2025-10-17
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::RwLock;
 
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
 use crate::errors::{Result, TokenSaveError};
+use crate::types::{Edge, Node};
 
 use super::migrations;
+
+pub(super) type CachedTraitDispatchCaller = (Node, Edge, String, bool);
 
 /// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
 ///
@@ -32,6 +37,7 @@ pub struct Database {
     conn: Connection,
     /// Kept alive so the underlying database is not dropped.
     _db: LibsqlDatabase,
+    pub(super) trait_dispatch_callers: RwLock<HashMap<String, Vec<CachedTraitDispatchCaller>>>,
 }
 
 impl Database {
@@ -66,7 +72,13 @@ impl Database {
         Self::apply_pragmas(&conn, 0).await?;
         migrations::create_schema(&conn).await?;
 
-        Ok((Self { conn, _db: db }, false))
+        let database = Self {
+            conn,
+            _db: db,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok((database, false))
     }
 
     /// Opens an existing database at `db_path`, applies performance pragmas,
@@ -92,7 +104,13 @@ impl Database {
         Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
 
-        Ok((Self { conn, _db: db }, migrated))
+        let database = Self {
+            conn,
+            _db: db,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok((database, migrated))
     }
 
     /// Returns a reference to the underlying libsql connection.
@@ -255,6 +273,10 @@ impl Database {
              DROP TRIGGER IF EXISTS nodes_fts_insert;
              DROP TRIGGER IF EXISTS nodes_fts_delete;
              DROP TRIGGER IF EXISTS nodes_fts_update;
+             DROP TRIGGER IF EXISTS trait_dispatch_call_insert;
+             DROP TRIGGER IF EXISTS trait_dispatch_implements_insert;
+             DROP TRIGGER IF EXISTS trait_dispatch_call_delete;
+             DROP TRIGGER IF EXISTS trait_dispatch_implements_delete;
              DELETE FROM nodes_fts;",
             )
             .await
@@ -302,6 +324,13 @@ impl Database {
             message: format!("failed to end bulk load: {e}"),
             operation: "end_bulk_load".to_string(),
         })?;
+        self.conn
+            .execute_batch(crate::db::migrations::TRAIT_DISPATCH_TRIGGERS_SQL)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to restore trait dispatch triggers: {e}"),
+                operation: "end_bulk_load".to_string(),
+            })?;
         Ok(())
     }
 }

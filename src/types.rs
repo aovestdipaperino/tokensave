@@ -464,6 +464,16 @@ pub struct SearchResult {
     pub score: f64,
 }
 
+/// Search document persisted for an executable node's source body.
+/// `node_id` and `file_path` are unindexed metadata columns in the FTS table;
+/// only `body` participates in full-text matching.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutableBodyDocument {
+    pub node_id: String,
+    pub file_path: String,
+    pub body: String,
+}
+
 /// Direction for graph traversal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TraversalDirection {

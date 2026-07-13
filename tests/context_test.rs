@@ -1017,3 +1017,59 @@ impl Source {
     );
     assert!(names.contains(&"polar_weight"), "entry points: {names:?}");
 }
+
+#[tokio::test]
+async fn executable_body_index_is_replaced_by_incremental_sync() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let source_path = project.join("src/policy.rs");
+    fs::write(
+        &source_path,
+        "pub fn policy() { let cached_precond = true; let must_rebuild = cached_precond; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let options = BuildContextOptions {
+        search_limit: 5,
+        max_nodes: 20,
+        ..Default::default()
+    };
+    let builder = ContextBuilder::new(cg.db(), project);
+    let before = builder
+        .build_context("preconditioner rebuild", &options)
+        .await
+        .unwrap();
+    assert!(before.entry_points.iter().any(|node| node.name == "policy"));
+
+    fs::write(
+        &source_path,
+        "pub fn policy() { let session_rotation = true; let renew_credentials = session_rotation; }\n",
+    )
+    .unwrap();
+    cg.sync().await.unwrap();
+
+    let old_terms = builder
+        .build_context("preconditioner rebuild", &options)
+        .await
+        .unwrap();
+    assert!(!old_terms
+        .entry_points
+        .iter()
+        .any(|node| node.name == "policy"));
+    let new_terms = builder
+        .build_context("session rotation credentials renewal", &options)
+        .await
+        .unwrap();
+    assert!(new_terms
+        .entry_points
+        .iter()
+        .any(|node| node.name == "policy"));
+}

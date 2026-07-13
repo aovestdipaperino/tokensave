@@ -436,6 +436,70 @@ impl Database {
         collect_rows(&mut rows, row_to_node, "get_children_of").await
     }
 
+    /// Returns children of many parent scopes in one query.
+    pub async fn get_children_of_many(&self, parent_ids: &[String]) -> Result<Vec<Node>> {
+        if parent_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = build_qmark_placeholders(parent_ids.len());
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
+             FROM nodes WHERE parent_id IN ({placeholders}) ORDER BY file_path, start_line"
+        );
+        let values = parent_ids
+            .iter()
+            .cloned()
+            .map(libsql::Value::Text)
+            .collect::<Vec<_>>();
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query children for parent set: {e}"),
+                operation: "get_children_of_many".to_string(),
+            })?;
+        collect_rows(&mut rows, row_to_node, "get_children_of_many").await
+    }
+
+    /// Resolves a method in an impl block to same-named methods on the trait
+    /// implemented by that block, using one indexed join.
+    pub async fn get_trait_methods_for_impl_method(
+        &self,
+        impl_id: &str,
+        method_name: &str,
+    ) -> Result<Vec<Node>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT method.id, method.kind, method.name, method.qualified_name, method.file_path,
+                        method.start_line, method.end_line, method.start_column, method.end_column,
+                        method.docstring, method.signature, method.visibility, method.is_async,
+                        method.branches, method.loops, method.returns, method.max_nesting,
+                        method.unsafe_blocks, method.unchecked_calls, method.assertions,
+                        method.updated_at, method.attrs_start_line, method.parent_id,
+                        method.cognitive_complexity, method.distinct_operators,
+                        method.distinct_operands, method.total_operators, method.total_operands
+                 FROM edges dispatch
+                 JOIN nodes trait ON trait.id = dispatch.target AND trait.kind = 'trait'
+                 JOIN nodes method ON method.parent_id = trait.id
+                 WHERE dispatch.source = ?1
+                   AND dispatch.kind = 'implements'
+                   AND method.name = ?2
+                   AND method.kind IN ('method', 'function')
+                 ORDER BY method.file_path, method.start_line",
+                params![impl_id, method_name],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to resolve reverse trait dispatch: {e}"),
+                operation: "get_trait_methods_for_impl_method".to_string(),
+            })?;
+        collect_rows(&mut rows, row_to_node, "get_trait_methods_for_impl_method").await
+    }
+
     /// Returns all nodes of a given kind.
     pub async fn get_nodes_by_kind(&self, kind: NodeKind) -> Result<Vec<Node>> {
         let mut rows = self
@@ -486,6 +550,17 @@ impl Database {
             !file_path.starts_with('/'),
             "delete_nodes_by_file expects relative path, got absolute"
         );
+        self.conn()
+            .execute(
+                "DELETE FROM executable_body_fts WHERE file_path = ?1",
+                params![file_path],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to delete executable body documents: {e}"),
+                operation: "delete_nodes_by_file".to_string(),
+            })?;
+
         // Gather node IDs for the file first.
         let node_ids: Vec<String> = {
             let mut rows = self

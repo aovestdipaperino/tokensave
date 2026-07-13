@@ -41,6 +41,7 @@ impl Database {
                 message: format!("failed to insert edge: {e}"),
                 operation: "insert_edge".to_string(),
             })?;
+        self.refresh_trait_dispatch_callers().await?;
         Ok(())
     }
 
@@ -122,6 +123,7 @@ impl Database {
                 message: format!("failed to commit: {e}"),
                 operation: "insert_edges".to_string(),
             })?;
+        self.refresh_trait_dispatch_callers().await?;
         Ok(())
     }
 
@@ -227,6 +229,130 @@ impl Database {
 
             collect_rows(&mut rows, row_to_edge, "get_incoming_edges").await
         }
+    }
+
+    /// Rebuilds the materialized reverse-dispatch caller map after graph edges
+    /// change. This shifts trait joins to indexing so hot caller queries need
+    /// only two indexed probes.
+    pub async fn rebuild_trait_dispatch_callers(&self) -> Result<()> {
+        self.conn()
+            .execute_batch(
+                "DELETE FROM trait_dispatch_callers;
+                 INSERT OR IGNORE INTO trait_dispatch_callers
+                     (concrete_method_id, trait_method_id, caller_id, line)
+                 SELECT concrete.id, trait_method.id, call.source, COALESCE(call.line, -1)
+                   FROM edges dispatch
+                   JOIN nodes trait_method
+                     ON trait_method.parent_id = dispatch.target
+                    AND trait_method.kind IN ('method', 'function')
+                   JOIN nodes concrete
+                     ON concrete.parent_id = dispatch.source
+                    AND concrete.name = trait_method.name
+                    AND concrete.kind IN ('method', 'function')
+                   JOIN edges call
+                     ON call.target = trait_method.id
+                    AND call.kind = 'calls'
+                  WHERE dispatch.kind = 'implements';",
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to rebuild reverse trait dispatch callers: {e}"),
+                operation: "rebuild_trait_dispatch_callers".to_string(),
+            })?;
+        self.refresh_trait_dispatch_callers().await?;
+        Ok(())
+    }
+
+    pub async fn refresh_trait_dispatch_callers(&self) -> Result<()> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT caller.id, caller.kind, caller.name, caller.qualified_name, caller.file_path,
+                        caller.start_line, caller.end_line, caller.start_column, caller.end_column,
+                        caller.docstring, caller.signature, caller.visibility, caller.is_async,
+                        caller.branches, caller.loops, caller.returns, caller.max_nesting,
+                        caller.unsafe_blocks, caller.unchecked_calls, caller.assertions,
+                        caller.updated_at, caller.attrs_start_line, caller.parent_id,
+                        caller.cognitive_complexity, caller.distinct_operators,
+                        caller.distinct_operands, caller.total_operators, caller.total_operands,
+                        dispatch.concrete_method_id, dispatch.trait_method_id, dispatch.line,
+                        EXISTS(
+                            SELECT 1 FROM edges upstream
+                             WHERE upstream.target = caller.id
+                               AND upstream.kind = 'calls'
+                        )
+                   FROM trait_dispatch_callers dispatch
+                   JOIN nodes caller ON caller.id = dispatch.caller_id
+                  ORDER BY dispatch.concrete_method_id, caller.file_path, caller.start_line",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to refresh trait dispatch method cache: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+        let mut callers: std::collections::HashMap<String, Vec<CachedTraitDispatchCaller>> =
+            std::collections::HashMap::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read trait dispatch method cache: {e}"),
+            operation: "refresh_trait_dispatch_callers".to_string(),
+        })? {
+            let caller = row_to_node(&row).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map cached trait dispatch caller: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+            let concrete_method_id: String = row.get(28).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map cached concrete method: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+            let trait_method_id: String = row.get(29).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map cached trait method: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+            let stored_line: i64 = row.get(30).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map cached trait dispatch line: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+            let has_upstream: i64 = row.get(31).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to map cached caller fan-in: {e}"),
+                operation: "refresh_trait_dispatch_callers".to_string(),
+            })?;
+            let edge = Edge {
+                source: caller.id.clone(),
+                target: trait_method_id.clone(),
+                kind: EdgeKind::Calls,
+                line: (stored_line >= 0).then_some(stored_line as u32),
+            };
+            callers.entry(concrete_method_id).or_default().push((
+                caller,
+                edge,
+                trait_method_id,
+                has_upstream != 0,
+            ));
+        }
+        *self
+            .trait_dispatch_callers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = callers;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn has_trait_dispatch_callers(&self, node_id: &str) -> bool {
+        self.trait_dispatch_callers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(node_id)
+    }
+
+    #[must_use]
+    pub fn cached_trait_dispatch_callers(&self, node_id: &str) -> Vec<CachedTraitDispatchCaller> {
+        self.trait_dispatch_callers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(node_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Returns all incoming edges for many target nodes in a single query.

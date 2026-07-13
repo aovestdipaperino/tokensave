@@ -11,6 +11,8 @@ impl Database {
         self.conn()
             .execute_batch(
                 "DELETE FROM vectors;
+                 DELETE FROM executable_body_fts;
+                 DELETE FROM trait_dispatch_callers;
                  DELETE FROM unresolved_refs;
                  DELETE FROM edges;
                  DELETE FROM nodes;
@@ -21,6 +23,10 @@ impl Database {
                 message: format!("failed to clear database: {e}"),
                 operation: "clear".to_string(),
             })?;
+        self.trait_dispatch_callers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         Ok(())
     }
 }

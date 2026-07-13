@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use libsql::params;
 
-use super::connection::Database;
+use super::connection::{CachedTraitDispatchCaller, Database};
 use crate::errors::{Result, TokenSaveError};
 use crate::types::*;
 

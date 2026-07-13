@@ -15,7 +15,58 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 11;
+const LATEST_VERSION: u32 = 12;
+
+pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
+CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
+AFTER INSERT ON edges WHEN NEW.kind = 'calls' BEGIN
+    INSERT OR IGNORE INTO trait_dispatch_callers
+        (concrete_method_id, trait_method_id, caller_id, line)
+    SELECT concrete.id, trait_method.id, NEW.source, COALESCE(NEW.line, -1)
+      FROM nodes trait_method
+      JOIN edges dispatch
+        ON dispatch.target = trait_method.parent_id
+       AND dispatch.kind = 'implements'
+      JOIN nodes concrete
+        ON concrete.parent_id = dispatch.source
+       AND concrete.name = trait_method.name
+       AND concrete.kind IN ('method', 'function')
+     WHERE trait_method.id = NEW.target
+       AND trait_method.kind IN ('method', 'function');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trait_dispatch_implements_insert
+AFTER INSERT ON edges WHEN NEW.kind = 'implements' BEGIN
+    INSERT OR IGNORE INTO trait_dispatch_callers
+        (concrete_method_id, trait_method_id, caller_id, line)
+    SELECT concrete.id, trait_method.id, call.source, COALESCE(call.line, -1)
+      FROM nodes trait_method
+      JOIN nodes concrete
+        ON concrete.parent_id = NEW.source
+       AND concrete.name = trait_method.name
+       AND concrete.kind IN ('method', 'function')
+      JOIN edges call
+        ON call.target = trait_method.id
+       AND call.kind = 'calls'
+     WHERE trait_method.parent_id = NEW.target
+       AND trait_method.kind IN ('method', 'function');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_delete
+AFTER DELETE ON edges WHEN OLD.kind = 'calls' BEGIN
+    DELETE FROM trait_dispatch_callers
+     WHERE caller_id = OLD.source
+       AND trait_method_id = OLD.target
+       AND line = COALESCE(OLD.line, -1);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trait_dispatch_implements_delete
+AFTER DELETE ON edges WHEN OLD.kind = 'implements' BEGIN
+    DELETE FROM trait_dispatch_callers
+     WHERE concrete_method_id IN (SELECT id FROM nodes WHERE parent_id = OLD.source)
+       AND trait_method_id IN (SELECT id FROM nodes WHERE parent_id = OLD.target);
+END;
+";
 
 /// Returns the highest schema version this build knows how to produce.
 #[must_use]
@@ -153,6 +204,24 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             content='nodes', content_rowid='rowid'
         );
 
+        CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
+            node_id UNINDEXED,
+            file_path UNINDEXED,
+            body,
+            tokenize='unicode61'
+        );
+
+        CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
+            concrete_method_id TEXT NOT NULL,
+            trait_method_id TEXT NOT NULL,
+            caller_id TEXT NOT NULL,
+            line INTEGER NOT NULL DEFAULT -1,
+            PRIMARY KEY (concrete_method_id, trait_method_id, caller_id, line)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_concrete
+            ON trait_dispatch_callers(concrete_method_id);
+
         CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
             VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
@@ -271,6 +340,13 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         operation: "create_schema".to_string(),
     })?;
 
+    conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to create trait dispatch triggers: {e}"),
+            operation: "create_schema".to_string(),
+        })?;
+
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
@@ -353,6 +429,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         9 => migrate_v9(conn).await,
         10 => migrate_v10(conn).await,
         11 => migrate_v11(conn).await,
+        12 => migrate_v12(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -936,6 +1013,67 @@ async fn migrate_v11(conn: &Connection) -> Result<()> {
         })?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V12: persistent executable-body search
+// ---------------------------------------------------------------------------
+
+/// Adds persistent indexes used by conceptual context retrieval and resolved
+/// reverse trait dispatch.
+/// Existing projects are fully re-indexed by `TokenSave::open` after this
+/// schema migration, which populates the table from source exactly once.
+async fn migrate_v12(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
+            node_id UNINDEXED,
+            file_path UNINDEXED,
+            body,
+            tokenize='unicode61'
+        );
+        CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
+            concrete_method_id TEXT NOT NULL,
+            trait_method_id TEXT NOT NULL,
+            caller_id TEXT NOT NULL,
+            line INTEGER NOT NULL DEFAULT -1,
+            PRIMARY KEY (concrete_method_id, trait_method_id, caller_id, line)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_concrete
+            ON trait_dispatch_callers(concrete_method_id);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v12: failed to create executable body FTS table: {e}"),
+        operation: "migrate_v12".to_string(),
+    })?;
+    let mut edge_table = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'",
+            (),
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v12: failed to inspect edges table: {e}"),
+            operation: "migrate_v12".to_string(),
+        })?;
+    let has_edges = edge_table
+        .next()
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v12: failed to read edges table status: {e}"),
+            operation: "migrate_v12".to_string(),
+        })?
+        .is_some();
+    drop(edge_table);
+    if has_edges {
+        conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v12: failed to create trait dispatch triggers: {e}"),
+                operation: "migrate_v12".to_string(),
+            })?;
+    }
     Ok(())
 }
 

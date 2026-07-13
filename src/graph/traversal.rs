@@ -336,6 +336,84 @@ impl<'a> GraphTraverser<'a> {
         Ok(results)
     }
 
+    /// Traverses callers while resolving generic calls to a concrete trait impl
+    /// in the first incoming-edge query. The optional string identifies the
+    /// trait method through which the caller dispatches.
+    pub async fn get_callers_with_dispatch_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize, Option<String>)>> {
+        debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
+        debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
+        let mut results: Vec<(Node, Edge, usize, Option<String>)> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(node_id.to_string());
+
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        queue.push_back((node_id.to_string(), 0));
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let edges = self
+                .db
+                .get_incoming_edges(&current_id, &[EdgeKind::Calls])
+                .await?;
+            let caller_ids: HashSet<String> = edges
+                .iter()
+                .map(|edge| edge.source.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+            let caller_nodes = if caller_ids.is_empty() {
+                Vec::new()
+            } else {
+                self.db
+                    .get_nodes_by_ids(&caller_ids.into_iter().collect::<Vec<_>>())
+                    .await?
+            };
+            let caller_map: std::collections::HashMap<String, Node> = caller_nodes
+                .into_iter()
+                .map(|node| (node.id.clone(), node))
+                .collect();
+
+            for edge in edges {
+                let caller_id = &edge.source;
+                if visited.contains(caller_id) {
+                    continue;
+                }
+                if let Some(caller_node) = caller_map.get(caller_id) {
+                    visited.insert(caller_id.clone());
+                    queue.push_back((caller_id.clone(), depth + 1));
+                    results.push((caller_node.clone(), edge, depth + 1, None));
+                }
+            }
+
+            if depth == 0 {
+                for (caller, edge, dispatch_from, has_upstream) in
+                    self.db.cached_trait_dispatch_callers(&current_id)
+                {
+                    if visited.contains(&caller.id) {
+                        if let Some(existing) = results
+                            .iter_mut()
+                            .find(|(node, _, _, _)| node.id == caller.id)
+                        {
+                            existing.3 = Some(dispatch_from);
+                        }
+                        continue;
+                    }
+                    visited.insert(caller.id.clone());
+                    if has_upstream {
+                        queue.push_back((caller.id.clone(), depth + 1));
+                    }
+                    results.push((caller, edge, depth + 1, Some(dispatch_from)));
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// Gets all nodes that the given node calls, up to `max_depth` levels.
     ///
     /// Follows outgoing `Calls` edges to find callees transitively.

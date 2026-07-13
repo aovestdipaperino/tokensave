@@ -238,7 +238,7 @@ async fn apply_v4(conn: &Connection) {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// create_schema on a fresh database sets user_version to 5 and creates all tables.
+/// `create_schema` on a fresh database sets the latest version and creates all tables.
 #[tokio::test]
 async fn test_create_schema_fresh_db() {
     let (conn, _db, _dir) = create_raw_db().await;
@@ -247,7 +247,7 @@ async fn test_create_schema_fresh_db() {
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -255,6 +255,7 @@ async fn test_create_schema_fresh_db() {
     assert!(table_exists(&conn, "vectors").await);
     assert!(table_exists(&conn, "metadata").await);
     assert!(table_exists(&conn, "nodes_fts").await);
+    assert!(table_exists(&conn, "executable_body_fts").await);
 }
 
 /// create_schema is idempotent — calling it twice does not error.
@@ -269,7 +270,7 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 }
 
 /// migrate returns false when already at the latest version.
@@ -287,7 +288,7 @@ async fn test_migrate_already_latest_returns_false() {
         !migrated,
         "migrate should return false when already at latest"
     );
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 }
 
 /// migrate from v0 (completely empty database) applies all migrations to latest.
@@ -306,7 +307,7 @@ async fn test_migrate_from_v0() {
         migrated,
         "migrate should return true when migrations were applied"
     );
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -316,6 +317,7 @@ async fn test_migrate_from_v0() {
     assert!(table_exists(&conn, "vectors").await);
     assert!(table_exists(&conn, "metadata").await);
     assert!(table_exists(&conn, "nodes_fts").await);
+    assert!(table_exists(&conn, "executable_body_fts").await);
 
     // V3 complexity columns should exist
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -347,7 +349,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -383,7 +385,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -413,7 +415,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -441,7 +443,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 11);
+    assert_eq!(get_user_version(&conn).await, 12);
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -583,7 +585,7 @@ async fn test_database_initialize_creates_latest_version() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -650,7 +652,7 @@ async fn test_database_open_migrates_v1_to_latest() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 /// After create_schema, all v5 columns on nodes exist.
@@ -874,7 +876,7 @@ async fn test_v7_to_latest_upgrade_path() {
     let mut rows = conn.query("PRAGMA user_version", ()).await.unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let v: i64 = row.get(0).unwrap();
-    assert_eq!(v, 11);
+    assert_eq!(v, 12);
 
     let mut rows = conn
         .query(

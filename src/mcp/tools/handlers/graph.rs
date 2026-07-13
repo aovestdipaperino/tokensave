@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::context::format_context_as_markdown;
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
-use crate::types::{BuildContextOptions, EdgeKind, NodeKind, Visibility};
+use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
 
 use super::super::ToolResult;
 use super::{
@@ -49,17 +49,16 @@ fn halstead_diff_for(n: &crate::types::Node) -> f64 {
 /// or a symbol *name* passed where an ID is expected (the #109 CLI nit:
 /// `tokensave tool callers Helper`) read like clean answers. Fail loudly and
 /// point at the name-based lookups instead.
-async fn ensure_node_exists(cg: &TokenSave, node_id: &str) -> Result<()> {
-    if cg.get_node(node_id).await?.is_none() {
-        return Err(TokenSaveError::Config {
+async fn require_existing_node(cg: &TokenSave, node_id: &str) -> Result<Node> {
+    cg.get_node(node_id)
+        .await?
+        .ok_or_else(|| TokenSaveError::Config {
             message: format!(
                 "node not found: '{node_id}'. `node_id` expects a graph node ID \
                  (e.g. from tokensave_search results); to look up by symbol name \
                  use tokensave_callers_for or tokensave_search."
             ),
-        });
-    }
-    Ok(())
+        })
 }
 
 /// Handles `tokensave_search` tool calls.
@@ -433,7 +432,7 @@ pub(super) async fn handle_context(
 /// Handles `tokensave_callers` tool calls.
 pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;
-    ensure_node_exists(cg, node_id).await?;
+    let _target = require_existing_node(cg, node_id).await?;
 
     // Default to direct callers only. `get_callers` is a transitive BFS, so a
     // larger default silently mixed 2-/3-hop callers into the same flat list
@@ -449,12 +448,20 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
 
-    let results = cg.get_callers_with_depth(node_id, max_depth).await?;
-    let mut seen: HashSet<String> = results.iter().map(|(node, _, _)| node.id.clone()).collect();
+    let results = if resolve_dispatch && cg.has_trait_dispatch_callers(node_id) {
+        cg.get_callers_with_dispatch_depth(node_id, max_depth)
+            .await?
+    } else {
+        cg.get_callers_with_depth(node_id, max_depth)
+            .await?
+            .into_iter()
+            .map(|(node, edge, depth)| (node, edge, depth, None))
+            .collect()
+    };
 
-    let mut items: Vec<Value> = results
+    let items: Vec<Value> = results
         .iter()
-        .map(|(node, edge, depth)| {
+        .map(|(node, edge, depth, dispatch_from)| {
             json!({
                 "node_id": node.id,
                 "name": node.name,
@@ -469,48 +476,11 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
                 // BFS hop count: 1 = direct caller, 2+ = transitive.
                 "depth": depth,
                 "edge_kind": edge.kind.as_str(),
-                "dispatch_via_trait": false,
+                "dispatch_via_trait": dispatch_from.is_some(),
+                "dispatch_from": dispatch_from,
             })
         })
         .collect();
-
-    if resolve_dispatch {
-        if let Some(target) = cg.get_node(node_id).await? {
-            for trait_method in cg.get_trait_dispatch_sources(&target).await? {
-                for (caller, edge, depth) in cg
-                    .get_callers_with_depth(&trait_method.id, max_depth)
-                    .await?
-                {
-                    if !seen.insert(caller.id.clone()) {
-                        // A resolver may conservatively emit both the static
-                        // trait edge and a concrete edge. Preserve one row but
-                        // annotate it as trait dispatch when the reverse path
-                        // confirms that relationship.
-                        if let Some(existing) = items
-                            .iter_mut()
-                            .find(|item| item.get("node_id") == Some(&json!(caller.id)))
-                        {
-                            existing["dispatch_via_trait"] = json!(true);
-                            existing["dispatch_from"] = json!(trait_method.id);
-                        }
-                        continue;
-                    }
-                    items.push(json!({
-                        "node_id": caller.id,
-                        "name": caller.name,
-                        "kind": caller.kind.as_str(),
-                        "file": caller.file_path,
-                        "line": super::display_line(edge.line.unwrap_or(caller.start_line)),
-                        "def_line": super::display_line(caller.start_line),
-                        "depth": depth,
-                        "edge_kind": edge.kind.as_str(),
-                        "dispatch_via_trait": true,
-                        "dispatch_from": trait_method.id,
-                    }));
-                }
-            }
-        }
-    }
 
     let touched_files = unique_file_paths(
         items
@@ -538,7 +508,7 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
 /// Dispatch resolution skipped when `resolve_dispatch=false` is passed.
 pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let node_id = require_node_id(&args)?;
-    ensure_node_exists(cg, node_id).await?;
+    let _target = require_existing_node(cg, node_id).await?;
 
     let max_depth = args
         .get("max_depth")

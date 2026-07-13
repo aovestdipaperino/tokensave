@@ -114,6 +114,24 @@ impl TokenSave {
         traverser.get_callers_with_depth(node_id, max_depth).await
     }
 
+    /// Like [`get_callers_with_depth`](Self::get_callers_with_depth), with
+    /// concrete trait dispatch resolved in the initial edge traversal.
+    pub async fn get_callers_with_dispatch_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize, Option<String>)>> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser
+            .get_callers_with_dispatch_depth(node_id, max_depth)
+            .await
+    }
+
+    #[must_use]
+    pub fn has_trait_dispatch_callers(&self, node_id: &str) -> bool {
+        self.db.has_trait_dispatch_callers(node_id)
+    }
+
     /// Returns all nodes that the given node transitively calls, up to `max_depth`.
     pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
         let traverser = GraphTraverser::new(&self.db);
@@ -582,14 +600,22 @@ impl TokenSave {
     /// Resolves a concrete method in `impl Trait for Type` back to the trait
     /// method that generic call sites statically invoke.
     pub async fn get_trait_dispatch_sources(&self, method: &Node) -> Result<Vec<Node>> {
-        use crate::types::EdgeKind;
-
         if !matches!(method.kind, NodeKind::Method | NodeKind::Function) {
             return Ok(Vec::new());
         }
         let Some(parent_id) = method.parent_id.as_deref() else {
             return Ok(Vec::new());
         };
+        let sources = self
+            .db
+            .get_trait_methods_for_impl_method(parent_id, &method.name)
+            .await?;
+        if !sources.is_empty() {
+            return Ok(sources);
+        }
+
+        // Compatibility fallback for an older/partially resolved index whose
+        // impl relationship has not produced an `Implements` edge.
         let Some(parent) = self.db.get_node_by_id(parent_id).await? else {
             return Ok(Vec::new());
         };
@@ -597,34 +623,26 @@ impl TokenSave {
             return Ok(Vec::new());
         }
 
-        let mut trait_ids: Vec<String> = self
-            .db
-            .get_outgoing_edges(&parent.id, &[EdgeKind::Implements])
-            .await?
-            .into_iter()
-            .map(|edge| edge.target)
-            .collect();
+        let mut trait_ids: Vec<String> = Vec::new();
         // Keep reverse dispatch useful when an older or partially resolved
         // index still has the impl relationship only in the Rust signature.
         // The extractor records `impl Trait for Type` verbatim on the impl
         // node, so an exact trait-name lookup is a safe fallback.
-        if trait_ids.is_empty() {
-            if let Some(trait_name) = parent.signature.as_deref().and_then(|signature| {
-                signature
-                    .trim_start()
-                    .strip_prefix("impl ")?
-                    .split_once(" for ")
-                    .map(|(trait_name, _)| trait_name.trim())
-            }) {
-                trait_ids.extend(
-                    self.db
-                        .get_nodes_by_name(trait_name)
-                        .await?
-                        .into_iter()
-                        .filter(|node| node.kind == NodeKind::Trait)
-                        .map(|node| node.id),
-                );
-            }
+        if let Some(trait_name) = parent.signature.as_deref().and_then(|signature| {
+            signature
+                .trim_start()
+                .strip_prefix("impl ")?
+                .split_once(" for ")
+                .map(|(trait_name, _)| trait_name.trim())
+        }) {
+            trait_ids.extend(
+                self.db
+                    .get_nodes_by_name(trait_name)
+                    .await?
+                    .into_iter()
+                    .filter(|node| node.kind == NodeKind::Trait)
+                    .map(|node| node.id),
+            );
         }
         let mut sources = Vec::new();
         for trait_id in trait_ids {

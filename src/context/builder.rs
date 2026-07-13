@@ -205,14 +205,11 @@ impl<'a> ContextBuilder<'a> {
         let mut candidates: Vec<SearchResult> = Vec::new();
         let cap = options.max_nodes * 2;
 
-        // Build a deduplicated, ordered list of FTS terms. Earlier revisions
-        // searched the full query, every extracted symbol, every stem, and
-        // every extra keyword separately — but these sets overlap heavily
-        // (e.g. `symbol` "foo" and `keyword` "foo" produce identical FTS
-        // results). libsql serializes queries on a single connection, so each
-        // duplicate term costs a full roundtrip. Order matters for the
-        // `cap`-based early exit, so we keep the original priority:
-        //   full query → symbols → stems → extra keywords.
+        // Build a deduplicated, ordered list of bounded FTS searches. Passing
+        // the whole natural-language sentence to FTS creates a broad OR query;
+        // SQLite must BM25-rank every row matching common prose before LIMIT is
+        // applied. Search meaningful concepts separately so every ranking is
+        // bounded, then merge the candidates below.
         let mut fts_terms: Vec<String> = Vec::new();
         let mut fts_seen: HashSet<String> = HashSet::new();
         let push_term = |t: String, terms: &mut Vec<String>, seen: &mut HashSet<String>| {
@@ -220,7 +217,10 @@ impl<'a> ContextBuilder<'a> {
                 terms.push(t);
             }
         };
-        push_term(query.to_string(), &mut fts_terms, &mut fts_seen);
+        let body_terms = conceptual_query_terms(query, &options.extra_keywords);
+        for term in &body_terms {
+            push_term(term.clone(), &mut fts_terms, &mut fts_seen);
+        }
         for s in symbols {
             push_term(s.clone(), &mut fts_terms, &mut fts_seen);
         }
@@ -236,7 +236,10 @@ impl<'a> ContextBuilder<'a> {
             if candidates.len() >= cap {
                 break;
             }
-            let results = self.db.search_nodes(term, options.search_limit).await?;
+            let results = self
+                .db
+                .search_nodes_bounded(term, options.search_limit)
+                .await?;
             for sr in results {
                 if !Self::score_passes(sr.score, options.min_score)
                     || excluded.contains(&sr.node.id)
@@ -294,7 +297,6 @@ impl<'a> ContextBuilder<'a> {
         // with the smallest enclosing executable node. This gives context a
         // path to the behavioral owner without promoting local variables to
         // first-class graph nodes.
-        let body_terms = conceptual_query_terms(query, &options.extra_keywords);
         if body_terms.len() >= 2 {
             for sr in self
                 .find_executable_body_candidates(&body_terms, options)
@@ -323,18 +325,27 @@ impl<'a> ContextBuilder<'a> {
             .filter(|candidate| is_api_owner_kind(&candidate.node.kind))
             .cloned()
             .collect();
-        for owner in owner_candidates {
-            for child in self.db.get_children_of(&owner.node.id).await? {
-                if !is_executable_kind(&child.kind) || excluded.contains(&child.id) {
-                    continue;
-                }
-                let score = owner.score * 0.5;
-                if let Some(&idx) = index_of.get(&child.id) {
-                    candidates[idx].score = candidates[idx].score.max(score);
-                } else {
-                    index_of.insert(child.id.clone(), candidates.len());
-                    candidates.push(SearchResult { node: child, score });
-                }
+        let owner_scores: HashMap<String, f64> = owner_candidates
+            .iter()
+            .map(|owner| (owner.node.id.clone(), owner.score))
+            .collect();
+        let owner_ids: Vec<String> = owner_scores.keys().cloned().collect();
+        for child in self.db.get_children_of_many(&owner_ids).await? {
+            if !is_executable_kind(&child.kind) || excluded.contains(&child.id) {
+                continue;
+            }
+            let score = child
+                .parent_id
+                .as_ref()
+                .and_then(|parent| owner_scores.get(parent))
+                .copied()
+                .unwrap_or_default()
+                * 0.5;
+            if let Some(&idx) = index_of.get(&child.id) {
+                candidates[idx].score = candidates[idx].score.max(score);
+            } else {
+                index_of.insert(child.id.clone(), candidates.len());
+                candidates.push(SearchResult { node: child, score });
             }
         }
 
@@ -411,84 +422,38 @@ impl<'a> ContextBuilder<'a> {
         Ok(entry_points)
     }
 
-    /// Finds executable symbols whose bodies contain several conceptual query
-    /// terms. Files are prefiltered before their nodes are loaded, and results
-    /// are bounded to the same candidate budget as the regular FTS channel.
+    /// Finds executable symbols whose persistently indexed bodies contain
+    /// several conceptual query terms. Source files are read only while
+    /// indexing; request-time work is bounded FTS plus one batched node fetch.
     async fn find_executable_body_candidates(
         &self,
         terms: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<SearchResult>> {
-        let mut results = Vec::new();
-        let files = self.db.get_all_files().await?;
-
-        for file in files {
-            if results.len() >= options.max_nodes * 2 {
-                break;
-            }
-            if !path_lists_keep(&file.path, &options.path_include, &options.path_exclude)
-                || options.query_ignore.is_ignored(&file.path)
-                || options.path_prefix.as_ref().is_some_and(|prefix| {
-                    let with_slash = format!("{}/", prefix.trim_end_matches('/'));
-                    file.path != *prefix && !file.path.starts_with(&with_slash)
-                })
-            {
-                continue;
-            }
-
-            let Ok(source) = fs::read_to_string(self.project_root.join(&file.path)) else {
-                continue;
-            };
-            let source_lower = source.to_lowercase();
-            let source_identifiers = identifier_components(&source);
-            let file_hits = terms
-                .iter()
-                .filter(|term| term_matches_body(term, &source_lower, &source_identifiers))
-                .count();
-            if file_hits < 2 {
-                continue;
-            }
-
-            let lines: Vec<&str> = source.lines().collect();
-            for node in self.db.get_nodes_by_file(&file.path).await? {
-                if !is_executable_kind(&node.kind) {
-                    continue;
-                }
-                let start = node.start_line as usize;
-                let end = (node.end_line as usize).saturating_add(1).min(lines.len());
-                if start >= end {
-                    continue;
-                }
-                let body_source = lines[start..end].join("\n");
-                let body = body_source.to_lowercase();
-                let identifiers = identifier_components(&body_source);
-                let hits = terms
-                    .iter()
-                    .filter(|term| term_matches_body(term, &body, &identifiers))
-                    .count();
-                if hits < 2 {
-                    continue;
-                }
-                // Body matches are deliberately below exact-name matches (20)
-                // but strong enough to compete with ordinary BM25 results.
-                let control_flow_boost = ((node.branches + node.loops) as f64).min(4.0) * 0.25;
-                results.push(SearchResult {
+        let mut results = self
+            .db
+            .search_executable_bodies(terms, options.max_nodes.saturating_mul(4))
+            .await?
+            .into_iter()
+            .filter(|(node, _)| {
+                path_lists_keep(
+                    &node.file_path,
+                    &options.path_include,
+                    &options.path_exclude,
+                ) && !options.query_ignore.is_ignored(&node.file_path)
+                    && options.path_prefix.as_ref().is_none_or(|prefix| {
+                        let with_slash = format!("{}/", prefix.trim_end_matches('/'));
+                        node.file_path == *prefix || node.file_path.starts_with(&with_slash)
+                    })
+            })
+            .map(|(node, hits)| {
+                let control_flow_boost = f64::from(node.branches + node.loops).min(4.0) * 0.25;
+                SearchResult {
                     node,
                     score: 1.5 + hits as f64 + control_flow_boost,
-                });
-            }
-        }
-
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let a_span = a.node.end_line.saturating_sub(a.node.start_line);
-                    let b_span = b.node.end_line.saturating_sub(b.node.start_line);
-                    a_span.cmp(&b_span)
-                })
-        });
+                }
+            })
+            .collect::<Vec<_>>();
         results.truncate(options.max_nodes * 2);
         Ok(results)
     }
@@ -1091,7 +1056,7 @@ fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
 fn conceptual_query_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
     const STOP: &[&str] = &[
         "about", "after", "before", "code", "find", "from", "function", "harden", "into", "locate",
-        "near", "request", "source", "that", "their", "then", "this", "with",
+        "near", "request", "that", "their", "then", "this", "with",
     ];
     let mut seen = HashSet::new();
     query
@@ -1137,34 +1102,6 @@ fn is_api_owner_kind(kind: &NodeKind) -> bool {
             | NodeKind::DataClass
             | NodeKind::Record
     )
-}
-
-/// Splits source identifiers into searchable components. Keeping this local to
-/// the body-search channel avoids graph noise from turning every local binding
-/// into a public symbol while still making `cached_precond` discoverable.
-fn identifier_components(source: &str) -> HashSet<String> {
-    source
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .flat_map(|identifier| identifier.split('_'))
-        .filter(|component| component.len() >= 4)
-        .map(str::to_lowercase)
-        .collect()
-}
-
-fn term_matches_body(term: &str, body_lower: &str, identifiers: &HashSet<String>) -> bool {
-    if body_lower.contains(term) {
-        return true;
-    }
-    identifiers.iter().any(|identifier| {
-        let common = term
-            .bytes()
-            .zip(identifier.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        // Long shared prefixes cover conventional abbreviations (`precond` /
-        // `preconditioner`) without equating short, generic word fragments.
-        common >= 5 && (common == term.len() || common == identifier.len())
-    })
 }
 
 /// Boosts candidates whose file contains multiple query terms.
