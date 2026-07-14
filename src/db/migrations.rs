@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 12;
+const LATEST_VERSION: u32 = 13;
 
 pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
 CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
@@ -430,6 +430,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         10 => migrate_v10(conn).await,
         11 => migrate_v11(conn).await,
         12 => migrate_v12(conn).await,
+        13 => migrate_v13(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1074,6 +1075,40 @@ async fn migrate_v12(conn: &Connection) -> Result<()> {
                 operation: "migrate_v12".to_string(),
             })?;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V13: repair incomplete trait-dispatch cache schema
+// ---------------------------------------------------------------------------
+
+/// Recreates the trait-dispatch cache objects for databases that recorded V12
+/// before all of its DDL was durable.  The statements are idempotent so this
+/// also leaves correctly migrated V12 databases unchanged.
+async fn migrate_v13(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
+            concrete_method_id TEXT NOT NULL,
+            trait_method_id TEXT NOT NULL,
+            caller_id TEXT NOT NULL,
+            line INTEGER NOT NULL DEFAULT -1,
+            PRIMARY KEY (concrete_method_id, trait_method_id, caller_id, line)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_concrete
+            ON trait_dispatch_callers(concrete_method_id);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v13: failed to recreate trait dispatch cache table: {e}"),
+        operation: "migrate_v13".to_string(),
+    })?;
+
+    conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v13: failed to recreate trait dispatch triggers: {e}"),
+            operation: "migrate_v13".to_string(),
+        })?;
     Ok(())
 }
 

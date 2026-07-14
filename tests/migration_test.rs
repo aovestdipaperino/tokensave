@@ -1,6 +1,6 @@
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 use tempfile::TempDir;
-use tokensave::db::migrations::{create_schema, migrate};
+use tokensave::db::migrations::{create_schema, latest_version, migrate};
 use tokensave::db::Database;
 
 // ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ async fn test_create_schema_fresh_db() {
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -270,7 +270,7 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 }
 
 /// migrate returns false when already at the latest version.
@@ -288,7 +288,7 @@ async fn test_migrate_already_latest_returns_false() {
         !migrated,
         "migrate should return false when already at latest"
     );
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 }
 
 /// migrate from v0 (completely empty database) applies all migrations to latest.
@@ -307,7 +307,7 @@ async fn test_migrate_from_v0() {
         migrated,
         "migrate should return true when migrations were applied"
     );
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -349,7 +349,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -385,7 +385,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -415,7 +415,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -443,7 +443,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 12);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -585,7 +585,7 @@ async fn test_database_initialize_creates_latest_version() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 12);
+    assert_eq!(version as u32, latest_version());
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -652,7 +652,26 @@ async fn test_database_open_migrates_v1_to_latest() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 12);
+    assert_eq!(version as u32, latest_version());
+}
+
+/// V13 repairs v12 databases missing the trait-dispatch cache table.
+#[tokio::test]
+async fn test_migrate_v13_repairs_missing_trait_dispatch_cache() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+
+    conn.execute("DROP TABLE trait_dispatch_callers", ())
+        .await
+        .expect("failed to remove trait dispatch cache table");
+    set_user_version(&conn, 12).await;
+
+    assert!(migrate(&conn).await.expect("v13 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(table_exists(&conn, "trait_dispatch_callers").await);
+    assert!(index_exists(&conn, "idx_trait_dispatch_callers_concrete").await);
 }
 
 /// After create_schema, all v5 columns on nodes exist.
@@ -876,7 +895,7 @@ async fn test_v7_to_latest_upgrade_path() {
     let mut rows = conn.query("PRAGMA user_version", ()).await.unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let v: i64 = row.get(0).unwrap();
-    assert_eq!(v, 12);
+    assert_eq!(v as u32, latest_version());
 
     let mut rows = conn
         .query(
