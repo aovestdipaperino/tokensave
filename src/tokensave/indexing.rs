@@ -161,6 +161,24 @@ impl TokenSave {
         self.db.insert_edges(&all_edges).await?;
         self.db.upsert_files(&file_records).await?;
 
+        // Durably record every raw unresolved reference extracted this pass —
+        // not just the leftovers `resolve_all` couldn't bind. A full index
+        // resolves cross-file refs in-memory in one shot and, until now, never
+        // wrote them to the `unresolved_refs` table. That left a later
+        // incremental `sync` with no record of e.g. "file A calls a symbol
+        // defined in file B": when B is edited, `delete_nodes_by_file` cascades
+        // away every edge touching B's (old) node ids — including inbound
+        // edges from untouched files like A — and `sync`'s resolution step
+        // only replays refs durably stored here, so A's call into B was
+        // silently dropped forever (never in the table to retry). Persisting
+        // the full set here lets `sync` re-resolve and recreate those edges
+        // the next time it runs, keeping `sync` convergent with a full
+        // reindex instead of monotonically losing cross-file call edges as
+        // files get touched over time.
+        if !all_unresolved.is_empty() {
+            self.db.insert_unresolved_refs(&all_unresolved).await?;
+        }
+
         // 8. Restore indexes and normal durability
         self.db.end_bulk_load().await?;
         self.db.rebuild_trait_dispatch_callers().await?;
