@@ -13,7 +13,7 @@ use tokio::time::timeout;
 
 use crate::diagnose::{parse_cargo_output, Severity};
 use crate::errors::{Result, TokenSaveError};
-use crate::tokensave::{is_test_file, TokenSave};
+use crate::tokensave::TokenSave;
 use crate::types::NodeKind;
 
 use super::super::ToolResult;
@@ -188,7 +188,7 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
         let nodes = cg.get_nodes_by_file(path).await.unwrap_or_default();
 
         // (b) Direct dispatch from changed test files.
-        let path_is_test_file = is_test_file(path);
+        let path_is_test_file = cg.is_test_file(path);
         if path_is_test_file || !nodes.is_empty() {
             let candidate_ids: Vec<String> = nodes
                 .iter()
@@ -231,7 +231,7 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
                 .await
                 .unwrap_or_default();
             for (caller, _) in callers {
-                if !is_test_file(&caller.file_path) && !test_annotated.contains(&caller.id) {
+                if !cg.is_test_file(&caller.file_path) && !test_annotated.contains(&caller.id) {
                     continue;
                 }
                 if !matches!(caller.kind, NodeKind::Function | NodeKind::Method) {
