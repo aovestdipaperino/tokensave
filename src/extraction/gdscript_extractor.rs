@@ -764,22 +764,55 @@ impl GdScriptExtractor {
     /// unresolved `Calls` references. `GDScript` has no nested named function
     /// definitions (only `lambda` expressions), so unlike `ActionScript` there
     /// is no nested-function guard needed here.
+    ///
+    /// Two additional dynamic-dispatch idioms this codebase's style relies on
+    /// heavily are captured alongside direct calls (both verified against the
+    /// live grammar via a parse-tree dump, not inferred from node-types.json
+    /// alone, which under-documents the bare-attribute shape):
+    /// - `Callable(receiver, "method_name")` / `X.call_deferred("method_name")`
+    ///   / `X.connect(callback)` — a small, deliberately narrow allowlist of
+    ///   well-known Godot dynamic-dispatch APIs. See `dynamic_dispatch_targets`.
+    /// - A bare dotted attribute passed as a call argument with no call
+    ///   parens (`foo(bar, MyDb._load_from_registry)`) — a function
+    ///   reference passed by value, the shape `BaseDatabaseCache`'s
+    ///   lazy-init pattern and similar dispatch tables use. See
+    ///   `extract_bare_attribute_args`.
+    ///
+    /// Both were previously invisible to this extractor: a callee referenced
+    /// only this way had zero recorded edges, making `tokensave_dead_code`
+    /// misreport it as unreachable even though it's genuinely live.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if matches!(child.kind(), "call" | "attribute_call") {
-                    if let Some(callee) = Self::callee_name(state, child) {
-                        state.unresolved_refs.push(UnresolvedRef {
-                            from_node_id: fn_id.to_string(),
-                            reference_name: callee,
-                            reference_kind: EdgeKind::Calls,
-                            line: child.start_position().row as u32,
-                            column: child.start_position().column as u32,
-                            file_path: state.file_path.clone(),
-                        });
+                match child.kind() {
+                    "call" | "attribute_call" => {
+                        if let Some(callee) = Self::callee_name(state, child) {
+                            state.unresolved_refs.push(UnresolvedRef {
+                                from_node_id: fn_id.to_string(),
+                                reference_name: callee,
+                                reference_kind: EdgeKind::Calls,
+                                line: child.start_position().row as u32,
+                                column: child.start_position().column as u32,
+                                file_path: state.file_path.clone(),
+                            });
+                        }
+                        for target in Self::dynamic_dispatch_targets(state, child) {
+                            state.unresolved_refs.push(UnresolvedRef {
+                                from_node_id: fn_id.to_string(),
+                                reference_name: target,
+                                reference_kind: EdgeKind::Calls,
+                                line: child.start_position().row as u32,
+                                column: child.start_position().column as u32,
+                                file_path: state.file_path.clone(),
+                            });
+                        }
                     }
+                    "arguments" => {
+                        Self::extract_bare_attribute_args(state, child, fn_id);
+                    }
+                    _ => {}
                 }
                 Self::extract_call_sites(state, child, fn_id);
                 if !cursor.goto_next_sibling() {
@@ -789,15 +822,169 @@ impl GdScriptExtractor {
         }
     }
 
+    /// Extra `Calls`-shaped targets hidden inside a small, deliberately
+    /// narrow allowlist of well-known Godot dynamic-dispatch APIs — on top
+    /// of the direct `callee_name` edge already recorded for the call site
+    /// itself (`Callable(...)`/`call_deferred(...)`/`connect(...)` are each
+    /// still recorded as an ordinary call to themselves too):
+    /// - `Callable(receiver, "method_name")` — the method is named by a
+    ///   string literal (2-arg constructor shape only).
+    /// - `X.call_deferred("method_name")` / bare `call_deferred("method_name")`
+    ///   — Godot's deferred-call API, first argument a string literal.
+    /// - `X.connect(callback)` — Godot's signal-connect API; `callback` is a
+    ///   bare identifier or bare dotted-attribute function reference (no call
+    ///   parens) naming the handler directly.
+    ///
+    /// All three were previously invisible: a handler referenced only this
+    /// way showed zero incoming edges and misreported as dead code by
+    /// `tokensave_dead_code`. Matching is on method name only (not receiver
+    /// type — `GDScript` has no static typing strong enough to verify the
+    /// receiver really is e.g. a `Signal`), so this is a heuristic, but a
+    /// narrow one: these three names are Godot-API-reserved enough in
+    /// practice that a same-named unrelated user method is very unlikely.
+    fn dynamic_dispatch_targets(state: &ExtractionState, node: TsNode<'_>) -> Vec<String> {
+        let Some(method) = Self::find_child_by_kind(node, "identifier").map(|n| state.node_text(n))
+        else {
+            return Vec::new();
+        };
+        let Some(args) = node.child_by_field_name("arguments") else {
+            return Vec::new();
+        };
+        let mut named = Vec::new();
+        let mut cursor = args.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if c.is_named() {
+                    named.push(c);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+
+        let first: Option<TsNode<'_>> = named.first().copied();
+
+        match method.as_str() {
+            "Callable" if named.len() == 2 && named[1].kind() == "string" => {
+                Self::string_literal_text(state, named[1])
+                    .into_iter()
+                    .collect()
+            }
+            "call_deferred" => first
+                .filter(|n| n.kind() == "string")
+                .and_then(|n| Self::string_literal_text(state, n))
+                .into_iter()
+                .collect(),
+            "connect" => first
+                .filter(|n| {
+                    n.kind() == "identifier"
+                        || (n.kind() == "attribute" && Self::is_bare_dotted_attribute(*n))
+                })
+                .map(|n| state.node_text(n))
+                .filter(|s| !s.is_empty())
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Unquoted text of a `string` node, or `None` if empty after trimming
+    /// quotes.
+    fn string_literal_text(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let raw = state.node_text(node);
+        let trimmed = raw.trim_matches(|c| c == '"' || c == '\'');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    /// Scan a call's `arguments` node for bare dotted-attribute references
+    /// passed by value (no call parens) — e.g. the second argument of
+    /// `BaseDatabaseCache.get_or_create(_h, MyDb._load_from_registry)`. Each
+    /// survivor is recorded as a `Calls`-kind reference (matching the
+    /// eventual invocation semantics — it's a function value being handed
+    /// off to be called later, not data being read) so the referenced
+    /// function isn't misread as dead just because it's never *directly*
+    /// invoked at this call site.
+    fn extract_bare_attribute_args(state: &mut ExtractionState, args: TsNode<'_>, fn_id: &str) {
+        let mut cursor = args.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if c.kind() == "attribute" && Self::is_bare_dotted_attribute(c) {
+                    let text = state.node_text(c);
+                    if !text.is_empty() {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_id.to_string(),
+                            reference_name: text,
+                            reference_kind: EdgeKind::Calls,
+                            line: c.start_position().row as u32,
+                            column: c.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// True when `node` (an `attribute` node) is a bare dotted chain with no
+    /// trailing call/subscript — e.g. `MyDb._load_from_registry`, not
+    /// `MyDb._load_from_registry()` or `MyDb._load_from_registry[0]`.
+    /// Verified against the live grammar via a parse-tree dump: a bare `a.b`
+    /// parses as `attribute(identifier, identifier)` — two plain `identifier`
+    /// children, no `attribute_call`/`attribute_subscript` wrapper — while a
+    /// called or subscripted chain's outermost `attribute` node has one of
+    /// those two kinds as its last child instead.
+    fn is_bare_dotted_attribute(node: TsNode<'_>) -> bool {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return false;
+        }
+        loop {
+            let c = cursor.node();
+            if c.is_named() && matches!(c.kind(), "attribute_call" | "attribute_subscript") {
+                return false;
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        true
+    }
+
     /// The callee name of a `call` / `attribute_call` node. `attribute_call`
     /// (`obj.method()`) carries the method name as its `identifier` child
-    /// directly (the receiver is a sibling under the enclosing `attribute`
-    /// node, not part of this node). `call` (`foo()`) carries the callee as
-    /// its first named child ahead of the `arguments` field.
+    /// directly; the receiver is a preceding named sibling under the
+    /// enclosing `attribute` node (`attribute(receiver, attribute_call(...))`
+    /// — confirmed via a parse-tree dump), fetched here via
+    /// `prev_named_sibling()` and prefixed on, matching the `receiver.method`
+    /// convention the Python/TS/JS extractors already use for the same
+    /// shape. Previously only the bare method name was emitted, silently
+    /// discarding the receiver — a preload-alias (`XScript.some_method()`) or
+    /// direct `class_name` receiver (`EquipmentDatabase.get_equipment()`) gave
+    /// the resolver no qualifier to disambiguate a same-named method
+    /// elsewhere. `call` (`foo()`) carries the callee as its first named
+    /// child ahead of the `arguments` field.
     fn callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         match node.kind() {
             "attribute_call" => {
-                Self::find_child_by_kind(node, "identifier").map(|n| state.node_text(n))
+                let method =
+                    Self::find_child_by_kind(node, "identifier").map(|n| state.node_text(n))?;
+                if let Some(receiver) = node.prev_named_sibling() {
+                    let receiver_text = state.node_text(receiver);
+                    if !receiver_text.is_empty() {
+                        return Some(format!("{receiver_text}.{method}"));
+                    }
+                }
+                Some(method)
             }
             "call" => {
                 let mut cursor = node.walk();
