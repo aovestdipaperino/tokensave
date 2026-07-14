@@ -5459,3 +5459,246 @@ async fn affected_classifies_candidates_and_excludes_inline_sources_from_suite()
         .iter()
         .any(|file| file == "crates/consumer/tests/use_core.rs"));
 }
+
+// Edit tools: path resolution — absolute-path verbatim honoring,
+// `project_root` override, and `resolved_path` echoed in every result.
+//
+// Regression coverage for the worktree wrong-tree-write bug: a caller
+// working in a git worktree passing a relative `path` previously always had
+// it silently resolved against the *indexed* project root (the primary
+// checkout), not the worktree it was actually working in.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_str_replace_resolved_path_for_relative_path_in_root() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn hello() {}",
+            "new_str": "fn hello_updated() {}"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true);
+    // Unchanged backward-compatible behavior: file_path stays project-relative.
+    assert_eq!(parsed["file_path"], "src/main.rs");
+    // New: resolved_path is always the fully-resolved absolute path actually
+    // read/written, so a caller can verify the edit landed where intended.
+    let expected_resolved = project.join("src/main.rs").to_string_lossy().to_string();
+    assert_eq!(parsed["resolved_path"], expected_resolved);
+}
+
+#[tokio::test]
+async fn test_str_replace_absolute_path_outside_root_honored_verbatim() {
+    let project_dir = TempDir::new().unwrap();
+    let project = project_dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // A file entirely outside the indexed project — e.g. a sibling git
+    // worktree directory. Previously this errored with "path is not within
+    // the project"; it should now be honored verbatim.
+    let outside_dir = TempDir::new().unwrap();
+    let outside_file = outside_dir.path().join("notes.txt");
+    fs::write(&outside_file, "todo: fix the bug\n").unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": outside_file.to_string_lossy(),
+            "old_str": "todo: fix the bug",
+            "new_str": "done: fixed the bug"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        parsed["success"], true,
+        "absolute path outside the indexed root must be honored, not rejected: {text}"
+    );
+    let expected = outside_file.to_string_lossy().to_string();
+    assert_eq!(parsed["resolved_path"], expected);
+
+    let content = fs::read_to_string(&outside_file).unwrap();
+    assert_eq!(content, "done: fixed the bug\n");
+
+    // The indexed project itself must be untouched.
+    let project_content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert_eq!(project_content, "fn hello() {}\n");
+}
+
+#[tokio::test]
+async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_checkout() {
+    let primary = TempDir::new().unwrap();
+    let primary_root = primary.path();
+    fs::create_dir_all(primary_root.join("src")).unwrap();
+    fs::write(
+        primary_root.join("src/main.rs"),
+        "fn hello() { \"primary\" }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(primary_root).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Simulate a git worktree: same relative layout, different absolute
+    // location, not part of the indexed project.
+    let worktree = TempDir::new().unwrap();
+    let worktree_root = worktree.path();
+    fs::create_dir_all(worktree_root.join("src")).unwrap();
+    fs::write(
+        worktree_root.join("src/main.rs"),
+        "fn hello() { \"worktree\" }\n",
+    )
+    .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn hello() { \"worktree\" }",
+            "new_str": "fn hello() { \"worktree-updated\" }",
+            "project_root": worktree_root.to_string_lossy()
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true, "got: {text}");
+    let expected_resolved = worktree_root
+        .join("src/main.rs")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(parsed["resolved_path"], expected_resolved);
+
+    // The worktree copy was edited...
+    let worktree_content = fs::read_to_string(worktree_root.join("src/main.rs")).unwrap();
+    assert_eq!(worktree_content, "fn hello() { \"worktree-updated\" }\n");
+
+    // ...and — this is the regression the bug report describes — the
+    // primary checkout's identically-named relative file must be untouched.
+    let primary_content = fs::read_to_string(primary_root.join("src/main.rs")).unwrap();
+    assert_eq!(primary_content, "fn hello() { \"primary\" }\n");
+}
+
+#[tokio::test]
+async fn test_insert_at_absolute_path_outside_root_honored_verbatim() {
+    let project_dir = TempDir::new().unwrap();
+    let project = project_dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let outside_dir = TempDir::new().unwrap();
+    let outside_file = outside_dir.path().join("scratch.txt");
+    fs::write(&outside_file, "line one\nline two\n").unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({
+            "path": outside_file.to_string_lossy(),
+            "anchor": "line one",
+            "content": "inserted line",
+            "before": false
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true, "got: {text}");
+    let expected = outside_file.to_string_lossy().to_string();
+    assert_eq!(parsed["resolved_path"], expected);
+
+    let content = fs::read_to_string(&outside_file).unwrap();
+    assert_eq!(content, "line one\ninserted line\nline two\n");
+}
+
+#[tokio::test]
+async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primary_checkout() {
+    let primary = TempDir::new().unwrap();
+    let primary_root = primary.path();
+    fs::create_dir_all(primary_root.join("src")).unwrap();
+    let original_source = "pub fn greet_widget_example() -> String {\n    \"hi\".to_string()\n}\n";
+    fs::write(primary_root.join("src/lib.rs"), original_source).unwrap();
+
+    let cg = TokenSave::init(primary_root).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Worktree: an exact copy of the file (same line ranges — the symbol's
+    // start/end lines are resolved from the primary index, then applied to
+    // whatever file `resolve_edit_target` points the write at).
+    let worktree = TempDir::new().unwrap();
+    let worktree_root = worktree.path();
+    fs::create_dir_all(worktree_root.join("src")).unwrap();
+    fs::write(worktree_root.join("src/lib.rs"), original_source).unwrap();
+
+    let new_source =
+        "pub fn greet_widget_example() -> String {\n    \"hi from worktree\".to_string()\n}";
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_replace_symbol",
+        json!({
+            "symbol": "greet_widget_example",
+            "new_source": new_source,
+            "project_root": worktree_root.to_string_lossy()
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["success"], true, "got: {text}");
+    let expected_resolved = worktree_root
+        .join("src/lib.rs")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(parsed["resolved_path"], expected_resolved);
+
+    let worktree_content = fs::read_to_string(worktree_root.join("src/lib.rs")).unwrap();
+    assert!(worktree_content.contains("hi from worktree"));
+
+    // The primary checkout's copy of the same relative file must be untouched.
+    let primary_content = fs::read_to_string(primary_root.join("src/lib.rs")).unwrap();
+    assert_eq!(primary_content, original_source);
+}

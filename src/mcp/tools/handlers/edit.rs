@@ -8,6 +8,18 @@ use crate::tokensave::TokenSave;
 
 use super::super::ToolResult;
 
+/// Extracts the optional `project_root` (alias: `cwd`) parameter shared by
+/// every edit tool. When present, it retargets resolution of a *relative*
+/// `path`/symbol-file argument to this directory instead of the indexed
+/// project root — the fix for callers working in a git worktree, where a
+/// bare relative path previously always resolved against the primary
+/// checkout regardless of where the caller was actually working.
+fn project_root_arg(args: &Value) -> Option<&str> {
+    args.get("project_root")
+        .or_else(|| args.get("cwd"))
+        .and_then(|v| v.as_str())
+}
+
 pub(super) async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let path = args
         .get("path")
@@ -30,7 +42,10 @@ pub(super) async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<To
             message: "missing required parameter: new_str".to_string(),
         })?;
 
-    let result = cg.str_replace(path, old_str, new_str).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .str_replace(path, old_str, new_str, root_override)
+        .await?;
     let touched_files = vec![result.file_path.clone()];
     Ok(ToolResult {
         value: json!({
@@ -74,7 +89,10 @@ pub(super) async fn handle_multi_str_replace(cg: &TokenSave, args: Value) -> Res
         });
     }
 
-    let result = cg.multi_str_replace(path, &parsed_replacements).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .multi_str_replace(path, &parsed_replacements, root_override)
+        .await?;
     let touched_files = vec![result.file_path.clone()];
     Ok(ToolResult {
         value: json!({
@@ -111,7 +129,10 @@ pub(super) async fn handle_insert_at(cg: &TokenSave, args: Value) -> Result<Tool
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let result = cg.insert_at(path, anchor, content, before).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .insert_at(path, anchor, content, before, root_override)
+        .await?;
     let touched_files = vec![result.file_path.clone()];
     Ok(ToolResult {
         value: json!({
@@ -135,7 +156,8 @@ pub(super) async fn handle_replace_symbol(cg: &TokenSave, args: Value) -> Result
             message: "missing required parameter: new_source".to_string(),
         })?;
 
-    let result = cg.replace_symbol(symbol, new_source).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg.replace_symbol(symbol, new_source, root_override).await?;
     let touched_files = if result.success {
         vec![result.file_path.clone()]
     } else {
@@ -167,7 +189,10 @@ pub(super) async fn handle_insert_at_symbol(cg: &TokenSave, args: Value) -> Resu
         .and_then(|v| v.as_str())
         .unwrap_or("after");
 
-    let result = cg.insert_at_symbol(symbol, content, position).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .insert_at_symbol(symbol, content, position, root_override)
+        .await?;
     let touched_files = if result.success {
         vec![result.file_path.clone()]
     } else {
@@ -203,7 +228,10 @@ pub(super) async fn handle_ast_grep_rewrite(cg: &TokenSave, args: Value) -> Resu
             message: "missing required parameter: rewrite".to_string(),
         })?;
 
-    let result = cg.ast_grep_rewrite(path, pattern, rewrite).await?;
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .ast_grep_rewrite(path, pattern, rewrite, root_override)
+        .await?;
     let touched_files = if result.success {
         vec![result.file_path.clone()]
     } else {

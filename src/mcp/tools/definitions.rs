@@ -1267,7 +1267,7 @@ fn def_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path"
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
                 },
                 "old_str": {
                     "type": "string",
@@ -1276,6 +1276,10 @@ fn def_str_replace() -> ToolDefinition {
                 "new_str": {
                     "type": "string",
                     "description": "Replacement string"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "old_str", "new_str"]
@@ -1297,7 +1301,7 @@ fn def_multi_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path"
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
                 },
                 "replacements": {
                     "type": "array",
@@ -1308,6 +1312,10 @@ fn def_multi_str_replace() -> ToolDefinition {
                         "minItems": 2,
                         "maxItems": 2
                     }
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "replacements"]
@@ -1329,7 +1337,7 @@ fn def_insert_at() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path"
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
                 },
                 "anchor": {
                     "type": "string",
@@ -1342,6 +1350,10 @@ fn def_insert_at() -> ToolDefinition {
                 "before": {
                     "type": "boolean",
                     "description": "If true, insert before the anchor line; if false, insert after (default: false)"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "anchor", "content"]
@@ -1778,7 +1790,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path"
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
                 },
                 "pattern": {
                     "type": "string",
@@ -1787,6 +1799,10 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
                 "rewrite": {
                     "type": "string",
                     "description": "ast-grep rewrite rule"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "pattern", "rewrite"]
@@ -2338,6 +2354,10 @@ fn def_replace_symbol() -> ToolDefinition {
                 "new_source": {
                     "type": "string",
                     "description": "Full replacement source — must include the symbol's own declaration line."
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
                 }
             },
             "required": ["symbol", "new_source"]
@@ -2393,6 +2413,10 @@ fn def_insert_at_symbol() -> ToolDefinition {
                     "type": "string",
                     "enum": ["before", "after"],
                     "description": "Where to insert relative to the symbol's range. Default: after."
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
                 }
             },
             "required": ["symbol", "content"]
