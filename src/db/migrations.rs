@@ -1103,12 +1103,33 @@ async fn migrate_v13(conn: &Connection) -> Result<()> {
         operation: "migrate_v13".to_string(),
     })?;
 
-    conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+    let mut edge_table = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'",
+            (),
+        )
         .await
         .map_err(|e| TokenSaveError::Database {
-            message: format!("v13: failed to recreate trait dispatch triggers: {e}"),
+            message: format!("v13: failed to inspect edges table: {e}"),
             operation: "migrate_v13".to_string(),
         })?;
+    let has_edges = edge_table
+        .next()
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v13: failed to read edges table status: {e}"),
+            operation: "migrate_v13".to_string(),
+        })?
+        .is_some();
+    drop(edge_table);
+    if has_edges {
+        conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v13: failed to recreate trait dispatch triggers: {e}"),
+                operation: "migrate_v13".to_string(),
+            })?;
+    }
     Ok(())
 }
 
