@@ -226,8 +226,12 @@ impl WorkerPool {
         F: Fn(usize, usize, &str) + Send + Sync + 'static,
     {
         let total = files.len();
-        let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(files.into_iter().collect()));
-        let results: Arc<Mutex<Vec<ExtractTuple>>> =
+        // Pair each file with its original position so completion order
+        // (a race between worker threads) never leaks into the returned
+        // node/edge order — see `results` below.
+        let queue: Arc<Mutex<VecDeque<(usize, String)>>> =
+            Arc::new(Mutex::new(files.into_iter().enumerate().collect()));
+        let results: Arc<Mutex<Vec<(usize, ExtractTuple)>>> =
             Arc::new(Mutex::new(Vec::with_capacity(total)));
         let skipped: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let progress_count = Arc::new(AtomicUsize::new(0));
@@ -272,12 +276,20 @@ impl WorkerPool {
         // reference. `into_inner` returns `Some` in that case; if it ever
         // returns `None` (concurrent leak), prefer an empty result over a
         // panic — the sync continues and the user just sees zero changes.
-        let results = Arc::into_inner(results)
+        let mut results = Arc::into_inner(results)
             .and_then(|m| m.into_inner().ok())
             .unwrap_or_default();
         let skipped = Arc::into_inner(skipped)
             .and_then(|m| m.into_inner().ok())
             .unwrap_or_default();
+        // Worker threads race to finish and push into `results`, so its
+        // arrival order is nondeterministic run-to-run even on unchanged
+        // source. Restoring the original file order here makes downstream
+        // node insertion (and thus `ReferenceResolver`'s name-cache
+        // iteration order and its first-candidate-wins tie-break) stable
+        // across repeated `sync --force` runs instead of flapping.
+        results.sort_unstable_by_key(|(idx, _)| *idx);
+        let results = results.into_iter().map(|(_, tuple)| tuple).collect();
         ExtractFilesOutcome { results, skipped }
     }
 }
@@ -300,8 +312,8 @@ pub struct ExtractFilesOutcome {
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn worker_thread<F>(
     mut worker: WorkerHandle,
-    queue: Arc<Mutex<VecDeque<String>>>,
-    results: Arc<Mutex<Vec<ExtractTuple>>>,
+    queue: Arc<Mutex<VecDeque<(usize, String)>>>,
+    results: Arc<Mutex<Vec<(usize, ExtractTuple)>>>,
     skipped: Arc<Mutex<Vec<(String, String)>>>,
     progress_count: Arc<AtomicUsize>,
     on_progress: Arc<F>,
@@ -318,7 +330,7 @@ fn worker_thread<F>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front();
-        let Some(file_path) = next else {
+        let Some((idx, file_path)) = next else {
             break;
         };
 
@@ -338,11 +350,14 @@ fn worker_thread<F>(
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push((
-                            resp.file_path,
-                            data.result,
-                            data.content_hash,
-                            data.size,
-                            data.mtime,
+                            idx,
+                            (
+                                resp.file_path,
+                                data.result,
+                                data.content_hash,
+                                data.size,
+                                data.mtime,
+                            ),
                         ));
                 }
             }
