@@ -812,10 +812,16 @@ pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result
 
 /// Handles `tokensave_pr_context` tool calls.
 pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir);
+    let default_branch = meta
+        .as_ref()
+        .map(|m| m.default_branch.as_str())
+        .unwrap_or("main");
     let base = args
         .get("base_ref")
         .and_then(|v| v.as_str())
-        .unwrap_or("main");
+        .unwrap_or(default_branch);
     let head = args
         .get("head_ref")
         .and_then(|v| v.as_str())
