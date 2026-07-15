@@ -742,6 +742,11 @@ impl TokenSave {
         &self.config
     }
 
+    /// Returns whether a path should be treated as test code for this project.
+    pub fn is_test_file(&self, path: &str) -> bool {
+        is_test_file_with_source_overrides(path, &self.config.source_path_overrides)
+    }
+
     /// Returns the project root path.
     pub fn project_root(&self) -> &Path {
         &self.project_root

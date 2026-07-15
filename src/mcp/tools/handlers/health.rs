@@ -699,10 +699,9 @@ pub(super) async fn handle_test_risk(
         .iter()
         .filter(|n| {
             matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                && !crate::tokensave::is_test_file(&n.file_path)
+                && !cg.is_test_file(&n.file_path)
                 && !n.name.starts_with("test_")
                 && !n.name.starts_with("test")
-                && !n.file_path.contains("/test")
                 && !test_annotated_fns.contains(&n.id)
                 && !skip_coverage.contains(&n.id)
                 && !n.qualified_name.contains("::tests::")
@@ -743,7 +742,7 @@ pub(super) async fn handle_test_risk(
         if e.kind == EdgeKind::Calls {
             let is_test = node_to_file
                 .get(&e.source)
-                .is_some_and(|f| crate::tokensave::is_test_file(f))
+                .is_some_and(|f| cg.is_test_file(f))
                 || test_annotated_callers.contains(&e.source);
             if is_test {
                 tested.insert(e.target.clone());
@@ -758,7 +757,7 @@ pub(super) async fn handle_test_risk(
         .filter(|n| {
             matches!(n.kind, NodeKind::Function | NodeKind::Method)
                 && skip_coverage.contains(&n.id)
-                && !crate::tokensave::is_test_file(&n.file_path)
+                && !cg.is_test_file(&n.file_path)
                 && !n.qualified_name.contains("::tests::")
         })
         .count();
@@ -894,9 +893,7 @@ pub(super) async fn handle_test_map(
             .unwrap_or_default();
         let test_callers: Vec<Value> = callers
             .iter()
-            .filter(|(n, _)| {
-                crate::tokensave::is_test_file(&n.file_path) || test_annotated.contains(&n.id)
-            })
+            .filter(|(n, _)| cg.is_test_file(&n.file_path) || test_annotated.contains(&n.id))
             .map(|(n, _)| {
                 all_test_files.insert(n.file_path.clone());
                 json!({
@@ -953,6 +950,7 @@ pub(super) async fn handle_test_map(
 /// or by carrying a `#[test]`-style annotation. Pure helper so the handler
 /// stays readable.
 fn classify_test_nodes(
+    cg: &TokenSave,
     candidates: &[String],
     nodes_by_id: &HashMap<String, &crate::types::Node>,
     test_annotated: &HashSet<String>,
@@ -962,7 +960,7 @@ fn classify_test_nodes(
         .filter(|id| {
             nodes_by_id
                 .get(id.as_str())
-                .is_some_and(|n| crate::tokensave::is_test_file(&n.file_path))
+                .is_some_and(|n| cg.is_test_file(&n.file_path))
                 || test_annotated.contains(*id)
         })
         .cloned()
@@ -1030,7 +1028,7 @@ async fn coverage_for_file(
             .get_test_annotated_node_ids(std::slice::from_ref(&node.id))
             .await
             .unwrap_or_default();
-        if crate::tokensave::is_test_file(&node.file_path) || self_annotated.contains(&node.id) {
+        if cg.is_test_file(&node.file_path) || self_annotated.contains(&node.id) {
             test_only += 1;
             continue;
         }
@@ -1046,7 +1044,7 @@ async fn coverage_for_file(
             .unwrap_or_default();
         let by_id: HashMap<String, &crate::types::Node> =
             callers.iter().map(|(n, _)| (n.id.clone(), n)).collect();
-        let test_caller_ids = classify_test_nodes(&caller_ids, &by_id, &annotated);
+        let test_caller_ids = classify_test_nodes(cg, &caller_ids, &by_id, &annotated);
 
         if test_caller_ids.is_empty() {
             if include_untested {
@@ -1120,7 +1118,7 @@ async fn coverage_for_symbol(cg: &TokenSave, symbol: &str, max_depth: usize) -> 
             .unwrap_or_default();
         let by_id: HashMap<String, &crate::types::Node> =
             callers.iter().map(|(c, _)| (c.id.clone(), c)).collect();
-        let test_ids = classify_test_nodes(&caller_ids, &by_id, &annotated);
+        let test_ids = classify_test_nodes(cg, &caller_ids, &by_id, &annotated);
         for tid in &test_ids {
             if let Some(t) = by_id.get(tid.as_str()) {
                 touched.insert(t.file_path.clone());
@@ -1165,7 +1163,7 @@ async fn coverage_for_test_fn(
         let callees = cg.get_callees(&n.id, max_depth).await.unwrap_or_default();
         for (callee, _) in callees {
             // Only count prod symbols — skip anything that itself looks like a test.
-            if crate::tokensave::is_test_file(&callee.file_path) {
+            if cg.is_test_file(&callee.file_path) {
                 continue;
             }
             let self_annot = cg

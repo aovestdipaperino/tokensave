@@ -6,6 +6,7 @@
 use serde_json::{json, Value};
 use std::fs;
 use tempfile::TempDir;
+use tokensave::config::{load_config, save_config};
 use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
 
@@ -2886,6 +2887,57 @@ async fn test_test_coverage_file_mode_returns_rollup() {
     assert!(parsed["summary"]["untested"].is_u64());
     assert!(parsed["tested"].is_array());
     assert!(parsed["untested"].is_array());
+}
+
+#[tokio::test]
+async fn source_path_override_is_used_by_coverage_and_risk_tools() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("components/test/__tests__")).unwrap();
+    fs::write(
+        project.join("components/test/widget.rs"),
+        "pub fn widget() -> bool { true }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("components/test/__tests__/widget_test.rs"),
+        "#[test]\nfn widget_works() { assert!(true); }\n",
+    )
+    .unwrap();
+
+    let initial = TokenSave::init(project).await.unwrap();
+    drop(initial);
+    let mut config = load_config(project).unwrap();
+    config.source_path_overrides = vec!["components/test/**".to_string()];
+    save_config(project, &config).unwrap();
+
+    let cg = TokenSave::open(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let coverage = handle_tool_call(
+        &cg,
+        "tokensave_test_coverage",
+        json!({ "file": "components/test/widget.rs" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let coverage: Value = serde_json::from_str(extract_text(&coverage.value)).unwrap();
+    assert_eq!(coverage["summary"]["total_prod_fns"], 1);
+    assert_eq!(coverage["summary"]["test_only_fns"], 0);
+
+    let risk = handle_tool_call(
+        &cg,
+        "tokensave_test_risk",
+        json!({ "path": "components/test", "include_tested": true }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let risk: Value = serde_json::from_str(extract_text(&risk.value)).unwrap();
+    assert_eq!(risk["summary"]["total_functions"], 1);
 }
 
 #[tokio::test]

@@ -265,19 +265,40 @@ pub(crate) fn node_name_matches(node: &Node, query: &str) -> bool {
 
 /// Returns `true` if the file path looks like a test file.
 pub fn is_test_file(path: &str) -> bool {
-    let test_segments = [
-        "test/",
-        "tests/",
-        "__tests__/",
-        "spec/",
-        "e2e/",
-        ".test.",
-        ".spec.",
-        "_test.",
-        "_spec.",
-    ];
-    let lower = path.to_ascii_lowercase();
-    test_segments.iter().any(|s| lower.contains(s))
+    is_test_file_with_source_overrides(path, &[])
+}
+
+/// Returns `true` if the file path looks like a test file after applying
+/// project-level source-path overrides.
+pub(crate) fn is_test_file_with_source_overrides(
+    path: &str,
+    source_path_overrides: &[String],
+) -> bool {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+
+    // These markers are unambiguous and must remain tests even when a parent
+    // directory is explicitly treated as production source.
+    let explicit_test_markers = ["__tests__/", ".test.", ".spec.", "_test.", "_spec."];
+    if explicit_test_markers.iter().any(|s| lower.contains(s)) {
+        return true;
+    }
+
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    if source_path_overrides.iter().any(|pattern| {
+        glob::Pattern::new(pattern).is_ok_and(|glob| glob.matches_with(&normalized, match_opts))
+    }) {
+        return false;
+    }
+
+    let test_directory_segments = ["test/", "tests/", "spec/", "e2e/"];
+    test_directory_segments
+        .iter()
+        .any(|segment| lower.contains(segment))
 }
 
 #[cfg(test)]
