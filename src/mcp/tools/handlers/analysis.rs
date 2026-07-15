@@ -149,6 +149,112 @@ fn go_import_identifier(name: &str) -> Option<String> {
     crate::go_import::import_identifier(name)
 }
 
+/// Returns the identifier a Python import statement binds into scope.
+///
+/// The Python extractor's Use node `name` is a dotted path (`enum.StrEnum`
+/// for `from enum import StrEnum`, `os.path` for `import os.path`), not the
+/// bound identifier, so the generic `::`-based [`identifiers_from_use_path`]
+/// returns the literal dotted string, which never matches the plain
+/// `StrEnum` reference in `class Colour(StrEnum)` (#224).
+///
+/// Python import semantics fix which segment binds the name:
+/// - `from a.b import c` → the **last** `.`-segment of `name` (`c`)
+/// - `import a.b.c` → the **first** `.`-segment of `name` (`a`)
+///
+/// An `as` alias always wins over either rule. `signature` (the statement's
+/// source text) is needed to detect it, but a single Python `import`/`from`
+/// statement can bind several names on one line (`import a, b as c`), all of
+/// which share one Use-node-creating statement and therefore one `signature`
+/// string — so an alias can't just be read off the tail of `signature`, or
+/// `a`'s Use node would pick up `b`'s alias. Instead, the segment that
+/// *would* be returned by the two rules above is located as a whole word
+/// inside the region of `signature` **after the `import` keyword**, and only
+/// an ` as <alias>` immediately following that specific occurrence is
+/// honored — `name` itself is always this node's own dotted path (extracted
+/// per-import, never shared), so this correctly isolates each name's own
+/// alias even when several share one statement. Restricting the search to
+/// after `import` matters when the module and the imported name are the
+/// same word (`from datetime import datetime as dt`): searching the whole
+/// statement would find the *module* occurrence first — its trailing text
+/// is `import datetime as dt`, not an `as` clause — and silently drop the
+/// alias.
+///
+/// Wildcard imports (`name` ends in `.*`) return `None` (caller already
+/// skips these).
+fn python_import_identifier(name: &str, signature: &str) -> Option<String> {
+    if name.is_empty() || name.ends_with(".*") || name == "*" {
+        return None;
+    }
+    let sig = signature.trim();
+    let is_from = sig.starts_with("from ");
+    // For `from a.b import c`, only `c` appears verbatim in the source next
+    // to a possible `as` alias — `a.b.c` is never written. For `import
+    // a.b.c`, the *whole* dotted path is what a trailing `as x` attaches to
+    // (`import a.b.c as x` binds `x`, not `a`), so search on the full name.
+    let (search_key, base) = if is_from {
+        let last = name.rsplit('.').next().unwrap_or(name);
+        (last, last)
+    } else {
+        let first = name.split('.').next().unwrap_or(name);
+        (name, first)
+    };
+    if base.is_empty() {
+        return None;
+    }
+    // Only the region *after* the `import` keyword can contain a bound name
+    // or its alias — the `from MOD` module part (present only in the `from`
+    // form) precedes it and can collide with the imported name itself
+    // (`from datetime import datetime as dt`: searching the whole signature
+    // for `datetime` finds the *module* occurrence first, whose trailing
+    // text is `import datetime as dt` — not an `as` clause — silently
+    // dropping the alias and reporting the import unused despite `dt.now()`
+    // being called). Restricting the search to after `import` skips that
+    // collision; every other shape (no `from MOD` prefix to collide with)
+    // is unaffected.
+    let region_start = find_word_pos(sig, "import").map_or(0, |p| p + "import".len());
+    let region = &sig[region_start..];
+    if let Some(pos) = find_word_pos(region, search_key) {
+        let after = region[pos + search_key.len()..].trim_start();
+        if let Some(alias_part) = after.strip_prefix("as ") {
+            let alias = alias_part
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !alias.is_empty() {
+                return Some(alias.to_string());
+            }
+        }
+    }
+    Some(base.to_string())
+}
+
+/// Locates `key` as a whole token within `text` (boundaries are any
+/// non-identifier byte or string ends), mirroring [`has_identifier_match`]
+/// but returning the match position instead of a boolean. `key` may itself
+/// contain `.` (a dotted import path) — only the two ends are checked
+/// against a boundary; the position returned is the first match.
+fn find_word_pos(text: &str, key: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let key_bytes = key.as_bytes();
+    let key_len = key_bytes.len();
+    if key_len == 0 || bytes.len() < key_len {
+        return None;
+    }
+    let mut i = 0;
+    while i + key_len <= bytes.len() {
+        if &bytes[i..i + key_len] == key_bytes {
+            let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+            let after_ok = i + key_len == bytes.len() || !is_ident_byte(bytes[i + key_len]);
+            if before_ok && after_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Resolves a single use-tree segment (no `::`) into the identifier it
 /// brings into scope, accounting for `as` aliases.
 fn identifier_from_segment(seg: &str) -> String {
@@ -567,10 +673,26 @@ pub(super) async fn handle_unused_imports(
             ext.as_str(),
             "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs"
         );
+        let is_python = matches!(ext.as_str(), "py" | "pyi");
+        // `__init__.py` re-exports are a Python-idiomatic public API surface
+        // (`from .module import Thing` there is meant to be imported by
+        // consumers, not used within the file itself) — never flag them as
+        // unused (#224).
+        if is_python
+            && std::path::Path::new(&use_node.file_path)
+                .file_name()
+                .is_some_and(|f| f == "__init__.py")
+        {
+            continue;
+        }
         let identifiers: Vec<String> = if is_go {
             go_import_identifier(&use_node.name).into_iter().collect()
         } else if is_ts_js {
             ts_import_identifiers(use_node.signature.as_deref().unwrap_or(""))
+        } else if is_python {
+            python_import_identifier(&use_node.name, use_node.signature.as_deref().unwrap_or(""))
+                .into_iter()
+                .collect()
         } else {
             identifiers_from_use_path(&use_node.name)
         };
@@ -2441,7 +2563,7 @@ fn line_is_comment(source: &str, byte: usize) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{go_import_identifier, ts_import_identifiers};
+    use super::{go_import_identifier, python_import_identifier, ts_import_identifiers};
 
     #[test]
     fn ts_import_identifiers_named_and_aliased() {
@@ -2499,6 +2621,93 @@ mod tests {
         assert_eq!(
             go_import_identifier("example.com/m/internal/foo/revision").as_deref(),
             Some("revision")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_from_import_last_segment() {
+        // #224: `from enum import StrEnum` binds `StrEnum`, not `enum.StrEnum`.
+        assert_eq!(
+            python_import_identifier("enum.StrEnum", "from enum import StrEnum").as_deref(),
+            Some("StrEnum")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_plain_import_first_segment() {
+        // `import os.path` binds `os` into scope, not `os.path`.
+        assert_eq!(
+            python_import_identifier("os.path", "import os.path").as_deref(),
+            Some("os")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_plain_import_aliased() {
+        assert_eq!(
+            python_import_identifier("numpy", "import numpy as np").as_deref(),
+            Some("np")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_from_import_aliased() {
+        assert_eq!(
+            python_import_identifier("a.b", "from a import b as c").as_deref(),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_dotted_import_aliased() {
+        assert_eq!(
+            python_import_identifier("a.b.c", "import a.b.c as x").as_deref(),
+            Some("x")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_multi_name_statement_isolates_own_alias() {
+        // A single `import a, b as c` statement creates one Use node per
+        // name, all sharing the same `signature` (the whole statement's
+        // text) — `a`'s Use node must not pick up `b`'s alias.
+        let sig = "import a, b as c";
+        assert_eq!(
+            python_import_identifier("a", sig).as_deref(),
+            Some("a"),
+            "a has no alias of its own and must not inherit b's"
+        );
+        assert_eq!(python_import_identifier("b", sig).as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn python_import_identifier_wildcard_is_none() {
+        assert_eq!(python_import_identifier("pkg.*", "from pkg import *"), None);
+    }
+
+    #[test]
+    fn python_import_identifier_module_name_alias_collision() {
+        // Regression: the module and the imported name are the same word,
+        // so searching the whole signature for "datetime" finds the
+        // *module* occurrence first (in "from datetime") whose trailing
+        // text is "import datetime as dt", not an `as` clause — silently
+        // dropping the alias and reporting `datetime.datetime` unused
+        // despite `dt.now()` being called.
+        assert_eq!(
+            python_import_identifier("datetime.datetime", "from datetime import datetime as dt")
+                .as_deref(),
+            Some("dt")
+        );
+    }
+
+    #[test]
+    fn python_import_identifier_module_name_collision_no_alias() {
+        // Same collision, no alias: must still resolve to the imported
+        // name, not get confused by the earlier module-side occurrence.
+        assert_eq!(
+            python_import_identifier("datetime.datetime", "from datetime import datetime")
+                .as_deref(),
+            Some("datetime")
         );
     }
 }

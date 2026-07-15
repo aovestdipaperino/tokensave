@@ -298,6 +298,37 @@ fn test_fixture_python() {
         "log signature should contain 'message', got: {}",
         log_sig
     );
+
+    // #224 (nested-def recursion): `wrapper`, the closure nested inside the
+    // `retry` decorator factory, must be indexed as its own Function node
+    // and contained by `retry` — not silently dropped.
+    let retry_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "retry")
+        .expect("retry function not found");
+    let wrapper_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "wrapper")
+        .expect("nested closure `wrapper` should be indexed as a Function");
+    assert!(
+        result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+            && e.source == retry_fn.id
+            && e.target == wrapper_fn.id),
+        "retry should Contains wrapper"
+    );
+
+    // #224 (first-class value ref): `PARSERS = {"log": log}` references
+    // `log` by name only, never calling it — must still produce a Uses ref
+    // or `log` looks dead despite being reachable via the table.
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "log"),
+        "dict value referencing `log` should produce a Uses ref"
+    );
 }
 
 // ── C ───────────────────────────────────────────────────────────────────────

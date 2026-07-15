@@ -112,8 +112,17 @@ impl PythonExtractor {
             "decorated_definition" => Self::visit_decorated_definition(state, node),
             "import_statement" => Self::visit_import(state, node),
             "import_from_statement" => Self::visit_import_from(state, node),
-            "expression_statement" if state.class_depth == 0 => {
-                // Check for module-level assignments that look like constants.
+            "expression_statement" => {
+                // Check for module-level assignments that look like constants
+                // (module scope), or first-class value refs in a class-body
+                // assignment's RHS (class scope, #224: `class Registry:
+                // CALLBACKS = {"x": _class_callback}` — previously this arm
+                // was gated to `class_depth == 0` so a class-body assignment
+                // never reached `visit_assignment` at all, leaving
+                // `_class_callback` with no ref and reported dead).
+                // `visit_assignment` itself gates *Const-node creation* by
+                // class depth, so this doesn't turn class attributes into
+                // module Const nodes.
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     loop {
@@ -195,10 +204,95 @@ impl PythonExtractor {
             });
         }
 
+        // Parameter default values are a value position exactly like a call
+        // argument or assignment RHS (#224): `def invoke(callback=_default_cb)`
+        // previously produced no ref for `_default_cb` because the body scan
+        // below never looks at the sibling `parameters` node — so the default
+        // looked dead despite being wired up as the function's fallback.
+        // Scanned unconditionally (independent of whether a `block` body is
+        // present) and attributed to the function's own id.
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let p = cursor.node();
+                    if matches!(p.kind(), "default_parameter" | "typed_default_parameter") {
+                        if let Some(value) = p.child_by_field_name("value") {
+                            Self::scan_value_positions(state, value, &id);
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+
         // Extract call sites from the function body.
         if let Some(body) = find_child_by_kind(node, "block") {
             Self::extract_call_sites(state, body, &id);
             Self::extract_receiver_typed_calls(state, node, body, &id);
+
+            // First-class function/value references (#224): e.g.
+            // `Spec(parse=_parse_text)` or `PARSERS = {"text": _parse_text}`
+            // written inside a function body. Bounded to call-argument
+            // values and assignment RHS — see `extract_value_refs`.
+            Self::extract_value_refs(state, body, &id);
+
+            // Recurse into nested function/class definitions (closures,
+            // locally-defined classes). `extract_call_sites` above
+            // deliberately stops at a nested def's boundary so it doesn't
+            // attribute the nested body's calls to the outer function; but
+            // nothing previously *visited* that nested def either, so it was
+            // never indexed and its own calls never became graph edges —
+            // e.g. a closure's call to a same-file helper left the helper
+            // looking dead (#224). Pushing this function onto the node
+            // stack attributes the nested def as its child, matching how
+            // `visit_class` already indexes a nested class's body.
+            state.node_stack.push((name.clone(), id.clone()));
+            Self::visit_nested_defs(state, body);
+            state.node_stack.pop();
+        }
+    }
+
+    /// Walks a function body for nested `function_definition` /
+    /// `decorated_definition` / `class_definition` nodes — including ones
+    /// sitting inside `if`/`for`/`while`/`try`/`with` blocks, not just
+    /// direct statements — and visits each one. Descent stops the moment
+    /// such a node is found; that node's own body is walked when it is
+    /// visited (by `visit_function`/`visit_class` themselves), not here.
+    ///
+    /// A nested def is always a plain local function/class, never a class
+    /// *member*, regardless of how many enclosing methods it sits inside —
+    /// so `class_depth` is reset to 0 for the duration of this walk. Without
+    /// this, `visit_function` for a closure defined inside a method would
+    /// see the outer method's `class_depth > 0` and misclassify the closure
+    /// as a `Method`.
+    fn visit_nested_defs(state: &mut ExtractionState, node: TsNode<'_>) {
+        let saved_depth = state.class_depth;
+        state.class_depth = 0;
+        Self::visit_nested_defs_inner(state, node);
+        state.class_depth = saved_depth;
+    }
+
+    fn visit_nested_defs_inner(state: &mut ExtractionState, node: TsNode<'_>) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "function_definition" => {
+                        let is_async = Self::has_async_keyword(child);
+                        Self::visit_function(state, child, is_async);
+                    }
+                    "class_definition" => Self::visit_class(state, child),
+                    "decorated_definition" => Self::visit_decorated_definition(state, child),
+                    _ => Self::visit_nested_defs_inner(state, child),
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
         }
     }
 
@@ -562,9 +656,18 @@ impl PythonExtractor {
     fn visit_assignment(state: &mut ExtractionState, node: TsNode<'_>) {
         // Get the left side of the assignment.
         let left = node.child_by_field_name("left");
+        let mut const_id: Option<String> = None;
         if let Some(left_node) = left {
             let name = state.node_text(left_node);
-            if Self::is_upper_snake_case(&name) {
+            // Only a *module-level* UPPER_SNAKE_CASE assignment becomes a
+            // Const node. A class-body assignment (`class Registry:
+            // CALLBACKS = {...}`) is a class attribute, not a module
+            // constant — it must not be indexed as one (that would change
+            // existing node counts, e.g. `Base.CLASS_VERSION` in the
+            // fixture). The RHS value-ref scan below still runs
+            // unconditionally, attributed to the enclosing class via
+            // `parent_node_id()` when no Const node is created (#224).
+            if state.class_depth == 0 && Self::is_upper_snake_case(&name) {
                 let start_line = node.start_position().row as u32;
                 let end_line = node.end_position().row as u32;
                 let start_column = node.start_position().column as u32;
@@ -609,11 +712,24 @@ impl PythonExtractor {
                 if let Some(parent_id) = state.parent_node_id() {
                     state.edges.push(Edge {
                         source: parent_id.to_string(),
-                        target: id,
+                        target: id.clone(),
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
                     });
                 }
+                const_id = Some(id);
+            }
+        }
+
+        // First-class function/value references in the RHS (#224), e.g.
+        // `PARSERS = {"text": _parse_text}`. Runs regardless of LHS casing
+        // (not just the `UPPER_SNAKE_CASE` constants above) — attributed to
+        // the Const node when one was created, otherwise to the enclosing
+        // scope (the File node for a plain module-level assignment).
+        if let Some(rhs) = node.child_by_field_name("right") {
+            let source_id = const_id.or_else(|| state.parent_node_id().map(str::to_string));
+            if let Some(source_id) = source_id {
+                Self::scan_value_positions(state, rhs, &source_id);
             }
         }
     }
@@ -968,6 +1084,123 @@ impl PythonExtractor {
                 }
                 if !cursor.goto_next_sibling() {
                     break;
+                }
+            }
+        }
+    }
+
+    /// Walk a statement-level subtree (a function body, or anything reached
+    /// while looking for one) for `call`, `assignment`, and `return_statement`
+    /// nodes, and hand their value-bearing subtrees off to
+    /// `scan_value_positions` (#224: first-class function references such as
+    /// `Spec(parse=_parse_text)`, `PARSERS = {"text": _parse_text}`, or a
+    /// factory returning a nested closure by name (`return add`) never
+    /// produced any ref, so the referenced symbol looked dead).
+    ///
+    /// Stops at a nested `function_definition`/`class_definition` boundary —
+    /// that scope's own calls/assignments are handled when *it* is visited
+    /// (see `visit_nested_defs`), not here, to avoid attributing them twice.
+    ///
+    /// For a `call`, only its `arguments` are scanned (the `function`/callee
+    /// is already a `Calls` ref via `extract_call_sites`); the callee itself
+    /// is still walked so a call used as another call's callee (`f()()`) is
+    /// still found. For an `assignment`, only `right` is scanned as a value
+    /// position; `left` is walked (not scanned) so a subscript target like
+    /// `d[get_key()] = fn` still finds the nested call in the key. A
+    /// `return_statement` is scanned in full — its returned expression is
+    /// always a value position.
+    fn extract_value_refs(state: &mut ExtractionState, node: TsNode<'_>, source_id: &str) {
+        match node.kind() {
+            "function_definition" | "class_definition" => {}
+            // A bare `return add` (returning a nested def/callback by name,
+            // as the issue's `make_adder`/`add` repro does) is a value
+            // position exactly like a call argument or assignment RHS: the
+            // returned expression is scanned in full (its own nested calls'
+            // arguments, dict/list literals, etc. via `scan_value_positions`
+            // itself), without also walking into it a second time below.
+            "return_statement" => {
+                Self::scan_value_positions(state, node, source_id);
+            }
+            "call" => {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    Self::scan_value_positions(state, args, source_id);
+                }
+                if let Some(func) = node.child_by_field_name("function") {
+                    Self::extract_value_refs(state, func, source_id);
+                }
+            }
+            "assignment" => {
+                if let Some(rhs) = node.child_by_field_name("right") {
+                    Self::scan_value_positions(state, rhs, source_id);
+                }
+                if let Some(lhs) = node.child_by_field_name("left") {
+                    Self::extract_value_refs(state, lhs, source_id);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        Self::extract_value_refs(state, cursor.node(), source_id);
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recursively scan a bounded "value position" subtree (a call's
+    /// `argument_list`, or an assignment's RHS) for bare `identifier` nodes
+    /// used as a *value*, emitting a `Uses` ref for each. The resolver only
+    /// turns these into edges when the name matches a known project symbol,
+    /// so unresolved locals/stdlib names are dropped cheaply.
+    ///
+    /// Recurses into nested calls' own `arguments` (skipping their callee,
+    /// already covered elsewhere), `keyword_argument`/`pair` **values** only
+    /// (skipping keys), a nested `assignment`'s RHS only, and container
+    /// literals (list/dict/set/tuple). Stops at `attribute`/`subscript`
+    /// (attribute sub-names aren't standalone references), `lambda` (its
+    /// body is a separate anonymous scope), and nested def boundaries.
+    fn scan_value_positions(state: &mut ExtractionState, node: TsNode<'_>, source_id: &str) {
+        match node.kind() {
+            "identifier" => {
+                let name = state.node_text(node);
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: source_id.to_string(),
+                    reference_name: name,
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            "attribute" | "subscript" | "lambda" | "function_definition" | "class_definition" => {}
+            "call" => {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    Self::scan_value_positions(state, args, source_id);
+                }
+            }
+            "keyword_argument" | "pair" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    Self::scan_value_positions(state, value, source_id);
+                }
+            }
+            "assignment" => {
+                if let Some(rhs) = node.child_by_field_name("right") {
+                    Self::scan_value_positions(state, rhs, source_id);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        Self::scan_value_positions(state, cursor.node(), source_id);
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
                 }
             }
         }
