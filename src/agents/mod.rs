@@ -121,6 +121,15 @@ pub struct InstallContext {
     pub tokensave_bin: String,
     pub tool_permissions: Vec<String>,
     pub scope: InstallScope,
+    /// Whether the caller explicitly requested a permission style this run
+    /// (`--wildcard-permissions` / `--explicit-permissions`). `false` on
+    /// every default/silent path (flagless `install`/`reinstall`, the
+    /// silent reinstall-on-upgrade). Used by the Claude integration: when
+    /// `false`, an existing covering grant the user already has (e.g. a
+    /// hand-written `mcp__tokensave__*`) is left untouched instead of being
+    /// churned back into the explicit per-tool list; when `true`, the
+    /// requested style is written exactly, tearing down the other style.
+    pub force_permission_style: bool,
 }
 
 impl InstallContext {
@@ -2897,6 +2906,7 @@ mod install_scope_tests {
             tokensave_bin: "tokensave".into(),
             tool_permissions: vec![],
             scope: InstallScope::Global,
+            force_permission_style: false,
         };
         assert_eq!(global.base_dir(), home.as_path());
         assert!(!global.is_local());
@@ -2908,6 +2918,7 @@ mod install_scope_tests {
             scope: InstallScope::Local {
                 project_path: proj.clone(),
             },
+            force_permission_style: false,
         };
         assert_eq!(local.base_dir(), proj.as_path());
         assert!(local.is_local());

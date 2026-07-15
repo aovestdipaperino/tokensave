@@ -28,6 +28,7 @@ fn claude_local_writes_project_files_only() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("claude").unwrap().install(&ctx).unwrap();
 
@@ -86,6 +87,7 @@ fn cursor_local_writes_project_mcp_only() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("cursor").unwrap().install(&ctx).unwrap();
     let mcp = read_json(&proj.path().join(".cursor/mcp.json"));
@@ -107,6 +109,7 @@ fn gemini_local_writes_project_settings() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("gemini").unwrap().install(&ctx).unwrap();
     let settings = read_json(&proj.path().join(".gemini/settings.json"));
@@ -125,6 +128,7 @@ fn kiro_local_writes_workspace_mcp() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("kiro").unwrap().install(&ctx).unwrap();
     let mcp = read_json(&proj.path().join(".kiro/settings/mcp.json"));
@@ -143,6 +147,7 @@ fn zed_local_writes_project_settings() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("zed").unwrap().install(&ctx).unwrap();
     let settings = read_json(&proj.path().join(".zed/settings.json"));
@@ -160,6 +165,7 @@ fn opencode_local_writes_project_config() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("opencode").unwrap().install(&ctx).unwrap();
     let cfg = read_json(&proj.path().join("opencode.json"));
@@ -178,6 +184,7 @@ fn roo_local_writes_project_mcp() {
         scope: InstallScope::Local {
             project_path: proj.path().to_path_buf(),
         },
+        force_permission_style: false,
     };
     get_integration("roo-code").unwrap().install(&ctx).unwrap();
     let mcp = read_json(&proj.path().join(".roo/mcp.json"));

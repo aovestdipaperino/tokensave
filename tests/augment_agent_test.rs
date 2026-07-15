@@ -16,6 +16,7 @@ fn make_ctx(home: &Path) -> InstallContext {
         tokensave_bin: "/usr/local/bin/tokensave".to_string(),
         tool_permissions: expected_tool_perms(),
         scope: InstallScope::Global,
+        force_permission_style: false,
     }
 }
 
@@ -27,6 +28,7 @@ fn make_local_ctx(home: &Path, project: &Path) -> InstallContext {
         scope: InstallScope::Local {
             project_path: project.to_path_buf(),
         },
+        force_permission_style: false,
     }
 }
 
