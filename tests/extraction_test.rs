@@ -354,4 +354,27 @@ fn test_language_registry_supported_extensions() {
     assert!(exts.contains(&"java"));
     assert!(exts.contains(&"scala"));
     assert!(exts.contains(&"sc"));
+    // #219: .mjs/.cjs/.mts/.cts must be registered or the sync walker silently
+    // skips those files instead of indexing them as JavaScript/TypeScript.
+    assert!(exts.contains(&"mjs"));
+    assert!(exts.contains(&"cjs"));
+    assert!(exts.contains(&"mts"));
+    assert!(exts.contains(&"cts"));
+}
+
+#[test]
+fn test_language_registry_extractor_for_mjs_and_cjs_files() {
+    // #219: extractor_for_file drives whether sync indexes the file at all,
+    // so this only needs to confirm a match is found for each extension.
+    // (language_name() is a constant on TypeScriptExtractor regardless of
+    // extension, so it can't distinguish JS from TS here; grammar routing
+    // for .mjs/.cjs is covered by the parse tests in
+    // typescript_extraction_test.rs instead.)
+    let registry = LanguageRegistry::new();
+    for path in ["foo.mjs", "foo.cjs", "foo.mts", "foo.cts"] {
+        assert!(
+            registry.extractor_for_file(path).is_some(),
+            "no extractor found for {path}"
+        );
+    }
 }
