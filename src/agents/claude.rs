@@ -376,7 +376,20 @@ fn find_tokensave_hook(
     })
 }
 
-/// Add MCP tool permissions (idempotent).
+/// True for any tokensave-owned permission entry: an individual tool grant,
+/// the bare server-wide grant, or the compact wildcard. Shared by
+/// `install_permissions` (to prune before re-adding, so switching between the
+/// explicit and compact styles never leaves stale entries behind) and
+/// `uninstall_permissions`.
+fn is_tokensave_perm(s: &str) -> bool {
+    s == "mcp__tokensave" || s.starts_with("mcp__tokensave__")
+}
+
+/// Add MCP tool permissions (idempotent). Any previously-installed
+/// tokensave-owned entries are dropped first, so re-running install after
+/// switching between the explicit per-tool list and the compact wildcard
+/// (see `wildcard_permissions` in `UserConfig`) always leaves exactly the
+/// entries in `tool_permissions` — never a mix of both styles.
 fn install_permissions(settings: &mut serde_json::Value, tool_permissions: &[String]) {
     let existing: Vec<String> = settings["permissions"]["allow"]
         .as_array()
@@ -386,7 +399,10 @@ fn install_permissions(settings: &mut serde_json::Value, tool_permissions: &[Str
                 .collect()
         })
         .unwrap_or_default();
-    let mut allow: Vec<String> = existing;
+    let mut allow: Vec<String> = existing
+        .into_iter()
+        .filter(|e| !is_tokensave_perm(e))
+        .collect();
     for tool in tool_permissions {
         if !allow.iter().any(|e| e == tool) {
             allow.push(tool.clone());
@@ -701,10 +717,7 @@ fn uninstall_permissions(settings: &mut serde_json::Value) -> bool {
     };
     let filtered: Vec<serde_json::Value> = arr
         .into_iter()
-        .filter(|v| {
-            !v.as_str()
-                .is_some_and(|s| s.starts_with("mcp__tokensave__"))
-        })
+        .filter(|v| !v.as_str().is_some_and(is_tokensave_perm))
         .collect();
     if filtered.len()
         >= settings["permissions"]["allow"]
@@ -1067,7 +1080,7 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
     let expected = expected_tool_perms();
     let missing: Vec<&String> = expected
         .iter()
-        .filter(|p| !installed.contains(&p.as_str()))
+        .filter(|p| !perm_is_covered(p, &installed))
         .collect();
 
     if missing.is_empty() {
@@ -1082,9 +1095,17 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
         }
     }
 
+    // A covering grant (bare "mcp__tokensave" or a wildcard/glob anchored on
+    // "mcp__tokensave__") is a deliberate compact grant, not a stale leftover
+    // from an older version — only flag entries that look like individually
+    // installed tool permissions no longer in the expected set.
     let stale: Vec<&&str> = installed
         .iter()
-        .filter(|p| p.starts_with("mcp__tokensave__") && !expected.contains(&p.to_string()))
+        .filter(|p| {
+            p.starts_with("mcp__tokensave__")
+                && !p.ends_with('*')
+                && !expected.contains(&p.to_string())
+        })
         .collect();
     if !stale.is_empty() {
         dc.warn(&format!(
@@ -1229,6 +1250,25 @@ pub fn check_install_stale() {
     }
 }
 
+/// True if `perm` (an expected `mcp__tokensave__<tool>` string) is granted by
+/// any entry in `installed`. Mirrors Claude Code's *allow-rule* matching: an
+/// exact tool name, the bare server grant, or a glob anchored after the
+/// literal `mcp__tokensave__` prefix. Unanchored globs (`mcp__*`, `*`) are
+/// deliberately NOT accepted — Claude Code skips them in `allow` rules (see
+/// docs: <https://code.claude.com/docs/en/permissions#tool-name-wildcards>), so
+/// honoring them here would hide a real "tools not granted" state.
+fn perm_is_covered(perm: &str, installed: &[&str]) -> bool {
+    installed.iter().any(|e| {
+        *e == perm                       // exact tool grant
+            || *e == "mcp__tokensave"    // bare server-wide grant
+            || *e == "mcp__tokensave__*" // full-server wildcard
+            // anchored partial glob, e.g. "mcp__tokensave__tokensave_*"
+            || e.strip_suffix('*').is_some_and(|pfx| {
+                pfx.starts_with("mcp__tokensave__") && perm.starts_with(pfx)
+            })
+    })
+}
+
 /// Emit a warning if the current tokensave version expects tool permissions
 /// that aren't present in `settings`.
 fn warn_missing_permissions(settings: &serde_json::Value) {
@@ -1240,7 +1280,7 @@ fn warn_missing_permissions(settings: &serde_json::Value) {
     let expected = expected_tool_perms();
     let missing_count = expected
         .iter()
-        .filter(|p| !installed.contains(&p.as_str()))
+        .filter(|p| !perm_is_covered(p, &installed))
         .count();
 
     if missing_count > 0 {
@@ -1344,6 +1384,7 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::super::{install_tool_perms, TOKENSAVE_WILDCARD_PERM};
     use super::*;
     use serde_json::json;
 
@@ -2027,5 +2068,213 @@ mod tests {
             fixed["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str(),
             Some("/usr/bin/tokensave")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Wildcard/compact permission recognition (`perm_is_covered`)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn perm_is_covered_matches_exact_tool() {
+        let installed = ["mcp__tokensave__tokensave_search"];
+        assert!(perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn perm_is_covered_matches_bare_server_grant() {
+        let installed = ["mcp__tokensave"];
+        assert!(perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn perm_is_covered_matches_full_wildcard() {
+        let installed = ["mcp__tokensave__*"];
+        assert!(perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn perm_is_covered_matches_anchored_partial_glob() {
+        let installed = ["mcp__tokensave__tokensave_*"];
+        assert!(perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+        // A glob anchored on a different prefix must not match.
+        assert!(!perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &["mcp__tokensave__other_*"]
+        ));
+    }
+
+    #[test]
+    fn perm_is_covered_rejects_unanchored_mcp_star() {
+        // Claude Code documents "mcp__*" as skipped-with-a-warning in `allow`
+        // rules — it does NOT grant anything. Treating it as covering here
+        // would hide a real "tools not granted" state, so it must not match.
+        let installed = ["mcp__*"];
+        assert!(!perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+    }
+
+    #[test]
+    fn perm_is_covered_rejects_unrelated_entries() {
+        let installed = ["Bash", "Read", "mcp__other_server__tool"];
+        assert!(!perm_is_covered(
+            "mcp__tokensave__tokensave_search",
+            &installed
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // doctor_check_permissions / warn_missing_permissions recognition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn doctor_passes_with_full_wildcard_grant() {
+        let settings = json!({ "permissions": { "allow": ["mcp__tokensave__*"] } });
+        let mut dc = DoctorCounters::new();
+        doctor_check_permissions(&mut dc, &settings);
+        assert_eq!(
+            dc.issues, 0,
+            "wildcard grant should satisfy all permissions"
+        );
+        assert_eq!(
+            dc.warnings, 0,
+            "wildcard grant must not be reported as a stale leftover"
+        );
+    }
+
+    #[test]
+    fn doctor_passes_with_bare_server_grant() {
+        let settings = json!({ "permissions": { "allow": ["mcp__tokensave"] } });
+        let mut dc = DoctorCounters::new();
+        doctor_check_permissions(&mut dc, &settings);
+        assert_eq!(
+            dc.issues, 0,
+            "bare server grant should satisfy all permissions"
+        );
+    }
+
+    #[test]
+    fn doctor_still_fails_with_only_unanchored_mcp_star() {
+        // Guard against a false negative: Claude Code doesn't honor "mcp__*"
+        // as an allow rule, so this must still be reported as missing.
+        let settings = json!({ "permissions": { "allow": ["mcp__*"] } });
+        let mut dc = DoctorCounters::new();
+        doctor_check_permissions(&mut dc, &settings);
+        assert!(
+            dc.issues > 0,
+            "unanchored mcp__* must not be treated as covering the tools"
+        );
+    }
+
+    #[test]
+    fn doctor_still_fails_when_permissions_missing() {
+        let settings = json!({ "permissions": { "allow": ["Bash"] } });
+        let mut dc = DoctorCounters::new();
+        doctor_check_permissions(&mut dc, &settings);
+        assert!(dc.issues > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Opt-in compact install (`install_tool_perms`, prune-then-add)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn install_tool_perms_wildcard_is_single_entry() {
+        assert_eq!(
+            install_tool_perms(true),
+            vec![TOKENSAVE_WILDCARD_PERM.to_string()]
+        );
+    }
+
+    #[test]
+    fn install_tool_perms_explicit_is_full_list() {
+        assert_eq!(install_tool_perms(false), expected_tool_perms());
+    }
+
+    #[test]
+    fn install_permissions_writes_wildcard_entry() {
+        let mut settings = json!({});
+        install_permissions(&mut settings, &install_tool_perms(true));
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(allow, vec![TOKENSAVE_WILDCARD_PERM]);
+    }
+
+    #[test]
+    fn install_permissions_switching_to_wildcard_prunes_explicit_list() {
+        let mut settings = json!({});
+        install_permissions(&mut settings, &expected_tool_perms());
+        // Sanity check the explicit list was actually written.
+        assert!(
+            settings["permissions"]["allow"].as_array().unwrap().len() > 1,
+            "explicit install should have written more than one entry"
+        );
+
+        install_permissions(&mut settings, &install_tool_perms(true));
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            allow,
+            vec![TOKENSAVE_WILDCARD_PERM],
+            "switching to wildcard must prune the stale explicit entries"
+        );
+    }
+
+    #[test]
+    fn install_permissions_switching_to_explicit_prunes_wildcard() {
+        let mut settings = json!({});
+        install_permissions(&mut settings, &install_tool_perms(true));
+
+        install_permissions(&mut settings, &expected_tool_perms());
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            !allow.contains(&TOKENSAVE_WILDCARD_PERM),
+            "switching to explicit must prune the stale wildcard entry"
+        );
+        for perm in expected_tool_perms() {
+            assert!(allow.contains(&perm.as_str()));
+        }
+    }
+
+    #[test]
+    fn install_permissions_preserves_non_tokensave_entries_across_style_switch() {
+        let mut settings = json!({ "permissions": { "allow": ["Bash", "Read"] } });
+        install_permissions(&mut settings, &expected_tool_perms());
+        install_permissions(&mut settings, &install_tool_perms(true));
+        let allow: Vec<&str> = settings["permissions"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(allow.contains(&"Bash"));
+        assert!(allow.contains(&"Read"));
+        assert!(allow.contains(&TOKENSAVE_WILDCARD_PERM));
     }
 }

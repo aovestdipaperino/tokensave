@@ -2204,6 +2204,24 @@ pub fn expected_tool_perms() -> Vec<String> {
         .collect()
 }
 
+/// The single compact permission entry that grants Claude Code all tokensave
+/// tools at once, as an alternative to enumerating every tool individually.
+/// Both this wildcard form and the bare `mcp__tokensave` form are fully
+/// honored by Claude Code as allow rules; this is the one tokensave writes
+/// when the compact style is requested.
+pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
+
+/// Tool permissions to install for Claude Code: either the single compact
+/// wildcard entry, or the full explicit per-tool list, depending on
+/// `wildcard`. See [`TOKENSAVE_WILDCARD_PERM`] and [`expected_tool_perms`].
+pub fn install_tool_perms(wildcard: bool) -> Vec<String> {
+    if wildcard {
+        vec![TOKENSAVE_WILDCARD_PERM.to_string()]
+    } else {
+        expected_tool_perms()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod jsonc_tests {
