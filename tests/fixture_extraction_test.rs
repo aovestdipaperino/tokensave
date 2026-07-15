@@ -147,6 +147,32 @@ fn test_fixture_javascript() {
         .any(|n| n.kind == NodeKind::ArrowFunction && n.name == "double"));
 }
 
+// ── JavaScript (.mjs) ───────────────────────────────────────────────────────
+
+#[test]
+fn test_fixture_javascript_mjs() {
+    // #219: .mjs files were skipped by the registry entirely; this exercises
+    // the extractor directly against the JavaScript grammar path used for
+    // Node.js ESM sources, including a node:test callback.
+    let source = read_fixture("sample.mjs");
+    let extractor = tokensave::extraction::TypeScriptExtractor;
+    let result = extractor.extract("sample.mjs", &source);
+    assert!(result.errors.is_empty(), "MJS errors: {:?}", result.errors);
+
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::ArrowFunction && n.name == "add"));
+    assert!(
+        result
+            .nodes
+            .iter()
+            .any(|n| n.kind == NodeKind::Function && n.name.contains("test adds two numbers")),
+        "missing node:test callback scope: {:?}",
+        result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+}
+
 // ── Python ──────────────────────────────────────────────────────────────────
 
 #[test]

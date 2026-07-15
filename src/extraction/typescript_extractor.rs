@@ -1,7 +1,7 @@
 /// Tree-sitter based TypeScript/JavaScript source code extractor.
 ///
-/// Parses TypeScript (.ts, .tsx) and JavaScript (.js, .jsx) source files and
-/// emits nodes and edges for the code graph.
+/// Parses TypeScript (.ts, .tsx, .mts, .cts) and JavaScript (.js, .jsx, .mjs, .cjs)
+/// source files and emits nodes and edges for the code graph.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -140,8 +140,8 @@ impl TypeScriptExtractor {
         let mut parser = Parser::new();
         let (key, label) = match extension {
             "tsx" => ("tsx", "TSX"),
-            "js" | "jsx" => ("javascript", "JavaScript"),
-            _ => ("typescript", "TypeScript"),
+            "js" | "jsx" | "mjs" | "cjs" => ("javascript", "JavaScript"),
+            _ => ("typescript", "TypeScript"), // ts, mts, cts
         };
         let language = crate::extraction::ts_provider::language(key);
         parser
@@ -1999,7 +1999,7 @@ impl TypeScriptExtractor {
 
 impl crate::extraction::LanguageExtractor for TypeScriptExtractor {
     fn extensions(&self) -> &[&str] {
-        &["ts", "tsx", "js", "jsx"]
+        &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]
     }
 
     fn language_name(&self) -> &'static str {
