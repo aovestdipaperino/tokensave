@@ -873,6 +873,57 @@ describe("date utils", () => {
 }
 
 #[test]
+fn test_mjs_node_test_callback_indexed() {
+    // #219: .mjs files were skipped by the registry entirely, so node:test
+    // callbacks in colocated *.test.mjs files were invisible to test-coverage
+    // tooling. This exercises the extractor directly against the JS grammar
+    // path used for .mjs, mirroring the vitest describe/it case (#211).
+    let source = r#"
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { add } from '../src/add.js';
+
+test('adds two numbers', () => {
+    assert.equal(add(1, 2), 3);
+});
+"#;
+    let result = TypeScriptExtractor.extract("add.test.mjs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let test_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
+    assert!(
+        test_nodes
+            .iter()
+            .any(|n| n.name.contains("test adds two numbers")),
+        "missing test callback node: {:?}",
+        test_nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    let calls = calls_from(&result, "test adds two numbers");
+    assert!(calls.iter().any(|c| c == "assert.equal" || c == "equal"));
+}
+
+#[test]
+fn test_cjs_file_parses_as_javascript() {
+    // #219: .cjs is CommonJS JavaScript, not TypeScript, and must route
+    // through the same grammar as .js/.mjs.
+    let source = r#"
+const add = (a, b) => a + b;
+
+module.exports = { add };
+"#;
+    let result = TypeScriptExtractor.extract("add.cjs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::ArrowFunction && n.name == "add"));
+}
+
+#[test]
 fn test_ts_decorators_on_class_methods_and_params() {
     // #206
     let source = r#"
