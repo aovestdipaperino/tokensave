@@ -851,6 +851,108 @@ async fn test_entry_points_capped_to_search_limit() {
 }
 
 #[tokio::test]
+async fn exact_qualified_expression_seeds_every_enclosing_symbol() {
+    use std::collections::HashSet;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("crates/sonium-bem/src")).unwrap();
+    fs::create_dir_all(project.join("crates/sonium-qa/tests")).unwrap();
+    fs::create_dir_all(project.join("crates/unrelated/src")).unwrap();
+    fs::write(
+        project.join("crates/sonium-bem/src/linear.rs"),
+        r#"
+pub enum BasisOrder { Linear, Quadratic }
+
+pub fn standard_assembly(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn stabilized_assembly(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn incident_rhs(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn validate_backend(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("crates/sonium-qa/tests/linear_regression.rs"),
+        r#"
+pub fn physical_pressure() {
+    let order = BasisOrder::Linear;
+    export(order);
+}
+
+#[test]
+fn linear_regression() {
+    let order = BasisOrder::Linear;
+    assert_supported(order);
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("crates/unrelated/src/ignored.rs"),
+        "pub fn excluded_path() { let _ = BasisOrder::Linear; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "Find every code path specific to BasisOrder::Linear, including assembly, validation, output, and regression tests.",
+            &BuildContextOptions {
+                max_nodes: 10,
+                search_limit: 2,
+                max_per_file: Some(2),
+                extra_keywords: vec!["BasisOrder::Linear".to_string()],
+                path_include: vec![
+                    "crates/sonium-bem".to_string(),
+                    "crates/sonium-qa".to_string(),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let names: HashSet<&str> = context
+        .entry_points
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+    let expected = HashSet::from([
+        "standard_assembly",
+        "stabilized_assembly",
+        "incident_rhs",
+        "validate_backend",
+        "physical_pressure",
+        "linear_regression",
+    ]);
+    assert!(
+        expected.is_subset(&names),
+        "entry points: {:?}",
+        context.entry_points
+    );
+    assert!(context.entry_points.len() <= expected.len() + 2);
+    assert_eq!(context.seen_node_ids.len(), context.entry_points.len());
+    assert!(!names.contains("excluded_path"));
+}
+
+#[tokio::test]
 async fn conceptual_context_discovers_executable_body_owner() {
     use std::fs;
     use tempfile::TempDir;
