@@ -393,8 +393,7 @@ pub(super) async fn handle_context(
                         .await
                         .unwrap_or_default();
                     for (caller, _) in &callers {
-                        if crate::tokensave::is_test_file(&caller.file_path)
-                            || test_annotated.contains(&caller.id)
+                        if cg.is_test_file(&caller.file_path) || test_annotated.contains(&caller.id)
                         {
                             test_files.insert(caller.file_path.clone());
                         }

@@ -43,7 +43,7 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
         if let Some(ref g) = custom_glob {
             g.matches(path)
         } else {
-            crate::tokensave::is_test_file(path)
+            cg.is_test_file(path)
         }
     };
 
@@ -226,8 +226,7 @@ async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<S
         .get_files_with_test_annotations()
         .await
         .unwrap_or_default();
-    let has_tests =
-        |path: &str| crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path);
+    let has_tests = |path: &str| cg.is_test_file(path) || files_with_inline_tests.contains(path);
 
     // First pass: gather all modified symbols.
     let mut modified_ids: Vec<String> = Vec::new();
@@ -605,8 +604,12 @@ fn git_commit_log(
 /// (the path-based check). A `src/foo.rs` with a `#[cfg(test)] mod tests`
 /// at the bottom still has role "source".
 #[allow(clippy::ptr_arg)]
-fn classify_file_role(path: &str, _files_with_inline_tests: &HashSet<String>) -> &'static str {
-    if crate::tokensave::is_test_file(path) {
+fn classify_file_role(
+    path: &str,
+    _files_with_inline_tests: &HashSet<String>,
+    source_path_overrides: &[String],
+) -> &'static str {
+    if crate::tokensave::is_test_file_with_source_overrides(path, source_path_overrides) {
         return "test";
     }
     let lower = path.to_lowercase();
@@ -752,7 +755,11 @@ async fn commit_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec
     let mut symbols_by_role: HashMap<&str, Vec<Value>> = HashMap::new();
 
     for file in &changed_files {
-        let role = classify_file_role(file, &files_with_inline_tests);
+        let role = classify_file_role(
+            file,
+            &files_with_inline_tests,
+            &cg.get_config().source_path_overrides,
+        );
         let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
         file_roles.push(json!({"file": file, "role": role, "symbols": nodes.len()}));
 
@@ -843,8 +850,7 @@ pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<Too
         .get_files_with_test_annotations()
         .await
         .unwrap_or_default();
-    let has_tests =
-        |path: &str| crate::tokensave::is_test_file(path) || files_with_inline_tests.contains(path);
+    let has_tests = |path: &str| cg.is_test_file(path) || files_with_inline_tests.contains(path);
 
     for file in &changed_files {
         if has_tests(file) {
@@ -857,7 +863,12 @@ pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<Too
         // dependencies blows past the response budget. Treat them as a
         // single summary symbol attributed to `symbols_modified` (they're
         // never "added" since the file pre-exists in a typical PR).
-        if classify_file_role(file, &files_with_inline_tests) == "config" {
+        if classify_file_role(
+            file,
+            &files_with_inline_tests,
+            &cg.get_config().source_path_overrides,
+        ) == "config"
+        {
             symbols_modified.push(json!({
                 "file": file,
                 "kind": "config_summary",
@@ -1286,10 +1297,10 @@ mod tests {
     #[test]
     fn config_files_classified_as_config_not_source() {
         let empty: HashSet<String> = HashSet::new();
-        assert_eq!(classify_file_role("Cargo.toml", &empty), "config");
-        assert_eq!(classify_file_role("package.json", &empty), "config");
-        assert_eq!(classify_file_role("foo.yaml", &empty), "config");
-        assert_eq!(classify_file_role("config.ini", &empty), "config");
+        assert_eq!(classify_file_role("Cargo.toml", &empty, &[]), "config");
+        assert_eq!(classify_file_role("package.json", &empty, &[]), "config");
+        assert_eq!(classify_file_role("foo.yaml", &empty, &[]), "config");
+        assert_eq!(classify_file_role("config.ini", &empty, &[]), "config");
     }
 
     /// Regression for bug #3 follow-up: a source file with `#[cfg(test)] mod
@@ -1300,14 +1311,39 @@ mod tests {
     fn source_file_with_inline_tests_keeps_source_role() {
         let mut with_inline: HashSet<String> = HashSet::new();
         with_inline.insert("src/lib.rs".to_string());
-        assert_eq!(classify_file_role("src/lib.rs", &with_inline), "source");
+        assert_eq!(
+            classify_file_role("src/lib.rs", &with_inline, &[]),
+            "source"
+        );
     }
 
     #[test]
     fn path_based_test_files_classify_as_test() {
         let empty: HashSet<String> = HashSet::new();
-        assert_eq!(classify_file_role("tests/integration.rs", &empty), "test");
-        assert_eq!(classify_file_role("src/foo_test.rs", &empty), "test");
+        assert_eq!(
+            classify_file_role("tests/integration.rs", &empty, &[]),
+            "test"
+        );
+        assert_eq!(classify_file_role("src/foo_test.rs", &empty, &[]), "test");
+    }
+
+    #[test]
+    fn source_override_preserves_explicit_test_markers() {
+        let empty: HashSet<String> = HashSet::new();
+        let overrides = vec!["components/test/**".to_string()];
+
+        assert_eq!(
+            classify_file_role("components/test/Widget.tsx", &empty, &overrides),
+            "source"
+        );
+        assert_eq!(
+            classify_file_role(
+                "components/test/__tests__/Widget.test.tsx",
+                &empty,
+                &overrides,
+            ),
+            "test"
+        );
     }
 
     /// Regression: `handle_diff` used to re-parse each delegate's already

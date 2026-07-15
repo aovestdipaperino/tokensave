@@ -52,6 +52,12 @@ pub struct TokenSaveConfig {
     /// no explicit `path_exclude` is provided by the caller.
     #[serde(default)]
     pub default_path_exclude: Vec<String>,
+    /// Glob patterns for paths that should be treated as production source
+    /// even when an ambiguous directory name (such as `test/`) matches the
+    /// default test-file heuristic. Explicit test markers such as
+    /// `__tests__/`, `*.test.*`, and `*.spec.*` still take precedence.
+    #[serde(default)]
+    pub source_path_overrides: Vec<String>,
     /// tokensave version that last fully indexed this project.
     ///
     /// Used to decide whether a major-version upgrade requires a forced
@@ -95,6 +101,7 @@ impl Default for TokenSaveConfig {
             git_ignore: true,
             default_path_include: Vec::new(),
             default_path_exclude: Vec::new(),
+            source_path_overrides: Vec::new(),
             last_indexed_version: String::new(),
         }
     }
@@ -579,6 +586,18 @@ mod tests {
         assert!(is_included(".config/secret/key.rs", &config));
         // But also matched by exclude glob
         assert!(is_excluded(".config/secret/key.rs", &config));
+    }
+
+    #[test]
+    fn test_legacy_config_defaults_source_path_overrides() {
+        let mut value = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("source_path_overrides");
+
+        let config: TokenSaveConfig = serde_json::from_value(value).unwrap();
+        assert!(config.source_path_overrides.is_empty());
     }
 
     #[test]

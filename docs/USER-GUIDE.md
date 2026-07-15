@@ -692,6 +692,20 @@ Created inside each project you index. Contains:
 
 Add `.tokensave` to your `.gitignore`.
 
+#### Production paths named like test directories
+
+If a production route or feature directory has a name such as `test`, add a
+`source_path_overrides` glob to the generated `.tokensave/config.json`:
+
+```json
+"source_path_overrides": ["components/test/**"]
+```
+
+The override affects test/source classification only; the files are indexed
+either way. Explicit test markers such as `__tests__/`, `*.test.*`, and
+`*.spec.*` still count as tests inside an overridden path. Restart the
+tokensave MCP server after editing the config; no re-index is required.
+
 ### Optional: `.tokensave/project.json` — explicit index entries
 
 Alongside `config.json` (walker policy: excludes, size limits, gitignore), you can add a `project.json` manifest listing files or globs to index explicitly, each with an optional `language` override that forces a specific extractor:
