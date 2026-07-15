@@ -1286,7 +1286,7 @@ async fn test_reached_node_ids(cg: &TokenSave) -> Result<HashSet<String>> {
         if e.kind == EdgeKind::Calls {
             let is_test = node_to_file
                 .get(&e.source)
-                .is_some_and(|f| crate::tokensave::is_test_file(f))
+                .is_some_and(|f| cg.is_test_file(f))
                 || test_annotated_callers.contains(&e.source);
             if is_test {
                 tested.insert(e.target.clone());
