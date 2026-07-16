@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt out of the "update available" notice with `TOKENSAVE_UPDATE_CHECK=off`.** The passive update check that runs during `init`, `sync`, `status`, and the MCP server can now be silenced by setting `TOKENSAVE_UPDATE_CHECK` to a falsey value (`off`, `false`, `0`, `no`, `disable`, `disabled`). On by default, so normal installs are unchanged. When disabled the notice paths return early without touching the network. Explicit `tokensave upgrade` and `tokensave doctor` ignore the flag and always check, so an intentional upgrade still works. This is aimed at managed installs (for example a local build symlinked onto `PATH`) where an automated `tokensave upgrade` would replace the managed binary or waste time upgrading when it was not wanted.
+
 ## [7.3.0] - 2026-07-16
 
 ### Added

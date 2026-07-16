@@ -149,6 +149,37 @@ fn release_has_current_platform_asset(release: &GitHubRelease) -> bool {
     release.assets.iter().any(|a| a.name == expected)
 }
 
+/// Whether the passive "update available" notice should run.
+///
+/// On by default. Set `TOKENSAVE_UPDATE_CHECK` to a falsey value
+/// (`off`, `false`, `0`, `no`, `disable`, `disabled`) to silence the notice
+/// emitted by `init`, `sync`, `status`, and the MCP server. Explicit
+/// `tokensave upgrade` and `tokensave doctor` do not consult this and always
+/// check.
+pub fn update_check_enabled() -> bool {
+    update_check_enabled_from(std::env::var("TOKENSAVE_UPDATE_CHECK").ok().as_deref())
+}
+
+fn update_check_enabled_from(value: Option<&str>) -> bool {
+    match value {
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off" | "disable" | "disabled"
+        ),
+        None => true,
+    }
+}
+
+/// Passive counterpart of [`fetch_latest_version`] for the notice paths.
+/// Returns `None` without touching the network when the update check is
+/// disabled via `TOKENSAVE_UPDATE_CHECK`.
+pub fn fetch_latest_version_passive() -> Option<String> {
+    if !update_check_enabled() {
+        return None;
+    }
+    fetch_latest_version()
+}
+
 /// Fetches the latest release version from GitHub.
 /// For beta builds, fetches the latest prerelease; for stable builds,
 /// fetches the latest stable release. This ensures each channel only
@@ -383,6 +414,22 @@ pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_check_defaults_on_and_honors_off_values() {
+        assert!(update_check_enabled_from(None));
+        assert!(update_check_enabled_from(Some("on")));
+        assert!(update_check_enabled_from(Some("1")));
+        assert!(update_check_enabled_from(Some("please")));
+        for off in [
+            "off", "OFF", " Off ", "false", "0", "no", "disable", "disabled",
+        ] {
+            assert!(
+                !update_check_enabled_from(Some(off)),
+                "{off} should disable"
+            );
+        }
+    }
 
     fn release(tag: &str, prerelease: bool, asset_names: &[&str]) -> GitHubRelease {
         GitHubRelease {
