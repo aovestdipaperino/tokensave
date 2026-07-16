@@ -5,6 +5,26 @@ use super::*;
 // Search
 // ---------------------------------------------------------------------------
 
+/// Converts a raw user query into a safe FTS5 MATCH expression.
+///
+/// Parameter binding stops SQL injection but does **not** stop FTS5 from
+/// parsing the bound string as a query *expression* — `-`, `.`, `:`, `*`,
+/// and friends are FTS5 syntax, so a term like `data-api` raises a syntax
+/// error (#218). Each whitespace token is stripped of `"` and wrapped as a
+/// quoted prefix term (`"token"*`), joined with `OR`. Returns `None` when
+/// no tokenizable content remains.
+pub(crate) fn to_fts_match_query(query: &str) -> Option<String> {
+    let fts_query = query
+        .split_whitespace()
+        .filter_map(|w| {
+            let sanitized: String = w.chars().filter(|c| *c != '"').collect();
+            (!sanitized.is_empty()).then(|| format!("\"{sanitized}\"*"))
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    (!fts_query.is_empty()).then_some(fts_query)
+}
+
 impl Database {
     /// Replaces executable-body FTS documents in one prepared-statement
     /// transaction. Callers delete stale documents by file before supplying
@@ -163,21 +183,9 @@ impl Database {
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         debug_assert!(!query.is_empty(), "search_nodes called with empty query");
         debug_assert!(limit > 0, "search_nodes limit must be positive");
-        // Sanitize query for FTS5: wrap each word in double quotes to escape
-        // special characters (*, ?, :, etc.) and join with spaces (implicit OR).
-        let fts_query: String = query
-            .split_whitespace()
-            .filter(|w| !w.is_empty())
-            .map(|w| {
-                let sanitized: String = w.chars().filter(|c| *c != '"').collect();
-                format!("\"{sanitized}\"*")
-            })
-            .collect::<Vec<_>>()
-            .join(" OR ");
-
-        if fts_query.is_empty() {
+        let Some(fts_query) = to_fts_match_query(query) else {
             return Ok(Vec::new());
-        }
+        };
 
         // Try FTS search, with one self-healing retry on corruption.
         let fts_result = self.search_nodes_fts(&fts_query, limit).await;

@@ -14,6 +14,7 @@ mod fingerprints;
 mod metadata;
 mod nodes;
 mod search;
+pub(crate) use search::to_fts_match_query;
 mod stats;
 mod unresolved;
 

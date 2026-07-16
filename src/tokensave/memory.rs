@@ -127,7 +127,14 @@ impl TokenSave {
             operation: "session_recall".to_string(),
         };
 
-        let mut rows = match (query, since) {
+        // FTS5 parses the bound MATCH string as a query expression even
+        // through a bound parameter, so raw terms containing `-`, `.`, `/`
+        // etc. (`data-api`) are syntax errors (#218). Escape into quoted
+        // prefix terms first; a query with no tokenizable content degrades
+        // to the unfiltered recency-ordered arms.
+        let fts_query = query.and_then(crate::db::to_fts_match_query);
+
+        let mut rows = match (fts_query.as_deref(), since) {
             (Some(q), Some(ts)) => conn
                 .query(
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
