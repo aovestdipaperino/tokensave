@@ -31,6 +31,7 @@ fn round_trip_serialization() {
         previous_version: String::new(),
         last_pricing_fetch_at: 0,
         extraction_timeout_secs: 60,
+        wildcard_permissions: false,
     };
     let toml_str = toml::to_string_pretty(&config).unwrap();
     let parsed: UserConfig = toml::from_str(&toml_str).unwrap();

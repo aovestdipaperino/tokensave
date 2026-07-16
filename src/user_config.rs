@@ -86,6 +86,16 @@ pub struct UserConfig {
     /// pathological grammar / input combo.
     #[serde(default = "default_extraction_timeout_secs")]
     pub extraction_timeout_secs: u64,
+
+    /// When true, `install`/`reinstall` grant Claude Code tokensave tools via
+    /// a single compact `mcp__tokensave__*` entry in `permissions.allow`
+    /// instead of enumerating every tool individually. Both forms are fully
+    /// honored by Claude Code; this only affects what gets written. Defaults
+    /// to `false` (explicit per-tool list) for continuity with existing
+    /// installs. Overridable per-invocation with `--wildcard-permissions` /
+    /// `--explicit-permissions`.
+    #[serde(default)]
+    pub wildcard_permissions: bool,
 }
 
 fn default_true() -> bool {
@@ -120,6 +130,7 @@ impl Default for UserConfig {
             last_installed_version: String::new(),
             previous_version: String::new(),
             extraction_timeout_secs: default_extraction_timeout_secs(),
+            wildcard_permissions: false,
         }
     }
 }

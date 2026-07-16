@@ -1025,6 +1025,7 @@ fn test_antigravity_install_writes_cli_plugin() {
         tokensave_bin: bin.to_string(),
         tool_permissions: expected_tool_perms(),
         scope: tokensave::agents::InstallScope::Global,
+        force_permission_style: false,
     };
 
     AntigravityIntegration.install(&ctx).expect("install ok");
@@ -1075,6 +1076,7 @@ fn test_antigravity_uninstall_removes_both_locations() {
         tokensave_bin: bin.to_string(),
         tool_permissions: expected_tool_perms(),
         scope: tokensave::agents::InstallScope::Global,
+        force_permission_style: false,
     };
 
     AntigravityIntegration.install(&ctx).unwrap();

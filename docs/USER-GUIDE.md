@@ -179,6 +179,8 @@ tokensave install
 
 This is the default. It registers the MCP server in `~/.claude/settings.json`, grants tool permissions so Claude doesn't have to ask you every time, installs a `PreToolUse` hook that redirects Claude away from spawning expensive Explore agents and away from symbol-shaped grep/rg searches that a tokensave tool answers more cheaply, and adds prompt rules to `~/.claude/CLAUDE.md` that tell Claude to prefer tokensave tools.
 
+By default the tool grant is an explicit list (one `permissions.allow` entry per tool). Pass `--wildcard-permissions` to grant them via a single compact `mcp__tokensave__*` entry instead — both forms are fully honored by Claude Code, so this is purely a preference. The choice is remembered in `~/.tokensave/config.toml` (`wildcard_permissions`) for global installs; pass `--explicit-permissions` to switch back.
+
 ### Other agents
 
 Tokensave supports many agents. Pass `--agent` to install for a specific one:
@@ -748,6 +750,7 @@ pending_upload = 4823       # tokens waiting to be uploaded
 last_upload_at = 1711375200 # last successful upload timestamp
 last_worldwide_total = 1000000
 last_worldwide_fetch_at = 1711375200
+wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 ```
 
 ---
