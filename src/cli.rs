@@ -103,9 +103,31 @@ pub enum Commands {
         /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie).
         #[arg(long)]
         local: bool,
+        /// Grant Claude Code tokensave tools via a single compact
+        /// "mcp__tokensave__*" entry instead of listing every tool
+        /// individually. Persisted to ~/.tokensave/config.toml for global
+        /// installs, so future silent reinstalls keep the choice.
+        #[arg(long, conflicts_with = "explicit_permissions")]
+        wildcard_permissions: bool,
+        /// Grant Claude Code tokensave tools via the explicit per-tool list
+        /// (the default). Only useful to switch back after having enabled
+        /// `--wildcard-permissions`.
+        #[arg(long, conflicts_with = "wildcard_permissions")]
+        explicit_permissions: bool,
     },
     /// Refresh settings for all already-installed agents
-    Reinstall,
+    Reinstall {
+        /// Grant Claude Code tokensave tools via a single compact
+        /// "mcp__tokensave__*" entry instead of listing every tool
+        /// individually. Persisted to ~/.tokensave/config.toml.
+        #[arg(long, conflicts_with = "explicit_permissions")]
+        wildcard_permissions: bool,
+        /// Grant Claude Code tokensave tools via the explicit per-tool list
+        /// (the default). Only useful to switch back after having enabled
+        /// `--wildcard-permissions`.
+        #[arg(long, conflicts_with = "wildcard_permissions")]
+        explicit_permissions: bool,
+    },
     /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {

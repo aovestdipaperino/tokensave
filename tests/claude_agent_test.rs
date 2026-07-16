@@ -166,6 +166,99 @@ fn test_install_creates_settings_with_permissions() {
 }
 
 #[test]
+fn test_install_writes_single_wildcard_entry_when_requested() {
+    // Opt-in compact install (`--wildcard-permissions` / the
+    // `wildcard_permissions` config field): a single "mcp__tokensave__*"
+    // entry should be written instead of every tool individually.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut ctx = make_install_ctx(home);
+    ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
+    ctx.force_permission_style = true; // represents `--wildcard-permissions`
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude/settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .expect("permissions.allow should be an array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "wildcard install should write exactly one compact entry"
+    );
+}
+
+#[test]
+fn test_reinstall_switching_from_explicit_to_wildcard_prunes_old_entries() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home); // explicit per-tool list
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let mut wildcard_ctx = make_install_ctx(home);
+    wildcard_ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
+    wildcard_ctx.force_permission_style = true; // represents `--wildcard-permissions`
+    ClaudeIntegration.install(&wildcard_ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude/settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "reinstalling with wildcard enabled should leave no explicit leftovers"
+    );
+}
+
+#[test]
+fn test_silent_reinstall_preserves_user_wildcard_grant() {
+    // Regression test: a silent reinstall on upgrade (or any flagless
+    // install/reinstall) must NOT clobber a user's hand-authored compact
+    // grant back into the 80+ explicit entries, even though
+    // `install_tool_perms`/`ctx.tool_permissions` carries the explicit list
+    // by default for configs written before the wildcard feature existed.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Seed settings.json as if the user hand-wrote a compact grant.
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({ "permissions": { "allow": ["mcp__tokensave__*"] } }).to_string(),
+    )
+    .unwrap();
+
+    // Shape of the silent-reinstall-on-upgrade context: the explicit list,
+    // force_permission_style = false (no flag was passed this run).
+    let mut ctx = make_install_ctx(home);
+    ctx.tool_permissions = expected_tool_perms();
+    assert!(!ctx.force_permission_style);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude/settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "a flagless reinstall must preserve an existing covering grant, not inflate it \
+         back to the explicit per-tool list"
+    );
+}
+
+#[test]
 fn test_install_creates_claude_md_with_rules() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();

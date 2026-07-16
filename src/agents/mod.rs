@@ -121,6 +121,15 @@ pub struct InstallContext {
     pub tokensave_bin: String,
     pub tool_permissions: Vec<String>,
     pub scope: InstallScope,
+    /// Whether the caller explicitly requested a permission style this run
+    /// (`--wildcard-permissions` / `--explicit-permissions`). `false` on
+    /// every default/silent path (flagless `install`/`reinstall`, the
+    /// silent reinstall-on-upgrade). Used by the Claude integration: when
+    /// `false`, an existing covering grant the user already has (e.g. a
+    /// hand-written `mcp__tokensave__*`) is left untouched instead of being
+    /// churned back into the explicit per-tool list; when `true`, the
+    /// requested style is written exactly, tearing down the other style.
+    pub force_permission_style: bool,
 }
 
 impl InstallContext {
@@ -2204,6 +2213,24 @@ pub fn expected_tool_perms() -> Vec<String> {
         .collect()
 }
 
+/// The single compact permission entry that grants Claude Code all tokensave
+/// tools at once, as an alternative to enumerating every tool individually.
+/// Both this wildcard form and the bare `mcp__tokensave` form are fully
+/// honored by Claude Code as allow rules; this is the one tokensave writes
+/// when the compact style is requested.
+pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
+
+/// Tool permissions to install for Claude Code: either the single compact
+/// wildcard entry, or the full explicit per-tool list, depending on
+/// `wildcard`. See [`TOKENSAVE_WILDCARD_PERM`] and [`expected_tool_perms`].
+pub fn install_tool_perms(wildcard: bool) -> Vec<String> {
+    if wildcard {
+        vec![TOKENSAVE_WILDCARD_PERM.to_string()]
+    } else {
+        expected_tool_perms()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod jsonc_tests {
@@ -2879,6 +2906,7 @@ mod install_scope_tests {
             tokensave_bin: "tokensave".into(),
             tool_permissions: vec![],
             scope: InstallScope::Global,
+            force_permission_style: false,
         };
         assert_eq!(global.base_dir(), home.as_path());
         assert!(!global.is_local());
@@ -2890,6 +2918,7 @@ mod install_scope_tests {
             scope: InstallScope::Local {
                 project_path: proj.clone(),
             },
+            force_permission_style: false,
         };
         assert_eq!(local.base_dir(), proj.as_path());
         assert!(local.is_local());
