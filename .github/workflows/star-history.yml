@@ -23,3 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: narayann7/star-history-action@29310fc87122228fe128d811f14027be3ca99601 # v1.0.3
+        with:
+          # Since ~2026-07-15 GitHub also blocks the Actions installation
+          # token from the stargazers endpoint; only an admin/collaborator
+          # user token works. Fine-grained PAT, Metadata: Read-only.
+          token: ${{ secrets.STAR_HISTORY_TOKEN || github.token }}
