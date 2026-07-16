@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.4.0] - 2026-07-16
+
 ### Added
 - **GitHub Copilot in JetBrains IDEs (`tokensave install --agent copilot`).** The copilot agent previously configured only VS Code (stable + Insiders) `settings.json` and the Copilot CLI's `~/.copilot/mcp-config.json` — none of which the JetBrains Copilot plugin reads. Install now also registers the MCP server in the plugin's global config (`~/.config/github-copilot/intellij/mcp.json`; `%LOCALAPPDATA%\github-copilot\intellij\mcp.json` on Windows) using its top-level `servers` JSON shape, and writes tokensave's prompt rules to `global-copilot-instructions.md` in the same directory, since JetBrains does not read the VS Code `User/prompts` file. The JetBrains config is only written when `~/.config/github-copilot` already exists (the plugin creates it on sign-in), so non-JetBrains homes stay untouched — install again after signing in to Copilot in a JetBrains IDE, or let the next upgrade's silent reinstall pick it up. Uninstall, detection, and `doctor` gained matching JetBrains handling; note the JetBrains plugin reads MCP config at startup, so restart the IDE after installing.
 - **Opt out of the "update available" notice with `TOKENSAVE_UPDATE_CHECK=off`.** The passive update check that runs during `init`, `sync`, `status`, and the MCP server can now be silenced by setting `TOKENSAVE_UPDATE_CHECK` to a falsey value (`off`, `false`, `0`, `no`, `disable`, `disabled`). On by default, so normal installs are unchanged. When disabled the notice paths return early without touching the network. Explicit `tokensave upgrade` and `tokensave doctor` ignore the flag and always check, so an intentional upgrade still works. This is aimed at managed installs (for example a local build symlinked onto `PATH`) where an automated `tokensave upgrade` would replace the managed binary or waste time upgrading when it was not wanted.
@@ -1619,3 +1622,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.0.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.0
 [7.0.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.1
 [7.0.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.2
+[7.4.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.0
