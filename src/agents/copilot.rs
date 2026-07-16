@@ -1,8 +1,11 @@
+// Rust guideline compliant 2025-10-17
 //! GitHub Copilot integration.
 //!
-//! Handles registration of the tokensave MCP server in both:
+//! Handles registration of the tokensave MCP server in:
 //! - VS Code's `settings.json` under `mcp.servers.tokensave`
 //! - Copilot CLI's `~/.copilot/mcp-config.json` under `mcpServers.tokensave`
+//! - `JetBrains` plugin's `~/.config/github-copilot/intellij/mcp.json` under
+//!   `servers.tokensave` (only when the plugin's config dir exists)
 
 use std::path::Path;
 
@@ -43,6 +46,16 @@ impl AgentIntegration for CopilotIntegration {
         }
         install_cli_mcp_server(&cli_settings_path, &ctx.tokensave_bin)?;
 
+        // JetBrains plugin config lives under ~/.config/github-copilot/intellij.
+        // Only install when ~/.config/github-copilot exists (the Copilot plugin
+        // creates it on sign-in); otherwise we'd litter homes of non-JetBrains
+        // users with an unused config tree.
+        let jetbrains_dir = super::copilot_jetbrains_dir(&ctx.home);
+        let jetbrains_detected = jetbrains_dir.parent().is_some_and(std::path::Path::exists);
+        if jetbrains_detected {
+            install_jetbrains_mcp_server(&jetbrains_dir.join("mcp.json"), &ctx.tokensave_bin)?;
+        }
+
         // Install prompt rules
         let vscode_instructions =
             super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
@@ -57,11 +70,19 @@ impl AgentIntegration for CopilotIntegration {
         }
         let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
         install_prompt_rules(&cli_instructions)?;
+        if jetbrains_detected {
+            // JetBrains reads global instructions from this file, not from the
+            // VS Code User/prompts location.
+            install_prompt_rules(&jetbrains_dir.join("global-copilot-instructions.md"))?;
+        }
 
         eprintln!();
         eprintln!("Setup complete. Next steps:");
         eprintln!("  1. cd into your project and run: tokensave init");
         eprintln!("  2. Restart VS Code and/or start a new Copilot CLI session");
+        if jetbrains_detected {
+            eprintln!("     For JetBrains IDEs, restart the IDE (MCP config is read at startup)");
+        }
         eprintln!("     tokensave tools are now available in GitHub Copilot");
         Ok(())
     }
@@ -74,6 +95,8 @@ impl AgentIntegration for CopilotIntegration {
             super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
         uninstall_vscode_mcp_server(&insiders_settings_path);
         uninstall_cli_mcp_server(&cli_settings_path);
+        let jetbrains_dir = super::copilot_jetbrains_dir(&ctx.home);
+        uninstall_jetbrains_mcp_server(&jetbrains_dir.join("mcp.json"));
 
         let vscode_instructions =
             super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
@@ -83,11 +106,12 @@ impl AgentIntegration for CopilotIntegration {
         uninstall_prompt_rules(&insiders_instructions);
         let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
         uninstall_prompt_rules(&cli_instructions);
+        uninstall_prompt_rules(&jetbrains_dir.join("global-copilot-instructions.md"));
 
         eprintln!();
         eprintln!("Uninstall complete. Tokensave has been removed from GitHub Copilot.");
         eprintln!(
-            "Restart VS Code and/or start a new Copilot CLI session for changes to take effect."
+            "Restart VS Code, JetBrains IDEs, and/or start a new Copilot CLI session for changes to take effect."
         );
         Ok(())
     }
@@ -101,12 +125,16 @@ impl AgentIntegration for CopilotIntegration {
             "VS Code Insiders",
         );
         doctor_check_cli_settings(dc, &ctx.home);
+        doctor_check_jetbrains_settings(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
         super::vscode_data_dir(home).join("User").is_dir()
             || super::vscode_insiders_data_dir(home).join("User").is_dir()
             || super::copilot_cli_dir(home).is_dir()
+            || super::copilot_jetbrains_dir(home)
+                .parent()
+                .is_some_and(Path::is_dir)
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
@@ -148,7 +176,20 @@ impl AgentIntegration for CopilotIntegration {
             false
         };
 
-        vscode_has_tokensave || insiders_has_tokensave || cli_has_tokensave
+        let jetbrains_settings_path = super::copilot_jetbrains_dir(home).join("mcp.json");
+        let jetbrains_has_tokensave = if jetbrains_settings_path.exists() {
+            let json = load_json_file(&jetbrains_settings_path);
+            json.get("servers")
+                .and_then(|v| v.get("tokensave"))
+                .is_some()
+        } else {
+            false
+        };
+
+        vscode_has_tokensave
+            || insiders_has_tokensave
+            || cli_has_tokensave
+            || jetbrains_has_tokensave
     }
 }
 
@@ -208,6 +249,43 @@ fn install_cli_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<(
     );
     settings["mcpServers"]["tokensave"] = json!({
         "type": "stdio",
+        "command": bin,
+        "args": ["serve"]
+    });
+
+    safe_write_json_file(settings_path, &settings, backup.as_deref())?;
+    eprintln!(
+        "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
+        settings_path.display()
+    );
+    Ok(())
+}
+
+/// Register MCP server in the `JetBrains` plugin's mcp.json.
+///
+/// The `JetBrains` plugin uses the VS Code `mcp.json` shape (top-level
+/// `servers` key), not the CLI's `mcpServers` key. It rejects unknown
+/// fields conservatively, so no `type` field is written.
+fn install_jetbrains_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    let backup = backup_config_file(settings_path)?;
+    let mut settings = match load_json_file_strict(settings_path) {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(ref b) = backup {
+                eprintln!("  Backup preserved at: {}", b.display());
+            }
+            return Err(e);
+        }
+    };
+    let bin = crate::agents::preserve_mcp_command(
+        settings.pointer("/servers/tokensave/command"),
+        tokensave_bin,
+    );
+    settings["servers"]["tokensave"] = json!({
         "command": bin,
         "args": ["serve"]
     });
@@ -307,6 +385,45 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
     }
     if servers.is_empty() {
         settings.as_object_mut().map(|o| o.remove("mcpServers"));
+    }
+    let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
+    if is_empty {
+        std::fs::remove_file(settings_path).ok();
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
+            settings_path.display()
+        );
+    } else if backup_and_write_json(settings_path, &settings) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
+            settings_path.display()
+        );
+    }
+}
+
+/// Remove MCP server entry from the `JetBrains` plugin's mcp.json.
+fn uninstall_jetbrains_mcp_server(settings_path: &Path) {
+    if !settings_path.exists() {
+        return;
+    }
+    let Ok(contents) = std::fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return;
+    };
+    let Some(servers) = settings.get_mut("servers").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    if servers.remove("tokensave").is_none() {
+        eprintln!(
+            "  No tokensave MCP server in {}, skipping",
+            settings_path.display()
+        );
+        return;
+    }
+    if servers.is_empty() {
+        settings.as_object_mut().map(|o| o.remove("servers"));
     }
     let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
@@ -453,6 +570,44 @@ fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, labe
     ));
 
     // Check args include "serve"
+    let has_serve = server
+        .get("args")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("serve")));
+    if has_serve {
+        dc.pass("MCP server args include \"serve\"");
+    } else {
+        dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent copilot`");
+    }
+}
+
+/// Check the `JetBrains` plugin's mcp.json has tokensave MCP server registered.
+fn doctor_check_jetbrains_settings(dc: &mut DoctorCounters, home: &Path) {
+    let settings_path = super::copilot_jetbrains_dir(home).join("mcp.json");
+
+    if !settings_path.exists() {
+        dc.warn(&format!(
+            "{} not found — run `tokensave install --agent copilot` if you use GitHub Copilot in JetBrains IDEs",
+            settings_path.display()
+        ));
+        return;
+    }
+
+    let settings = load_json_file(&settings_path);
+    let server = settings.get("servers").and_then(|v| v.get("tokensave"));
+
+    let Some(server) = server.and_then(|v| v.as_object()) else {
+        dc.fail(&format!(
+            "MCP server NOT registered in {} — run `tokensave install --agent copilot`",
+            settings_path.display()
+        ));
+        return;
+    };
+    dc.pass(&format!(
+        "MCP server registered in {}",
+        settings_path.display()
+    ));
+
     let has_serve = server
         .get("args")
         .and_then(|v| v.as_array())

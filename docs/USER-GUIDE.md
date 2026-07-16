@@ -191,7 +191,7 @@ tokensave install --agent opencode    # OpenCode
 tokensave install --agent codex       # OpenAI Codex CLI
 tokensave install --agent gemini      # Gemini CLI
 tokensave install --agent qwen        # Qwen Code
-tokensave install --agent copilot     # GitHub Copilot CLI
+tokensave install --agent copilot     # GitHub Copilot (VS Code, JetBrains, CLI)
 tokensave install --agent cursor      # Cursor
 tokensave install --agent droid       # Factory Droid
 tokensave install --agent zed         # Zed

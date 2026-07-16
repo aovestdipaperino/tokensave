@@ -943,6 +943,29 @@ pub fn copilot_cli_dir(home: &Path) -> PathBuf {
     home.join(".copilot")
 }
 
+/// Returns the GitHub Copilot `JetBrains` plugin config directory.
+///
+/// The `JetBrains` plugin stores its MCP config (`mcp.json`) and global
+/// instructions under `~/.config/github-copilot/intellij` on macOS and
+/// Linux (XDG-style even on macOS), and under
+/// `%LOCALAPPDATA%\github-copilot\intellij` on Windows.
+pub fn copilot_jetbrains_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            let localappdata_path = PathBuf::from(&localappdata);
+            if localappdata_path.starts_with(home) {
+                return localappdata_path.join("github-copilot/intellij");
+            }
+        }
+        home.join("AppData/Local/github-copilot/intellij")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        home.join(".config/github-copilot/intellij")
+    }
+}
+
 /// Returns agent IDs that have tokensave configured under `home` but are
 /// absent from `current`. Pure — does no I/O on the config file.
 pub fn detect_missing_installed_agents(home: &Path, current: &[String]) -> Vec<String> {

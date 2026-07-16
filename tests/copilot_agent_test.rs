@@ -30,6 +30,29 @@ fn cli_config_path(home: &Path) -> std::path::PathBuf {
     home.join(".copilot/mcp-config.json")
 }
 
+/// Platform-specific path for the JetBrains plugin's mcp.json under the temp home.
+fn jetbrains_config_path(home: &Path) -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        home.join("AppData/Local/github-copilot/intellij/mcp.json")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        home.join(".config/github-copilot/intellij/mcp.json")
+    }
+}
+
+/// Create the `github-copilot` plugin dir that gates the JetBrains install.
+fn create_jetbrains_plugin_dir(home: &Path) {
+    let plugin_dir = jetbrains_config_path(home)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::fs::create_dir_all(plugin_dir).unwrap();
+}
+
 // ===========================================================================
 // Install content verification
 // ===========================================================================
@@ -195,6 +218,105 @@ fn test_install_idempotent_cli() {
     );
 }
 
+#[test]
+fn test_install_creates_jetbrains_config_when_plugin_dir_exists() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    create_jetbrains_plugin_dir(home);
+
+    let ctx = make_ctx(home);
+    CopilotIntegration.install(&ctx).unwrap();
+
+    let jetbrains_path = jetbrains_config_path(home);
+    assert!(
+        jetbrains_path.exists(),
+        "JetBrains mcp.json should be created when the plugin dir exists"
+    );
+
+    let config = read_json(&jetbrains_path);
+    let ts = &config["servers"]["tokensave"];
+    assert!(
+        ts.is_object(),
+        "servers.tokensave should be an object in JetBrains config"
+    );
+    assert_eq!(ts["command"].as_str().unwrap(), "/usr/local/bin/tokensave");
+    let args: Vec<&str> = ts["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(args, vec!["serve"], "args should be just [\"serve\"]");
+
+    let instructions = jetbrains_path
+        .parent()
+        .unwrap()
+        .join("global-copilot-instructions.md");
+    assert!(
+        instructions.exists(),
+        "JetBrains global instructions should be created"
+    );
+}
+
+#[test]
+fn test_install_skips_jetbrains_config_without_plugin_dir() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    CopilotIntegration.install(&ctx).unwrap();
+
+    assert!(
+        !jetbrains_config_path(home).exists(),
+        "JetBrains mcp.json should not be created when the plugin dir is absent"
+    );
+}
+
+#[test]
+fn test_install_preserves_existing_jetbrains_servers() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let jetbrains_path = jetbrains_config_path(home);
+    std::fs::create_dir_all(jetbrains_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &jetbrains_path,
+        r#"{"servers": {"other-server": {"command": "foo", "args": []}}}"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    CopilotIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&jetbrains_path);
+    assert!(
+        config["servers"]["other-server"].is_object(),
+        "existing server should be preserved in JetBrains config"
+    );
+    assert!(
+        config["servers"]["tokensave"].is_object(),
+        "tokensave should be added alongside existing servers"
+    );
+}
+
+#[test]
+fn test_install_idempotent_jetbrains() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    create_jetbrains_plugin_dir(home);
+    let ctx = make_ctx(home);
+
+    CopilotIntegration.install(&ctx).unwrap();
+    CopilotIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&jetbrains_config_path(home));
+    let servers = config["servers"].as_object().unwrap();
+    let ts_count = servers.keys().filter(|k| *k == "tokensave").count();
+    assert_eq!(
+        ts_count, 1,
+        "tokensave should appear exactly once in JetBrains config"
+    );
+}
+
 // ===========================================================================
 // Uninstall verification
 // ===========================================================================
@@ -353,6 +475,75 @@ fn test_uninstall_cli_with_no_tokensave_is_noop() {
     // File should remain unchanged
     let config = read_json(&cli_path);
     assert!(config["mcpServers"]["something-else"].is_object());
+}
+
+#[test]
+fn test_uninstall_removes_jetbrains_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    create_jetbrains_plugin_dir(home);
+    let ctx = make_ctx(home);
+
+    CopilotIntegration.install(&ctx).unwrap();
+    CopilotIntegration.uninstall(&ctx).unwrap();
+
+    let jetbrains_path = jetbrains_config_path(home);
+    // When tokensave was the only entry, the file should be removed entirely
+    if jetbrains_path.exists() {
+        let config = read_json(&jetbrains_path);
+        let has_tokensave = config
+            .get("servers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some();
+        assert!(
+            !has_tokensave,
+            "servers.tokensave should be removed from JetBrains config"
+        );
+    }
+    let instructions = jetbrains_path
+        .parent()
+        .unwrap()
+        .join("global-copilot-instructions.md");
+    assert!(
+        !instructions.exists()
+            || !std::fs::read_to_string(&instructions)
+                .unwrap()
+                .contains("tokensave"),
+        "tokensave rules should be removed from JetBrains global instructions"
+    );
+}
+
+#[test]
+fn test_uninstall_preserves_other_jetbrains_servers() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let jetbrains_path = jetbrains_config_path(home);
+    std::fs::create_dir_all(jetbrains_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &jetbrains_path,
+        r#"{"servers": {"other-tool": {"command": "other-tool", "args": ["serve"]}}}"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    CopilotIntegration.install(&ctx).unwrap();
+    CopilotIntegration.uninstall(&ctx).unwrap();
+
+    assert!(
+        jetbrains_path.exists(),
+        "JetBrains config should still exist when other servers remain"
+    );
+    let config = read_json(&jetbrains_path);
+    assert!(
+        config["servers"]["other-tool"].is_object(),
+        "other server should be preserved"
+    );
+    let has_tokensave = config
+        .get("servers")
+        .and_then(|v| v.get("tokensave"))
+        .is_some();
+    assert!(!has_tokensave, "tokensave should be removed");
 }
 
 // ===========================================================================
@@ -515,6 +706,32 @@ fn test_healthcheck_detects_no_tokensave_in_existing_cli() {
     );
 }
 
+#[test]
+fn test_healthcheck_detects_missing_serve_arg_jetbrains() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // JetBrains config with tokensave but no "serve" in args
+    let jetbrains_path = jetbrains_config_path(home);
+    std::fs::create_dir_all(jetbrains_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &jetbrains_path,
+        r#"{"servers": {"tokensave": {"command": "/usr/local/bin/tokensave", "args": []}}}"#,
+    )
+    .unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    CopilotIntegration.healthcheck(&mut dc, &hctx);
+    assert!(
+        dc.issues > 0,
+        "healthcheck should detect missing 'serve' arg in JetBrains config"
+    );
+}
+
 // ===========================================================================
 // is_detected / has_tokensave
 // ===========================================================================
@@ -558,6 +775,36 @@ fn test_is_detected_with_vscode_user_dir() {
     assert!(
         CopilotIntegration.is_detected(home),
         "should be detected when VS Code User dir exists"
+    );
+}
+
+#[test]
+fn test_is_detected_with_jetbrains_plugin_dir() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    create_jetbrains_plugin_dir(home);
+    assert!(
+        CopilotIntegration.is_detected(home),
+        "should be detected when the github-copilot plugin dir exists"
+    );
+}
+
+#[test]
+fn test_has_tokensave_jetbrains_only() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let jetbrains_path = jetbrains_config_path(home);
+    std::fs::create_dir_all(jetbrains_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &jetbrains_path,
+        r#"{"servers": {"tokensave": {"command": "tokensave", "args": ["serve"]}}}"#,
+    )
+    .unwrap();
+
+    assert!(
+        CopilotIntegration.has_tokensave(home),
+        "has_tokensave should be true with only JetBrains config"
     );
 }
 
