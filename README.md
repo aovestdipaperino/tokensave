@@ -7,6 +7,7 @@
 <p align="center"><strong>Fewer tokens &bull; Fewer tool calls &bull; 100% local</strong></p>
 
 <p align="center">
+  <a href="https://github.com/aovestdipaperino/tokensave/stargazers"><img src="https://img.shields.io/github/stars/aovestdipaperino/tokensave?logo=github&color=brightgreen" alt="GitHub stars"></a>
   <a href="https://crates.io/crates/tokensave"><img src="https://img.shields.io/crates/v/tokensave.svg" alt="crates.io"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.70+-orange.svg" alt="Rust"></a>
@@ -234,6 +235,16 @@ Three MCP tools enable cross-branch queries without switching your checkout:
 ### Branch fallback
 
 When the MCP server can't find a database for the current branch, it serves from the nearest ancestor branch's DB and includes a warning in every tool response suggesting you run `tokensave branch add`.
+
+### Automatic branch tracking (v7.3.0)
+
+Once multi-branch mode is bootstrapped (a first manual `tokensave branch add` created the branch metadata), new branches can be tracked automatically instead of falling back to the ancestor DB. Two independent mechanisms cover this; projects in single-DB mode are never affected, and neither mechanism ever touches the default branch's database.
+
+**Git hook (on branch checkout).** The `post-checkout` hook that `tokensave install` sets up recognizes a *branch* checkout (as opposed to a file checkout) and runs `tokensave branch add` in the background. That command is a no-op when the branch is already tracked or is the default branch, so ordinary switching between known branches costs nothing.
+
+**Open-time auto-track (opt-in).** When `TokenSave::open` runs — CLI command or MCP server start — and the active branch is untracked, tokensave can track it on the spot by copying the nearest tracked ancestor's DB and recording it in the branch metadata. This is gated by the `auto_track` config field (default `false`) or the `TOKENSAVE_AUTO_TRACK` environment variable, which overrides the config per-run (any value enables it except `0`, `false`, `no`, `off`, or empty). The copy is the same near-instant ancestor-DB copy a manual `branch add` performs; no sync runs at that moment — the `post-commit` hook keeps the new branch DB fresh as you commit, or run `tokensave sync` to refresh immediately. Auto-tracking is strictly best-effort: any failure is reported as a warning and `open()` proceeds with the usual ancestor fallback, so it can never break a tool call.
+
+In short: with the hook installed, checking out a new feature branch transparently gives it its own per-branch graph; with `auto_track` enabled, even a branch created outside a checkout (e.g. in a fresh worktree) is picked up the first time tokensave opens the project on it.
 
 See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full guide.
 
@@ -614,6 +625,8 @@ tokensave follows [Semantic Versioning](https://semver.org/), and the version co
 
 **Per-project forced reindex (major only).** A major bump can change the on-disk schema, so each project's index must be rebuilt to backfill the new columns. tokensave does this lazily and per project: on the **first MCP tool call** in a project after a major upgrade, it spawns a background full reindex (equivalent to `tokensave sync --force`). The reindex never blocks the tool response; when it finishes, the project records the version that indexed it. A project that has never recorded a version (created before this mechanism existed) is treated as needing the reindex, as is any project whose DB schema is older than the running build's latest schema.
 
+**Schema changes (maintainer rule).** The database schema has its own version, independent of the release version: `LATEST_VERSION` in `src/db/migrations.rs`, stored per-database in `PRAGMA user_version`. Any change to the on-disk schema — new table, column, index, trigger, or FTS surface — **must** bump `LATEST_VERSION` by one and add a sequential entry to `run_migration`; that is the mechanism of record. Detection is schema-driven, not semver-driven: on the first MCP tool call, a project whose stored schema version is older than the running build's `LATEST_VERSION` gets the forced background reindex *regardless of which semver component changed*, so a migration-safe schema change may ship in a patch or minor release (as v7 did in 4.3.9, v9 in 5.1.1, v11 in 6.4.5, and v12/v13 in 7.2.0). Reserve a **major** release for schema changes that a forward migration plus reindex cannot absorb — a change that breaks older binaries reading the new database, or one that alters the meaning of existing data. Migrations only run forward; never renumber or edit a shipped migration — repair mistakes with a new version (the way v13 recreates the trait-dispatch cache some v12 databases were missing).
+
 **Brew / cargo fallback.** External upgrades that replace the binary outside of `tokensave upgrade` — `brew upgrade tokensave` or `cargo install tokensave` — are detected the same way: if the running version is newer than the last version that performed an install, the global reinstall (and, for a major bump, the per-project reindex) runs on the next launch just as it would after a self-upgrade.
 
 ---
@@ -942,13 +955,15 @@ cargo clippy --all
 
 ## Star History
 
-<a href="https://www.star-history.com/#aovestdipaperino/tokensave&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
- </picture>
-</a>
+<!-- Chart is rendered in CI by .github/workflows/star-history.yml (the hosted
+     star-history.com embed broke with GitHub's 2026-06-30 stargazers API
+     restriction). The action rewrites everything between these markers. -->
+<!-- star-history:start -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
+  <img alt="Star history" src="assets/star-history/star-history-light.svg">
+</picture>
+<!-- star-history:end -->
 
 ## Sponsors
 

@@ -198,8 +198,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: bin.clone(),
-                            tool_permissions: tokensave::agents::expected_tool_perms(),
+                            tool_permissions: tokensave::agents::install_tool_perms(
+                                user_config.wildcard_permissions,
+                            ),
                             scope: tokensave::agents::InstallScope::Global,
+                            // Silent reinstall on upgrade is never an explicit
+                            // style request — preserve an existing covering
+                            // grant rather than clobbering it.
+                            force_permission_style: false,
                         };
                         if ag.install(&ctx).is_err() {
                             all_ok = false;
@@ -571,6 +577,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             agent,
             git_hook,
             local,
+            wildcard_permissions,
+            explicit_permissions,
         } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
@@ -588,6 +596,29 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            // --wildcard-permissions / --explicit-permissions (mutually
+            // exclusive, enforced by clap) override the persisted default for
+            // this run; a flag on a global install also updates the default
+            // for future silent reinstalls. A --local install is
+            // project-scoped and must not touch the persisted global choice.
+            if wildcard_permissions {
+                user_cfg.wildcard_permissions = true;
+                if !local {
+                    user_cfg.save();
+                }
+            } else if explicit_permissions {
+                user_cfg.wildcard_permissions = false;
+                if !local {
+                    user_cfg.save();
+                }
+            }
+            let want_wildcard = user_cfg.wildcard_permissions;
+            // Only an explicit flag on this invocation counts as a style
+            // request; a flagless install must preserve an existing covering
+            // grant instead of clobbering it (see `install_permissions` in
+            // `agents/claude.rs`).
+            let force_permission_style = wildcard_permissions || explicit_permissions;
 
             let mut installed_names: Vec<String> = Vec::new();
             let mut removed_names: Vec<String> = Vec::new();
@@ -607,8 +638,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let ctx = tokensave::agents::InstallContext {
                     home: home.clone(),
                     tokensave_bin: tokensave_bin.clone(),
-                    tool_permissions: tokensave::agents::expected_tool_perms(),
+                    tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
                     scope: scope.clone(),
+                    force_permission_style,
                 };
                 ag.install(&ctx)?;
                 // A --local install is project-scoped; it must not touch the
@@ -643,6 +675,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         tokensave_bin: tokensave_bin.clone(),
                         tool_permissions: tokensave::agents::expected_tool_perms(),
                         scope: scope.clone(),
+                        force_permission_style: false,
                     };
                     ag.uninstall(&ctx)?;
                     removed_names.push(ag.name().to_string());
@@ -662,8 +695,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::expected_tool_perms(),
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
                         scope: scope.clone(),
+                        force_permission_style,
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
@@ -696,7 +730,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
         }
-        Commands::Reinstall => {
+        Commands::Reinstall {
+            wildcard_permissions,
+            explicit_permissions,
+        } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -709,6 +746,22 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             })?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            // See the matching comment on Commands::Install: a flag overrides
+            // and persists the default for future silent reinstalls.
+            if wildcard_permissions {
+                user_cfg.wildcard_permissions = true;
+                user_cfg.save();
+            } else if explicit_permissions {
+                user_cfg.wildcard_permissions = false;
+                user_cfg.save();
+            }
+            let want_wildcard = user_cfg.wildcard_permissions;
+            // As in Commands::Install: only an explicit flag on this
+            // invocation forces the style; a flagless `reinstall` (including
+            // the automatic silent one on upgrade) must preserve an existing
+            // covering grant.
+            let force_permission_style = wildcard_permissions || explicit_permissions;
 
             if user_cfg.installed_agents.is_empty() {
                 eprintln!("No installed agents found. Run `tokensave install` first.");
@@ -724,8 +777,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::expected_tool_perms(),
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
                         scope: tokensave::agents::InstallScope::Global,
+                        force_permission_style,
                     };
                     ag.install(&ctx)?;
                 }
@@ -760,6 +814,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     tokensave_bin: String::new(),
                     tool_permissions: tokensave::agents::expected_tool_perms(),
                     scope: scope.clone(),
+                    force_permission_style: false,
                 };
                 ag.uninstall(&ctx)?;
                 // A --local uninstall only removes project config; leave the
@@ -783,6 +838,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             tokensave_bin: String::new(),
                             tool_permissions: tokensave::agents::expected_tool_perms(),
                             scope: scope.clone(),
+                            force_permission_style: false,
                         };
                         ag.uninstall(&ctx).ok();
                     }
@@ -1206,7 +1262,7 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Install { .. }
-            | Commands::Reinstall
+            | Commands::Reinstall { .. }
             | Commands::Uninstall { .. }
             | Commands::Doctor { .. }
             // `Serve` is the hot path used by MCP clients (Claude Code,
@@ -1249,8 +1305,15 @@ mod startup_tests {
             agent: Some("kiro".to_string()),
             git_hook: tokensave::agents::GitHookMode::Default,
             local: false,
+            wildcard_permissions: false,
+            explicit_permissions: false,
         }));
-        assert!(should_skip_agent_install_maintenance(&Commands::Reinstall));
+        assert!(should_skip_agent_install_maintenance(
+            &Commands::Reinstall {
+                wildcard_permissions: false,
+                explicit_permissions: false,
+            }
+        ));
         assert!(should_skip_agent_install_maintenance(
             &Commands::Uninstall {
                 agent: Some("kiro".to_string()),

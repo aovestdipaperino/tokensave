@@ -66,6 +66,14 @@ pub struct TokenSaveConfig {
     /// such projects backfill the latest schema on first MCP tool use.
     #[serde(default)]
     pub last_indexed_version: String,
+    /// Transparently track the current git branch when it is untracked, by
+    /// copying the nearest-ancestor DB on the next `TokenSave::open`. Defaults
+    /// to `false` (current behavior: fall back to the ancestor DB with a
+    /// warning). The `TOKENSAVE_AUTO_TRACK` env var overrides this per-run.
+    /// Independent of the `post-checkout` git hook, which tracks on branch
+    /// switch when `tokensave install` set it up.
+    #[serde(default)]
+    pub auto_track: bool,
 }
 
 impl Default for TokenSaveConfig {
@@ -103,6 +111,7 @@ impl Default for TokenSaveConfig {
             default_path_exclude: Vec::new(),
             source_path_overrides: Vec::new(),
             last_indexed_version: String::new(),
+            auto_track: false,
         }
     }
 }

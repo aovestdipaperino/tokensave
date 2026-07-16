@@ -182,6 +182,59 @@ pub fn find_nearest_tracked_ancestor(
     best.map(|(name, _)| name)
 }
 
+/// Tracks `branch` by copying the nearest-ancestor DB into a per-branch DB and
+/// recording it in `BranchMeta`. This is the copy+record core shared by the
+/// `tokensave branch add` CLI command and the transparent auto-track paths.
+///
+/// Does **not** run an incremental sync — that would require opening a
+/// `TokenSave` (re-entrant with `open()`); callers that want a fresh index run
+/// `sync()` afterwards, and the `post-commit` hook keeps a tracked branch fresh.
+///
+/// Returns `Ok(true)` when the branch is newly tracked, `Ok(false)` when nothing
+/// was done (no branch metadata yet → single-DB mode; the branch is the default;
+/// or it is already tracked). Never touches the default branch's `tokensave.db`.
+pub fn track_branch_copy(
+    project_root: &Path,
+    tokensave_dir: &Path,
+    branch: &str,
+) -> crate::errors::Result<bool> {
+    use crate::branch_meta;
+
+    // No metadata → single-DB mode. Do NOT bootstrap tracking implicitly here;
+    // that is `branch add`'s job. Preserves backward-compatible behavior.
+    let Some(mut meta) = branch_meta::load_branch_meta(tokensave_dir) else {
+        return Ok(false);
+    };
+
+    // The default branch is served by the top-level tokensave.db; never copy it.
+    if branch == meta.default_branch || meta.is_tracked(branch) {
+        return Ok(false);
+    }
+
+    // Pick the parent DB to copy from (nearest tracked ancestor, else default).
+    let parent = find_nearest_tracked_ancestor(project_root, branch, &meta)
+        .unwrap_or_else(|| meta.default_branch.clone());
+    let Some(parent_db) = resolve_branch_db_path(tokensave_dir, &parent, &meta) else {
+        return Ok(false);
+    };
+    if !parent_db.exists() {
+        return Ok(false);
+    }
+
+    let sanitized = sanitize_branch_name(branch);
+    let branches_dir = branch_meta::ensure_branches_dir(tokensave_dir)?;
+    let new_db_path = branches_dir.join(format!("{sanitized}.db"));
+    // ponytail: copies only the .db, matching `tokensave branch add`. If the
+    // ancestor has an uncheckpointed WAL (concurrent sync), that data is missed;
+    // upgrade path = checkpoint-before-copy applied to BOTH paths together.
+    std::fs::copy(&parent_db, &new_db_path)?;
+
+    let db_file = format!("branches/{sanitized}.db");
+    meta.add_branch(branch, &db_file, &parent);
+    branch_meta::save_branch_meta(tokensave_dir, &meta)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -208,5 +261,29 @@ mod tests {
         assert_eq!(sanitize_branch_name(".."), "");
         // dots and slashes become underscores, collapsed
         assert_eq!(sanitize_branch_name("foo/../bar"), "foo_bar");
+    }
+
+    #[test]
+    fn track_branch_copy_copies_ancestor_and_is_idempotent() {
+        use crate::branch_meta;
+        let dir = tempfile::TempDir::new().unwrap();
+        let ts = dir.path(); // use as both project_root and tokensave_dir
+                             // Seed default-branch metadata + its DB (no git repo → ancestor lookup
+                             // falls back to the default branch).
+        branch_meta::save_branch_meta(ts, &branch_meta::BranchMeta::new("main")).unwrap();
+        std::fs::write(ts.join("tokensave.db"), b"DBDATA").unwrap();
+
+        // First call tracks the branch by copying the ancestor DB.
+        assert!(track_branch_copy(ts, ts, "feature-x").unwrap());
+        assert!(ts.join("branches").join("feature-x.db").exists());
+        assert!(branch_meta::load_branch_meta(ts)
+            .unwrap()
+            .is_tracked("feature-x"));
+
+        // Idempotent: already tracked, default branch, and no-metadata are no-ops.
+        assert!(!track_branch_copy(ts, ts, "feature-x").unwrap());
+        assert!(!track_branch_copy(ts, ts, "main").unwrap());
+        let empty = tempfile::TempDir::new().unwrap();
+        assert!(!track_branch_copy(empty.path(), empty.path(), "x").unwrap());
     }
 }

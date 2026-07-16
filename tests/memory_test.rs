@@ -190,3 +190,67 @@ async fn session_recall_filters_by_since() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].text, "new decision");
 }
+
+/// Regression for #218: FTS5 parses the bound MATCH string as a query
+/// expression even through a bound parameter, so raw terms containing FTS5
+/// syntax characters (`-`, `.`, `/`) used to fail with a syntax error
+/// instead of matching.
+#[tokio::test]
+async fn session_recall_handles_fts5_syntax_characters_in_query() {
+    let (_tmp, cg) = make_project().await;
+
+    cg.record_decision(
+        "migrate the data-api client",
+        Some("keep src/auth.rs on v2.1"),
+        &[],
+        &[],
+    )
+    .await
+    .unwrap();
+
+    // Hyphenated term (the exact #218 repro shape).
+    let hits = cg.session_recall(Some("data-api"), None, 10).await.unwrap();
+    assert_eq!(hits.len(), 1, "hyphenated query must match, not error");
+
+    // Dotted and slashed terms.
+    let hits = cg.session_recall(Some("v2.1"), None, 10).await.unwrap();
+    assert_eq!(hits.len(), 1, "dotted query must match, not error");
+    let hits = cg
+        .session_recall(Some("src/auth.rs"), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1, "slashed query must match, not error");
+
+    // Non-matching hyphenated term still returns empty, not an error.
+    let hits = cg
+        .session_recall(Some("billing-api"), None, 10)
+        .await
+        .unwrap();
+    assert!(hits.is_empty());
+}
+
+/// Regression for #218: the escaped query must also flow through the
+/// query+since arm, and a query with no tokenizable content (only FTS5
+/// quote characters) degrades to the unfiltered recency arms instead of
+/// producing an invalid MATCH expression.
+#[tokio::test]
+async fn session_recall_escapes_query_in_since_arm_and_degrades_empty_query() {
+    let (_tmp, cg) = make_project().await;
+
+    cg.record_decision("adopt data-api gateway", None, &[], &[])
+        .await
+        .unwrap();
+
+    let hits = cg
+        .session_recall(Some("data-api"), Some(0), 10)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1, "query+since arm must escape too");
+
+    let hits = cg.session_recall(Some("\"\""), None, 10).await.unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "untokenizable query degrades to recency ordering"
+    );
+}

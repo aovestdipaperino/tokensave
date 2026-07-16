@@ -591,3 +591,245 @@ fn test_receiver_typed_method_calls_python() {
         "expected Beta::handle, got {names:?}"
     );
 }
+
+/// #224: a call inside a closure nested in a factory function must still be
+/// tracked as a `Calls` ref, and the closure itself must be indexed as a
+/// `Function` node (not silently dropped, and not misclassified as a
+/// `Method` just because it happens to sit inside a class's method below).
+#[test]
+fn test_py_nested_closure_call_tracked() {
+    let source = r#"
+def _helper(x: int) -> int:
+    return x + 1
+
+def make_adder():
+    def add(x: int) -> int:
+        return _helper(x)
+    return add
+"#;
+    let result = PythonExtractor.extract("closure.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let functions: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
+    assert!(
+        functions.iter().any(|f| f.name == "add"),
+        "nested closure `add` should be indexed as a Function, got: {:?}",
+        functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+
+    let helper_calls: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls && r.reference_name == "_helper")
+        .collect();
+    assert!(
+        !helper_calls.is_empty(),
+        "closure's call to _helper should produce a Calls ref"
+    );
+
+    // Contains edge: make_adder -> add.
+    let make_adder_id = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "make_adder")
+        .map(|n| n.id.clone())
+        .expect("make_adder node");
+    let add_id = functions
+        .iter()
+        .find(|f| f.name == "add")
+        .map(|f| f.id.clone())
+        .expect("add node");
+    assert!(
+        result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+            && e.source == make_adder_id
+            && e.target == add_id),
+        "make_adder should Contains add"
+    );
+
+    // #224: `return add` returns the nested closure by name — without a
+    // `Uses` ref here, `add` would itself look dead the moment Fix 3 started
+    // indexing it as a node (it wasn't indexed at all before).
+    let add_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "add")
+        .collect();
+    assert!(
+        !add_refs.is_empty(),
+        "`return add` should produce a Uses ref for the returned closure"
+    );
+}
+
+/// #224: a closure nested inside a *method* is a plain local function, not
+/// a class member — `class_depth` must not leak into nested-def visitation.
+#[test]
+fn test_py_nested_closure_inside_method_is_function_not_method() {
+    let source = r#"
+class Factory:
+    def make(self):
+        def inner():
+            return 1
+        return inner
+"#;
+    let result = PythonExtractor.extract("closure_method.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let inner = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "inner")
+        .expect("inner node");
+    assert_eq!(
+        inner.kind,
+        NodeKind::Function,
+        "closure nested in a method should be a Function, not a Method"
+    );
+}
+
+/// #224: a function referenced only by name as a dict value
+/// (`PARSERS = {"text": _parse_text}`) must produce a `Uses` ref, or the
+/// referenced function looks dead even though it's reachable via the table.
+#[test]
+fn test_py_first_class_ref_in_dict_value() {
+    let source = r#"
+def _parse_text(s):
+    return s
+
+PARSERS = {"text": _parse_text}
+"#;
+    let result = PythonExtractor.extract("parsers.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "_parse_text")
+        .collect();
+    assert!(
+        !uses_refs.is_empty(),
+        "dict value referencing _parse_text should produce a Uses ref"
+    );
+
+    // The dict key ("text") must NOT be treated as a reference.
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .all(|r| r.reference_name != "text"),
+        "dict key must not be scanned as a value reference"
+    );
+}
+
+/// #224: a function passed as a keyword argument value
+/// (`QuestionSpec(parse=_parse_text)`) must produce a `Uses` ref; the
+/// keyword name (`parse`) and the callee (`QuestionSpec`) must not.
+#[test]
+fn test_py_first_class_ref_in_keyword_argument() {
+    let source = r#"
+def _parse_text(s):
+    return s
+
+def build():
+    return QuestionSpec(parse=_parse_text)
+"#;
+    let result = PythonExtractor.extract("spec.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "_parse_text")
+        .collect();
+    assert!(
+        !uses_refs.is_empty(),
+        "keyword argument value referencing _parse_text should produce a Uses ref"
+    );
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .all(|r| r.reference_name != "parse"),
+        "keyword argument name must not be scanned as a value reference"
+    );
+}
+
+/// #224 (second review): a function referenced only as a parameter default
+/// (`def invoke(callback=_default_callback)`) must produce a `Uses` ref, or
+/// the default looks dead even though it's the function's fallback value.
+/// The default lives in the sibling `parameters` node, not the `block` body,
+/// so it needs its own scan.
+#[test]
+fn test_py_first_class_ref_in_parameter_default() {
+    let source = r#"
+def _default_callback(x):
+    return x
+
+def invoke(callback=_default_callback):
+    return callback()
+"#;
+    let result = PythonExtractor.extract("invoke.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "_default_callback")
+        .collect();
+    assert!(
+        !uses_refs.is_empty(),
+        "parameter default referencing _default_callback should produce a Uses ref"
+    );
+
+    // The parameter name itself must not be treated as a *value* reference
+    // (a `Calls` ref for `callback()` in the body is separate, legitimate
+    // call-site tracking — not what this scan produces).
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .all(|r| !(r.reference_kind == EdgeKind::Uses && r.reference_name == "callback")),
+        "parameter name must not be scanned as a value reference"
+    );
+}
+
+/// #224 (second review): a function referenced only as a class-level
+/// attribute value (`class Registry: CALLBACKS = {"x": _class_callback}`)
+/// must produce a `Uses` ref. Previously the `expression_statement` dispatch
+/// in `visit_node` was gated to module scope only, so a class-body
+/// assignment never even reached the value-ref scanner.
+#[test]
+fn test_py_first_class_ref_in_class_level_assignment() {
+    let source = r#"
+def _class_callback(x):
+    return x
+
+class Registry:
+    CALLBACKS = {"x": _class_callback}
+"#;
+    let result = PythonExtractor.extract("registry.py", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "_class_callback")
+        .collect();
+    assert!(
+        !uses_refs.is_empty(),
+        "class-level assignment referencing _class_callback should produce a Uses ref"
+    );
+
+    // A class-body UPPER_SNAKE_CASE assignment is a class attribute, not a
+    // module constant — it must not be indexed as a Const node (that would
+    // change existing node counts for patterns like `Base.CLASS_VERSION`).
+    assert!(
+        result
+            .nodes
+            .iter()
+            .all(|n| !(n.kind == NodeKind::Const && n.name == "CALLBACKS")),
+        "class-level CALLBACKS must not become a module Const node"
+    );
+}

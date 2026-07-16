@@ -12,6 +12,11 @@ def log(message: str) -> None:
     print(message)
 
 
+# First-class function reference (#224): `log` is referenced by name only,
+# never called here — without a Uses ref for it, `log` looks dead.
+PARSERS = {"log": log}
+
+
 def retry(func):
     """Decorator that retries a function up to 3 times."""
     def wrapper(*args, **kwargs):
