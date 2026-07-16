@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt out of the "update available" notice with `TOKENSAVE_UPDATE_CHECK=off`.** The passive update check that runs during `init`, `sync`, `status`, and the MCP server can now be silenced by setting `TOKENSAVE_UPDATE_CHECK` to a falsey value (`off`, `false`, `0`, `no`, `disable`, `disabled`). On by default, so normal installs are unchanged. When disabled the notice paths return early without touching the network. Explicit `tokensave upgrade` and `tokensave doctor` ignore the flag and always check, so an intentional upgrade still works. This is aimed at managed installs (for example a local build symlinked onto `PATH`) where an automated `tokensave upgrade` would replace the managed binary or waste time upgrading when it was not wanted.
+
 ### Fixed
 - **`tokensave_context` preserves exhaustive qualified-expression matches.** Source-shaped task terms and keywords such as `Type::Variant` now seed their exact literal-hit enclosing symbols ahead of generic semantic matches. These exact seeds may exceed the small semantic `search_limit` when they fit within `max_nodes`, while still respecting path filters, query-ignore rules, explicit node exclusions, and the global context budget.
 - **Production paths named `test` can be classified as source code.** Add `source_path_overrides` globs to `.tokensave/config.json` when a product route or feature directory matches the default test-path heuristic. Explicit markers such as `__tests__/`, `*.test.*`, and `*.spec.*` remain tests inside overridden paths.

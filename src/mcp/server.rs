@@ -706,6 +706,9 @@ impl McpServer {
     /// Returns a version-update warning if a newer release is available.
     /// Results are cached for `VERSION_CHECK_INTERVAL` (15 minutes).
     async fn check_version_update(&self) -> Option<String> {
+        if !crate::cloud::update_check_enabled() {
+            return None;
+        }
         let current = env!("CARGO_PKG_VERSION");
 
         // Fast path: serve from cache if still fresh.

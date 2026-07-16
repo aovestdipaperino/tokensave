@@ -59,6 +59,12 @@ pub(crate) fn check_for_update(
     skip_cache: bool,
     skip_suppression: bool,
 ) {
+    // Honor the update-check opt-out (TOKENSAVE_UPDATE_CHECK). Explicit
+    // `tokensave upgrade` and `doctor` bypass this by calling
+    // fetch_latest_version directly.
+    if !tokensave::cloud::update_check_enabled() {
+        return;
+    }
     let current_version = env!("CARGO_PKG_VERSION");
     let now = current_unix_timestamp();
 

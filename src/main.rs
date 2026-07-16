@@ -261,7 +261,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
             // Check for updates in parallel with indexing
-            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
             commands::init_and_index(&project_path, &skip_folders, false).await?;
 
             // Print update notice from parallel check (suppressed for 15 min)
@@ -309,7 +309,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             }
             // Check for updates in parallel with indexing
-            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
 
             if force {
                 commands::init_and_index(&project_path, &skip_folders, verbose).await?;
