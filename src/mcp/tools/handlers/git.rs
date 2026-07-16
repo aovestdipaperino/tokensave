@@ -33,8 +33,8 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
     let custom_filter = args.get("filter").and_then(|v| v.as_str());
     let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
 
-    // Inline-test source files are useful evidence, but they are not runnable
-    // test targets and must not be mixed into the practical affected suite.
+    // Inline-test source files are test-bearing targets even though their path
+    // does not match the standalone test-file heuristic.
     let files_with_inline_tests = cg
         .get_files_with_test_annotations()
         .await
@@ -116,6 +116,32 @@ pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolR
                 queue.push_back((dep, distance));
             }
         }
+    }
+
+    for (file, distance) in &inline_sources {
+        affected.insert(file.clone());
+        let same_crate = cargo_package_root(cg.project_root(), file)
+            .is_some_and(|root| changed_crates.contains(&root));
+        let (confidence, is_recommended) = if *distance == 0 {
+            ("high", true)
+        } else if !same_crate {
+            ("medium", false)
+        } else if *distance == 1 {
+            ("high", true)
+        } else if *distance >= 3 {
+            ("low", false)
+        } else {
+            ("medium", true)
+        };
+        if is_recommended {
+            recommended.insert(file.clone());
+        }
+        classified.push(json!({
+            "file": file,
+            "category": "inline_test_source",
+            "distance": distance,
+            "confidence": confidence,
+        }));
     }
 
     let mut result: Vec<String> = affected.into_iter().collect();

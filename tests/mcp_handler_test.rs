@@ -5382,7 +5382,70 @@ pub fn residual_vector<T: LinearOperator>(operator: &T, x: &[f64], ax: &mut [f64
 }
 
 #[tokio::test]
-async fn affected_classifies_candidates_and_excludes_inline_sources_from_suite() {
+async fn affected_promotes_directly_changed_inline_test_source() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname='inline-tests'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub fn changed_api() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_inline_check() {
+        changed_api();
+    }
+
+    #[test]
+    fn second_inline_check() {
+        changed_api();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_affected",
+        json!({"files": ["src/lib.rs"], "depth": 5}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let output: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+
+    assert_eq!(output["affected_tests"], json!(["src/lib.rs"]));
+    assert_eq!(output["recommended_tests"], json!(["src/lib.rs"]));
+    assert_eq!(
+        output["inline_test_sources"],
+        json!([{"file": "src/lib.rs", "distance": 0}])
+    );
+    assert_eq!(output["count"], 1);
+    let candidate = output["classified_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["file"] == "src/lib.rs")
+        .unwrap();
+    assert_eq!(candidate["category"], "inline_test_source");
+    assert_eq!(candidate["distance"], 0);
+    assert_eq!(candidate["confidence"], "high");
+}
+
+#[tokio::test]
+async fn affected_classifies_candidates_and_includes_inline_sources_in_suite() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -5489,12 +5552,19 @@ async fn affected_classifies_candidates_and_excludes_inline_sources_from_suite()
     .unwrap();
     let output: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
     let affected = output["affected_tests"].as_array().unwrap();
-    assert!(!affected.iter().any(|file| file == "src/inline.rs"));
+    assert!(affected.iter().any(|file| file == "src/inline.rs"));
     assert!(output["inline_test_sources"]
         .as_array()
         .unwrap()
         .iter()
         .any(|item| item["file"] == "src/inline.rs"));
+    assert!(output["classified_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["file"] == "src/inline.rs"
+            && item["category"] == "inline_test_source"
+            && item["confidence"] == "high"));
     assert!(output["classified_candidates"]
         .as_array()
         .unwrap()
@@ -5505,6 +5575,11 @@ async fn affected_classifies_candidates_and_excludes_inline_sources_from_suite()
         .unwrap()
         .iter()
         .any(|item| item["category"] == "cross_crate_consumer"));
+    assert!(output["recommended_tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file == "src/inline.rs"));
     assert!(!output["recommended_tests"]
         .as_array()
         .unwrap()

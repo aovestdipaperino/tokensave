@@ -174,11 +174,13 @@ impl<'a> ContextBuilder<'a> {
     ///    and agent-provided extra keywords.
     /// 2. Exact name supplement — ensures perfect name matches are never buried
     ///    by BM25 noise.
-    /// 3. Re-rank with structural signals (kind, visibility, path).
-    /// 4. Connectivity boost (incoming call counts).
-    /// 5. Co-occurrence boost for multi-term queries — symbols whose file
+    /// 3. Exact source supplement — qualified expressions such as
+    ///    `Type::Variant` seed every matching enclosing symbol.
+    /// 4. Re-rank with structural signals (kind, visibility, path).
+    /// 5. Connectivity boost (incoming call counts).
+    /// 6. Co-occurrence boost for multi-term queries — symbols whose file
     ///    contains multiple search terms rank higher.
-    /// 6. Per-file diversity cap — limits how many symbols from a single file
+    /// 7. Per-file diversity cap — limits how many symbols from a single file
     ///    appear so one large file doesn't dominate the output.
     async fn find_entry_points(
         &self,
@@ -203,6 +205,18 @@ impl<'a> ContextBuilder<'a> {
         // name) is merged in place via MAX score rather than first-seen-wins.
         let mut index_of: HashMap<String, usize> = HashMap::new();
         let mut candidates: Vec<SearchResult> = Vec::new();
+        let literal_terms = exact_source_terms(query, &options.extra_keywords);
+        let exact_source_candidates = self
+            .find_exact_source_candidates(&literal_terms, options)
+            .await?;
+        let exact_source_ids: HashSet<String> = exact_source_candidates
+            .iter()
+            .map(|candidate| candidate.node.id.clone())
+            .collect();
+        for candidate in exact_source_candidates {
+            index_of.insert(candidate.node.id.clone(), candidates.len());
+            candidates.push(candidate);
+        }
         let cap = options.max_nodes * 2;
 
         // Build a deduplicated, ordered list of bounded FTS searches. Passing
@@ -409,17 +423,119 @@ impl<'a> ContextBuilder<'a> {
         // a large file's executable owner is still available to the cap.
         // --- Per-file diversity cap + final BFS root limit ---
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
-        let entry_points = apply_per_file_cap(
-            candidates,
-            options.max_nodes.min(options.search_limit),
-            max_per_file,
-        );
+        // `search_limit` and per-file diversity bound ranked semantic BFS roots
+        // (#120), but exact source hits are correctness-sensitive seeds rather
+        // than semantic suggestions. Retain all exact enclosing symbols that
+        // fit in `max_nodes`, then add up to the usual semantic-root allowance.
+        // This prevents a generic candidate from displacing a literal hit even
+        // when many hits live in one file.
+        let (mut exact_candidates, semantic_candidates): (Vec<_>, Vec<_>) = candidates
+            .into_iter()
+            .partition(|candidate| exact_source_ids.contains(&candidate.node.id));
+        exact_candidates.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut entry_points: Vec<Node> = exact_candidates
+            .into_iter()
+            .take(options.max_nodes)
+            .map(|candidate| candidate.node)
+            .collect();
+        let semantic_slots = options
+            .search_limit
+            .min(options.max_nodes.saturating_sub(entry_points.len()));
+        if semantic_slots > 0 {
+            entry_points.extend(apply_per_file_cap(
+                semantic_candidates,
+                semantic_slots,
+                max_per_file,
+            ));
+        }
 
         debug_assert!(
             entry_points.len() <= options.max_nodes,
             "entry_points exceeds max_nodes"
         );
         Ok(entry_points)
+    }
+
+    /// Finds the innermost indexed symbol enclosing each exact qualified
+    /// source expression. This intentionally mirrors literal search instead
+    /// of relying on symbol FTS: punctuation such as `::` is tokenized away by
+    /// semantic indexes, which loses the distinction between `Type::Variant`
+    /// and generic mentions of either word.
+    async fn find_exact_source_candidates(
+        &self,
+        terms: &[String],
+        options: &BuildContextOptions,
+    ) -> Result<Vec<SearchResult>> {
+        const EXACT_SOURCE_SCORE: f64 = 1_000.0;
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut files = self.db.get_all_files().await?;
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut candidates: HashMap<String, SearchResult> = HashMap::new();
+
+        for file in files {
+            if !path_lists_keep(&file.path, &options.path_include, &options.path_exclude)
+                || options.query_ignore.is_ignored(&file.path)
+                || options.path_prefix.as_ref().is_some_and(|prefix| {
+                    let with_slash = format!("{}/", prefix.trim_end_matches('/'));
+                    file.path != *prefix && !file.path.starts_with(&with_slash)
+                })
+            {
+                continue;
+            }
+
+            let path = self.project_root.join(&file.path);
+            let Ok(source) = crate::sync::read_source_file(&path) else {
+                continue;
+            };
+            if !terms.iter().any(|term| source.contains(term)) {
+                continue;
+            }
+
+            let nodes = self.db.get_nodes_by_file(&file.path).await?;
+            for (line_index, line) in source.lines().enumerate() {
+                let hit_count = terms.iter().filter(|term| line.contains(*term)).count();
+                if hit_count == 0 {
+                    continue;
+                }
+                let line0 = line_index as u32;
+                let enclosing = nodes
+                    .iter()
+                    .filter(|node| {
+                        node.start_line <= line0
+                            && line0 <= node.end_line
+                            && !options.exclude_node_ids.contains(&node.id)
+                    })
+                    .min_by_key(|node| node.end_line.saturating_sub(node.start_line));
+                let Some(node) = enclosing else {
+                    continue;
+                };
+
+                candidates
+                    .entry(node.id.clone())
+                    .and_modify(|candidate| candidate.score += hit_count as f64)
+                    .or_insert_with(|| SearchResult {
+                        node: node.clone(),
+                        score: EXACT_SOURCE_SCORE + hit_count as f64,
+                    });
+            }
+        }
+
+        let mut candidates: Vec<SearchResult> = candidates.into_values().collect();
+        candidates.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.node.file_path.cmp(&b.node.file_path))
+                .then_with(|| a.node.start_line.cmp(&b.node.start_line))
+        });
+        Ok(candidates)
     }
 
     /// Finds executable symbols whose persistently indexed bodies contain
@@ -1050,6 +1166,35 @@ fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
     variants
 }
 
+/// Extracts exact, namespace-qualified source tokens from the task and extra
+/// keywords. Surrounding prose punctuation and Markdown backticks are removed,
+/// but the original case is retained for case-sensitive literal matching.
+fn exact_source_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    std::iter::once(query)
+        .chain(extra_keywords.iter().map(String::as_str))
+        .flat_map(str::split_whitespace)
+        .filter_map(|word| {
+            let token = word
+                .trim_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':' || c == '#'));
+            let mut segments = token.split("::");
+            let first = segments.next()?;
+            let rest: Vec<&str> = segments.collect();
+            let valid_segment = |segment: &str| {
+                !segment.is_empty()
+                    && segment
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '#')
+            };
+            (!rest.is_empty()
+                && valid_segment(first)
+                && rest.iter().all(|segment| valid_segment(segment))
+                && seen.insert(token.to_string()))
+            .then(|| token.to_string())
+        })
+        .collect()
+}
+
 /// Extracts lower-case concept words suitable for body co-occurrence search.
 /// This intentionally keeps identifier splitting for a separate stage: here
 /// ordinary prose terms are enough to discover behavior described in a task.
@@ -1238,6 +1383,24 @@ mod tests {
     fn test_extract_qualified_path() {
         let symbols = extract_symbols_from_query("look at crate::types::Node");
         assert!(symbols.iter().any(|s| s.contains("Node")));
+    }
+
+    #[test]
+    fn test_exact_source_terms_preserve_qualified_expressions() {
+        let terms = exact_source_terms(
+            "Find every path for `BasisOrder::Linear`, not generic BasisOrder.",
+            &[
+                "BasisOrder::Linear".to_string(),
+                "crate::types::Node".to_string(),
+            ],
+        );
+        assert_eq!(
+            terms,
+            vec![
+                "BasisOrder::Linear".to_string(),
+                "crate::types::Node".to_string()
+            ]
+        );
     }
 
     #[test]
