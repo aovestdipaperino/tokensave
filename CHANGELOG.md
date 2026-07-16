@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [7.3.0] - 2026-07-16
-
 ### Added
 - **Opt-in compact Claude Code permission grant.** `tokensave install`/`reinstall` can now write a single `mcp__tokensave__*` entry to `~/.claude/settings.json` instead of enumerating all 80+ individual tool permissions, via `--wildcard-permissions` (and `--explicit-permissions` to switch back). The choice persists to `~/.tokensave/config.toml` (`wildcard_permissions`) for global installs, so silent reinstalls on upgrade keep it. Passing one of these flags prunes the previous grant form so `permissions.allow` never accumulates both an explicit list and a wildcard/bare entry for tokensave. A flagless install/reinstall (including the automatic silent reinstall on upgrade) never rewrites an existing covering grant — a hand-authored `mcp__tokensave__*` or bare `mcp__tokensave` survives untouched even if the local config predates this feature.
 
