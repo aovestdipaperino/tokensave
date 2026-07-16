@@ -1,0 +1,25 @@
+name: Star History
+
+# Regenerates the README star history chart in CI. Needed since GitHub's
+# 2026-06-30 stargazers API restriction broke the hosted star-history.com
+# embed; this runs with the repo's own token, which can still read stars.
+on:
+  schedule:
+    - cron: '17 4 * * *' # daily
+  watch:
+    types: [started] # refresh right after a new star
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: narayann7/star-history-action@29310fc87122228fe128d811f14027be3ca99601 # v1.0.3

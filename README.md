@@ -7,6 +7,7 @@
 <p align="center"><strong>Fewer tokens &bull; Fewer tool calls &bull; 100% local</strong></p>
 
 <p align="center">
+  <a href="https://github.com/aovestdipaperino/tokensave/stargazers"><img src="https://img.shields.io/github/stars/aovestdipaperino/tokensave?logo=github&color=brightgreen" alt="GitHub stars"></a>
   <a href="https://crates.io/crates/tokensave"><img src="https://img.shields.io/crates/v/tokensave.svg" alt="crates.io"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.70+-orange.svg" alt="Rust"></a>
@@ -954,13 +955,11 @@ cargo clippy --all
 
 ## Star History
 
-<a href="https://www.star-history.com/#aovestdipaperino/tokensave&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=aovestdipaperino/tokensave&type=Date" />
- </picture>
-</a>
+<!-- Chart is rendered in CI by .github/workflows/star-history.yml (the hosted
+     star-history.com embed broke with GitHub's 2026-06-30 stargazers API
+     restriction). The action rewrites everything between these markers. -->
+<!-- star-history:start -->
+<!-- star-history:end -->
 
 ## Sponsors
 
