@@ -1342,16 +1342,20 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
 
 /// The hook snippet appended to (or written as) the post-checkout script.
 ///
-/// Runs `tokensave init` in the background, but only on the initial checkout of
-/// a fresh clone — git passes the all-zeros sentinel as the previous HEAD in
-/// that case — so ordinary branch switches and file checkouts don't trigger
-/// indexing.
+/// Runs `tokensave init` in the background on the initial checkout of a fresh
+/// clone — git passes the all-zeros sentinel as the previous HEAD in that case.
+/// On an ordinary **branch** checkout (git passes flag `$3 == 1`) it runs
+/// `tokensave branch add` to transparently track the just-checked-out branch;
+/// that is a no-op when the branch is already tracked or is the default branch.
+/// File checkouts (`$3 == 0`) trigger nothing.
 fn post_checkout_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
     format!(
         "{HOOK_MARKER_CHECKOUT}\n\
          if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
          \t{bin} init >/dev/null 2>&1 &\n\
+         elif [ \"$3\" = \"1\" ]; then\n\
+         \t{bin} branch add >/dev/null 2>&1 &\n\
          fi\n"
     )
 }
@@ -1916,7 +1920,12 @@ mod git_hook_tests {
         );
         assert!(
             s.contains("0000000000000000000000000000000000000000"),
-            "must guard on the fresh-clone sentinel so branch switches don't index, got: {s}"
+            "must guard on the fresh-clone sentinel so branch switches re-route to branch add, got: {s}"
+        );
+        assert!(
+            s.contains("elif [ \"$3\" = \"1\" ]")
+                && s.contains("/usr/local/bin/tokensave branch add"),
+            "must transparently track the branch on a branch checkout (flag $3==1), got: {s}"
         );
     }
 

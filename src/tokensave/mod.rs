@@ -192,6 +192,33 @@ impl TokenSave {
         let tokensave_dir = get_tokensave_dir(project_root);
         let active_branch = branch::current_branch(project_root);
 
+        // Transparent auto-track: when branch metadata exists and the active
+        // branch is untracked, copy the ancestor DB so queries + get_stats serve
+        // a real per-branch DB instead of silently falling back. Best-effort —
+        // never fail open() on this. Gated by config.auto_track, overridable
+        // per-run via TOKENSAVE_AUTO_TRACK (git-hook path is separate).
+        let auto_track = match std::env::var("TOKENSAVE_AUTO_TRACK") {
+            // Present → enabled unless an explicit falsey value.
+            Ok(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | ""
+            ),
+            // Absent → fall back to the per-project config (default false).
+            Err(_) => config.auto_track,
+        };
+        if auto_track {
+            if let Some(b) = active_branch.as_deref() {
+                match branch::track_branch_copy(project_root, &tokensave_dir, b) {
+                    Ok(true) => eprintln!(
+                        "[tokensave] auto-tracked branch '{b}' (index copied from \
+                         ancestor; run `tokensave sync` to refresh)"
+                    ),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[tokensave] auto-track skipped for '{b}': {e}"),
+                }
+            }
+        }
+
         let (db_path, serving_branch, fallback_warning) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
 
