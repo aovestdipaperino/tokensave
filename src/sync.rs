@@ -4,8 +4,10 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 /// Read a source file to a UTF-8 string, transparently handling UTF-16 LE/BE
-/// (detected via BOM). Returns an IO error only when the file genuinely cannot
-/// be read or decoded.
+/// (detected via BOM). Invalid non-BOM UTF-8 sequences are replaced with the
+/// Unicode replacement character so legacy-encoded source can still be parsed.
+/// Returns an IO error only when the file cannot be read or BOM-marked UTF-16
+/// cannot be decoded.
 pub fn read_source_file(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
 
@@ -35,8 +37,10 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
     } else {
         0
     };
-    String::from_utf8(bytes[start..].to_vec())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    match String::from_utf8(bytes[start..].to_vec()) {
+        Ok(source) => Ok(source),
+        Err(error) => Ok(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
 }
 
 /// Get filesystem mtime (seconds since epoch) and size for pre-filter.

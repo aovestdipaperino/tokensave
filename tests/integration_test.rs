@@ -143,6 +143,29 @@ async fn test_incremental_sync() {
 }
 
 #[tokio::test]
+async fn test_indexes_source_with_invalid_utf8_in_comment() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::write(
+        project.join("latin1_repro.c"),
+        b"/* by W\xfcrkner */\nint latin1_symbol(void) { return 42; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let results = cg.search("latin1_symbol", 10).await.unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|result| result.node.name == "latin1_symbol"),
+        "function in source containing invalid UTF-8 should be indexed"
+    );
+}
+
+#[tokio::test]
 async fn test_init_and_open() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();

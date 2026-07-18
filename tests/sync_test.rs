@@ -66,9 +66,13 @@ fn test_read_source_file_utf16_be() {
 }
 
 #[test]
-fn test_read_source_file_invalid_encoding() {
+fn test_read_source_file_replaces_invalid_utf8() {
     let mut f = NamedTempFile::new().unwrap();
-    // Invalid UTF-8 sequence without any BOM
-    f.write_all(b"\x80\x81\x82\x83").unwrap();
-    assert!(read_source_file(f.path()).is_err());
+    f.write_all(b"/* by W\xfcrkner */\nint answer(void) { return 42; }\n")
+        .unwrap();
+    let content = read_source_file(f.path()).unwrap();
+    assert_eq!(
+        content,
+        "/* by W\u{fffd}rkner */\nint answer(void) { return 42; }\n"
+    );
 }
