@@ -8,8 +8,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Fixed
+- **The Factory Droid `PreToolUse` hook ran full install maintenance on every tool call (`HookDroidPreToolUse` was missing from the hot-path skip list).** `should_skip_agent_install_maintenance` lists the per-tool-call hook subcommands that must bypass the pre-dispatch startup work (the worldwide-counter network flush, the install-stale check, and the silent-reinstall loop that rewrites every tracked agent's MCP/hook config), but the Droid hook variant was absent. So, unlike the Claude and Kiro hooks, every `tokensave hook-droid-pre-tool-use` invocation ran that maintenance: a network round-trip plus a `user_config.save()` on each call and, whenever a version transition was pending, a full rewrite of all agent configs (leaving `.bak` files) in the middle of an unrelated Grep/Execute tool call. Adding `HookDroidPreToolUse` to the skip list makes the Droid hook take the same fast, side-effect-free, JSON-only path as the other per-tool-call hooks.
 - **Source files containing invalid UTF-8 bytes are indexed instead of skipped (#241).** Legacy C/C++ sources often contain isolated non-UTF-8 bytes in comments; source reads now replace malformed byte sequences with the Unicode replacement character while preserving the existing UTF-8 and BOM-marked UTF-16 handling.
-
 ## [7.4.0] - 2026-07-16
 
 ### Added

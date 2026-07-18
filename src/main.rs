@@ -1274,16 +1274,18 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             // runs on the user's next interactive `tokensave …` invocation.
             | Commands::Serve { .. }
             // Hook handlers are on the per-tool-call hot path (Cursor fires
-            // `preToolUse` before every Grep/Shell). They must not run the HTTP
-            // flush, install-stale scans, or the silent-reinstall loop — and
-            // stdout must stay JSON-only for the permission gate (see hooks.rs
-            // `hook_pre_tool_use`).
+            // `preToolUse` before every Grep/Shell; Factory Droid fires
+            // `hook-droid-pre-tool-use` before every Execute/Grep). They must
+            // not run the HTTP flush, install-stale scans, or the
+            // silent-reinstall loop, and stdout must stay JSON-only for the
+            // permission gate (see hooks.rs `hook_pre_tool_use`).
             | Commands::HookPreToolUse
             | Commands::HookPromptSubmit
             | Commands::HookStop
             | Commands::HookKiroPreToolUse
             | Commands::HookKiroPromptSubmit
             | Commands::HookKiroPostToolUse
+            | Commands::HookDroidPreToolUse
     )
 }
 
@@ -1343,6 +1345,29 @@ mod startup_tests {
             path: None,
             timings: false,
         }));
+    }
+
+    #[test]
+    fn per_tool_call_hooks_skip_agent_install_maintenance() {
+        // Every per-tool-call hook must take the fast, side-effect-free path.
+        // The Droid hook was previously missing from the skip list, so unlike
+        // the Claude and Kiro hooks it ran the pre-dispatch maintenance
+        // (network flush, install-stale check, and the silent-reinstall loop
+        // that rewrites every tracked agent's config) on each invocation.
+        for command in [
+            Commands::HookPreToolUse,
+            Commands::HookPromptSubmit,
+            Commands::HookStop,
+            Commands::HookKiroPreToolUse,
+            Commands::HookKiroPromptSubmit,
+            Commands::HookKiroPostToolUse,
+            Commands::HookDroidPreToolUse,
+        ] {
+            assert!(
+                should_skip_agent_install_maintenance(&command),
+                "per-tool-call hook must skip agent install maintenance"
+            );
+        }
     }
 }
 
