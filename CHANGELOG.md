@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Source files containing invalid UTF-8 bytes are indexed instead of skipped (#241).** Legacy C/C++ sources often contain isolated non-UTF-8 bytes in comments; source reads now replace malformed byte sequences with the Unicode replacement character while preserving the existing UTF-8 and BOM-marked UTF-16 handling.
 
 ## [7.4.0] - 2026-07-16
 
