@@ -58,6 +58,21 @@ async fn run_server_with_messages(server: Arc<McpServer>, messages: Vec<String>)
     responses
 }
 
+/// A Windows-style scope prefix must be normalized to forward slashes so it
+/// matches the `/`-separated paths stored in the DB (#242). Before the fix
+/// every scoped query on Windows returned zero results.
+#[tokio::test]
+async fn test_scope_prefix_backslashes_normalized() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, Some("plugins\\obs\\my-plugin".to_string())).await;
+    assert_eq!(server.scope_prefix(), Some("plugins/obs/my-plugin"));
+}
+
 /// Helper to build a JSON-RPC request string.
 fn jsonrpc_request(id: Value, method: &str, params: Value) -> String {
     serde_json::to_string(&json!({

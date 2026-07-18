@@ -299,6 +299,10 @@ impl McpServer {
         scope_prefix: Option<String>,
         check_worktree_mismatch: bool,
     ) -> Arc<Self> {
+        // The DB stores `/`-separated paths on every platform, but the scope
+        // prefix is derived from an OS path, so on Windows it arrives with
+        // `\` separators and would never match any indexed path (#242).
+        let scope_prefix = scope_prefix.map(|p| p.replace('\\', "/"));
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
