@@ -14,8 +14,10 @@
 //!    [`composite_similarity`](crate::redundancy::composite_similarity).
 //! 4. Filter by threshold, sort by score desc, return the top N pairs.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::errors::Result;
@@ -28,6 +30,30 @@ use crate::types::{Node, NodeKind};
 
 use super::super::ToolResult;
 use super::{effective_path, truncate_response};
+
+const EXACT_SOURCE_BODY_HASH: &str = "exact_source_body_hash";
+
+#[derive(Debug, Serialize)]
+pub(super) struct SimplifyDuplication {
+    symbol: String,
+    id: String,
+    qualified_name: String,
+    file: String,
+    line: u32,
+    similar_to: Vec<SimplifyDuplicateMatch>,
+}
+
+#[derive(Debug, Serialize)]
+struct SimplifyDuplicateMatch {
+    name: String,
+    id: String,
+    qualified_name: String,
+    file: String,
+    line: u32,
+    score: f64,
+    evidence_kind: &'static str,
+    body_hash: String,
+}
 
 /// `tokensave_redundancy` handler.
 pub(super) async fn handle_redundancy(
@@ -87,6 +113,208 @@ pub(super) async fn handle_redundancy(
         }),
         touched_files: vec![],
     })
+}
+
+/// Finds exact copied implementations for changed-file simplify analysis.
+///
+/// Bare names only bound candidate retrieval. A finding requires receiver-
+/// qualified identity, the same language and node kind, a non-empty body, and
+/// an exact source-body hash match. Near-duplicate heuristics remain owned by
+/// `tokensave_redundancy`.
+pub(super) async fn find_target_duplications(
+    cg: &TokenSave,
+    targets: &[Node],
+) -> Result<Vec<SimplifyDuplication>> {
+    let registry = crate::extraction::LanguageRegistry::new();
+    let project_root = cg.project_root();
+    let mut sorted_targets: Vec<Node> = targets
+        .iter()
+        .filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method))
+        .cloned()
+        .collect();
+    sorted_targets.sort_by(compare_node_identity);
+    sorted_targets.dedup_by(|left, right| left.id == right.id);
+
+    let target_names: HashSet<&str> = sorted_targets
+        .iter()
+        .map(|target| target.name.as_str())
+        .collect();
+    let mut candidates_by_name: BTreeMap<String, Vec<Node>> = BTreeMap::new();
+    for candidate in cg.get_all_nodes().await? {
+        if target_names.contains(candidate.name.as_str())
+            && matches!(candidate.kind, NodeKind::Function | NodeKind::Method)
+        {
+            candidates_by_name
+                .entry(candidate.name.clone())
+                .or_default()
+                .push(candidate);
+        }
+    }
+    for candidates in candidates_by_name.values_mut() {
+        candidates.sort_by(compare_node_identity);
+    }
+
+    let mut nodes_by_id: BTreeMap<String, Node> = sorted_targets
+        .iter()
+        .cloned()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    for candidates in candidates_by_name.values() {
+        for candidate in candidates {
+            nodes_by_id
+                .entry(candidate.id.clone())
+                .or_insert_with(|| candidate.clone());
+        }
+    }
+    let fingerprint_nodes: Vec<Node> = nodes_by_id.into_values().collect();
+    let fingerprints = ensure_fingerprints(cg, &fingerprint_nodes).await?;
+    let non_empty_bodies = non_empty_body_ids(cg, &fingerprint_nodes);
+
+    let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+    let mut findings = Vec::new();
+    for target in sorted_targets {
+        let Some(target_language) = node_language(&registry, project_root, &target) else {
+            continue;
+        };
+        let Some(target_fingerprint) = fingerprints.get(&target.id) else {
+            continue;
+        };
+        if !non_empty_bodies.contains(&target.id) || target_fingerprint.source_hash.is_empty() {
+            continue;
+        }
+
+        let mut matches = Vec::new();
+        if let Some(candidates) = candidates_by_name.get(&target.name) {
+            for candidate in candidates {
+                if candidate.id == target.id || candidate.kind != target.kind {
+                    continue;
+                }
+                if node_language(&registry, project_root, candidate).as_deref()
+                    != Some(target_language.as_str())
+                {
+                    continue;
+                }
+                if !non_empty_bodies.contains(&candidate.id) {
+                    continue;
+                }
+                let Some(candidate_fingerprint) = fingerprints.get(&candidate.id) else {
+                    continue;
+                };
+                if candidate_fingerprint.source_hash.is_empty()
+                    || candidate_fingerprint.source_hash != target_fingerprint.source_hash
+                {
+                    continue;
+                }
+
+                let pair = canonical_pair(&target.id, &candidate.id);
+                if !seen_pairs.insert(pair) {
+                    continue;
+                }
+                matches.push(SimplifyDuplicateMatch {
+                    name: candidate.name.clone(),
+                    id: candidate.id.clone(),
+                    qualified_name: candidate.qualified_name.clone(),
+                    file: candidate.file_path.clone(),
+                    line: super::display_line(candidate.start_line),
+                    score: 1.0,
+                    evidence_kind: EXACT_SOURCE_BODY_HASH,
+                    body_hash: target_fingerprint.source_hash.clone(),
+                });
+            }
+        }
+
+        if !matches.is_empty() {
+            findings.push(SimplifyDuplication {
+                symbol: target.name,
+                id: target.id,
+                qualified_name: target.qualified_name,
+                file: target.file_path,
+                line: super::display_line(target.start_line),
+                similar_to: matches,
+            });
+        }
+    }
+
+    Ok(findings)
+}
+
+fn compare_node_identity(left: &Node, right: &Node) -> Ordering {
+    left.file_path
+        .cmp(&right.file_path)
+        .then_with(|| left.start_line.cmp(&right.start_line))
+        .then_with(|| left.qualified_name.cmp(&right.qualified_name))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn canonical_pair(left: &str, right: &str) -> (String, String) {
+    if left <= right {
+        (left.to_string(), right.to_string())
+    } else {
+        (right.to_string(), left.to_string())
+    }
+}
+
+fn node_language(
+    registry: &crate::extraction::LanguageRegistry,
+    project_root: &std::path::Path,
+    node: &Node,
+) -> Option<String> {
+    let extractor =
+        crate::project_manifest::resolve_extractor(registry, project_root, &node.file_path)?;
+    Some(extractor.language_name().to_string())
+}
+
+fn non_empty_body_ids(cg: &TokenSave, candidates: &[Node]) -> HashSet<String> {
+    let registry = crate::extraction::LanguageRegistry::new();
+    let project_root = cg.project_root();
+    let mut by_file: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
+    for node in candidates {
+        by_file.entry(&node.file_path).or_default().push(node);
+    }
+
+    let mut non_empty = HashSet::new();
+    for (file_path, nodes) in by_file {
+        let Some(extractor) =
+            crate::project_manifest::resolve_extractor(&registry, project_root, file_path)
+        else {
+            continue;
+        };
+        let Some(language_key) = extractor_to_language_key(extractor.language_name()) else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(project_root.join(file_path)) else {
+            continue;
+        };
+        let language = crate::extraction::ts_provider::language(language_key);
+        let Some(tree) = parse_file(&source, &language) else {
+            continue;
+        };
+
+        for node in nodes {
+            let Some(syntax_node) = find_node_at_lines(&tree, node.start_line, node.end_line)
+            else {
+                continue;
+            };
+            if has_non_empty_body(syntax_node, &source) {
+                non_empty.insert(node.id.clone());
+            }
+        }
+    }
+    non_empty
+}
+
+fn has_non_empty_body(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    if body.kind().contains("block") || body.kind() == "compound_statement" {
+        return body.named_child_count() > 0;
+    }
+    !body
+        .utf8_text(source.as_bytes())
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
 }
 
 // ---------------------------------------------------------------------------

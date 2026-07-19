@@ -13,7 +13,9 @@ pub mod graph;
 pub mod health;
 pub mod info;
 pub mod memory;
+pub mod port;
 pub mod redundancy;
+pub mod simplify;
 pub mod workflow;
 
 use std::collections::HashSet;
@@ -301,11 +303,11 @@ pub async fn handle_tool_call(
         "tokensave_doc_coverage" => analysis::handle_doc_coverage(cg, args, scope_prefix).await,
         "tokensave_god_class" => analysis::handle_god_class(cg, args, scope_prefix).await,
         "tokensave_changelog" => git::handle_changelog(cg, args).await,
-        "tokensave_port_status" => info::handle_port_status(cg, args).await,
-        "tokensave_port_order" => info::handle_port_order(cg, args).await,
+        "tokensave_port_status" => port::handle_port_status(cg, args).await,
+        "tokensave_port_order" => port::handle_port_order(cg, args).await,
         "tokensave_commit_context" => git::handle_commit_context(cg, args).await,
         "tokensave_pr_context" => git::handle_pr_context(cg, args).await,
-        "tokensave_simplify_scan" => info::handle_simplify_scan(cg, args, scope_prefix).await,
+        "tokensave_simplify_scan" => simplify::handle_simplify_scan(cg, args, scope_prefix).await,
         "tokensave_test_map" => health::handle_test_map(cg, args, scope_prefix).await,
         "tokensave_type_hierarchy" => info::handle_type_hierarchy(cg, args).await,
         "tokensave_branch_search" => git::handle_branch_search(cg, args).await,
