@@ -32,6 +32,37 @@ pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
     (cache_kb, mmap)
 }
 
+/// Max attempts to establish a fresh libsql connection before giving up.
+///
+/// libsql's local driver intermittently fails while opening a connection under
+/// heavy concurrency (observed as `SQLITE_MISUSE` / "bad parameter or other API
+/// misuse" on the macOS CI runner, which opens a separate temp database per test
+/// in parallel; Linux does not reproduce it). The setup steps are idempotent (a
+/// fresh build/connect, `PRAGMA`s, and `CREATE ... IF NOT EXISTS`), so retrying
+/// the whole sequence on a transient error is safe.
+const DB_CONNECT_MAX_ATTEMPTS: u32 = 5;
+
+/// True when a database error looks like a transient connection-setup failure
+/// worth retrying, as opposed to a genuine schema or corruption error (which
+/// would recur on every attempt and must surface to the caller).
+fn is_transient_connect_error(err: &TokenSaveError) -> bool {
+    match err {
+        TokenSaveError::Database { message, .. } => {
+            let m = message.to_ascii_lowercase();
+            m.contains("misuse")
+                || m.contains("database is locked")
+                || m.contains("database is busy")
+        }
+        _ => false,
+    }
+}
+
+/// Short exponential backoff (20, 40, 80, 160 ms) between connect attempts,
+/// small enough to stay invisible on a normal run that never retries.
+fn connect_retry_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(20u64.saturating_mul(1u64 << (attempt - 1)))
+}
+
 /// `SQLite` database backing the code graph, powered by libsql.
 pub struct Database {
     conn: Connection,
@@ -55,6 +86,20 @@ impl Database {
             })?;
         }
 
+        let mut attempt = 1;
+        loop {
+            match Self::try_initialize(db_path).await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn try_initialize(db_path: &Path) -> Result<(Self, bool)> {
         let db =
             Builder::new_local(db_path)
                 .build()
@@ -86,6 +131,20 @@ impl Database {
     /// Returns `(Self, migrated)` where `migrated` is `true` if schema
     /// migrations were applied during open.
     pub async fn open(db_path: &Path) -> Result<(Self, bool)> {
+        let mut attempt = 1;
+        loop {
+            match Self::try_open(db_path).await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn try_open(db_path: &Path) -> Result<(Self, bool)> {
         let db =
             Builder::new_local(db_path)
                 .build()
@@ -380,5 +439,44 @@ mod tests {
         let (cache_kb, mmap) = adaptive_cache_sizes(2 * 1024 * MB);
         assert_eq!(cache_kb, 64 * MB / KB);
         assert_eq!(mmap, 256 * MB);
+    }
+
+    #[test]
+    fn transient_connect_error_matches_misuse_and_locks() {
+        let misuse = TokenSaveError::Database {
+            message: "failed to create schema: SQLite failure: `bad parameter or other API misuse`"
+                .to_string(),
+            operation: "create_schema".to_string(),
+        };
+        assert!(is_transient_connect_error(&misuse));
+
+        let locked = TokenSaveError::Database {
+            message: "failed to open database: database is locked".to_string(),
+            operation: "initialize".to_string(),
+        };
+        assert!(is_transient_connect_error(&locked));
+    }
+
+    #[test]
+    fn transient_connect_error_ignores_real_and_non_db_errors() {
+        let corrupt = TokenSaveError::Database {
+            message: "failed to open database: file is not a database".to_string(),
+            operation: "open".to_string(),
+        };
+        assert!(!is_transient_connect_error(&corrupt));
+
+        let config = TokenSaveError::Config {
+            message: "bad config".to_string(),
+        };
+        assert!(!is_transient_connect_error(&config));
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_and_stays_small() {
+        use std::time::Duration;
+        assert_eq!(connect_retry_backoff(1), Duration::from_millis(20));
+        assert_eq!(connect_retry_backoff(2), Duration::from_millis(40));
+        assert_eq!(connect_retry_backoff(3), Duration::from_millis(80));
+        assert_eq!(connect_retry_backoff(4), Duration::from_millis(160));
     }
 }
