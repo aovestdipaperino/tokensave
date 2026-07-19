@@ -188,6 +188,8 @@ This creates a `.tokensave/` directory with the knowledge graph database. Initia
 
 The hook runs `tokensave hook-pre-tool-use` -- a native Rust command (no bash or jq required). It intercepts Agent, Grep, and Bash tool calls: Explore agents are blocked outright, and symbol-shaped grep/rg/ag invocations (plain identifiers, alternations, `\b`-wrapped names) are redirected to the matching tokensave MCP tool. Regex patterns, file-discovery modes, `git grep`, and piped commands pass through untouched; set `TOKENSAVE_DISABLE_GREP_HOOK=1` to opt out per shell.
 
+**Headless / subagent dispatch (`claude -p`).** Child processes dispatched by an orchestrating session inherit its `~/.claude/settings.json`, including this hook. To let a child run raw searches, set `TOKENSAVE_DISABLE_GREP_HOOK=1` in the child's environment -- the native binary honors it and passes every path (Grep, Bash, Agent) through, so there is no need for the blunt `--settings '{"hooks": {}}'` that strips *all* hooks. The guardrail is stateless: it never consults citation history, so it only ever redirects the symbol-shaped searches described above and steers untyped research fan-out; ordinary commands are unaffected whether the session is interactive or headless.
+
 #### CLAUDE.md rules
 
 Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave tools before reaching for Explore agents or raw file reads.

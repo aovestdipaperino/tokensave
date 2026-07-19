@@ -551,6 +551,45 @@ fn test_grep_allows_when_env_override() {
 }
 
 #[test]
+fn test_bash_allows_when_env_override() {
+    let input = r#"{"command": "grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_disabled());
+    assert!(
+        result.is_empty(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 → bash grep passes through"
+    );
+}
+
+/// Regression for #248: `TOKENSAVE_DISABLE_GREP_HOOK` must be a *complete*
+/// bypass for the binary hook, across every redirect path — Grep, Bash, a
+/// typed `Explore` agent, and an untyped research-shaped prompt. This is the
+/// documented escape hatch for headless / subagent (`claude -p`) dispatch,
+/// where a child that legitimately needs raw search must be able to opt out
+/// without stripping all hooks. `HookEnv::from_runtime` maps the env var onto
+/// `disable_grep_hook`, so exercising the flag here covers the runtime path.
+#[test]
+fn test_disable_env_bypasses_every_redirect_path() {
+    let cases = [
+        r#"{"pattern": "FooBar", "path": "src/main.rs"}"#,
+        r#"{"command": "grep -n FooBar src/main.rs"}"#,
+        r#"{"subagent_type": "Explore", "prompt": "find all API endpoints"}"#,
+        r#"{"prompt": "explore the codebase and map the call graph"}"#,
+    ];
+    for input in cases {
+        // Sanity: each case IS redirected with the guardrail active...
+        assert!(
+            is_blocked(&evaluate_hook_decision_with_env(input, &env_indexed())),
+            "expected redirect with guardrail active: {input}"
+        );
+        // ...and the opt-out lets every one of them through.
+        assert!(
+            evaluate_hook_decision_with_env(input, &env_disabled()).is_empty(),
+            "TOKENSAVE_DISABLE_GREP_HOOK must fully bypass this path: {input}"
+        );
+    }
+}
+
+#[test]
 fn test_bash_allows_when_not_indexed() {
     let input = r#"{"command": "grep -n FooBar src/main.rs"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_not_indexed());
