@@ -16,7 +16,11 @@ use crate::errors::Result;
 use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 
-use super::tools::{explore_call_budget, get_tool_definitions_with_budget, handle_tool_call};
+use super::tools::{
+    baseline_policy, cap_baseline, explore_call_budget, get_tool_definitions,
+    get_tool_definitions_with_budget, handle_tool_call, request_overhead_tokens,
+    schema_overhead_tokens, settle_session_debt,
+};
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
 /// Runtime statistics for the MCP server.
@@ -216,6 +220,33 @@ pub struct McpServer {
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
     /// Approximate token count per indexed file (`file_path` -> tokens).
     file_token_map: std::sync::Mutex<HashMap<String, u64>>,
+    /// One-time approximate token cost of the full tool schema listing
+    /// (`tools/list`), charged into `after` on the first *successful*
+    /// `tools/call` after [`schema_served`](Self::schema_served) goes true —
+    /// see [`handle_tools_call`](Self::handle_tools_call).
+    schema_overhead_tokens: u64,
+    /// Whether [`handle_tools_list`](Self::handle_tools_list) has served the
+    /// schema this session. `schema_overhead_tokens` approximates the
+    /// context cost of that payload, so it would be wrong to charge it
+    /// against a client that invoked a known tool directly and never
+    /// fetched the schema at all. Gates `schema_overhead_charged` below —
+    /// a call before `tools/list` has been served leaves the overhead
+    /// un-debited so it can still be charged on the next accounted call
+    /// once `tools/list` does run.
+    schema_served: AtomicBool,
+    /// Whether [`schema_overhead_tokens`](Self::schema_overhead_tokens) has
+    /// already been charged this session. Tracked independently of
+    /// `stats.tool_calls` (which counts every dispatch attempt, including
+    /// ones that error before any accounting runs) so a failing first call
+    /// can't permanently skip the charge.
+    schema_overhead_charged: AtomicBool,
+    /// Session-scoped carry-forward debt for [`add_tokens_saved`](Self::add_tokens_saved):
+    /// the unpaid shortfall from calls whose `after` exceeded `before` — most
+    /// notably the one call that absorbs the one-time schema charge — which
+    /// later calls' surplus pays down before anything more is credited to
+    /// the persisted counter. See
+    /// [`settle_against_session_debt`](Self::settle_against_session_debt).
+    session_debt: AtomicI64,
     /// Running total of tokens saved by serving from the graph.
     tokens_saved: AtomicU64,
     /// Tokens already flushed to the worldwide counter this session.
@@ -304,6 +335,13 @@ impl McpServer {
         // `\` separators and would never match any indexed path (#242).
         let scope_prefix = scope_prefix.map(|p| p.replace('\\', "/"));
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
+        // Approximates the `tools/list` payload with the unbudgeted
+        // definitions. `handle_tools_list` actually serves
+        // `get_tool_definitions_with_budget`, which only tweaks
+        // `tokensave_context`'s description by a handful of tokens — close
+        // enough for this one-time overhead estimate, and avoids depending
+        // on graph stats (`node_count`) that may not be ready this early.
+        let schema_overhead = schema_overhead_tokens(&get_tool_definitions());
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
         // Register this project in the global DB with its current tokens
@@ -333,6 +371,10 @@ impl McpServer {
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
+            schema_overhead_tokens: schema_overhead,
+            schema_served: AtomicBool::new(false),
+            schema_overhead_charged: AtomicBool::new(false),
+            session_debt: AtomicI64::new(0),
             tokens_saved: AtomicU64::new(persisted),
             last_flushed_tokens: AtomicU64::new(persisted),
             last_flush_at: AtomicI64::new(0),
@@ -400,41 +442,63 @@ impl McpServer {
         &self.cg
     }
 
-    /// Adds the approximate token count for the given file paths to the
-    /// running saved-tokens counter and persists it to the database.
-    /// Returns the delta (tokens saved by this call).
-    async fn accumulate_tokens_saved(&self, file_paths: &[String]) -> u64 {
+    /// Sums the raw (full-file) approximate token weight of the given files
+    /// from the cached `file_token_map`. This is the *unadjusted* baseline —
+    /// callers must run it through [`cap_baseline`] per the tool's
+    /// [`baseline_policy`] before treating it as a "before" figure, since
+    /// most tools return references rather than full file content.
+    fn touched_file_tokens(&self, file_paths: &[String]) -> u64 {
         if file_paths.is_empty() {
             return 0;
         }
         debug_assert!(
             file_paths.iter().all(|p| !p.is_empty()),
-            "accumulate_tokens_saved received empty file path"
+            "touched_file_tokens received empty file path"
         );
-        let delta = {
-            let Ok(map) = self.file_token_map.lock() else {
-                return 0;
-            };
-            let mut total: u64 = 0;
-            for path in file_paths {
-                if let Some(&tokens) = map.get(path.as_str()) {
-                    total += tokens;
-                }
-            }
-            total
+        let Ok(map) = self.file_token_map.lock() else {
+            return 0;
         };
-        if delta > 0 {
-            let new_total = self.tokens_saved.fetch_add(delta, Ordering::Relaxed) + delta;
-            // Persist to DB (best-effort, don't block on failure)
-            let _ = self.cg.set_tokens_saved(new_total).await;
-            // Also increment the resettable local counter
-            let _ = self.cg.add_local_counter(delta).await;
-            // Best-effort update to global DB
-            if let Some(ref gdb) = self.global_db {
-                gdb.upsert(self.cg.project_root(), new_total).await;
-            }
+        file_paths
+            .iter()
+            .filter_map(|path| map.get(path.as_str()))
+            .sum()
+    }
+
+    /// Settles a call's raw signed savings (`before as i64 - after as i64`)
+    /// against `session_debt` via [`settle_session_debt`], returning the
+    /// non-negative amount that should actually be credited to the
+    /// persisted counter this call. Only this aggregate is saturated this
+    /// way — the per-call displayed `saved=` figure and the ledger's
+    /// persisted rows are unaffected.
+    fn settle_against_session_debt(&self, raw_delta: i64) -> u64 {
+        let mut credited = 0u64;
+        let _ = self
+            .session_debt
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                let (new_debt, c) = settle_session_debt(debt, raw_delta);
+                credited = c;
+                Some(new_debt)
+            });
+        credited
+    }
+
+    /// Adds `net` (already `before - after`, baseline-capped and
+    /// overhead-inclusive) to the running saved-tokens counter and persists
+    /// it to the database. No-op when `net` is 0 (nothing was saved, or the
+    /// call cost more than its baseline).
+    async fn add_tokens_saved(&self, net: u64) {
+        if net == 0 {
+            return;
         }
-        delta
+        let new_total = self.tokens_saved.fetch_add(net, Ordering::Relaxed) + net;
+        // Persist to DB (best-effort, don't block on failure)
+        let _ = self.cg.set_tokens_saved(new_total).await;
+        // Also increment the resettable local counter
+        let _ = self.cg.add_local_counter(net).await;
+        // Best-effort update to global DB
+        if let Some(ref gdb) = self.global_db {
+            gdb.upsert(self.cg.project_root(), new_total).await;
+        }
     }
 
     /// Re-read the file-to-token-count map from the DB and swap it into the
@@ -1025,6 +1089,10 @@ impl McpServer {
         let node_count = self.cg.get_stats().await.map_or(0, |s| s.node_count);
         let budget = explore_call_budget(node_count);
         let tools = get_tool_definitions_with_budget(node_count, budget);
+        // Marks the schema as actually delivered so `handle_tools_call` knows
+        // it's fair to debit `schema_overhead_tokens` against this session —
+        // see `schema_served`.
+        self.schema_served.store(true, Ordering::Relaxed);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 
@@ -1305,6 +1373,12 @@ impl McpServer {
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        // Request-side cost of this call (tool name + arguments + JSON-RPC
+        // framing) — computed before `arguments` moves into `handle_tool_call`
+        // below. Folded into `after` alongside the response text, since the
+        // model pays for sending the call too.
+        let request_overhead = request_overhead_tokens(tool_name, &arguments);
+
         // Notification-free freshness: walk the tree and resync any stale
         // files, gated by a 30 s cooldown. Replaces the embedded watcher
         // (see McpServer::new). No-op on the hot path most of the time.
@@ -1355,61 +1429,24 @@ impl McpServer {
                         }
                     }
                 }
-                let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
-                crate::monitor::write_entry(
-                    self.cg.project_root(),
-                    "tokensave",
-                    tool_name,
-                    raw_file_tokens,
-                    raw_file_tokens,
-                );
-                self.maybe_flush_worldwide().await;
-
-                // Estimate approximate token count of the graph response.
-                let response_tokens: u64 = result
+                // Estimate approximate token count of the tool's own answer,
+                // before any of the warnings/banners below are attached.
+                // Used as the baseline-cap basis (see `before_tokens` below)
+                // so a large staleness banner can't loosen the cap on a
+                // `Reference` tool's savings — the cap should track what the
+                // *answer* delivered, not incidental warning text.
+                let tool_response_tokens: u64 = result
                     .value
                     .get("content")
                     .and_then(|c| c.as_array())
                     .map_or(0, |arr| {
-                        let total_chars: usize = arr
+                        let total_bytes: usize = arr
                             .iter()
                             .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
                             .map(str::len)
                             .sum();
-                        (total_chars / 4) as u64
+                        (total_bytes / 4) as u64
                     });
-
-                // Append per-call token savings to the response content.
-                if raw_file_tokens > 0 {
-                    if let Some(content) = result
-                        .value
-                        .get_mut("content")
-                        .and_then(|c| c.as_array_mut())
-                    {
-                        content.push(json!({"type": "text", "text": format!(
-                            "\ntokensave_metrics: before={raw_file_tokens} after={response_tokens}"
-                        )}));
-                    }
-                }
-
-                // Persist to the cross-project savings ledger (best-effort, non-blocking).
-                {
-                    let project_path_str = self.cg.project_root().to_string_lossy().to_string();
-                    let tool_name_owned = tool_name.to_string();
-                    let ts = crate::tokensave::current_timestamp();
-                    tokio::spawn(async move {
-                        if let Some(gdb) = crate::global_db::GlobalDb::open().await {
-                            gdb.record_savings(
-                                &project_path_str,
-                                &tool_name_owned,
-                                raw_file_tokens,
-                                response_tokens,
-                                ts,
-                            )
-                            .await;
-                        }
-                    });
-                }
 
                 // Prepend version-update warning + queue logging notification.
                 if let Some(warning) = self.check_version_update().await {
@@ -1537,6 +1574,163 @@ impl McpServer {
                     {
                         content.insert(0, json!({"type": "text", "text": notice}));
                     }
+                }
+
+                // Every warning/banner above has now been attached to
+                // `content` — re-measure the *whole* response so `after`
+                // reflects what the model actually receives, not just the
+                // tool's own answer. Version warnings and staleness banners
+                // in particular can be substantial text; measuring before
+                // they were attached (the original bug) left `after`
+                // understating real cost and `saved` correspondingly
+                // inflated.
+                let full_response_tokens: u64 = result
+                    .value
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map_or(0, |arr| {
+                        let total_bytes: usize = arr
+                            .iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .map(str::len)
+                            .sum();
+                        (total_bytes / 4) as u64
+                    });
+
+                // `after`: everything the model actually paid for this call —
+                // the full response text (answer + any banners), the request
+                // it sent (name + args + JSON-RPC framing), and, once per
+                // session, the tool schema it loaded up front via
+                // `tools/list`. The original metric only counted the tool's
+                // own answer text, so overhead that's very real to the
+                // model — 80+ tool schemas, the call itself, warning banners
+                // — was invisible. Debited only once `schema_served` is
+                // true (i.e. `tools/list` actually ran): a client that
+                // invokes a known tool directly never paid for the schema
+                // listing, so charging it here would be a real cost with no
+                // matching event. If `tools/list` hasn't run yet,
+                // `schema_overhead_charged` is left unset so the overhead
+                // still gets debited on the first accounted call after it
+                // eventually does.
+                let schema_overhead = if self.schema_served.load(Ordering::Relaxed)
+                    && !self.schema_overhead_charged.swap(true, Ordering::Relaxed)
+                {
+                    self.schema_overhead_tokens
+                } else {
+                    0
+                };
+                let after_pre_metrics = full_response_tokens + request_overhead + schema_overhead;
+
+                // `before`: the full weight of every touched file, capped per
+                // the tool's baseline policy. Most tools return references
+                // (file paths, symbol names) rather than file content, so an
+                // agent would never have read every touched file in full —
+                // charging that full weight as the counterfactual wildly
+                // overstates savings for e.g. a dead-code scan touching 50
+                // files, or a cached/partial `tokensave_read` claiming a
+                // large file's full weight for a stub. The cap scales with
+                // `tool_response_tokens` alone (not `after`) — schema/
+                // request/banner overhead are real costs but say nothing
+                // about how much source the answer stood in for, and mixing
+                // them in would loosen the cap most on a session's first
+                // call, where the schema overhead is largest. It also never
+                // binds on a genuine full-file response, since that response
+                // is always at least as large as the source it wraps — see
+                // `accounting::baseline_policy`.
+                let full_file_tokens = self.touched_file_tokens(&result.touched_files);
+                let before_tokens = cap_baseline(
+                    baseline_policy(tool_name),
+                    full_file_tokens,
+                    tool_response_tokens,
+                );
+
+                // The metrics line itself is appended to `content` below, so
+                // it too costs the model tokens. Two-pass: render it once
+                // against the pre-metrics `after` to measure its own byte
+                // cost, then fold that in and re-render with the final
+                // numbers. `saved`'s digit count essentially never changes
+                // between the two passes, so this converges in one extra
+                // pass.
+                // The line is only ever appended to `content` when
+                // `before_tokens > 0` (see the shared `emit_metrics_line`
+                // below) — so its own token cost only belongs in `after` in
+                // that same case. Charging for it unconditionally would
+                // record phantom response tokens for a line that was never
+                // sent, and would also make a schema charge landing on a
+                // `before == 0` call invisible in both the response and
+                // what's persisted. One shared bool drives both decisions so
+                // they can't drift apart again.
+                let emit_metrics_line = before_tokens > 0;
+                let render_metrics = |before: u64, after: u64, saved: u64| -> String {
+                    format!("\ntokensave_metrics: before={before} after={after} saved={saved}")
+                };
+                let metrics_line_tokens = if emit_metrics_line {
+                    let provisional = render_metrics(
+                        before_tokens,
+                        after_pre_metrics,
+                        before_tokens.saturating_sub(after_pre_metrics),
+                    );
+                    (provisional.len() / 4) as u64
+                } else {
+                    0
+                };
+                let after_tokens = after_pre_metrics + metrics_line_tokens;
+
+                // Per-call net, saturating: what this call alone reports as
+                // saved, never negative. Drives the displayed metrics line
+                // and the monitor log — unlike the persisted counter below,
+                // these stay simple, per-call figures with no carry-forward.
+                let net_saved = before_tokens.saturating_sub(after_tokens);
+
+                // What actually accrues to the persisted counter. Unlike
+                // `net_saved` above, a call whose `after` exceeds `before` —
+                // most notably the one that absorbs the one-time schema
+                // charge — doesn't just lose the excess: it's carried
+                // forward as session debt and paid down out of later calls'
+                // surplus first. See `settle_against_session_debt`.
+                let raw_delta = before_tokens as i64 - after_tokens as i64;
+                let credited = self.settle_against_session_debt(raw_delta);
+                self.add_tokens_saved(credited).await;
+                crate::monitor::write_entry(
+                    self.cg.project_root(),
+                    "tokensave",
+                    tool_name,
+                    net_saved,
+                    before_tokens,
+                );
+                self.maybe_flush_worldwide().await;
+
+                // Append per-call token savings to the response content.
+                if emit_metrics_line {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.push(json!({
+                            "type": "text",
+                            "text": render_metrics(before_tokens, after_tokens, net_saved)
+                        }));
+                    }
+                }
+
+                // Persist to the cross-project savings ledger (best-effort, non-blocking).
+                {
+                    let project_path_str = self.cg.project_root().to_string_lossy().to_string();
+                    let tool_name_owned = tool_name.to_string();
+                    let ts = crate::tokensave::current_timestamp();
+                    tokio::spawn(async move {
+                        if let Some(gdb) = crate::global_db::GlobalDb::open().await {
+                            gdb.record_savings(
+                                &project_path_str,
+                                &tool_name_owned,
+                                before_tokens,
+                                after_tokens,
+                                ts,
+                            )
+                            .await;
+                        }
+                    });
                 }
 
                 JsonRpcResponse::success(id, result.value)
