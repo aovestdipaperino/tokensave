@@ -4,12 +4,17 @@
 //! - `definitions`: JSON Schema tool descriptors (`def_*` functions)
 //! - `handlers`: tool call implementations (`handle_*` functions)
 
+mod accounting;
 mod definitions;
 mod handlers;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use accounting::{
+    baseline_policy, cap_baseline, request_overhead_tokens, schema_overhead_tokens,
+    settle_session_debt, BaselinePolicy,
+};
 pub use definitions::{
     ast_grep_available, context_description, explore_call_budget, get_tool_definitions,
     get_tool_definitions_with_budget,

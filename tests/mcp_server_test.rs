@@ -383,6 +383,582 @@ async fn test_tools_call_status() {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. test_search_metrics_are_capped_and_net
+// ---------------------------------------------------------------------------
+
+/// `tokensave_search` is a `Reference`-policy tool: it returns file/line
+/// references, not file content, so an agent would never have read every
+/// touched file in full. Before the token-savings fix, `before` charged the
+/// full weight of every touched file regardless — here that would be a
+/// multi-hundred-line padded file. This asserts the corrected behavior: the
+/// baseline is capped near what the response actually delivered, and the
+/// reported `saved` is the net `before - after`, not the gross `before`.
+#[tokio::test]
+async fn test_search_metrics_are_capped_and_net() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(70),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "helper" }
+            }),
+        )],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 70)
+        .expect("should have a response for id=70");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "search should not error");
+    let content = resp["result"]["content"].as_array().unwrap();
+    let text = content
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let metrics_line = text
+        .lines()
+        .find(|l| l.starts_with("tokensave_metrics:"))
+        .unwrap_or_else(|| panic!("no tokensave_metrics line in response: {text}"));
+    assert!(
+        metrics_line.contains(" saved="),
+        "metrics line should report net savings via saved=, got: {metrics_line}"
+    );
+
+    let field = |key: &str| -> u64 {
+        metrics_line
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("no {key}= field in: {metrics_line}"))
+            .parse()
+            .unwrap_or_else(|e| panic!("{key}= field not a u64 in {metrics_line}: {e}"))
+    };
+    let before = field("before");
+    let after = field("after");
+    let saved = field("saved");
+
+    assert_eq!(
+        saved,
+        before.saturating_sub(after),
+        "saved must be the net before - after, not the gross before"
+    );
+    // The padded file alone is ~500 lines (~3000+ tokens at 4 chars/token);
+    // a search response capped to a small multiple of what it returned must
+    // stay far below that raw file weight.
+    assert!(
+        before < 2_000,
+        "reference-tool baseline should be capped near the response size \
+         instead of charging the full padded file, got before={before}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7c. test_schema_overhead_survives_a_failed_first_call
+// ---------------------------------------------------------------------------
+
+/// Schema overhead (the approximate cost of the `tools/list` payload) is
+/// meant to be charged exactly once per session, into `after` on the first
+/// *successful* `tools/call` once `tools/list` has actually been served.
+/// Before the "gate on `prev_tool_calls == 0`" bug was fixed, a failing
+/// first call silently burned the "first call" slot and no call that
+/// session ever got charged the schema overhead. Before the "charge
+/// regardless of whether `tools/list` ran" bug was fixed, the charge would
+/// have landed even without the `tools/list` call this test sends first.
+/// This drives `tools/list`, then an unknown-tool call (which errors),
+/// then two identical successful calls, and asserts the first success's
+/// `after` is strictly greater than the second's — the only possible
+/// source of that gap is the one-time schema charge landing on the first
+/// success rather than being lost to the earlier error or never accrued at
+/// all.
+#[tokio::test]
+async fn test_schema_overhead_survives_a_failed_first_call() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let search_call = || {
+        jsonrpc_request(
+            json!(72),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "helper" }
+            }),
+        )
+    };
+
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(70), "tools/list", json!({})),
+            jsonrpc_request(
+                json!(71),
+                "tools/call",
+                json!({
+                    "name": "tokensave_bogus_unknown_tool_xyz",
+                    "arguments": {}
+                }),
+            ),
+            search_call(),
+            search_call(),
+        ],
+    )
+    .await;
+
+    let err_resp = parse_response(
+        responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == 71)
+            .expect("should have a response for id=71"),
+    );
+    assert!(
+        !err_resp["error"].is_null(),
+        "unknown tool name must produce a dispatch error"
+    );
+
+    // Both successful calls share id=72 (duplicated on purpose to drive two
+    // identical dispatches); pull each occurrence out in order.
+    let success_ids: Vec<&String> = responses
+        .iter()
+        .filter(|r| parse_response(r)["id"] == 72)
+        .collect();
+    assert_eq!(
+        success_ids.len(),
+        2,
+        "expected two responses for the two identical search calls"
+    );
+    let extract_after = |resp_str: &str| -> u64 {
+        let resp = parse_response(resp_str);
+        assert!(resp["error"].is_null(), "search should not error");
+        let content = resp["result"]["content"].as_array().unwrap();
+        let text = content
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        let metrics_line = text
+            .lines()
+            .find(|l| l.starts_with("tokensave_metrics:"))
+            .unwrap_or_else(|| panic!("no tokensave_metrics line in response: {text}"));
+        metrics_line
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix("after="))
+            .unwrap_or_else(|| panic!("no after= field in: {metrics_line}"))
+            .parse()
+            .unwrap_or_else(|e| panic!("after= field not a u64 in {metrics_line}: {e}"))
+    };
+
+    let after_first_success = extract_after(success_ids[0]);
+    let after_second_success = extract_after(success_ids[1]);
+
+    assert!(
+        after_first_success > after_second_success,
+        "the first successful call (preceded by a failed dispatch) should still \
+         carry the one-time schema overhead: after_first={after_first_success} \
+         after_second={after_second_success}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7d. baseline policy tracks what a tool actually delivered, not its name
+// ---------------------------------------------------------------------------
+
+fn extract_metrics_field(resp_str: &str, key: &str) -> u64 {
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "call should not error: {resp}");
+    let content = resp["result"]["content"].as_array().unwrap();
+    let text = content
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    let metrics_line = text
+        .lines()
+        .find(|l| l.starts_with("tokensave_metrics:"))
+        .unwrap_or_else(|| panic!("no tokensave_metrics line in response: {text}"));
+    metrics_line
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("no {key}= field in: {metrics_line}"))
+        .parse()
+        .unwrap_or_else(|e| panic!("{key}= field not a u64 in {metrics_line}: {e}"))
+}
+
+/// A genuine, uncached `mode=full` read of a large file must not have its
+/// baseline shrunk by the reference cap — the JSON-wrapped response is
+/// always at least as large as the source it carries, so `before` should
+/// land at (or above) the file's raw weight, not some small multiple of a
+/// tiny response. Guards the invariant `accounting::baseline_policy` relies
+/// on to classify every tool as `Reference` and still charge full weight
+/// for a real full-file delivery.
+#[tokio::test]
+async fn test_uncached_full_read_baseline_matches_file_weight() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let file_tokens = (padded_source.len() / 4) as u64;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(80),
+            "tools/call",
+            json!({
+                "name": "tokensave_read",
+                "arguments": { "file": "src/main.rs", "mode": "full" }
+            }),
+        )],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 80)
+        .expect("should have a response for id=80");
+    let before = extract_metrics_field(resp_str, "before");
+
+    assert!(
+        before >= file_tokens,
+        "an uncached full-file read must not be capped below the file's raw \
+         weight: before={before} file_tokens={file_tokens}"
+    );
+}
+
+/// A cache-hit re-read of the same file returns a small `{"unchanged": ...}`
+/// stub, not the file content — its baseline must be capped near that stub,
+/// not the full file. Before the fix, `tokensave_read` was unconditionally
+/// classified `FullFile`, so a cached read of a large file claimed the
+/// entire file as "saved" for a response that carried none of it.
+#[tokio::test]
+async fn test_cached_read_baseline_is_capped_not_full_file() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let file_tokens = (padded_source.len() / 4) as u64;
+    let read_call = |id: i64| {
+        jsonrpc_request(
+            json!(id),
+            "tools/call",
+            json!({
+                "name": "tokensave_read",
+                "arguments": { "file": "src/main.rs", "mode": "full" }
+            }),
+        )
+    };
+
+    let responses = run_server_with_messages(server, vec![read_call(81), read_call(82)]).await;
+
+    let second_resp = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 82)
+        .expect("should have a response for id=82");
+    let text = {
+        let resp = parse_response(second_resp);
+        resp["result"]["content"].as_array().unwrap()[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        text.contains("\"unchanged\""),
+        "second identical read should be served from the read cache as an \
+         unchanged stub, got: {text}"
+    );
+
+    let before = extract_metrics_field(second_resp, "before");
+    assert!(
+        before < file_tokens / 4,
+        "a cache-hit stub must not claim the full file's weight as its \
+         baseline: before={before} file_tokens={file_tokens}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7e. schema overhead only accrues once tools/list is actually served
+// ---------------------------------------------------------------------------
+
+/// A client that never calls `tools/list` and instead invokes a known tool
+/// name directly should never be charged for the schema payload it never
+/// received. Compares a session with no `tools/list` call against the
+/// existing schema-overhead behavior via `schema_overhead_tokens` directly.
+#[tokio::test]
+async fn test_schema_overhead_not_charged_without_tools_list() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(90),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "helper" }
+            }),
+        )],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 90)
+        .expect("should have a response for id=90");
+    let after = extract_metrics_field(resp_str, "after");
+
+    // Without a preceding tools/list, `after` should be small — just the
+    // response, request overhead, and metrics line, with no ~85-tool schema
+    // payload folded in. A generous upper bound keeps this robust to minor
+    // response wording changes while still catching a schema charge, which
+    // would add several thousand tokens.
+    assert!(
+        after < 500,
+        "after should not include schema overhead when tools/list was never \
+         called: after={after}"
+    );
+}
+
+/// Once `tools/list` has actually run, the next accounted call should carry
+/// the one-time schema overhead — mirroring (but now correctly gated on) the
+/// prior "first call" behavior.
+#[tokio::test]
+async fn test_schema_overhead_charged_after_tools_list_call() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(91), "tools/list", json!({})),
+            jsonrpc_request(
+                json!(92),
+                "tools/call",
+                json!({
+                    "name": "tokensave_search",
+                    "arguments": { "query": "helper" }
+                }),
+            ),
+        ],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 92)
+        .expect("should have a response for id=92");
+    let after = extract_metrics_field(resp_str, "after");
+
+    // With tools/list served first, the schema payload (~85 tool
+    // definitions) should be folded into `after`, pushing it well past the
+    // no-tools/list baseline asserted in the sibling test above.
+    assert!(
+        after > 500,
+        "after should include schema overhead once tools/list has been \
+         served: after={after}"
+    );
+}
+
+/// `tokensave_status` never touches a file (`touched_files` is always
+/// empty), so its `before` is always `0` — the case where the metrics line
+/// is never appended to the response at all. Guards the invariant that a
+/// `before == 0` response never carries a `tokensave_metrics` line, since
+/// `after`'s token count (and what gets persisted to the ledger) is only
+/// honest when it matches exactly what the response contains.
+#[tokio::test]
+async fn test_zero_before_call_never_gets_a_metrics_line() {
+    let (server, _dir) = setup_server().await;
+
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(93),
+            "tools/call",
+            json!({
+                "name": "tokensave_status",
+                "arguments": {}
+            }),
+        )],
+    )
+    .await;
+
+    let resp_str = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 93)
+        .expect("should have a response for id=93");
+    let resp = parse_response(resp_str);
+    assert!(resp["error"].is_null(), "status should not error");
+    let content = resp["result"]["content"].as_array().unwrap();
+    let text = content
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        !text.contains("tokensave_metrics:"),
+        "a before=0 call must not carry a metrics line: {text}"
+    );
+}
+
+/// A single call whose `after` dwarfs its `before` — the one that absorbs
+/// the one-time schema charge — must not silently discard the excess.
+/// Before the fix, every call added its own saturating `before - after`
+/// straight to the persisted counter, so the schema charge was mostly lost
+/// on the one call that happened to carry it, and every later call's
+/// savings were credited in full regardless. This drives `tools/list`, a
+/// `tokensave_status` call (whose `before` is always `0`, so it absorbs the
+/// whole schema charge as debt), then a few real `tokensave_search` calls
+/// whose own `before` is comfortably smaller than that debt, and asserts
+/// the persisted `approx_tokens_saved` stays flat while those calls'
+/// displayed `saved=` figures are individually positive — proof the surplus
+/// is paying down debt rather than being credited on top of it.
+#[tokio::test]
+async fn test_schema_debt_is_paid_down_not_discarded() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let padded_source = format!(
+        "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
+        "// padding line to inflate file size\n".repeat(500)
+    );
+    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let status_call = |id: i64| {
+        jsonrpc_request(
+            json!(id),
+            "tools/call",
+            json!({ "name": "tokensave_status", "arguments": {} }),
+        )
+    };
+    let search_call = |id: i64| {
+        jsonrpc_request(
+            json!(id),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "helper" }
+            }),
+        )
+    };
+
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(100), "tools/list", json!({})),
+            status_call(101), // absorbs the schema charge as debt (before=0)
+            search_call(102),
+            search_call(103),
+            search_call(104),
+            status_call(199), // read the persisted counter afterward
+        ],
+    )
+    .await;
+
+    let approx_tokens_saved = |id: i64| -> u64 {
+        let resp_str = responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == id)
+            .unwrap_or_else(|| panic!("should have a response for id={id}"));
+        let resp = parse_response(resp_str);
+        assert!(resp["error"].is_null(), "status should not error");
+        let content = resp["result"]["content"].as_array().unwrap();
+        let text = content
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .find(|t| t.contains("approx_tokens_saved"))
+            .unwrap_or_else(|| panic!("no status JSON in response: {resp}"));
+        let status: Value = serde_json::from_str(text).unwrap();
+        status["server"]["approx_tokens_saved"].as_u64().unwrap()
+    };
+
+    let baseline = approx_tokens_saved(101);
+    let after_searches = approx_tokens_saved(199);
+
+    let mut sum_displayed_saved = 0u64;
+    for id in [102, 103, 104] {
+        let resp_str = responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == id)
+            .unwrap_or_else(|| panic!("should have a response for id={id}"));
+        sum_displayed_saved += extract_metrics_field(resp_str, "saved");
+    }
+
+    assert!(
+        sum_displayed_saved > 0,
+        "the search calls should each report positive per-call savings"
+    );
+    assert_eq!(
+        after_searches, baseline,
+        "the persisted counter must not move while debt from the schema \
+         charge is still being paid down, even though the calls in between \
+         individually displayed saved={sum_displayed_saved} tokens: \
+         baseline={baseline} after_searches={after_searches}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 8. test_tools_call_missing_params
 // ---------------------------------------------------------------------------
 
