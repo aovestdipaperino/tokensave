@@ -8,6 +8,11 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 
+## [7.4.2] - 2026-07-19
+
+### Changed
+- **`tokensave_health` always reports the full dimension breakdown.** The tool previously returned only `quality_signal` and `files_analyzed` by default and hid the per-dimension subscores (acyclicity, depth, equality, redundancy, modularity, coverage_discipline) behind an opt-in `details: true` argument. The subscores — each with its raw score, supporting counts, and the formula under `source` — are the actionable part of the report, so they are now always included and the `details` argument has been removed from the tool schema. Callers that were passing `details` see no error (unknown arguments are ignored); callers that were not now get the breakdown they previously had to ask for.
+
 ## [7.4.1] - 2026-07-19
 
 ### Documentation
@@ -1637,3 +1642,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.0.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.2
 [7.4.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.0
 [7.4.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.1
+[7.4.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.2

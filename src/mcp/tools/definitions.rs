@@ -1456,10 +1456,6 @@ fn def_health() -> ToolDefinition {
                 "path": {
                     "type": "string",
                     "description": "Filter to files under this directory path"
-                },
-                "details": {
-                    "type": "boolean",
-                    "description": "If true, include full dimension breakdown (default: false)"
                 }
             }
         }),

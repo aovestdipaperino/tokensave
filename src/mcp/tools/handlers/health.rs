@@ -41,7 +41,7 @@ pub(super) struct HealthSnapshot {
     pub(super) redundancy: f64,
     pub(super) modularity: f64,
     pub(super) coverage_discipline: f64,
-    /// Raw signals retained for `details=true` (#82).
+    /// Raw signals surfaced in the dimension breakdown (#82).
     pub(super) gini: f64,
     pub(super) edges_in_cycles: usize,
     pub(super) max_chain: usize,
@@ -413,14 +413,10 @@ pub(super) async fn handle_health(
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
     let path_prefix = effective_path(&args, scope_prefix);
-    let details = args
-        .get("details")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
 
     let snap = compute_health_snapshot(cg, path_prefix).await?;
 
-    let output = if details {
+    let output = {
         let r4 = |x: f64| (x * 10000.0).round() / 10000.0;
         json!({
             "quality_signal": snap.quality_signal,
@@ -465,11 +461,6 @@ pub(super) async fn handle_health(
             "weights": {
                 "note": "quality_signal is geometric mean × 10000",
             },
-        })
-    } else {
-        json!({
-            "quality_signal": snap.quality_signal,
-            "files_analyzed": snap.files_analyzed,
         })
     };
 
