@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.4.1] - 2026-07-19
+
 ### Documentation
 - **Documented `TOKENSAVE_DISABLE_GREP_HOOK` as the headless / subagent (`claude -p`) bypass (#248).** Child processes dispatched by an orchestrating session inherit the parent's `PreToolUse` hook; the README now spells out that setting `TOKENSAVE_DISABLE_GREP_HOOK=1` in the child's environment is a complete, per-path opt-out honored by the native binary (no need for the blunt `--settings '{"hooks": {}}'` that strips all hooks), and clarifies that the guardrail is stateless — it never consults citation history, so it only redirects symbol-shaped searches and untyped research fan-out, in headless and interactive sessions alike. Added a regression test (`test_disable_env_bypasses_every_redirect_path`) locking the flag as a complete bypass across the Grep, Bash, and Agent paths.
 
@@ -1633,3 +1636,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.0.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.1
 [7.0.2]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.0.2
 [7.4.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.0
+[7.4.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.4.1
