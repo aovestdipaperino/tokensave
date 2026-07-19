@@ -202,6 +202,33 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     definitions
 }
 
+/// True when a definition is marked `anthropic/alwaysLoad` — i.e. its schema
+/// is loaded into the model's context immediately, rather than being deferred
+/// and fetched on demand (via `ToolSearch`).
+fn is_always_load(def: &ToolDefinition) -> bool {
+    def.meta
+        .as_ref()
+        .and_then(|m| m.get("anthropic/alwaysLoad"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Returns only the tool definitions that are loaded into the model's context
+/// up front (`anthropic/alwaysLoad`: currently `tokensave_search`,
+/// `tokensave_context`, and `tokensave_status`).
+///
+/// The remaining ~80 tools are deferred — their full schemas never enter the
+/// context unless the client fetches one on demand — so only this primary
+/// subset should count toward the one-time schema-overhead estimate. Charging
+/// the whole `tools/list` payload assumed every schema was resident, which
+/// over-stated the up-front context cost by more than an order of magnitude.
+pub fn get_always_load_tool_definitions() -> Vec<ToolDefinition> {
+    get_tool_definitions()
+        .into_iter()
+        .filter(is_always_load)
+        .collect()
+}
+
 /// Returns true when the external `ast-grep` binary is on PATH. Result is
 /// cached after the first check so we don't fork a subprocess on every
 /// `tools/list` request.
@@ -2518,5 +2545,20 @@ mod tests {
         let context_tool = defs.iter().find(|d| d.name == "tokensave_context").unwrap();
         assert!(context_tool.description.contains("4 calls maximum"));
         assert!(context_tool.description.contains("10000 nodes"));
+    }
+
+    #[test]
+    fn always_load_defs_are_the_primary_subset() {
+        let primary = get_always_load_tool_definitions();
+        let names: Vec<&str> = primary.iter().map(|d| d.name.as_str()).collect();
+        // Exactly the three tools built via `def_always_load`.
+        assert_eq!(
+            names,
+            ["tokensave_search", "tokensave_context", "tokensave_status"]
+        );
+        // Every returned def actually carries the alwaysLoad marker...
+        assert!(primary.iter().all(is_always_load));
+        // ...and it's a strict subset of the full listing (the rest are deferred).
+        assert!(primary.len() < get_tool_definitions().len());
     }
 }

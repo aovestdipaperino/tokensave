@@ -112,9 +112,14 @@ pub fn request_overhead_tokens(tool_name: &str, arguments: &Value) -> u64 {
         + FRAMING_CONST
 }
 
-/// Approximates the one-time token cost of the full tool schema listing
-/// (`tools/list`) that the client loads into context at the start of a
-/// session. Charged once, on the first `tools/call` of the session.
+/// Approximates the one-time token cost of the tool schemas the client loads
+/// into context at the start of a session. Charged once, on the first
+/// `tools/call` of the session.
+///
+/// Pass only the schemas that are actually resident up front — the
+/// `anthropic/alwaysLoad` subset (see
+/// [`get_always_load_tool_definitions`](super::get_always_load_tool_definitions)).
+/// Deferred tools are not in context and would over-state the estimate.
 pub fn schema_overhead_tokens(definitions: &[ToolDefinition]) -> u64 {
     let json = serde_json::to_string(definitions).unwrap_or_default();
     u64::from(estimate_tokens(&json))

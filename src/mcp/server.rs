@@ -17,7 +17,7 @@ use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 
 use super::tools::{
-    baseline_policy, cap_baseline, explore_call_budget, get_tool_definitions,
+    baseline_policy, cap_baseline, explore_call_budget, get_always_load_tool_definitions,
     get_tool_definitions_with_budget, handle_tool_call, request_overhead_tokens,
     schema_overhead_tokens, settle_session_debt,
 };
@@ -335,13 +335,19 @@ impl McpServer {
         // `\` separators and would never match any indexed path (#242).
         let scope_prefix = scope_prefix.map(|p| p.replace('\\', "/"));
         let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
-        // Approximates the `tools/list` payload with the unbudgeted
-        // definitions. `handle_tools_list` actually serves
+        // Approximates the schema payload the client actually loads into
+        // context up front. Only the `anthropic/alwaysLoad` tools
+        // (`tokensave_search`, `tokensave_context`, `tokensave_status`) are
+        // resident from the start; the other ~80 are deferred and never
+        // enter context unless the client fetches one on demand, so charging
+        // the whole `tools/list` payload here over-stated the up-front cost
+        // by more than an order of magnitude. Uses the unbudgeted
+        // definitions — `handle_tools_list` serves
         // `get_tool_definitions_with_budget`, which only tweaks
         // `tokensave_context`'s description by a handful of tokens — close
-        // enough for this one-time overhead estimate, and avoids depending
-        // on graph stats (`node_count`) that may not be ready this early.
-        let schema_overhead = schema_overhead_tokens(&get_tool_definitions());
+        // enough for this one-time estimate, and avoids depending on graph
+        // stats (`node_count`) that may not be ready this early.
+        let schema_overhead = schema_overhead_tokens(&get_always_load_tool_definitions());
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
         // Register this project in the global DB with its current tokens
