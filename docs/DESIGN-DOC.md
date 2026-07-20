@@ -53,7 +53,7 @@ src/
   config.rs           Per-project config (exclude patterns, limits)
   errors.rs           Error types (thiserror)
   sync.rs             Content hashing, stale/new/removed file detection
-  user_config.rs      User-level config (~/.tokensave/config.toml)
+  user_config.rs      User-level config: stable prefs in ~/.tokensave/config.toml, volatile cached/timestamp state in ~/.tokensave/state.toml
   cloud.rs            Cloudflare Worker counter, GitHub release checks
   global_db.rs        Cross-project token tracking (~/.tokensave/global.db)
 
