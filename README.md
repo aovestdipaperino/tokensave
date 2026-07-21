@@ -625,6 +625,15 @@ tokensave version numbers look like SemVer but **do not follow it**: the compone
 
 **Global reinstall.** On the first run of a new minor or major build, tokensave silently re-runs `install` for each agent it has registered, so the agent config always points at the current binary and exposes the current tool set. Patch bumps skip this — the running version marker is simply advanced.
 
+The reinstall is genuinely silent: the per-agent setup output you see from an explicit `tokensave install` is suppressed here, so it never appears in front of an ordinary `tokensave init` or `tokensave sync`. If an agent's config can't be refreshed — the app isn't installed, or its config lives somewhere read-only — you get one line naming the agents that failed:
+
+```
+warning: could not refresh tokensave config for: copilot.
+  Run tokensave install to see the error.
+```
+
+Run `tokensave install` to see the underlying error. The version markers advance either way, so a config path that can never be written is reported once per upgrade rather than retried on every subsequent command.
+
 **Per-project forced reindex (major only).** A major bump means project indexes must be rebuilt. tokensave does this lazily and per project: on the **first MCP tool call** in a project after a major upgrade, it spawns a background full reindex (equivalent to `tokensave sync --force`) that never blocks the tool response.
 
 **Brew / cargo fallback.** External upgrades that replace the binary outside of `tokensave upgrade` — `brew upgrade tokensave` or `cargo install tokensave` — are detected the same way: if the running version is newer than the last version that performed an install, the reinstall runs on the next launch just as it would after a self-upgrade.

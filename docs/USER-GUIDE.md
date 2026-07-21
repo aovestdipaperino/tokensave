@@ -419,7 +419,7 @@ It verifies:
 - **Binary** — location and version
 - **Current project** — whether a `.tokensave/` index exists and the database is healthy
 - **Global database** — the cross-project database at `~/.tokensave/global.db`
-- **User config** — `~/.tokensave/config.toml` and upload settings
+- **User config** — `~/.tokensave/config.toml` (plus machine-local `state.toml`) and upload settings
 - **Agent integrations** — MCP server registration, hook installation, tool permissions, prompt rules
 - **Network** — connectivity to the worldwide counter and GitHub releases API
 
@@ -673,11 +673,13 @@ scoop update tokensave          # Scoop
 cargo install tokensave         # Cargo
 ```
 
-After upgrading, it's good practice to re-run install (to pick up any new tool permissions or prompt rules) and force a re-index:
+Upgrades are zero-touch: you normally do **not** need to re-run `install` or `sync --force` by hand. Tokensave compares the version that last ran against the running one and performs exactly the maintenance that transition requires — refreshing every registered agent's config on a minor or major bump, and rebuilding project indexes on a major one. That refresh is silent; it will not print install output in front of your next `init` or `sync`. See [TOKENSAVE-VERSIONING.md](../TOKENSAVE-VERSIONING.md) for the full rules.
+
+The two cases where you should still step in:
 
 ```bash
-tokensave install
-tokensave sync --force
+tokensave install      # after a "could not refresh tokensave config" or stale-install warning
+tokensave sync --force # to rebuild an index you suspect is wrong
 ```
 
 ---
@@ -810,6 +812,17 @@ tokensave install
 ```
 
 This updates tool permissions, hooks, and prompt rules to match the new version.
+
+### "could not refresh tokensave config for: ..."
+
+After an upgrade you may see:
+
+```
+warning: could not refresh tokensave config for: copilot.
+  Run tokensave install to see the error.
+```
+
+The automatic post-upgrade refresh could not write one agent's config. The usual causes are an agent that is registered but no longer installed, or a config file in a read-only or centrally-managed location. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
 
 ### Getting help
 
