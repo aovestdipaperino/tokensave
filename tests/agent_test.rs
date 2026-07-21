@@ -171,13 +171,21 @@ fn test_claude_install_creates_config() {
         "permissions.allow should be an array"
     );
 
-    // Check CLAUDE.md exists with tokensave rules
-    let claude_md = home.join(".claude/CLAUDE.md");
-    assert!(claude_md.exists(), "CLAUDE.md should exist after install");
-    let md_content = std::fs::read_to_string(&claude_md).unwrap();
+    // Issue #256: rules live in a tokensave-owned managed file, not
+    // appended to the user's CLAUDE.md.
     assert!(
-        md_content.contains("tokensave"),
-        "CLAUDE.md should mention tokensave"
+        !home.join(".claude/CLAUDE.md").exists(),
+        "install should not create/touch CLAUDE.md"
+    );
+    let rules_path = home.join(".claude/rules/tokensave.md");
+    assert!(
+        rules_path.exists(),
+        "managed rules file should exist after install"
+    );
+    let rules_content = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        rules_content.contains("tokensave"),
+        "managed rules file should mention tokensave"
     );
 }
 

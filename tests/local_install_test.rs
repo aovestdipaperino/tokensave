@@ -37,7 +37,11 @@ fn claude_local_writes_project_files_only() {
     assert!(mcp["mcpServers"]["tokensave"].is_object());
     let settings = read_json(&proj.path().join(".claude/settings.json"));
     assert!(settings["hooks"]["PreToolUse"].is_array());
-    assert!(proj.path().join("CLAUDE.md").exists());
+    assert!(
+        !proj.path().join("CLAUDE.md").exists(),
+        "local install should not create/touch project CLAUDE.md"
+    );
+    assert!(proj.path().join(".claude/rules/tokensave.md").exists());
 
     // Global config under home was NOT touched.
     assert!(
@@ -170,7 +174,15 @@ fn opencode_local_writes_project_config() {
     get_integration("opencode").unwrap().install(&ctx).unwrap();
     let cfg = read_json(&proj.path().join("opencode.json"));
     assert!(cfg["mcp"]["tokensave"].is_object());
-    assert!(proj.path().join("AGENTS.md").exists());
+    assert!(
+        !proj.path().join("AGENTS.md").exists(),
+        "local install should not create/touch project AGENTS.md"
+    );
+    assert!(proj.path().join("tokensave.md").exists());
+    let instructions = cfg["instructions"].as_array().unwrap();
+    assert!(instructions
+        .iter()
+        .any(|v| v.as_str() == Some("tokensave.md")));
 }
 
 #[test]
