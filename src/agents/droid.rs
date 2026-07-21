@@ -80,10 +80,10 @@ impl AgentIntegration for DroidIntegration {
         let settings_path = droid_settings_path_for(ctx);
         install_hook(&settings_path, &ctx.tokensave_bin)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new droid session — tokensave tools are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new droid session — tokensave tools are now available");
         Ok(())
     }
 
@@ -97,14 +97,14 @@ impl AgentIntegration for DroidIntegration {
         let settings_path = droid_settings_path_for(ctx);
         uninstall_hook(&settings_path);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Factory Droid.");
-        eprintln!("Start a new droid session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Factory Droid.");
+        crate::agent_note!("Start a new droid session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mFactory Droid integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mFactory Droid integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
         doctor_check_hook(dc, &ctx.home);
@@ -186,7 +186,7 @@ fn install_mcp_server(mcp_path: &Path, tokensave_bin: &str) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -203,7 +203,7 @@ fn install_mcp_server(mcp_path: &Path, tokensave_bin: &str) -> Result<()> {
     });
 
     safe_write_json_file(mcp_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         mcp_path.display()
     );
@@ -219,7 +219,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!("  AGENTS.md already contains tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md already contains tokensave rules, skipping");
         return Ok(());
     }
     if let Some(parent) = agents_md.parent() {
@@ -251,7 +251,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
         before submitting.**\n"
     )
     .ok();
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
         agents_md.display()
     );
@@ -313,7 +313,7 @@ fn install_hook(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -333,7 +333,7 @@ fn install_hook(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
             && entry.get("matcher").and_then(|v| v.as_str()) == Some(DROID_HOOK_MATCHER)
     });
     if already_current {
-        eprintln!("  {DROID_PRE_TOOL_EVENT} hook already present, skipping");
+        crate::agent_note!("  {DROID_PRE_TOOL_EVENT} hook already present, skipping");
         return Ok(());
     }
 
@@ -354,7 +354,7 @@ fn install_hook(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     settings["hooks"][DROID_PRE_TOOL_EVENT] = serde_json::Value::Array(new_hooks);
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave PreToolUse hook to {}",
         settings_path.display()
     );
@@ -368,7 +368,7 @@ fn install_hook(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
 /// Remove the tokensave MCP server entry from mcp.json.
 fn uninstall_mcp_server(mcp_path: &Path) {
     if !mcp_path.exists() {
-        eprintln!("  {} not found, skipping", mcp_path.display());
+        crate::agent_note!("  {} not found, skipping", mcp_path.display());
         return;
     }
 
@@ -383,7 +383,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
@@ -391,7 +391,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
     };
 
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
@@ -405,12 +405,12 @@ fn uninstall_mcp_server(mcp_path: &Path) {
 
     if is_empty {
         std::fs::remove_file(mcp_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             mcp_path.display()
         );
     } else if backup_and_write_json(mcp_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             mcp_path.display()
         );
@@ -426,7 +426,7 @@ fn uninstall_prompt_rules(agents_md: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  AGENTS.md does not contain tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -447,13 +447,13 @@ fn uninstall_prompt_rules(agents_md: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(agents_md).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             agents_md.display()
         );
     } else {
         std::fs::write(agents_md, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             agents_md.display()
         );
@@ -465,7 +465,7 @@ fn uninstall_prompt_rules(agents_md: &Path) {
 /// tools installed under the same or other events.
 fn uninstall_hook(settings_path: &Path) {
     if !settings_path.exists() {
-        eprintln!("  {} not found, skipping", settings_path.display());
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
         return;
     }
     let Ok(contents) = std::fs::read_to_string(settings_path) else {
@@ -476,7 +476,7 @@ fn uninstall_hook(settings_path: &Path) {
     };
 
     let Some(arr) = settings["hooks"][DROID_PRE_TOOL_EVENT].as_array().cloned() else {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave PreToolUse hook in {}, skipping",
             settings_path.display()
         );
@@ -490,7 +490,7 @@ fn uninstall_hook(settings_path: &Path) {
         .collect();
 
     if filtered.len() == original_len {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave PreToolUse hook in {}, skipping",
             settings_path.display()
         );
@@ -511,12 +511,12 @@ fn uninstall_hook(settings_path: &Path) {
     let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(settings_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
     } else if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave PreToolUse hook from {}",
             settings_path.display()
         );

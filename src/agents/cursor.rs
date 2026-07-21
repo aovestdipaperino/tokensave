@@ -52,7 +52,7 @@ impl AgentIntegration for CursorIntegration {
             Ok(v) => v,
             Err(e) => {
                 if let Some(ref b) = backup {
-                    eprintln!("  Backup preserved at: {}", b.display());
+                    crate::agent_note!("  Backup preserved at: {}", b.display());
                 }
                 return Err(e);
             }
@@ -67,7 +67,7 @@ impl AgentIntegration for CursorIntegration {
         });
 
         safe_write_json_file(&mcp_path, &settings, backup.as_deref())?;
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
             mcp_path.display()
         );
@@ -75,10 +75,10 @@ impl AgentIntegration for CursorIntegration {
         let hooks_path = cursor_hooks_path_for(ctx);
         install_hooks(&hooks_path, &ctx.tokensave_bin)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Restart Cursor — tokensave MCP tools and hooks are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Restart Cursor — tokensave MCP tools and hooks are now available");
         Ok(())
     }
 
@@ -89,14 +89,14 @@ impl AgentIntegration for CursorIntegration {
         let hooks_path = cursor_hooks_path_for(ctx);
         uninstall_hooks(&hooks_path);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Cursor.");
-        eprintln!("Restart Cursor for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Cursor.");
+        crate::agent_note!("Restart Cursor for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mCursor integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mCursor integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
         doctor_check_hooks(dc, &ctx.home);
     }
@@ -189,12 +189,12 @@ fn install_hooks(hooks_path: &Path, tokensave_bin: &str) -> Result<()> {
 
     if changed {
         safe_write_json_file(hooks_path, &config, backup.as_deref())?;
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Added tokensave hooks to {}",
             hooks_path.display()
         );
     } else {
-        eprintln!("  Cursor hooks already present, skipping");
+        crate::agent_note!("  Cursor hooks already present, skipping");
     }
     Ok(())
 }
@@ -251,12 +251,12 @@ fn upsert_hook_entry(
 
 fn uninstall_hooks(hooks_path: &Path) {
     if !hooks_path.exists() {
-        eprintln!("  {} not found, skipping", hooks_path.display());
+        crate::agent_note!("  {} not found, skipping", hooks_path.display());
         return;
     }
 
     let Ok(mut config) = load_json_file_strict(hooks_path) else {
-        eprintln!("  {} is not valid JSON, skipping", hooks_path.display());
+        crate::agent_note!("  {} is not valid JSON, skipping", hooks_path.display());
         return;
     };
 
@@ -277,7 +277,7 @@ fn uninstall_hooks(hooks_path: &Path) {
     }
 
     if !removed_any {
-        eprintln!("  No tokensave hooks in {}, skipping", hooks_path.display());
+        crate::agent_note!("  No tokensave hooks in {}, skipping", hooks_path.display());
         return;
     }
 
@@ -297,12 +297,12 @@ fn uninstall_hooks(hooks_path: &Path) {
 
     if only_version {
         std::fs::remove_file(hooks_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty after tokensave uninstall)",
             hooks_path.display()
         );
     } else if backup_and_write_json(hooks_path, &config) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave hooks from {}",
             hooks_path.display()
         );
@@ -316,7 +316,7 @@ fn uninstall_hooks(hooks_path: &Path) {
 /// Remove MCP server entry from ~/.cursor/mcp.json.
 fn uninstall_mcp_server(mcp_path: &Path) {
     if !mcp_path.exists() {
-        eprintln!("  {} not found, skipping", mcp_path.display());
+        crate::agent_note!("  {} not found, skipping", mcp_path.display());
         return;
     }
 
@@ -331,7 +331,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
@@ -339,7 +339,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
     };
 
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
@@ -353,12 +353,12 @@ fn uninstall_mcp_server(mcp_path: &Path) {
 
     if is_empty {
         std::fs::remove_file(mcp_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             mcp_path.display()
         );
     } else if backup_and_write_json(mcp_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             mcp_path.display()
         );

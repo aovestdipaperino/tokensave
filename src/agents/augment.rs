@@ -49,10 +49,10 @@ impl AgentIntegration for AugmentIntegration {
         let rules_path = augment_rules_path_for(ctx);
         install_prompt_rules(&rules_path)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new auggie session — tokensave tools are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new auggie session — tokensave tools are now available");
         Ok(())
     }
 
@@ -63,14 +63,14 @@ impl AgentIntegration for AugmentIntegration {
         let rules_path = augment_rules_path_for(ctx);
         uninstall_prompt_rules(&rules_path);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from AugmentCode.");
-        eprintln!("Start a new auggie session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from AugmentCode.");
+        crate::agent_note!("Start a new auggie session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mAugmentCode integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mAugmentCode integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
@@ -139,7 +139,7 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -156,7 +156,7 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         settings_path.display()
     );
@@ -195,7 +195,7 @@ fn install_prompt_rules(rules_path: &Path) -> Result<()> {
             message: format!("failed to write {}: {e}", rules_path.display()),
         }
     })?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Wrote tokensave rules to {}",
         rules_path.display()
     );
@@ -209,7 +209,7 @@ fn install_prompt_rules(rules_path: &Path) -> Result<()> {
 /// Remove the tokensave MCP server entry from settings.json.
 fn uninstall_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
-        eprintln!("  {} not found, skipping", settings_path.display());
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
         return;
     }
 
@@ -224,7 +224,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -232,7 +232,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
     };
 
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -246,12 +246,12 @@ fn uninstall_mcp_server(settings_path: &Path) {
 
     if is_empty {
         std::fs::remove_file(settings_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
     } else if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
         );
@@ -269,14 +269,14 @@ fn uninstall_prompt_rules(rules_path: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!(
+        crate::agent_note!(
             "  {} does not contain tokensave rules, skipping",
             rules_path.display()
         );
         return;
     }
     std::fs::remove_file(rules_path).ok();
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Removed tokensave rules at {}",
         rules_path.display()
     );

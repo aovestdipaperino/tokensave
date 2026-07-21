@@ -50,7 +50,7 @@ impl AgentIntegration for ClaudeIntegration {
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mClaude Code integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mClaude Code integration\x1b[0m");
         doctor_check_claude_json(dc, &ctx.home);
         doctor_check_settings_json(dc, &ctx.home);
         doctor_check_claude_md(dc, &ctx.home);
@@ -142,10 +142,10 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     install_claude_md_rules(&claude_md_path)?;
     install_clean_local_config();
 
-    eprintln!();
-    eprintln!("Setup complete. Next steps:");
-    eprintln!("  1. cd into your project and run: tokensave init");
-    eprintln!("  2. Start a new Claude Code session — tokensave tools are now available");
+    crate::agent_note!();
+    crate::agent_note!("Setup complete. Next steps:");
+    crate::agent_note!("  1. cd into your project and run: tokensave init");
+    crate::agent_note!("  2. Start a new Claude Code session — tokensave tools are now available");
     Ok(())
 }
 
@@ -171,13 +171,13 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
     install_claude_md_rules(&claude_md_path)?;
     // NB: no install_clean_local_config() — that is the global-only cleanup.
 
-    eprintln!();
-    eprintln!(
+    crate::agent_note!();
+    crate::agent_note!(
         "Project setup complete (\x1b[1m{}\x1b[0m).",
         project.display()
     );
-    eprintln!("  Tokensave is registered for this project only (./.mcp.json).");
-    eprintln!("  Run: tokensave init   then start a new Claude Code session.");
+    crate::agent_note!("  Tokensave is registered for this project only (./.mcp.json).");
+    crate::agent_note!("  Run: tokensave init   then start a new Claude Code session.");
     Ok(())
 }
 
@@ -191,9 +191,9 @@ fn uninstall_global(ctx: &InstallContext) {
     uninstall_settings(&settings_path);
     uninstall_claude_md_rules(&claude_md_path);
 
-    eprintln!();
-    eprintln!("Uninstall complete. Tokensave has been removed from Claude Code.");
-    eprintln!("Start a new Claude Code session for changes to take effect.");
+    crate::agent_note!();
+    crate::agent_note!("Uninstall complete. Tokensave has been removed from Claude Code.");
+    crate::agent_note!("Start a new Claude Code session for changes to take effect.");
 }
 
 fn uninstall_local(project: &Path) {
@@ -201,8 +201,8 @@ fn uninstall_local(project: &Path) {
     uninstall_settings(&project.join(".claude/settings.json"));
     uninstall_claude_md_rules(&project.join("CLAUDE.md"));
 
-    eprintln!();
-    eprintln!(
+    crate::agent_note!();
+    crate::agent_note!(
         "Removed tokensave from this project ({}).",
         project.display()
     );
@@ -219,7 +219,7 @@ fn install_mcp_server(claude_json_path: &Path, tokensave_bin: &str) -> Result<()
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -235,7 +235,7 @@ fn install_mcp_server(claude_json_path: &Path, tokensave_bin: &str) -> Result<()
     });
 
     safe_write_json_file(claude_json_path, &claude_json, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         claude_json_path.display()
     );
@@ -252,7 +252,7 @@ fn install_migrate_old_mcp(settings: &mut serde_json::Value, settings_path: &Pat
             if servers.is_empty() {
                 settings.as_object_mut().map(|o| o.remove("mcpServers"));
             }
-            eprintln!(
+            crate::agent_note!(
                 "\x1b[32m✔\x1b[0m Removed tokensave MCP server from old location ({})",
                 settings_path.display()
             );
@@ -328,10 +328,10 @@ fn install_single_hook(
         new_hooks.push(entry);
         settings["hooks"][event] = serde_json::Value::Array(new_hooks);
         if !quiet {
-            eprintln!("\x1b[32m✔\x1b[0m Added {event} hook");
+            crate::agent_note!("\x1b[32m✔\x1b[0m Added {event} hook");
         }
     } else if !quiet {
-        eprintln!("  {event} hook already present, skipping");
+        crate::agent_note!("  {event} hook already present, skipping");
     }
 }
 
@@ -429,7 +429,7 @@ fn install_permissions(
             expected.iter().all(|p| perm_is_covered(p, &single))
         });
         if has_compact_cover {
-            eprintln!("\x1b[32m✔\x1b[0m Tool permissions already granted");
+            crate::agent_note!("\x1b[32m✔\x1b[0m Tool permissions already granted");
             return;
         }
     }
@@ -447,7 +447,7 @@ fn install_permissions(
     allow.dedup();
     settings["permissions"]["allow"] =
         serde_json::Value::Array(allow.into_iter().map(serde_json::Value::String).collect());
-    eprintln!("\x1b[32m✔\x1b[0m Added tool permissions");
+    crate::agent_note!("\x1b[32m✔\x1b[0m Added tool permissions");
 }
 
 /// Append CLAUDE.md rules (idempotent).
@@ -461,7 +461,7 @@ fn install_claude_md_rules(claude_md_path: &Path) -> Result<()> {
     if existing_md.contains(marker)
         || existing_md.contains("No Explore Agents When Codegraph Is Available")
     {
-        eprintln!("  CLAUDE.md already contains tokensave rules, skipping");
+        crate::agent_note!("  CLAUDE.md already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
@@ -509,7 +509,7 @@ fn install_claude_md_rules(claude_md_path: &Path) -> Result<()> {
         Pass `seen_node_ids` from each response to the next call's `exclude_node_ids`.\n"
     )
     .ok();
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
         claude_md_path.display()
     );
@@ -531,11 +531,11 @@ fn install_clean_local_config() {
                     if servers.remove("tokensave").is_some() {
                         if servers.is_empty() {
                             std::fs::remove_file(&mcp_json_path).ok();
-                            eprintln!(
+                            crate::agent_note!(
                                 "\x1b[32m✔\x1b[0m Removed local .mcp.json (using global config only)"
                             );
                         } else if backup_and_write_json(&mcp_json_path, &mcp_val) {
-                            eprintln!("\x1b[32m✔\x1b[0m Removed tokensave from local .mcp.json (using global config only)");
+                            crate::agent_note!("\x1b[32m✔\x1b[0m Removed tokensave from local .mcp.json (using global config only)");
                         }
                     }
                 }
@@ -596,7 +596,7 @@ fn clean_local_settings_file(project_path: &Path, local_settings_path: &Path) {
     let is_empty = local_val.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         if std::fs::remove_file(local_settings_path).is_ok() {
-            eprintln!(
+            crate::agent_note!(
                 "\x1b[32m✔\x1b[0m Removed {} (tokensave should only be in global config)",
                 local_settings_path.display()
             );
@@ -604,7 +604,7 @@ fn clean_local_settings_file(project_path: &Path, local_settings_path: &Path) {
             std::fs::remove_dir(&claude_dir).ok();
         }
     } else if backup_and_write_json(local_settings_path, &local_val) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave entries from {} (should only be in global config)",
             local_settings_path.display()
         );
@@ -633,7 +633,7 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
         return;
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!("  No tokensave MCP server in ~/.claude.json, skipping");
+        crate::agent_note!("  No tokensave MCP server in ~/.claude.json, skipping");
         return;
     }
     if servers.is_empty() {
@@ -644,12 +644,12 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
         .is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(claude_json_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             claude_json_path.display()
         );
     } else if backup_and_write_json(claude_json_path, &claude_json) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             claude_json_path.display()
         );
@@ -674,7 +674,7 @@ fn uninstall_settings(settings_path: &Path) {
     modified |= uninstall_permissions(&mut settings);
 
     if modified && backup_and_write_json(settings_path, &settings) {
-        eprintln!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
+        crate::agent_note!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
     }
 }
 
@@ -688,7 +688,9 @@ fn uninstall_stale_mcp(settings: &mut serde_json::Value) -> bool {
             if servers.is_empty() {
                 settings.as_object_mut().map(|o| o.remove("mcpServers"));
             }
-            eprintln!("\x1b[32m✔\x1b[0m Removed stale tokensave MCP server from settings.json");
+            crate::agent_note!(
+                "\x1b[32m✔\x1b[0m Removed stale tokensave MCP server from settings.json"
+            );
             return true;
         }
     }
@@ -741,7 +743,7 @@ fn uninstall_single_hook(settings: &mut serde_json::Value, event: &str) -> bool 
     } else {
         settings["hooks"][event] = serde_json::Value::Array(filtered);
     }
-    eprintln!("\x1b[32m✔\x1b[0m Removed {event} hook");
+    crate::agent_note!("\x1b[32m✔\x1b[0m Removed {event} hook");
     true
 }
 
@@ -774,7 +776,7 @@ fn uninstall_permissions(settings: &mut serde_json::Value) -> bool {
     } else {
         settings["permissions"]["allow"] = serde_json::Value::Array(filtered);
     }
-    eprintln!("\x1b[32m✔\x1b[0m Removed tokensave tool permissions");
+    crate::agent_note!("\x1b[32m✔\x1b[0m Removed tokensave tool permissions");
     true
 }
 
@@ -787,7 +789,7 @@ fn uninstall_claude_md_rules(claude_md_path: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  CLAUDE.md does not contain tokensave rules, skipping");
+        crate::agent_note!("  CLAUDE.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## MANDATORY: No Explore Agents When Tokensave Is Available";
@@ -826,13 +828,13 @@ fn uninstall_claude_md_rules(claude_md_path: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(claude_md_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             claude_md_path.display()
         );
     } else {
         std::fs::write(claude_md_path, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             claude_md_path.display()
         );
@@ -1169,7 +1171,7 @@ fn doctor_check_claude_md(dc: &mut DoctorCounters, home: &Path) {
 
 /// Clean up local project config (.mcp.json and settings.local.json).
 fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
-    eprintln!("\n\x1b[1mLocal config\x1b[0m");
+    crate::agent_note!("\n\x1b[1mLocal config\x1b[0m");
     let mut local_cleaned = false;
 
     let mcp_json_path = project_path.join(".mcp.json");
@@ -1319,7 +1321,7 @@ fn warn_missing_permissions(settings: &serde_json::Value) {
         .count();
 
     if missing_count > 0 {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[33mwarning: {missing_count} new tokensave tool(s) not yet permitted. Run `tokensave reinstall` to update permissions.\x1b[0m"
         );
     }

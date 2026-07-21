@@ -64,7 +64,7 @@ impl AgentIntegration for ZedIntegration {
             Ok(v) => v,
             Err(e) => {
                 if let Some(ref b) = backup {
-                    eprintln!("  Backup preserved at: {}", b.display());
+                    crate::agent_note!("  Backup preserved at: {}", b.display());
                 }
                 return Err(e);
             }
@@ -81,15 +81,15 @@ impl AgentIntegration for ZedIntegration {
         });
 
         safe_write_json_file(&settings_path, &settings, backup.as_deref())?;
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Added tokensave context server to {}",
             settings_path.display()
         );
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Restart Zed — tokensave tools are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Restart Zed — tokensave tools are now available");
         Ok(())
     }
 
@@ -97,14 +97,14 @@ impl AgentIntegration for ZedIntegration {
         let settings_path = zed_settings_path(ctx);
         uninstall_context_server(&settings_path);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Zed.");
-        eprintln!("Restart Zed for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Zed.");
+        crate::agent_note!("Restart Zed for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mZed integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mZed integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
     }
 
@@ -136,7 +136,7 @@ impl AgentIntegration for ZedIntegration {
 /// Does not delete settings.json even if object is otherwise empty.
 fn uninstall_context_server(settings_path: &Path) {
     if !settings_path.exists() {
-        eprintln!("  {} not found, skipping", settings_path.display());
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
         return;
     }
 
@@ -149,7 +149,7 @@ fn uninstall_context_server(settings_path: &Path) {
         .is_some();
 
     if !removed {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave context server in {}, skipping",
             settings_path.display()
         );
@@ -170,7 +170,7 @@ fn uninstall_context_server(settings_path: &Path) {
     // Always write back (never delete settings.json — it has other Zed settings).
     // backup_and_write_json leaves a .bak so any mistake is recoverable (issue #63).
     if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave context server from {}",
             settings_path.display()
         );

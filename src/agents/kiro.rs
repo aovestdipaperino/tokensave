@@ -126,12 +126,12 @@ impl AgentIntegration for KiroIntegration {
         let cli_path = cli_config_path_in(&base);
         install_default_agent(&cli_path, owns_agent)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new Kiro session");
-        eprintln!("     tokensave tools are now available through Kiro MCP");
-        eprintln!(
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new Kiro session");
+        crate::agent_note!("     tokensave tools are now available through Kiro MCP");
+        crate::agent_note!(
             "     the tokensave Kiro agent includes hooks for delegation guardrails and sync"
         );
         Ok(())
@@ -146,14 +146,14 @@ impl AgentIntegration for KiroIntegration {
         uninstall_managed_agent(&agent_path);
         uninstall_default_agent(&cli_config_path_in(&base), &agent_path, owned_agent);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Kiro.");
-        eprintln!("Start a new Kiro session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Kiro.");
+        crate::agent_note!("Start a new Kiro session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mKiro integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mKiro integration\x1b[0m");
         let global_server = doctor_check_mcp_config(dc, &ctx.home);
         doctor_check_workspace_mcp_override(
             dc,
@@ -278,7 +278,7 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -293,7 +293,7 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
     config["mcpServers"]["tokensave"] = mcp_server_entry(&bin);
 
     safe_write_json_file(path, &config, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         path.display()
     );
@@ -307,7 +307,7 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
 /// agent selector is not pointed at a file whose policy tokensave does not own.
 fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path) -> Result<bool> {
     if path.exists() && !is_owned_agent_file(path) {
-        eprintln!(
+        crate::agent_note!(
             "  {} already exists and is user-managed, leaving unchanged",
             path.display()
         );
@@ -317,7 +317,7 @@ fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path)
     let backup = backup_config_file(path)?;
     let config = managed_agent_config(tokensave_bin, steering_path);
     safe_write_json_file(path, &config, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Wrote tokensave Kiro agent to {}",
         path.display()
     );
@@ -326,7 +326,7 @@ fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path)
 
 fn install_default_agent(path: &Path, owns_agent: bool) -> Result<()> {
     if !owns_agent {
-        eprintln!(
+        crate::agent_note!(
             "  Skipping Kiro default-agent update because tokensave does not own the agent file"
         );
         return Ok(());
@@ -337,7 +337,7 @@ fn install_default_agent(path: &Path, owns_agent: bool) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -348,14 +348,14 @@ fn install_default_agent(path: &Path, owns_agent: bool) -> Result<()> {
 
     match config["chat"].get("defaultAgent") {
         Some(v) if v.as_str() == Some(KIRO_AGENT_NAME) => {
-            eprintln!("  Kiro default agent already set to tokensave");
+            crate::agent_note!("  Kiro default agent already set to tokensave");
             return Ok(());
         }
         Some(v) if v.as_str().is_some_and(is_builtin_default_agent) => {}
         Some(v) if is_empty_default_agent(v) => {}
         None => {}
         Some(v) => {
-            eprintln!(
+            crate::agent_note!(
                 "  Kiro default agent is {}, leaving user choice unchanged",
                 format_json_scalar(v)
             );
@@ -365,7 +365,7 @@ fn install_default_agent(path: &Path, owns_agent: bool) -> Result<()> {
 
     config["chat"]["defaultAgent"] = json!(KIRO_AGENT_NAME);
     safe_write_json_file(path, &config, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Set Kiro default agent in {}",
         path.display()
     );
@@ -419,10 +419,10 @@ fn install_steering_rules(path: &Path) -> Result<()> {
     };
     if existing.contains(PROMPT_MARKER) {
         if existing.contains(PROMPT_END_MARKER) {
-            eprintln!("  Kiro steering already contains tokensave rules, skipping");
+            crate::agent_note!("  Kiro steering already contains tokensave rules, skipping");
             return Ok(());
         }
-        eprintln!(
+        crate::agent_note!(
             "  Kiro steering contains tokensave rules without an owned end marker, leaving unchanged"
         );
         return Ok(());
@@ -447,7 +447,7 @@ fn install_steering_rules(path: &Path) -> Result<()> {
     writeln!(f, "{}{}", separator, prompt_rules_text()).map_err(|e| TokenSaveError::Config {
         message: format!("failed to write {}: {e}", path.display()),
     })?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
         path.display()
     );
@@ -488,7 +488,7 @@ or proprietary code from the bug description before submitting."
 
 fn uninstall_mcp_server(path: &Path) {
     if !path.exists() {
-        eprintln!("  {} not found, skipping", path.display());
+        crate::agent_note!("  {} not found, skipping", path.display());
         return;
     }
     let Ok(contents) = std::fs::read_to_string(path) else {
@@ -498,11 +498,11 @@ fn uninstall_mcp_server(path: &Path) {
         return;
     };
     let Some(servers) = config.get_mut("mcpServers").and_then(|v| v.as_object_mut()) else {
-        eprintln!("  No tokensave MCP server in {}, skipping", path.display());
+        crate::agent_note!("  No tokensave MCP server in {}, skipping", path.display());
         return;
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!("  No tokensave MCP server in {}, skipping", path.display());
+        crate::agent_note!("  No tokensave MCP server in {}, skipping", path.display());
         return;
     }
     if servers.is_empty() {
@@ -511,9 +511,9 @@ fn uninstall_mcp_server(path: &Path) {
     let is_empty = config.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(path).ok();
-        eprintln!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
+        crate::agent_note!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
     } else if backup_and_write_json(path, &config) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             path.display()
         );
@@ -528,11 +528,11 @@ fn remove_steering_rules(path: &Path) {
         return;
     };
     if !contents.contains(PROMPT_MARKER) {
-        eprintln!("  Kiro steering does not contain tokensave rules, skipping");
+        crate::agent_note!("  Kiro steering does not contain tokensave rules, skipping");
         return;
     }
     let Some(range) = tokensave_prompt_block_range(&contents) else {
-        eprintln!(
+        crate::agent_note!(
             "  Kiro steering contains tokensave rules without an owned end marker; leaving unchanged"
         );
         return;
@@ -547,10 +547,10 @@ fn remove_steering_rules(path: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(path).ok();
-        eprintln!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
+        crate::agent_note!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
     } else {
         std::fs::write(path, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             path.display()
         );
@@ -562,11 +562,11 @@ fn uninstall_managed_agent(path: &Path) {
         return;
     }
     if !is_owned_agent_file(path) {
-        eprintln!("  {} is user-managed, leaving unchanged", path.display());
+        crate::agent_note!("  {} is user-managed, leaving unchanged", path.display());
         return;
     }
     if std::fs::remove_file(path).is_ok() {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave Kiro agent from {}",
             path.display()
         );
@@ -595,7 +595,7 @@ fn uninstall_default_agent(path: &Path, agent_path: &Path, owned_agent: bool) {
         return;
     }
     if agent_path.exists() && !owned_agent {
-        eprintln!(
+        crate::agent_note!(
             "  Kiro default agent points at a user-managed tokensave agent, leaving unchanged"
         );
         return;
@@ -612,9 +612,9 @@ fn uninstall_default_agent(path: &Path, agent_path: &Path, owned_agent: bool) {
     let is_empty = config.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(path).ok();
-        eprintln!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
+        crate::agent_note!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
     } else if backup_and_write_json(path, &config) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave Kiro default agent from {}",
             path.display()
         );

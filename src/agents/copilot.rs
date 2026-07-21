@@ -76,14 +76,16 @@ impl AgentIntegration for CopilotIntegration {
             install_prompt_rules(&jetbrains_dir.join("global-copilot-instructions.md"))?;
         }
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Restart VS Code and/or start a new Copilot CLI session");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Restart VS Code and/or start a new Copilot CLI session");
         if jetbrains_detected {
-            eprintln!("     For JetBrains IDEs, restart the IDE (MCP config is read at startup)");
+            crate::agent_note!(
+                "     For JetBrains IDEs, restart the IDE (MCP config is read at startup)"
+            );
         }
-        eprintln!("     tokensave tools are now available in GitHub Copilot");
+        crate::agent_note!("     tokensave tools are now available in GitHub Copilot");
         Ok(())
     }
 
@@ -108,16 +110,16 @@ impl AgentIntegration for CopilotIntegration {
         uninstall_prompt_rules(&cli_instructions);
         uninstall_prompt_rules(&jetbrains_dir.join("global-copilot-instructions.md"));
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from GitHub Copilot.");
-        eprintln!(
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from GitHub Copilot.");
+        crate::agent_note!(
             "Restart VS Code, JetBrains IDEs, and/or start a new Copilot CLI session for changes to take effect."
         );
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
         doctor_check_vscode_settings(dc, &super::vscode_data_dir(&ctx.home), "VS Code");
         doctor_check_vscode_settings(
             dc,
@@ -204,7 +206,7 @@ fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Resul
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -220,7 +222,7 @@ fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Resul
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         settings_path.display()
     );
@@ -238,7 +240,7 @@ fn install_cli_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<(
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -254,7 +256,7 @@ fn install_cli_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<(
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         settings_path.display()
     );
@@ -276,7 +278,7 @@ fn install_jetbrains_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Re
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -291,7 +293,7 @@ fn install_jetbrains_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Re
     });
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         settings_path.display()
     );
@@ -307,7 +309,7 @@ fn install_jetbrains_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Re
 /// settings may still exist).
 fn uninstall_vscode_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
-        eprintln!("  {} not found, skipping", settings_path.display());
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
         return;
     }
 
@@ -322,7 +324,7 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
         .is_some();
 
     if !removed {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -352,7 +354,7 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
     // Always write back (never delete settings.json — it has other VS Code settings).
     // backup_and_write_json leaves a .bak so any mistake is recoverable (issue #63).
     if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
         );
@@ -377,7 +379,7 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
         return;
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -389,12 +391,12 @@ fn uninstall_cli_mcp_server(settings_path: &Path) {
     let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(settings_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
     } else if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
         );
@@ -416,7 +418,7 @@ fn uninstall_jetbrains_mcp_server(settings_path: &Path) {
         return;
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -428,12 +430,12 @@ fn uninstall_jetbrains_mcp_server(settings_path: &Path) {
     let is_empty = settings.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(settings_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
     } else if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
         );
@@ -454,7 +456,7 @@ fn install_prompt_rules(instructions_path: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!(
+        crate::agent_note!(
             "  {} already contains tokensave rules, skipping",
             instructions_path.display()
         );
@@ -486,7 +488,7 @@ fn install_prompt_rules(instructions_path: &Path) -> Result<()> {
     .map_err(|e| crate::errors::TokenSaveError::Config {
         message: format!("failed to write {}: {e}", instructions_path.display()),
     })?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave rules to {}",
         instructions_path.display()
     );
@@ -522,13 +524,13 @@ fn uninstall_prompt_rules(instructions_path: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(instructions_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             instructions_path.display()
         );
     } else {
         std::fs::write(instructions_path, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             instructions_path.display()
         );

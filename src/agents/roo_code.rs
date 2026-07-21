@@ -57,7 +57,7 @@ impl AgentIntegration for RooCodeIntegration {
             Ok(v) => v,
             Err(e) => {
                 if let Some(ref b) = backup {
-                    eprintln!("  Backup preserved at: {}", b.display());
+                    crate::agent_note!("  Backup preserved at: {}", b.display());
                 }
                 return Err(e);
             }
@@ -73,15 +73,15 @@ impl AgentIntegration for RooCodeIntegration {
         });
 
         safe_write_json_file(&settings_path, &settings, backup.as_deref())?;
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
             settings_path.display()
         );
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Restart VS Code — tokensave tools are now available in Roo Code");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Restart VS Code — tokensave tools are now available in Roo Code");
         Ok(())
     }
 
@@ -89,14 +89,14 @@ impl AgentIntegration for RooCodeIntegration {
         let settings_path = roo_settings_path(ctx);
         uninstall_mcp_server(&settings_path);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Roo Code.");
-        eprintln!("Restart VS Code for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Roo Code.");
+        crate::agent_note!("Restart VS Code for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mRoo Code integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mRoo Code integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
     }
 
@@ -127,7 +127,7 @@ impl AgentIntegration for RooCodeIntegration {
 /// Remove MCP server entry from Roo Code's `cline_mcp_settings.json`.
 fn uninstall_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
-        eprintln!("  {} not found, skipping", settings_path.display());
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
         return;
     }
 
@@ -142,7 +142,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
         .get_mut("mcpServers")
         .and_then(|v| v.as_object_mut())
     else {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -150,7 +150,7 @@ fn uninstall_mcp_server(settings_path: &Path) {
     };
 
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             settings_path.display()
         );
@@ -164,12 +164,12 @@ fn uninstall_mcp_server(settings_path: &Path) {
 
     if is_empty {
         std::fs::remove_file(settings_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             settings_path.display()
         );
     } else if backup_and_write_json(settings_path, &settings) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
         );

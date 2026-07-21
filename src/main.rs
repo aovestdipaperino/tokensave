@@ -170,59 +170,46 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     //       the running version is newer than `last_installed_version`.
     if !skip_agent_install_maintenance {
         let running = env!("CARGO_PKG_VERSION");
-        let previous_version = if user_config.previous_version.is_empty() {
-            "6.0.0".to_string()
-        } else {
-            user_config.previous_version.clone()
-        };
-        let upgrade_detected = previous_version != running;
-        let transition_needs_reinstall = upgrade_detected
-            && (tokensave::cloud::is_newer_minor_version(&previous_version, running)
-                || tokensave::cloud::is_newer_minor_version(running, &previous_version));
-        let external_upgrade_needs_reinstall = !upgrade_detected
-            && (user_config.last_installed_version.is_empty()
-                || tokensave::cloud::is_newer_version(
-                    &user_config.last_installed_version,
-                    running,
-                ));
-        let needs_reinstall = transition_needs_reinstall || external_upgrade_needs_reinstall;
-
-        if !user_config.installed_agents.is_empty() && !running.is_empty() && needs_reinstall {
-            if let (Some(home), Some(bin)) = (
-                tokensave::agents::home_dir(),
-                tokensave::agents::which_tokensave(),
-            ) {
-                let mut all_ok = true;
-                for id in &user_config.installed_agents {
-                    if let Ok(ag) = tokensave::agents::get_integration(id) {
-                        let ctx = tokensave::agents::InstallContext {
-                            home: home.clone(),
-                            tokensave_bin: bin.clone(),
-                            tool_permissions: tokensave::agents::install_tool_perms(
-                                user_config.wildcard_permissions,
-                            ),
-                            scope: tokensave::agents::InstallScope::Global,
-                            // Silent reinstall on upgrade is never an explicit
-                            // style request — preserve an existing covering
-                            // grant rather than clobbering it.
-                            force_permission_style: false,
-                        };
-                        if ag.install(&ctx).is_err() {
-                            all_ok = false;
-                        }
-                    }
-                }
-                if all_ok {
-                    user_config.last_installed_version = running.to_string();
-                    user_config.previous_version = running.to_string();
-                    user_config.save();
-                }
+        let paths = (
+            tokensave::agents::home_dir(),
+            tokensave::agents::which_tokensave(),
+        );
+        // Without a home dir or a resolvable binary path there is nothing to
+        // write, so leave the markers alone and retry on the next run.
+        if let (Some(home), Some(bin)) = paths {
+            let wildcard = user_config.wildcard_permissions;
+            // This resync is background maintenance, not a user-requested
+            // install: keep the per-agent setup banners off stderr so they
+            // don't appear on every `init`/`sync` (#255).
+            tokensave::agents::set_quiet_install(true);
+            let outcome =
+                tokensave::agents::resync_installed_agents(&mut user_config, running, |id| {
+                    let Ok(ag) = tokensave::agents::get_integration(id) else {
+                        return true;
+                    };
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: bin.clone(),
+                        tool_permissions: tokensave::agents::install_tool_perms(wildcard),
+                        scope: tokensave::agents::InstallScope::Global,
+                        // Silent reinstall on upgrade is never an explicit
+                        // style request — preserve an existing covering
+                        // grant rather than clobbering it.
+                        force_permission_style: false,
+                    };
+                    ag.install(&ctx).is_ok()
+                });
+            tokensave::agents::set_quiet_install(false);
+            if !outcome.failed.is_empty() {
+                eprintln!(
+                    "\x1b[33mwarning:\x1b[0m could not refresh tokensave config for: {}.\n  \
+                     Run \x1b[1mtokensave install\x1b[0m to see the error.",
+                    outcome.failed.join(", ")
+                );
             }
-        } else if upgrade_detected {
-            // Patch-only bump (or nothing to reinstall) — advance the marker
-            // so we don't keep re-checking on every subsequent startup.
-            user_config.previous_version = running.to_string();
-            user_config.save();
+            if outcome.changed {
+                user_config.save();
+            }
         }
     }
 

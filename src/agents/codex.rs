@@ -37,10 +37,10 @@ impl AgentIntegration for CodexIntegration {
         let agents_md = codex_dir.join("AGENTS.md");
         install_prompt_rules(&agents_md)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new Codex session — tokensave tools are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new Codex session — tokensave tools are now available");
         Ok(())
     }
 
@@ -53,14 +53,14 @@ impl AgentIntegration for CodexIntegration {
         let agents_md = codex_dir.join("AGENTS.md");
         uninstall_prompt_rules(&agents_md);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Codex CLI.");
-        eprintln!("Start a new Codex session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Codex CLI.");
+        crate::agent_note!("Start a new Codex session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mCodex CLI integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
         let codex_dir = ctx.home.join(".codex");
         let config_path = codex_dir.join("config.toml");
         doctor_check_config(dc, &config_path);
@@ -142,7 +142,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     servers.insert("tokensave".to_string(), toml::Value::Table(server_table));
 
     write_toml_file(config_path, &config)?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         config_path.display()
     );
@@ -158,7 +158,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!("  AGENTS.md already contains tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
@@ -187,7 +187,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
         before submitting.**\n"
     )
     .ok();
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
         agents_md.display()
     );
@@ -211,7 +211,7 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
         return Ok(());
     };
     if servers.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             config_path.display()
         );
@@ -222,13 +222,13 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
     }
     if table.is_empty() {
         std::fs::remove_file(config_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             config_path.display()
         );
     } else {
         write_toml_file(config_path, &config)?;
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             config_path.display()
         );
@@ -245,7 +245,7 @@ fn uninstall_prompt_rules(agents_md: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  AGENTS.md does not contain tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -266,13 +266,13 @@ fn uninstall_prompt_rules(agents_md: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(agents_md).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             agents_md.display()
         );
     } else {
         std::fs::write(agents_md, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             agents_md.display()
         );

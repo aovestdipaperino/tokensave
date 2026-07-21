@@ -42,11 +42,11 @@ impl AgentIntegration for OpenCodeIntegration {
         let prompt = opencode_prompt_path_for(ctx);
         install_prompt_rules(&prompt)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new OpenCode session — tokensave tools are now available");
-        eprintln!("  3. OpenCode will prompt for approval on first use of each tool");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new OpenCode session — tokensave tools are now available");
+        crate::agent_note!("  3. OpenCode will prompt for approval on first use of each tool");
         Ok(())
     }
 
@@ -57,14 +57,14 @@ impl AgentIntegration for OpenCodeIntegration {
         let prompt = opencode_prompt_path_for(ctx);
         uninstall_prompt_rules(&prompt);
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from OpenCode.");
-        eprintln!("Start a new OpenCode session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from OpenCode.");
+        crate::agent_note!("Start a new OpenCode session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mOpenCode integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mOpenCode integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
@@ -157,7 +157,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
-                eprintln!("  Backup preserved at: {}", b.display());
+                crate::agent_note!("  Backup preserved at: {}", b.display());
             }
             return Err(e);
         }
@@ -173,7 +173,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     });
 
     safe_write_json_file(config_path, &config, backup.as_deref())?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         config_path.display()
     );
@@ -189,7 +189,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!("  AGENTS.md already contains tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
@@ -218,7 +218,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         before submitting.**\n"
     )
     .ok();
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
         prompt_path.display()
     );
@@ -244,7 +244,7 @@ fn uninstall_mcp_server(config_path: &Path) {
         return;
     };
     if mcp.remove("tokensave").is_none() {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             config_path.display()
         );
@@ -256,12 +256,12 @@ fn uninstall_mcp_server(config_path: &Path) {
     let is_empty = config.as_object().is_some_and(serde_json::Map::is_empty);
     if is_empty {
         std::fs::remove_file(config_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             config_path.display()
         );
     } else if backup_and_write_json(config_path, &config) {
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             config_path.display()
         );
@@ -277,7 +277,7 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  AGENTS.md does not contain tokensave rules, skipping");
+        crate::agent_note!("  AGENTS.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -298,13 +298,13 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
         std::fs::remove_file(prompt_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             prompt_path.display()
         );
     } else {
         std::fs::write(prompt_path, format!("{new_contents}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             prompt_path.display()
         );

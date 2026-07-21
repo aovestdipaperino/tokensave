@@ -59,10 +59,10 @@ impl AgentIntegration for VibeIntegration {
         let prompt_path = vibe_prompt_path(&ctx.home);
         install_prompt_rules(&prompt_path)?;
 
-        eprintln!();
-        eprintln!("Setup complete. Next steps:");
-        eprintln!("  1. cd into your project and run: tokensave init");
-        eprintln!("  2. Start a new Vibe session — tokensave tools are now available");
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Start a new Vibe session — tokensave tools are now available");
         Ok(())
     }
 
@@ -71,14 +71,14 @@ impl AgentIntegration for VibeIntegration {
         uninstall_mcp_server(&config_path);
         uninstall_prompt_rules(&vibe_prompt_path(&ctx.home));
 
-        eprintln!();
-        eprintln!("Uninstall complete. Tokensave has been removed from Mistral Vibe.");
-        eprintln!("Start a new Vibe session for changes to take effect.");
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Mistral Vibe.");
+        crate::agent_note!("Start a new Vibe session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        eprintln!("\n\x1b[1mMistral Vibe integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mMistral Vibe integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
@@ -110,7 +110,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     };
 
     if existing.contains(TOML_MARKER) {
-        eprintln!(
+        crate::agent_note!(
             "  tokensave MCP server already registered in {}, skipping",
             config_path.display()
         );
@@ -137,7 +137,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
             message: format!("failed to write {}: {e}", config_path.display()),
         })?;
 
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
         config_path.display()
     );
@@ -153,7 +153,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         String::new()
     };
     if existing.contains(marker) {
-        eprintln!("  Vibe prompt already contains tokensave rules, skipping");
+        crate::agent_note!("  Vibe prompt already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
@@ -181,7 +181,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
     .map_err(|e| TokenSaveError::Config {
         message: format!("failed to write Vibe prompt: {e}"),
     })?;
-    eprintln!(
+    crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave rules to {}",
         prompt_path.display()
     );
@@ -195,7 +195,7 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
 /// Remove the tokensave `[[mcp_servers]]` block from `config.toml`.
 fn uninstall_mcp_server(config_path: &Path) {
     if !config_path.exists() {
-        eprintln!("  {} not found, skipping", config_path.display());
+        crate::agent_note!("  {} not found, skipping", config_path.display());
         return;
     }
 
@@ -204,7 +204,7 @@ fn uninstall_mcp_server(config_path: &Path) {
     };
 
     if !contents.contains(TOML_MARKER) {
-        eprintln!(
+        crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             config_path.display()
         );
@@ -271,13 +271,13 @@ fn uninstall_mcp_server(config_path: &Path) {
 
     if new_contents.trim().is_empty() {
         std::fs::remove_file(config_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             config_path.display()
         );
     } else {
         std::fs::write(config_path, &new_contents).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             config_path.display()
         );
@@ -293,7 +293,7 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
         return;
     };
     if !contents.contains("tokensave") {
-        eprintln!("  Vibe prompt does not contain tokensave rules, skipping");
+        crate::agent_note!("  Vibe prompt does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -304,13 +304,13 @@ fn uninstall_prompt_rules(prompt_path: &Path) {
     let trimmed = before.trim_end().to_string();
     if trimmed.is_empty() {
         std::fs::remove_file(prompt_path).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             prompt_path.display()
         );
     } else {
         std::fs::write(prompt_path, format!("{trimmed}\n")).ok();
-        eprintln!(
+        crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
             prompt_path.display()
         );

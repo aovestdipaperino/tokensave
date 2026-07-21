@@ -6,6 +6,124 @@
 //! itself is agent-agnostic; this module handles the per-agent config
 //! plumbing (registering the MCP server, permissions, hooks, prompt rules).
 
+/// Set while a non-interactive caller (the silent reinstall-on-upgrade in
+/// `main`) drives `install`, so the per-agent integrations stay quiet instead
+/// of printing their full setup banner on every `init`/`sync` (#255).
+static QUIET_INSTALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Suppress (or re-enable) agent install progress output.
+pub fn set_quiet_install(quiet: bool) {
+    QUIET_INSTALL.store(quiet, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether agent install progress output is currently suppressed.
+pub fn quiet_install() -> bool {
+    QUIET_INSTALL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Re-run install for every tracked agent so permissions, hooks, and MCP
+/// config stay in sync after the binary changes version.
+///
+/// Two signals trigger a resync:
+///   (a) `previous_version` (set by `tokensave upgrade` / `channel switch`
+///       just before replacing the binary) differs from the running version
+///       AND the transition is a minor/major bump. Patch bumps are no-ops:
+///       we just advance `previous_version` and skip reinstall.
+///   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
+///       the running version is newer than `last_installed_version`.
+///
+/// `install` is called once per tracked agent id and returns `false` when that
+/// agent could not be updated. Version markers advance regardless of those
+/// failures — see [`ResyncOutcome::failed`]. Returns the outcome; the caller is
+/// responsible for persisting `config` and reporting failures.
+pub fn resync_installed_agents<F>(
+    config: &mut crate::user_config::UserConfig,
+    running: &str,
+    mut install: F,
+) -> ResyncOutcome
+where
+    F: FnMut(&str) -> bool,
+{
+    let previous_version = if config.previous_version.is_empty() {
+        "6.0.0".to_string()
+    } else {
+        config.previous_version.clone()
+    };
+    let upgrade_detected = previous_version != running;
+    let transition_needs_reinstall = upgrade_detected
+        && (crate::cloud::is_newer_minor_version(&previous_version, running)
+            || crate::cloud::is_newer_minor_version(running, &previous_version));
+    let external_upgrade_needs_reinstall = !upgrade_detected
+        && (config.last_installed_version.is_empty()
+            || crate::cloud::is_newer_version(&config.last_installed_version, running));
+    let needs_reinstall = transition_needs_reinstall || external_upgrade_needs_reinstall;
+
+    if config.installed_agents.is_empty() || running.is_empty() || !needs_reinstall {
+        if upgrade_detected {
+            // Patch-only bump (or nothing to reinstall) — advance the marker
+            // so we don't keep re-checking on every subsequent startup.
+            config.previous_version = running.to_string();
+            return ResyncOutcome {
+                changed: true,
+                ran: false,
+                failed: Vec::new(),
+            };
+        }
+        return ResyncOutcome {
+            changed: false,
+            ran: false,
+            failed: Vec::new(),
+        };
+    }
+
+    let agents = config.installed_agents.clone();
+    let failed: Vec<String> = agents.into_iter().filter(|id| !install(id)).collect();
+
+    // Advance the markers even when some agents failed. A config path we can't
+    // write (missing app, read-only location) fails identically on every run,
+    // and gating the markers on full success re-ran this resync — banner output
+    // included — on every single command (#255). Report the failures once
+    // instead of retrying forever.
+    config.last_installed_version = running.to_string();
+    config.previous_version = running.to_string();
+    ResyncOutcome {
+        changed: true,
+        ran: true,
+        failed,
+    }
+}
+
+/// Result of [`resync_installed_agents`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ResyncOutcome {
+    /// Whether `config` was mutated and needs saving.
+    pub changed: bool,
+    /// Whether the per-agent install loop actually ran.
+    pub ran: bool,
+    /// Ids of agents whose install failed. Non-fatal.
+    pub failed: Vec<String>,
+}
+
+/// `eprintln!` for agent install progress: silent under [`set_quiet_install`].
+#[macro_export]
+macro_rules! agent_note {
+    ($($arg:tt)*) => {
+        if !$crate::agents::quiet_install() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+/// `eprint!` for agent install progress: silent under [`set_quiet_install`].
+#[macro_export]
+macro_rules! agent_note_inline {
+    ($($arg:tt)*) => {
+        if !$crate::agents::quiet_install() {
+            eprint!($($arg)*);
+        }
+    };
+}
+
 pub mod antigravity;
 pub mod augment;
 pub mod claude;
@@ -2954,5 +3072,119 @@ mod install_scope_tests {
         };
         assert_eq!(local.base_dir(), proj.as_path());
         assert!(local.is_local());
+    }
+}
+
+/// Regression tests for #255: the silent reinstall-on-upgrade printed every
+/// agent's setup banner on every `init`/`sync`, forever.
+#[cfg(test)]
+mod resync_tests {
+    use super::*;
+    use crate::user_config::UserConfig;
+
+    /// A config that looks like a fresh external upgrade (`brew upgrade`):
+    /// two tracked agents and a stale `last_installed_version`.
+    fn upgraded_config() -> UserConfig {
+        UserConfig {
+            installed_agents: vec!["claude".to_string(), "copilot".to_string()],
+            last_installed_version: "7.3.0".to_string(),
+            previous_version: "7.4.0".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resync_runs_once_then_stops_when_every_agent_succeeds() {
+        let mut config = upgraded_config();
+        let mut calls = 0;
+        let first = resync_installed_agents(&mut config, "7.4.0", |_| {
+            calls += 1;
+            true
+        });
+        assert!(first.ran);
+        assert_eq!(calls, 2);
+        assert!(first.failed.is_empty());
+
+        // Second invocation at the same version must not reinstall again.
+        let second = resync_installed_agents(&mut config, "7.4.0", |_| {
+            calls += 1;
+            true
+        });
+        assert!(!second.ran, "resync repeated at an unchanged version");
+        assert_eq!(calls, 2, "install ran again on the second invocation");
+    }
+
+    /// The core of #255: one agent that can never be written (missing app,
+    /// read-only path) must not pin the version markers and re-trigger the
+    /// whole resync — banner output included — on every subsequent command.
+    #[test]
+    fn failing_agent_does_not_retrigger_resync_forever() {
+        let mut config = upgraded_config();
+        let calls = std::cell::Cell::new(0);
+        // "copilot" always fails, exactly as an unwritable VS Code settings
+        // path would.
+        let mut installer = |id: &str| {
+            calls.set(calls.get() + 1);
+            id != "copilot"
+        };
+
+        let first = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+        assert!(first.ran);
+        assert_eq!(first.failed, vec!["copilot".to_string()]);
+        assert!(first.changed, "markers must advance despite the failure");
+        assert_eq!(config.last_installed_version, "7.4.0");
+        assert_eq!(config.previous_version, "7.4.0");
+        assert_eq!(calls.get(), 2);
+
+        // Every later run at the same version is a no-op.
+        for _ in 0..3 {
+            let again = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+            assert!(!again.ran, "a failing agent re-triggered the resync (#255)");
+            assert!(again.failed.is_empty());
+        }
+        assert_eq!(
+            calls.get(),
+            2,
+            "install re-ran after a permanent failure (#255)"
+        );
+    }
+
+    #[test]
+    fn patch_bump_advances_marker_without_reinstalling() {
+        let mut config = upgraded_config();
+        config.last_installed_version = "7.4.0".to_string();
+        config.previous_version = "7.4.1".to_string();
+        let mut calls = 0;
+        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
+            calls += 1;
+            true
+        });
+        assert!(!outcome.ran, "patch bump should not reinstall");
+        assert_eq!(calls, 0);
+        assert!(outcome.changed);
+        assert_eq!(config.previous_version, "7.4.2");
+    }
+
+    #[test]
+    fn no_tracked_agents_is_a_no_op() {
+        let mut config = UserConfig {
+            previous_version: "7.4.2".to_string(),
+            ..Default::default()
+        };
+        let mut calls = 0;
+        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
+            calls += 1;
+            true
+        });
+        assert_eq!(outcome, ResyncOutcome::default());
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn quiet_install_suppresses_agent_progress_output() {
+        set_quiet_install(true);
+        assert!(quiet_install());
+        set_quiet_install(false);
+        assert!(!quiet_install());
     }
 }
