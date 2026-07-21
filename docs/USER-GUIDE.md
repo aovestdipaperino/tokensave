@@ -739,19 +739,31 @@ Semantics:
 
 Created in your home directory. Contains:
 
-- `config.toml` — user preferences (upload opt-in/out, cached version info, pending upload count)
+- `config.toml` — stable user preferences. This is the only file meant to be
+  version-controlled (e.g. checked into a dotfiles repo).
+- `state.toml` — machine-local, frequently-changing state: cached version/pricing/flag
+  info and check timestamps (harmless to lose), but also `pending_upload`
+  (tokens accumulated locally but not yet uploaded — deleting it forfeits
+  that count) and `installed_agents` (this machine's install bookkeeping —
+  deleting it can cause the next upgrade to treat agents as not installed).
+  Regenerated automatically on every run, but don't delete it casually and
+  don't track it in a dotfiles repo — it churns on almost every run.
 - `global.db` — cross-project database that tracks tokens saved across all your projects
 
 The `config.toml` is plain TOML and fully transparent:
 
 ```toml
-upload_enabled = true       # set to false to stop uploading
-pending_upload = 4823       # tokens waiting to be uploaded
-last_upload_at = 1711375200 # last successful upload timestamp
-last_worldwide_total = 1000000
-last_worldwide_fetch_at = 1711375200
+upload_enabled = true        # set to false to stop uploading
+watcher_debounce = "2s"      # debounce for the embedded MCP file watcher
+extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 ```
+
+`state.toml` holds everything else (`pending_upload`, `last_upload_at`,
+`cached_latest_version`, `installed_agents`, and similar cached/timestamp
+fields). If you're upgrading from a version that only had `config.toml`, the
+state fields are read from your existing file once and then migrated into
+`state.toml` automatically on the next save — no data is lost.
 
 ---
 
