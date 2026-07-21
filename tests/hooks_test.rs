@@ -317,14 +317,25 @@ fn test_kiro_allows_invalid_json() {
 
 #[test]
 fn test_grep_blocks_bare_symbol_on_rust_file() {
-    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "bare symbol on .rs should redirect");
 }
 
 #[test]
+fn test_grep_allows_omitted_output_mode() {
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "the harness default is path-only, so only explicit content mode should redirect"
+    );
+}
+
+#[test]
 fn test_grep_blocks_alternation_on_rust_file() {
-    let input = r#"{"pattern": "Foo\\|Bar\\|Baz", "path": "src/main.rs"}"#;
+    let input =
+        r#"{"pattern": "Foo\\|Bar\\|Baz", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(
         is_blocked(&result),
@@ -334,7 +345,8 @@ fn test_grep_blocks_alternation_on_rust_file() {
 
 #[test]
 fn test_grep_blocks_word_boundary_symbol() {
-    let input = r#"{"pattern": "\\bhandle_request\\b", "path": "src/main.rs"}"#;
+    let input =
+        r#"{"pattern": "\\bhandle_request\\b", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "\\bsymbol\\b should redirect");
 }
@@ -380,7 +392,7 @@ fn test_grep_allows_count_mode() {
 
 #[test]
 fn test_grep_blocks_on_directory_path_when_indexed() {
-    let input = r#"{"pattern": "FooBar", "path": "src/"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(
         is_blocked(&result),
@@ -390,7 +402,7 @@ fn test_grep_blocks_on_directory_path_when_indexed() {
 
 #[test]
 fn test_grep_blocks_when_only_glob_set() {
-    let input = r#"{"pattern": "FooBar", "glob": "**/*.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "glob": "**/*.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "glob over .rs should redirect");
 }
@@ -404,14 +416,14 @@ fn test_grep_allows_glob_for_non_code() {
 
 #[test]
 fn test_grep_blocks_with_type_filter_rust() {
-    let input = r#"{"pattern": "FooBar", "type": "rust"}"#;
+    let input = r#"{"pattern": "FooBar", "type": "rust", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(is_blocked(&result), "type=rust should redirect");
 }
 
 #[test]
 fn test_grep_block_message_names_tokensave_tool() {
-    let input = r#"{"pattern": "FooBar", "path": "src/main.rs"}"#;
+    let input = r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     let reason = get_block_reason(&result);
     assert!(
@@ -513,6 +525,189 @@ fn test_bash_allows_non_grep_command() {
 }
 
 #[test]
+fn test_bash_blocks_grep_after_env_prefix() {
+    let input = r#"{"command": "FOO=bar grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a leading env assignment should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_prefix() {
+    let input = r#"{"command": "cd src && grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a leading `cd … &&` should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_env_is_honored() {
+    // An explicit inline TOKENSAVE_DISABLE_GREP_HOOK=<truthy> is a deliberate
+    // opt-out and must be honored, not stripped and then blocked. This mirrors
+    // the exported opt-out; an ordinary FOO=bar prefix is still stripped.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "inline TOKENSAVE_DISABLE_GREP_HOOK=1 should opt out like the exported one"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_env_falsey_still_blocks() {
+    // A falsey value is not an opt-out (same truthiness as HookEnv::from_runtime),
+    // so the grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "TOKENSAVE_DISABLE_GREP_HOOK=0 is falsey and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_cd_is_honored() {
+    // The opt-out must be recognized wherever it sits in the leading noise, not
+    // only as the very first token, so a conscious `cd … && DISABLE=1 grep …`
+    // is honored rather than redirected.
+    let input = r#"{"command": "cd src && TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after a cd prefix should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_sudo_is_honored() {
+    let input = r#"{"command": "sudo TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after a sudo wrapper should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_other_env_is_honored() {
+    let input = r#"{"command": "FOO=1 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after another assignment should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_before_other_env_is_honored() {
+    let input =
+        r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 FOO=bar grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out before another assignment should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_nested_cd_and_env_is_honored() {
+    let input =
+        r#"{"command": "cd src && FOO=1 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a deeply nested inline opt-out (cd + env + disable) should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_quoted_is_honored() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=\"1\" grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a quoted truthy opt-out value should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_true_word_is_honored() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=true grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(result.is_empty(), "value `true` should opt out");
+}
+
+#[test]
+fn test_bash_inline_disable_false_word_still_blocks() {
+    // Case-insensitive `false` is falsey, matching HookEnv::from_runtime.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=FALSE grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "value `FALSE` is not an opt-out and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_empty_value_still_blocks() {
+    // An empty value is not set, so it is stripped like ordinary noise and the
+    // grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK= grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "an empty opt-out value is not an opt-out and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_last_assignment_wins_falsey_blocks() {
+    // Shell "last assignment wins": a trailing falsey reassignment overrides an
+    // earlier truthy one, so the grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a trailing falsey reassignment should win and still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_last_assignment_wins_truthy_allows() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=0 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a trailing truthy reassignment should win and opt out"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_and_env_prefix() {
+    // Nested non-opt-out prefixes still unwrap to reveal the grep.
+    let input = r#"{"command": "cd src && FOO=bar grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "cd + ordinary env prefix should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_allows_pipe_after_cd_prefix() {
+    let input = r#"{"command": "cd src && ls | grep FooBar"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "piped grep after a cd should still pass through"
+    );
+}
+
+#[test]
 fn test_bash_blocks_grep_on_python_file() {
     let input = r#"{"command": "grep -n FooBar src/app.py"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
@@ -570,7 +765,7 @@ fn test_bash_allows_when_env_override() {
 #[test]
 fn test_disable_env_bypasses_every_redirect_path() {
     let cases = [
-        r#"{"pattern": "FooBar", "path": "src/main.rs"}"#,
+        r#"{"pattern": "FooBar", "path": "src/main.rs", "output_mode": "content"}"#,
         r#"{"command": "grep -n FooBar src/main.rs"}"#,
         r#"{"subagent_type": "Explore", "prompt": "find all API endpoints"}"#,
         r#"{"prompt": "explore the codebase and map the call graph"}"#,
@@ -677,10 +872,10 @@ fn test_claude_allows_invalid_json() {
 // with the tool payload nested under `tool_input` (the Claude/Kiro shape),
 // but the block is signaled via the raw reason text (`hook_droid_pre_tool_use`
 // prints it to stderr and exits 2 — the Kiro mechanism), not a stdout JSON
-// object. Only the `Execute` matcher is installed (§ANALYSIS-droid-hooks.md
-// GAP 2), so only grep/bash-shaped `command` payloads reach this handler in
-// practice; the shared decision core is still exercised directly below for
-// the sub-agent-shaped payload in case that matcher ever widens.
+// object. The `^(Execute|Grep)$` matcher is installed, so grep/bash-shaped
+// `command` payloads and Droid's native `Grep` `pattern` payloads reach this
+// handler; the shared decision core is still exercised directly below for the
+// sub-agent-shaped payload, which no installed matcher routes here.
 // ============================================================================
 
 #[test]
@@ -757,10 +952,10 @@ fn test_droid_respects_disable_grep_hook_escape_hatch() {
 fn test_droid_specialized_subagent_with_normal_task_passes() {
     // A specialized sub-agent given a normal (non-research) task must not be
     // blocked. Droid's own sub-agent/task launch tool name is unconfirmed in
-    // Factory's public docs, so today such a call never reaches this hook at
-    // all (only "Execute" is a registered matcher) — this test guards the
-    // shared decision core directly in case that matcher scope ever widens to
-    // cover a delegation tool.
+    // Factory's public docs, so today such a call never reaches this hook
+    // (`^(Execute|Grep)$` is the registered matcher). This test guards the
+    // shared decision core directly in case that matcher scope widens to cover
+    // a delegation tool.
     let input = r#"{
         "subagent_type": "implementer",
         "prompt": "Implement the retry logic for the sync client and add tests"
@@ -794,4 +989,93 @@ fn test_droid_block_reason_documents_escape_hatch() {
     }"#;
     let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).unwrap();
     assert!(reason.contains("TOKENSAVE_DISABLE_GREP_HOOK"));
+}
+
+// ---------------------------------------------------------------------------
+// Droid native `Grep` tool payloads. The `Grep` matcher routes these through
+// the same shared decision core as the Claude `Grep` tool, but Droid names two
+// fields differently (`glob_pattern` not `glob`; `file_paths` not
+// `files_with_matches`), so these guard that the classifier reads both shapes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_droid_native_grep_omitted_output_mode_passes() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src"}
+    }"#;
+    let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed());
+    assert!(
+        reason.is_none(),
+        "omitted output_mode uses Droid's path-only default and should pass"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_uses_glob_pattern_field() {
+    // Droid's Grep field is `glob_pattern`, not Claude's `glob`.
+    let on_code = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "FooBar", "glob_pattern": "**/*.rs", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(on_code, &env_indexed()).is_some(),
+        "glob_pattern over .rs should redirect"
+    );
+
+    let on_docs = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "FooBar", "glob_pattern": "**/*.md", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(on_docs, &env_indexed()).is_none(),
+        "glob_pattern over .md should pass through"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_file_paths_mode_passes() {
+    // `file_paths` returns only names (Droid's cheap mode) — nothing to save.
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "file_paths"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none(),
+        "file_paths output mode should pass through"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_content_mode_blocks() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"}
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some(),
+        "content output mode over code should redirect"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_non_code_target_passes() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "TODO", "glob_pattern": "**/*.md", "output_mode": "content"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_native_grep_respects_escape_hatch() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"}
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some());
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_disabled()).is_none(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 must let the native Grep call through"
+    );
 }

@@ -428,8 +428,8 @@ fn test_install_writes_pre_tool_use_hook() {
     let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
     let entry = entries
         .iter()
-        .find(|e| e["matcher"].as_str() == Some("Execute"))
-        .expect("an Execute-matcher entry should be present");
+        .find(|e| e["matcher"].as_str() == Some("^(Execute|Grep)$"))
+        .expect("an ^(Execute|Grep)$-matcher entry should be present");
     let command = entry["hooks"][0]["command"].as_str().unwrap();
     assert!(
         command.contains("/usr/local/bin/tokensave"),
@@ -498,11 +498,11 @@ fn test_install_preserves_existing_hooks_and_settings() {
     assert!(
         pre_tool_use
             .iter()
-            .any(|e| e["matcher"].as_str() == Some("Execute")
+            .any(|e| e["matcher"].as_str() == Some("^(Execute|Grep)$")
                 && e["hooks"][0]["command"]
                     .as_str()
                     .is_some_and(|c| c.contains("tokensave"))),
-        "tokensave's Execute-matcher hook should be added"
+        "tokensave's ^(Execute|Grep)$-matcher hook should be added"
     );
     assert_eq!(
         config["hooks"]["Stop"][0]["hooks"][0]["command"]
@@ -510,6 +510,63 @@ fn test_install_preserves_existing_hooks_and_settings() {
             .unwrap(),
         "/opt/owner/stop.sh",
         "unrelated hook event should be untouched"
+    );
+}
+
+#[test]
+fn test_install_preserves_foreign_hook_with_lookalike_command() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Grep",
+                        "hooks": [{"type": "command", "command": "/opt/hooks/tokensave-helper hook-droid-pre-tool-use"}]
+                    },
+                    {
+                        "matcher": "Grep",
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/tokensave hook-droid-pre-tool-use --custom"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    DroidIntegration.install(&make_ctx(home)).unwrap();
+
+    let config = read_json(&path);
+    let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
+    assert!(
+        entries.iter().any(|e| {
+            e["hooks"][0]["command"].as_str()
+                == Some("/opt/hooks/tokensave-helper hook-droid-pre-tool-use")
+        }),
+        "a foreign hook using a lookalike binary must survive install"
+    );
+    assert!(
+        entries.iter().any(|e| {
+            e["hooks"][0]["command"].as_str()
+                == Some("/usr/local/bin/tokensave hook-droid-pre-tool-use --custom")
+        }),
+        "a customized command with trailing arguments must survive install"
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| {
+                e["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with("tokensave hook-droid-pre-tool-use"))
+            })
+            .count(),
+        1,
+        "tokensave's hook should be installed separately"
     );
 }
 
@@ -536,6 +593,95 @@ fn test_install_hook_idempotent() {
         count, 1,
         "tokensave's hook entry should appear exactly once"
     );
+}
+
+#[test]
+fn test_install_migrates_stale_execute_only_matcher() {
+    // An install written by an older tokensave used the `Execute`-only matcher.
+    // Re-installing must upgrade it in place to `^(Execute|Grep)$`, not leave a
+    // duplicate entry that would fire the hook twice.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Execute",
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/tokensave hook-droid-pre-tool-use"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&path);
+    let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
+    let tokensave_entries: Vec<_> = entries
+        .iter()
+        .filter(|e| {
+            e["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("hook-droid-pre-tool-use"))
+        })
+        .collect();
+    assert_eq!(
+        tokensave_entries.len(),
+        1,
+        "stale entry must be migrated in place, not duplicated"
+    );
+    assert_eq!(
+        tokensave_entries[0]["matcher"].as_str(),
+        Some("^(Execute|Grep)$"),
+        "matcher should be upgraded to the widened value"
+    );
+}
+
+#[test]
+fn test_uninstall_removes_stale_execute_only_matcher() {
+    // uninstall must recognize a tokensave entry by its subcommand even when
+    // the matcher is the older `Execute`-only value.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Execute",
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/tokensave hook-droid-pre-tool-use"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let ctx = make_ctx(home);
+    DroidIntegration.uninstall(&ctx).unwrap();
+
+    // The only hook was tokensave's, so uninstall empties and removes the file.
+    let still_present = path.exists()
+        && read_json(&path)["hooks"]["PreToolUse"]
+            .as_array()
+            .is_some_and(|arr| {
+                arr.iter().any(|e| {
+                    e["hooks"][0]["command"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("hook-droid-pre-tool-use"))
+                })
+            });
+    assert!(!still_present, "stale Execute-only entry should be removed");
 }
 
 #[test]
@@ -621,6 +767,30 @@ fn test_healthcheck_detects_missing_hook() {
     };
     DroidIntegration.healthcheck(&mut dc, &hctx);
     assert!(dc.issues > 0, "healthcheck should detect missing hook");
+}
+
+#[test]
+fn test_healthcheck_detects_stale_execute_only_matcher() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    DroidIntegration.install(&ctx).unwrap();
+
+    let path = settings_path(home);
+    let mut config = read_json(&path);
+    config["hooks"]["PreToolUse"][0]["matcher"] = serde_json::json!("Execute");
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    DroidIntegration.healthcheck(&mut dc, &hctx);
+    assert!(
+        dc.issues > 0,
+        "healthcheck should require the current matcher so users know to reinstall"
+    );
 }
 
 #[test]
