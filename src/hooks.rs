@@ -318,6 +318,11 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     if !env.cwd_has_tokensave_db || env.disable_grep_hook {
         return None;
     }
+    // An explicit inline `TOKENSAVE_DISABLE_GREP_HOOK=<truthy>` opts out too, so
+    // the deliberate bypass is honored rather than stripped and then blocked.
+    if strip_command_prefixes(command.trim()).disables_hook {
+        return None;
+    }
     let inv = extract_grep_invocation(command)?;
     if inv.pattern.is_empty() || inv.pattern.len() > MAX_PATTERN_LEN {
         return None;
@@ -430,17 +435,14 @@ struct GrepInvocation {
     targets: Vec<String>,
 }
 
-/// Parse a bash command that *starts* with `grep`, `rg`, or `ag` (optionally
-/// preceded by `rtk ` or `sudo `). Returns `None` for anything else, including
-/// piped commands like `ls | grep foo` — we deliberately don't try to handle
-/// those.
+/// Parse a bash command that *starts* with `grep`, `rg`, or `ag` after leading
+/// noise is stripped (see `strip_command_prefixes`: `rtk`/`sudo`/`time`/`nice`
+/// wrappers, `NAME=value` env assignments, and a leading `cd … &&`/`cd … ;`).
+/// Returns `None` for anything else, including piped commands like
+/// `ls | grep foo`: piping another command's output through grep is not a code
+/// search, so it deliberately passes through.
 fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
-    let mut rest = command.trim();
-    for prefix in ["rtk ", "sudo ", "time ", "nice "] {
-        if let Some(after) = rest.strip_prefix(prefix) {
-            rest = after.trim_start();
-        }
-    }
+    let rest = strip_command_prefixes(command.trim()).rest;
 
     // Identify the tool. `git grep` is intentionally excluded — it searches
     // git history, which tokensave does not index.
@@ -476,6 +478,159 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
         pattern: pattern?,
         targets,
     })
+}
+
+/// Result of peeling leading noise off a command. `rest` is the command with
+/// `rtk`/`sudo`/`time`/`nice` wrappers, `NAME=value` assignments, and a leading
+/// `cd … &&`/`cd … ;` removed. `disables_hook` is true when one of those leading
+/// assignments explicitly set `TOKENSAVE_DISABLE_GREP_HOOK` to a truthy value,
+/// so the caller can honor a deliberate inline opt-out.
+struct StrippedCommand<'a> {
+    rest: &'a str,
+    disables_hook: bool,
+}
+
+/// Peel leading noise that hides a code search: the `rtk`/`sudo`/`time`/`nice`
+/// wrappers, `NAME=value` environment assignments, and a leading `cd … &&` /
+/// `cd … ;` prefix. Applied repeatedly so combinations unwrap (for example
+/// `cd src && FOO=1 grep …`). A pipeline (`… | grep`) is intentionally NOT
+/// unwrapped, so piped grep still passes through. An inline
+/// `TOKENSAVE_DISABLE_GREP_HOOK=<truthy>` is recorded rather than treated as
+/// ordinary noise, so an explicit inline opt-out is honored exactly like the
+/// exported one instead of being stripped and then blocked.
+fn strip_command_prefixes(command: &str) -> StrippedCommand<'_> {
+    let mut rest = command.trim_start();
+    let mut disables_hook = false;
+    loop {
+        let mut advanced = false;
+
+        for prefix in ["rtk ", "sudo ", "time ", "nice "] {
+            if let Some(after) = rest.strip_prefix(prefix) {
+                rest = after.trim_start();
+                advanced = true;
+            }
+        }
+
+        if let Some((name, value, after)) = parse_leading_env_assignment(rest) {
+            // Mirror the shell's "last assignment wins": a later reassignment of
+            // the opt-out var overrides an earlier one in either direction.
+            if name == "TOKENSAVE_DISABLE_GREP_HOOK" {
+                disables_hook = disable_value_is_truthy(unquote(value));
+            }
+            rest = after.trim_start();
+            advanced = true;
+        }
+
+        if let Some(after) = strip_leading_cd(rest) {
+            rest = after.trim_start();
+            advanced = true;
+        }
+
+        if !advanced {
+            return StrippedCommand {
+                rest,
+                disables_hook,
+            };
+        }
+    }
+}
+
+/// Mirror `HookEnv::from_runtime`'s truthiness for `TOKENSAVE_DISABLE_GREP_HOOK`:
+/// set, non-empty, not `0`, not `false` (case-insensitive).
+fn disable_value_is_truthy(value: &str) -> bool {
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+}
+
+/// Strip one layer of matching surrounding single or double quotes.
+fn unquote(v: &str) -> &str {
+    let b = v.as_bytes();
+    if b.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[b.len() - 1] == b[0] {
+        &v[1..v.len() - 1]
+    } else {
+        v
+    }
+}
+
+/// If `s` begins with a `NAME=value` assignment followed by another token,
+/// return `(name, value, remainder)`. `value` may be single/double quoted and
+/// is returned verbatim. Returns `None` when there is no trailing command
+/// (nothing to search), so a bare `FOO=bar` is left alone.
+fn parse_leading_env_assignment(s: &str) -> Option<(&str, &str, &str)> {
+    let mut chars = s.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let mut eq_pos = None;
+    for (idx, c) in chars {
+        if c == '=' {
+            eq_pos = Some(idx);
+            break;
+        }
+        if !(c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+    }
+    let eq = eq_pos?;
+    let value_start = eq + 1;
+
+    let mut in_single = false;
+    let mut in_double = false;
+    for (idx, c) in s[value_start..].char_indices() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                let value = &s[value_start..value_start + idx];
+                return Some((&s[..eq], value, &s[value_start + idx..]));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// If `s` begins with a `cd …` command terminated by a top-level `&&` or `;`,
+/// return the remainder after that separator. Returns `None` when the first
+/// top-level separator is a pipe (so `cd x && ls | grep` still passes through)
+/// or when there is no separator at all.
+fn strip_leading_cd(s: &str) -> Option<&str> {
+    let after = s.strip_prefix("cd")?;
+    if !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut iter = s.char_indices().peekable();
+    while let Some((idx, c)) = iter.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            if c == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '|' => return None,
+            ';' => return Some(&s[idx + c.len_utf8()..]),
+            '&' => {
+                if let Some(&(idx2, '&')) = iter.peek() {
+                    return Some(&s[idx2 + 1..]);
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Minimal shell tokenizer covering single/double quotes and backslash

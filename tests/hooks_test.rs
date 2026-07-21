@@ -525,6 +525,189 @@ fn test_bash_allows_non_grep_command() {
 }
 
 #[test]
+fn test_bash_blocks_grep_after_env_prefix() {
+    let input = r#"{"command": "FOO=bar grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a leading env assignment should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_prefix() {
+    let input = r#"{"command": "cd src && grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a leading `cd … &&` should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_env_is_honored() {
+    // An explicit inline TOKENSAVE_DISABLE_GREP_HOOK=<truthy> is a deliberate
+    // opt-out and must be honored, not stripped and then blocked. This mirrors
+    // the exported opt-out; an ordinary FOO=bar prefix is still stripped.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "inline TOKENSAVE_DISABLE_GREP_HOOK=1 should opt out like the exported one"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_env_falsey_still_blocks() {
+    // A falsey value is not an opt-out (same truthiness as HookEnv::from_runtime),
+    // so the grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "TOKENSAVE_DISABLE_GREP_HOOK=0 is falsey and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_cd_is_honored() {
+    // The opt-out must be recognized wherever it sits in the leading noise, not
+    // only as the very first token, so a conscious `cd … && DISABLE=1 grep …`
+    // is honored rather than redirected.
+    let input = r#"{"command": "cd src && TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after a cd prefix should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_sudo_is_honored() {
+    let input = r#"{"command": "sudo TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after a sudo wrapper should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_after_other_env_is_honored() {
+    let input = r#"{"command": "FOO=1 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out after another assignment should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_before_other_env_is_honored() {
+    let input =
+        r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 FOO=bar grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an inline opt-out before another assignment should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_nested_cd_and_env_is_honored() {
+    let input =
+        r#"{"command": "cd src && FOO=1 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a deeply nested inline opt-out (cd + env + disable) should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_quoted_is_honored() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=\"1\" grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a quoted truthy opt-out value should still opt out"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_true_word_is_honored() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=true grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(result.is_empty(), "value `true` should opt out");
+}
+
+#[test]
+fn test_bash_inline_disable_false_word_still_blocks() {
+    // Case-insensitive `false` is falsey, matching HookEnv::from_runtime.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=FALSE grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "value `FALSE` is not an opt-out and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_empty_value_still_blocks() {
+    // An empty value is not set, so it is stripped like ordinary noise and the
+    // grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK= grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "an empty opt-out value is not an opt-out and should still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_last_assignment_wins_falsey_blocks() {
+    // Shell "last assignment wins": a trailing falsey reassignment overrides an
+    // earlier truthy one, so the grep is still redirected.
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=1 TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a trailing falsey reassignment should win and still redirect"
+    );
+}
+
+#[test]
+fn test_bash_inline_disable_last_assignment_wins_truthy_allows() {
+    let input = r#"{"command": "TOKENSAVE_DISABLE_GREP_HOOK=0 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n FooBar src/main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a trailing truthy reassignment should win and opt out"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_and_env_prefix() {
+    // Nested non-opt-out prefixes still unwrap to reveal the grep.
+    let input = r#"{"command": "cd src && FOO=bar grep -n FooBar main.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "cd + ordinary env prefix should not hide the grep"
+    );
+}
+
+#[test]
+fn test_bash_allows_pipe_after_cd_prefix() {
+    let input = r#"{"command": "cd src && ls | grep FooBar"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "piped grep after a cd should still pass through"
+    );
+}
+
+#[test]
 fn test_bash_blocks_grep_on_python_file() {
     let input = r#"{"command": "grep -n FooBar src/app.py"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
