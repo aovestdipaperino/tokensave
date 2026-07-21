@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+- **Factory Droid guardrail hook now also covers the native `Grep` tool (follow-up to the Droid `PreToolUse` hook).** The install matcher widens from `Execute` to `^(Execute|Grep)$` (an anchored regex, verified live to still fire on both tools, so it can never collide with a future tool name that merely contains `Execute`/`Grep`), so a symbol-shaped `pattern` on a code target routed through Droid's own `Grep` tool (previously invisible to the hook) redirects to `tokensave_search`/`tokensave_callers_for`, reaching parity with the Claude hook's Grep coverage. The shared decision core now also reads Droid's `glob_pattern` field alongside Claude's `glob`, and redirects only an explicit `output_mode: "content"`; omitted, malformed, unknown, and cheap path-only modes (including Droid's `file_paths`) pass through. Re-installing over an older `Execute`-only entry migrates it in place instead of adding a duplicate, `doctor` flags stale matchers instead of reporting them healthy, and install/uninstall preserve lookalike custom wrappers by requiring an exact tokensave command. `Read`/`LS`/`Glob`/`Task` are deliberately not matched (lossy or unclassifiable equivalents, and Droid's hard-block contract has no soft-steer channel); see the PR for the full per-tool analysis.
 
 ## [7.4.2] - 2026-07-19
 
