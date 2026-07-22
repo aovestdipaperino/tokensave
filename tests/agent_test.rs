@@ -2106,10 +2106,8 @@ fn test_home_dir_returns_some() {
 fn test_migrate_installed_agents_skips_when_already_populated() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    let mut config = tokensave::user_config::UserConfig {
-        installed_agents: vec!["claude".to_string()],
-        ..Default::default()
-    };
+    let mut config = tokensave::user_config::UserConfig::default();
+    config.installed_agents = vec!["claude".to_string()];
 
     // Should return immediately since installed_agents is non-empty
     migrate_installed_agents(home, &mut config);

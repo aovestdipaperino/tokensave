@@ -13,26 +13,17 @@ fn defaults_when_no_file() {
 
 #[test]
 fn round_trip_serialization() {
-    let config = UserConfig {
-        upload_enabled: false,
-        pending_upload: 12345,
-        last_upload_at: 1711375200,
-        last_worldwide_total: 2847561,
-        last_worldwide_fetch_at: 1711375200,
-        last_flush_attempt_at: 1711375100,
-        cached_latest_version: String::new(),
-        last_version_check_at: 0,
-        last_version_warning_at: 0,
-        installed_agents: vec!["claude".to_string()],
-        watcher_debounce: "30s".to_string(),
-        cached_country_flags: Vec::new(),
-        last_flags_fetch_at: 0,
-        last_installed_version: "1.2.3".to_string(),
-        previous_version: String::new(),
-        last_pricing_fetch_at: 0,
-        extraction_timeout_secs: 60,
-        wildcard_permissions: false,
-    };
+    let mut config = UserConfig::default();
+    config.upload_enabled = false;
+    config.pending_upload = 12345;
+    config.last_upload_at = 1711375200;
+    config.last_worldwide_total = 2847561;
+    config.last_worldwide_fetch_at = 1711375200;
+    config.last_flush_attempt_at = 1711375100;
+    config.installed_agents = vec!["claude".to_string()];
+    config.watcher_debounce = "30s".to_string();
+    config.last_installed_version = "1.2.3".to_string();
+    config.extraction_timeout_secs = 60;
     let toml_str = toml::to_string_pretty(&config).unwrap();
     let parsed: UserConfig = toml::from_str(&toml_str).unwrap();
     assert!(!parsed.upload_enabled);
