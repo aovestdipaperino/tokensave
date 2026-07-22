@@ -2,13 +2,15 @@
 //! frequently-changing machine-local state split out into
 //! `~/.tokensave/state.toml`.
 //!
-//! `UserConfig` itself stays a single flat struct (unchanged public API) so
-//! every call site can keep treating it as one value. Internally, `load()`
-//! and `save()` fan the fields out across the two on-disk files via the
-//! private `ConfigFile`/`StateFile` view structs below: `config.toml` holds
-//! stable, dotfile-friendly preferences; `state.toml` holds volatile cached
-//! values and timestamps that would otherwise churn a version-controlled
-//! `config.toml` on almost every run.
+//! `UserConfig` stays a single flat value that every call site treats as one
+//! unit, but it carries a private per-instance merge baseline, so it is
+//! `#[non_exhaustive]`: build it via `UserConfig::load()` or
+//! `UserConfig::default()`, not an external struct literal. Internally,
+//! `load()` and `save()` fan the fields out across the two on-disk files via
+//! the private `ConfigFile`/`StateFile` view structs below: `config.toml`
+//! holds stable, dotfile-friendly preferences; `state.toml` holds volatile
+//! cached values and timestamps that would otherwise churn a
+//! version-controlled `config.toml` on almost every run.
 //!
 //! All fields have defaults so a missing file or missing fields are handled
 //! gracefully. Unknown fields are silently ignored for forward compatibility.
@@ -17,11 +19,14 @@
 //! writes them out to `state.toml` and drops them from `config.toml`.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 /// User-level tokensave configuration.
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct UserConfig {
     /// Whether to upload pending tokens to the worldwide counter.
     #[serde(default = "default_true")]
@@ -109,7 +114,30 @@ pub struct UserConfig {
     /// `--explicit-permissions`.
     #[serde(default)]
     pub wildcard_permissions: bool,
+
+    /// Snapshot of the config-owned fields (see `ConfigFile`) as last seen
+    /// on disk by this instance -- either at `load()` time, or as of its own
+    /// most recent successful `save()`. `save()` compares against this to
+    /// tell which fields *this* process actually changed since then, so it
+    /// can preserve another process's concurrent change to a field this
+    /// process never touched instead of clobbering it with a stale value.
+    /// `None` means there is no baseline to merge against (fresh default, or
+    /// a test-constructed value), so `save()` writes this process's values
+    /// as-is. Not persisted: it only makes sense within one process's
+    /// load/save lifecycle. Crate-private: not part of `UserConfig`'s public
+    /// API. `Mutex` (rather than `RefCell`) so `save()` can advance the
+    /// baseline through `&self` while keeping `UserConfig` `Send + Sync`;
+    /// access is already fully serialized by `SAVE_LOCK`, so this is
+    /// uncontended bookkeeping, not a hot lock (see `merge_config_file`'s doc
+    /// comment for why the baseline must advance at all).
+    #[serde(skip)]
+    pub(crate) loaded_config: Mutex<Option<ConfigFile>>,
 }
+
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync + ?Sized>() {}
+    assert_send_sync::<UserConfig>();
+};
 
 fn default_true() -> bool {
     true
@@ -144,13 +172,15 @@ impl Default for UserConfig {
             previous_version: String::new(),
             extraction_timeout_secs: default_extraction_timeout_secs(),
             wildcard_permissions: false,
+            loaded_config: Mutex::new(None),
         }
     }
 }
 
-/// Stable, dotfile-friendly fields persisted to `config.toml`.
-#[derive(Serialize, Deserialize)]
-struct ConfigFile {
+/// Stable, dotfile-friendly fields persisted to `config.toml`. Not
+/// constructible outside this module (all fields private).
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ConfigFile {
     #[serde(default = "default_true")]
     upload_enabled: bool,
     #[serde(default = "default_watcher_debounce", alias = "daemon_debounce")]
@@ -159,6 +189,18 @@ struct ConfigFile {
     extraction_timeout_secs: u64,
     #[serde(default)]
     wildcard_permissions: bool,
+}
+
+impl ConfigFile {
+    /// Extracts the config-owned fields from a `UserConfig` snapshot.
+    fn from_config(c: &UserConfig) -> Self {
+        Self {
+            upload_enabled: c.upload_enabled,
+            watcher_debounce: c.watcher_debounce.clone(),
+            extraction_timeout_secs: c.extraction_timeout_secs,
+            wildcard_permissions: c.wildcard_permissions,
+        }
+    }
 }
 
 /// Volatile, machine-local fields persisted to `state.toml`.
@@ -421,22 +463,62 @@ pub fn state_path() -> Option<PathBuf> {
     tokensave_dir().map(|d| d.join("state.toml"))
 }
 
-/// Moves an unparseable `state.toml` aside rather than leaving it where a
-/// later `save()` would overwrite it in place. Best-effort: if the rename
-/// itself fails there is nothing more to do without risking the save path.
-/// The backup name mixes a timestamp, PID, and the shared temp-file counter
-/// so repeated corruption (or concurrent callers hitting it at once) never
-/// collide on the same backup path.
-fn preserve_corrupt_state_file(state_path: &std::path::Path) {
+/// Returns the path to the advisory lock guarding `config.toml`'s
+/// read-modify-write span in `save()` (see `merge_config_file`'s doc
+/// comment). A distinct sidecar path rather than locking `config.toml`
+/// itself, since `write_atomic` replaces that file by renaming a temp file
+/// over it, and holding an OS lock on a file across it being renamed away
+/// out from under the lock is not portable.
+fn config_lock_path() -> Option<PathBuf> {
+    tokensave_dir().map(|d| d.join("config.toml.lock"))
+}
+
+/// Moves an unparseable `config.toml`/`state.toml` aside rather than leaving
+/// it where a later `save()` would overwrite it in place. Best-effort: if the
+/// rename itself fails there is nothing more to do without risking the save
+/// path. The backup name mixes a timestamp, PID, and the shared temp-file
+/// counter so repeated corruption (or concurrent callers hitting it at once)
+/// never collide on the same backup path.
+///
+/// Resolves symlinks via `resolve_write_target` first and renames the
+/// resolved *target* rather than `path` itself: `rename` on a symlink moves
+/// the link, not its target, which would silently detach a dotfiles-managed
+/// `config.toml -> ~/dotfiles/config.toml` symlink (leaving the real corrupt
+/// content behind, unmoved, at the old target, while `path` starts pointing
+/// at a backup that still resolves right back to that same untouched file)
+/// instead of preserving the content and clearing it. Renaming the resolved
+/// target instead leaves `path`'s symlink chain intact but dangling, which
+/// `write_atomic` already knows how to write through on the next `save()`
+/// (the same case as a freshly cloned, still-empty dotfiles repo).
+fn preserve_corrupt_file(path: &std::path::Path) {
+    let target = resolve_write_target(path).unwrap_or_else(|| path.to_path_buf());
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let unique = TMP_FILE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let backup = state_path.with_extension(format!(
+    let backup = target.with_extension(format!(
         "toml.corrupt.{timestamp}.{}.{unique}",
         std::process::id()
     ));
-    let _ = std::fs::rename(state_path, backup);
+    let _ = std::fs::rename(&target, backup);
+}
+
+/// Opens (creating if needed) and exclusively locks `config_lock_path()`,
+/// returning the held file handle. Best-effort: if the lock file can't be
+/// opened (e.g. read-only home dir) or the underlying `flock` fails, returns
+/// `None` and callers fall back to relying on same-process-only protection
+/// (`SAVE_LOCK`) rather than failing outright.
+fn lock_config_file() -> Option<std::fs::File> {
+    let f = config_lock_path().and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(p)
+            .ok()
+    })?;
+    f.lock_exclusive().ok()?;
+    Some(f)
 }
 
 impl UserConfig {
@@ -455,21 +537,76 @@ impl UserConfig {
     /// config.toml snapshot from before a save paired with a state.toml
     /// snapshot from after it, mixing two callers' writes into one object
     /// that neither of them saved.
+    ///
+    /// The config.toml read, parse, and (on a parse failure) corrupt-file
+    /// preservation happen under the same cross-process `config_lock_path()`
+    /// lock `save()` holds around its own read-merge-write: without it, a
+    /// concurrent `save()` could successfully replace a corrupt config.toml
+    /// with a valid one in the gap between this read and the conditional
+    /// rename below, and `preserve_corrupt_file` would then move that brand
+    /// new valid file aside instead of the corrupt content it was actually
+    /// meant to preserve — silently losing the concurrent write and leaving
+    /// `load()` returning defaults.
     pub fn load() -> Self {
         let _guard = SAVE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let mut base: Self = config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|contents| toml::from_str(&contents).unwrap_or_default())
-            .unwrap_or_default();
+        let config_p = config_path();
+        let config_lock = lock_config_file();
+        // Read raw bytes rather than `read_to_string`: a `String`-returning
+        // read fails identically for "file doesn't exist" and "file exists
+        // but isn't valid UTF-8", which would silently skip the
+        // corrupt-file preservation below for a byte-corrupted config.toml
+        // exactly the way an unparseable-but-valid-UTF-8 one used to before
+        // that preservation existed.
+        let raw = config_p.as_ref().and_then(|p| std::fs::read(p).ok());
+        let parsed = raw
+            .as_ref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|contents| toml::from_str::<Self>(contents).ok());
+        let mut base: Self = if let Some(mut cfg) = parsed {
+            // Record what this process saw for the config-owned fields, so a
+            // later save() in this process can tell which of them it
+            // actually changed (see `save()`).
+            cfg.loaded_config = Mutex::new(Some(ConfigFile::from_config(&cfg)));
+            cfg
+        } else {
+            // config.toml exists but is unusable -- either invalid UTF-8 or
+            // valid UTF-8 that doesn't parse as TOML (manual edit, filesystem
+            // corruption, a future incompatible format). Falling back to
+            // defaults without preserving the original file would let the
+            // very next routine save() overwrite it in place with those
+            // defaults, permanently losing preferences like
+            // wildcard_permissions. Move it aside instead, mirroring
+            // state.toml's handling below. Only do this when the file was
+            // actually present (`raw.is_some()`) -- a missing or unreadable
+            // file must still fall back to defaults silently, with nothing
+            // to preserve.
+            if raw.is_some() {
+                if let Some(p) = &config_p {
+                    preserve_corrupt_file(p);
+                }
+            }
+            Self::default()
+        };
+        if let Some(f) = &config_lock {
+            let _ = f.unlock();
+        }
 
         if let Some(state_p) = state_path() {
-            if let Ok(contents) = std::fs::read_to_string(&state_p) {
-                match toml::from_str::<StateFile>(&contents) {
-                    Ok(state) => apply_state(&mut base, state),
-                    // state.toml exists but doesn't parse (manual edit,
+            // Read raw bytes rather than `read_to_string`, for the same
+            // reason as the config.toml read above: invalid UTF-8 must be
+            // preserved like any other unusable state.toml, not silently
+            // skipped as if the file were missing.
+            if let Ok(bytes) = std::fs::read(&state_p) {
+                match std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|contents| toml::from_str::<StateFile>(contents).ok())
+                {
+                    Some(state) => apply_state(&mut base, state),
+                    // state.toml exists but is unusable -- either invalid
+                    // UTF-8 or valid UTF-8 that doesn't parse (manual edit,
                     // filesystem corruption, a future incompatible format).
                     // `base` falls back to defaults for the fields it can't
                     // recover; without preserving the original file, the very
@@ -479,7 +616,7 @@ impl UserConfig {
                     // aside instead so the original content survives on disk
                     // for manual recovery even after later saves write a
                     // fresh state.toml at the original path.
-                    Err(_) => preserve_corrupt_state_file(&state_p),
+                    None => preserve_corrupt_file(&state_p),
                 }
             }
         }
@@ -494,9 +631,21 @@ impl UserConfig {
     /// (e.g. background MCP work racing a shutdown save) never interleave
     /// their writes into a config.toml from one caller paired with a
     /// state.toml from another. This does not protect against a *second
-    /// tokensave process* saving concurrently — there is no cross-process
-    /// file lock, so racing processes can still each write one half of the
-    /// pair, matching the existing best-effort persistence model.
+    /// tokensave process* saving concurrently writing `state.toml` — there is
+    /// no cross-process file lock, so racing processes can still each write
+    /// one half of the pair, matching the existing best-effort persistence
+    /// model. `config.toml` is different: `merge_config_file()` re-reads it
+    /// and only overwrites the fields this process actually changed since its
+    /// own `load()` (or most recent `save()` — the baseline advances below),
+    /// so a stable preference like `wildcard_permissions` set by a concurrent
+    /// process (e.g. `install`, or a manual edit) survives even when *this*
+    /// process — loaded before that change and never touching that field
+    /// itself — saves afterward. Unlike `state.toml`, the read-merge-write for
+    /// `config.toml` is also guarded by a cross-process advisory lock
+    /// (`config_lock_path()`), since `SAVE_LOCK` alone only serializes callers
+    /// within this process: two different processes each merging their own
+    /// change against the same stale on-disk read would otherwise still be
+    /// able to lose one of the two updates.
     pub fn save(&self) -> bool {
         let Some(config_path) = config_path() else {
             return false;
@@ -510,12 +659,6 @@ impl UserConfig {
             }
         }
 
-        let config_file = ConfigFile {
-            upload_enabled: self.upload_enabled,
-            watcher_debounce: self.watcher_debounce.clone(),
-            extraction_timeout_secs: self.extraction_timeout_secs,
-            wildcard_permissions: self.wildcard_permissions,
-        };
         let state_file = StateFile {
             pending_upload: self.pending_upload,
             last_upload_at: self.last_upload_at,
@@ -533,9 +676,6 @@ impl UserConfig {
             installed_agents: self.installed_agents.clone(),
         };
 
-        let Ok(config_contents) = toml::to_string_pretty(&config_file) else {
-            return false;
-        };
         let Ok(state_contents) = toml::to_string_pretty(&state_file) else {
             return false;
         };
@@ -547,11 +687,114 @@ impl UserConfig {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+        // Cross-process guard around the config.toml read-modify-write span:
+        // held from the on-disk re-read in merge_config_file() through the
+        // write_atomic() below, so a concurrent process performing the same
+        // merge can't read the same pre-write snapshot we're about to
+        // replace (which would silently drop whichever of the two updates
+        // gets written first). Best-effort: if the lock can't be acquired
+        // (e.g. read-only home dir), fall back to unlocked same-process-only
+        // protection rather than failing the save outright.
+        let lock_file = lock_config_file();
+
+        let config_file = self.merge_config_file();
+        let Ok(config_contents) = toml::to_string_pretty(&config_file) else {
+            if let Some(f) = &lock_file {
+                let _ = f.unlock();
+            }
+            return false;
+        };
+
         // Write state.toml first: if it fails, config.toml is left untouched
         // (still holding any legacy state fields recovered from a pre-split
         // install), so a failed save never loses state that only lived in
         // config.toml a moment ago.
-        write_atomic(&state_path, &state_contents) && write_atomic(&config_path, &config_contents)
+        let ok = write_atomic(&state_path, &state_contents)
+            && write_atomic(&config_path, &config_contents);
+
+        if let Some(f) = &lock_file {
+            let _ = f.unlock();
+        }
+
+        if ok {
+            // Advance the baseline to this process's own in-memory values --
+            // NOT `config_file`, which for an untouched field holds whatever
+            // was just read off disk (possibly written by another process).
+            // `merge_config_file()` decides "did this process change this
+            // field?" by comparing `self` against this baseline, so the
+            // baseline must live in that same frame of reference. Advancing
+            // it to `config_file` instead would, on this process's *next*
+            // save, compare its still-unchanged `self` field against the
+            // disk value just absorbed into the baseline, see a mismatch,
+            // and wrongly treat that external change as if this process had
+            // just made it -- reverting it right back.
+            *self
+                .loaded_config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(ConfigFile::from_config(self));
+        }
+
+        ok
+    }
+
+    /// Builds the `ConfigFile` to write to disk: for each config-owned field
+    /// this process left unchanged since its `load()` (or its most recent
+    /// successful `save()` — see the baseline advance there), keeps whatever
+    /// is currently on disk (which may have been written by another
+    /// tokensave process in the meantime) instead of overwriting it with
+    /// this process's now-stale snapshot; for a field this process did
+    /// change, its value wins regardless of what's on disk. Falls back to
+    /// writing this process's own values verbatim when there's no baseline
+    /// to merge against (fresh config, or a test-constructed value) or the
+    /// on-disk config.toml can't be read/parsed right now.
+    ///
+    /// Callers must hold `config_lock_path()`'s cross-process lock around
+    /// this read and the subsequent `config.toml` write (see `save()`):
+    /// otherwise two processes could both read the same pre-write on-disk
+    /// state here and each merge against it, and whichever writes last would
+    /// silently discard the other's update even though neither touched the
+    /// same field.
+    fn merge_config_file(&self) -> ConfigFile {
+        let self_file = ConfigFile::from_config(self);
+
+        let baseline = self
+            .loaded_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(base) = baseline.as_ref() else {
+            return self_file;
+        };
+        let Some(on_disk) = config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        else {
+            return self_file;
+        };
+
+        ConfigFile {
+            upload_enabled: if self.upload_enabled == base.upload_enabled {
+                on_disk.upload_enabled
+            } else {
+                self.upload_enabled
+            },
+            watcher_debounce: if self.watcher_debounce == base.watcher_debounce {
+                on_disk.watcher_debounce
+            } else {
+                self.watcher_debounce.clone()
+            },
+            extraction_timeout_secs: if self.extraction_timeout_secs == base.extraction_timeout_secs
+            {
+                on_disk.extraction_timeout_secs
+            } else {
+                self.extraction_timeout_secs
+            },
+            wildcard_permissions: if self.wildcard_permissions == base.wildcard_permissions {
+                on_disk.wildcard_permissions
+            } else {
+                self.wildcard_permissions
+            },
+        }
     }
 
     /// Returns true if this is a fresh config (file did not exist before).
@@ -649,6 +892,7 @@ mod tests {
             previous_version: "1.2.1".to_string(),
             extraction_timeout_secs: 30,
             wildcard_permissions: true,
+            loaded_config: Mutex::new(None),
         }
     }
 
@@ -719,6 +963,196 @@ mod tests {
         let loaded = UserConfig::load();
         assert_eq!(loaded.pending_upload, 4321);
         assert!(!loaded.wildcard_permissions);
+    }
+
+    #[test]
+    fn save_does_not_clobber_field_changed_by_another_process_after_load() {
+        // Regression: save() used to write its entire in-memory snapshot of
+        // config.toml, so a process that loaded `wildcard_permissions =
+        // false` and later saved -- without ever intentionally touching that
+        // field -- would revert a `true` written by a second process (e.g.
+        // `install --wildcard-permissions`) in between.
+        let _home = test_home();
+        let mut config = sample_config();
+        config.wildcard_permissions = false;
+        assert!(config.save());
+
+        // `a` represents a long-lived process (e.g. the MCP daemon) that
+        // loaded before the concurrent change below.
+        let a = UserConfig::load();
+        assert!(!a.wildcard_permissions);
+
+        // A second process loads, intentionally flips the field, and saves.
+        let mut other = UserConfig::load();
+        other.wildcard_permissions = true;
+        assert!(other.save());
+
+        // `a` never touched wildcard_permissions itself, so its save must not
+        // revert the concurrent change.
+        assert!(a.save());
+
+        let reloaded = UserConfig::load();
+        assert!(
+            reloaded.wildcard_permissions,
+            "save() clobbered another process's concurrent change to a field this process left untouched"
+        );
+    }
+
+    #[test]
+    fn save_writes_field_this_process_intentionally_changed() {
+        let _home = test_home();
+        let mut config = sample_config();
+        config.wildcard_permissions = false;
+        assert!(config.save());
+
+        let mut loaded = UserConfig::load();
+        loaded.wildcard_permissions = true;
+        assert!(loaded.save());
+
+        let reloaded = UserConfig::load();
+        assert!(
+            reloaded.wildcard_permissions,
+            "a field this process intentionally changed must still be written"
+        );
+    }
+
+    #[test]
+    fn save_advances_baseline_so_later_external_changes_are_not_reverted() {
+        // Regression: save() used to compare every subsequent save against
+        // the load()-time baseline forever, so a long-lived instance that
+        // changed a field once (e.g. `install` setting wildcard_permissions
+        // during Commands::Install, then saving again later for an unrelated
+        // field) would keep re-writing that first value on every later save,
+        // reverting any external change made to it in between.
+        let _home = test_home();
+        let mut config = sample_config();
+        config.wildcard_permissions = false;
+        assert!(config.save());
+
+        let mut long_lived = UserConfig::load();
+        long_lived.wildcard_permissions = true;
+        assert!(long_lived.save());
+
+        // A second process changes the field again after our save above.
+        let mut other = UserConfig::load();
+        other.wildcard_permissions = false;
+        assert!(other.save());
+
+        // The long-lived instance saves again (e.g. persisting an unrelated
+        // field). Its baseline should have advanced to `true` after its own
+        // save above, so it must now see itself as unchanged on this field
+        // and preserve the concurrent flip back to `false`.
+        long_lived.extraction_timeout_secs = 999;
+        assert!(long_lived.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.extraction_timeout_secs, 999);
+        assert!(
+            !reloaded.wildcard_permissions,
+            "save() re-wrote a field from a stale load()-time baseline instead of the advanced one, reverting a concurrent external change"
+        );
+    }
+
+    #[test]
+    fn save_advancing_baseline_to_merged_disk_value_does_not_revert_untouched_field_on_next_save() {
+        // Regression: save() used to advance the baseline to the *merged*
+        // ConfigFile it just wrote -- which, for a field this process never
+        // touched, holds whatever was on disk (possibly from another
+        // process), not this process's own in-memory value. merge_config_file()
+        // detects "did this process change this field?" by comparing `self`
+        // against the baseline, so advancing the baseline to the disk value
+        // instead of `self`'s value made an untouched field look "changed"
+        // relative to that new baseline on the process's *next* save, and the
+        // merge would wrongly treat the earlier external change as if this
+        // process had just made it -- reverting it right back.
+        let _home = test_home();
+        let mut config = sample_config();
+        config.wildcard_permissions = false;
+        assert!(config.save());
+
+        // `a` never touches wildcard_permissions.
+        let mut a = UserConfig::load();
+
+        // A concurrent process changes it after `a` loaded.
+        let mut b = UserConfig::load();
+        b.wildcard_permissions = true;
+        assert!(b.save());
+
+        // `a` saves an unrelated field. The merge correctly preserves `b`'s
+        // change (this much already worked before this fix).
+        a.extraction_timeout_secs = 111;
+        assert!(a.save());
+        assert!(UserConfig::load().wildcard_permissions);
+
+        // `a` saves a second, different unrelated field, still never having
+        // touched wildcard_permissions itself. If the baseline advanced to
+        // the merged (disk-sourced) value after the first save instead of
+        // `a`'s own in-memory value, `a`'s in-memory `false` now looks
+        // "changed" relative to that baseline, and this save wrongly
+        // re-asserts `false` over `b`'s `true`.
+        a.watcher_debounce = "45s".to_string();
+        assert!(a.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.watcher_debounce, "45s");
+        assert!(
+            reloaded.wildcard_permissions,
+            "a second consecutive save() reverted a field `a` never touched, because the baseline advanced to the merged/disk value instead of a's own in-memory value"
+        );
+    }
+
+    #[test]
+    fn config_lock_prevents_lost_updates_across_independent_file_handles() {
+        // The cross-process guard is an OS advisory lock (flock via fs2), so
+        // it can't be exercised meaningfully by two threads in the same
+        // process going through UserConfig::save() -- SAVE_LOCK already
+        // fully serializes those and would mask a broken file lock. flock is
+        // scoped to the *open file description*, though, not the process, so
+        // two independent File handles opened from different threads
+        // contend for it exactly as two real OS processes would. This
+        // exercises that primitive directly: many threads each acquire the
+        // lock, read-increment-write a shared counter file while holding it,
+        // and release. A lock that failed to exclude concurrent holders
+        // would lose increments to interleaved reads/writes.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let counter_path = dir.path().join("counter");
+        std::fs::write(&counter_path, "0").expect("seed counter");
+        let lock_path = dir.path().join("counter.lock");
+
+        let handles: Vec<_> = (0..16_u32)
+            .map(|_| {
+                let counter_path = counter_path.clone();
+                let lock_path = lock_path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        let f = std::fs::OpenOptions::new()
+                            .create(true)
+                            .truncate(false)
+                            .write(true)
+                            .open(&lock_path)
+                            .expect("open lock file");
+                        f.lock_exclusive().expect("acquire lock");
+
+                        let contents = std::fs::read_to_string(&counter_path).expect("read");
+                        let n: u64 = contents.trim().parse().expect("parse counter");
+                        std::fs::write(&counter_path, (n + 1).to_string()).expect("write");
+
+                        let _ = f.unlock();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        let final_contents = std::fs::read_to_string(&counter_path).expect("read final");
+        let final_n: u64 = final_contents.trim().parse().expect("parse final counter");
+        assert_eq!(
+            final_n, 400,
+            "lock failed to exclude concurrent holders, losing increments"
+        );
     }
 
     #[test]
@@ -926,6 +1360,363 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&backup_path).expect("read preserved backup after save"),
             corrupt_contents
+        );
+
+        drop(home);
+    }
+
+    #[test]
+    fn load_preserves_corrupt_config_file_instead_of_overwriting_it() {
+        // Regression: load() used to fall back to defaults for an
+        // unparseable config.toml without touching the file itself. A
+        // subsequent, entirely routine save() would then overwrite it in
+        // place with those defaults, permanently losing preferences like
+        // wildcard_permissions. The original content must survive on disk.
+        let home = test_home();
+
+        let config_p = config_path().expect("config path");
+        if let Some(parent) = config_p.parent() {
+            std::fs::create_dir_all(parent).expect("create tokensave dir");
+        }
+        let corrupt_contents = "wildcard_permissions = [not valid toml";
+        std::fs::write(&config_p, corrupt_contents).expect("seed corrupt config.toml");
+
+        let loaded = UserConfig::load();
+        assert!(
+            !loaded.wildcard_permissions,
+            "unrecoverable config fields should fall back to defaults"
+        );
+        assert!(
+            !config_p.exists(),
+            "corrupt config.toml should have been moved aside, not left at the original path"
+        );
+
+        let tokensave_dir = config_p.parent().expect("config parent").to_path_buf();
+        let backups: Vec<_> = std::fs::read_dir(&tokensave_dir)
+            .expect("read tokensave dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "expected exactly one preserved backup of the corrupt config.toml"
+        );
+        let backup_path = backups[0].path();
+        assert_eq!(
+            std::fs::read_to_string(&backup_path).expect("read preserved backup"),
+            corrupt_contents
+        );
+
+        // A subsequent, routine save() must not be blocked by the earlier
+        // corruption -- it writes a fresh config.toml at the original path...
+        assert!(loaded.save());
+        assert!(config_p.exists());
+        // ...leaving the preserved backup of the original corrupt content
+        // untouched.
+        assert_eq!(
+            std::fs::read_to_string(&backup_path).expect("read preserved backup after save"),
+            corrupt_contents
+        );
+
+        drop(home);
+    }
+
+    #[test]
+    fn load_preserves_invalid_utf8_config_file_instead_of_overwriting_it() {
+        // Regression: load() read config.toml with `read_to_string`, which
+        // fails identically for "file missing" and "file present but not
+        // valid UTF-8" -- collapsing both to `None`. That made a
+        // byte-corrupted config.toml indistinguishable from a missing one,
+        // so it fell back to defaults *without* calling
+        // preserve_corrupt_file(), and a subsequent routine save() would
+        // overwrite the original bytes in place. The original content must
+        // survive on disk exactly as it does for unparseable-but-valid-UTF-8
+        // corruption.
+        let home = test_home();
+
+        let config_p = config_path().expect("config path");
+        if let Some(parent) = config_p.parent() {
+            std::fs::create_dir_all(parent).expect("create tokensave dir");
+        }
+        let corrupt_bytes: &[u8] = &[b'w', b'p', b'=', 0xFF, 0xFE, b'x'];
+        std::fs::write(&config_p, corrupt_bytes).expect("seed invalid-UTF-8 config.toml");
+
+        let loaded = UserConfig::load();
+        assert!(
+            !loaded.wildcard_permissions,
+            "unrecoverable config fields should fall back to defaults"
+        );
+        assert!(
+            !config_p.exists(),
+            "invalid-UTF-8 config.toml should have been moved aside, not left at the original path"
+        );
+
+        let tokensave_dir = config_p.parent().expect("config parent").to_path_buf();
+        let backups: Vec<_> = std::fs::read_dir(&tokensave_dir)
+            .expect("read tokensave dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "expected exactly one preserved backup of the invalid-UTF-8 config.toml"
+        );
+        let backup_path = backups[0].path();
+        assert_eq!(
+            std::fs::read(&backup_path).expect("read preserved backup"),
+            corrupt_bytes
+        );
+
+        // A subsequent, routine save() must not be blocked by the earlier
+        // corruption -- it writes a fresh config.toml at the original path...
+        assert!(loaded.save());
+        assert!(config_p.exists());
+        // ...leaving the preserved backup of the original bytes untouched.
+        assert_eq!(
+            std::fs::read(&backup_path).expect("read preserved backup after save"),
+            corrupt_bytes
+        );
+
+        drop(home);
+    }
+
+    #[test]
+    fn load_preserves_invalid_utf8_state_file_instead_of_overwriting_it() {
+        // Regression: load() read state.toml with `read_to_string`, which
+        // fails identically for "file missing" and "file present but not
+        // valid UTF-8". That made a byte-corrupted state.toml indistinguishable
+        // from a missing one, so it fell back to defaults *without* calling
+        // preserve_corrupt_file(), and a subsequent routine save() would
+        // overwrite the original bytes in place.
+        let home = test_home();
+
+        let state_p = state_path().expect("state path");
+        if let Some(parent) = state_p.parent() {
+            std::fs::create_dir_all(parent).expect("create tokensave dir");
+        }
+        let corrupt_bytes: &[u8] = &[b'p', b'u', b'=', 0xFF, 0xFE, b'x'];
+        std::fs::write(&state_p, corrupt_bytes).expect("seed invalid-UTF-8 state.toml");
+
+        let loaded = UserConfig::load();
+        assert_eq!(
+            loaded.pending_upload, 0,
+            "unrecoverable state fields should fall back to defaults"
+        );
+        assert!(
+            !state_p.exists(),
+            "invalid-UTF-8 state.toml should have been moved aside, not left at the original path"
+        );
+
+        let tokensave_dir = state_p.parent().expect("state parent").to_path_buf();
+        let backups: Vec<_> = std::fs::read_dir(&tokensave_dir)
+            .expect("read tokensave dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("state.toml.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "expected exactly one preserved backup of the invalid-UTF-8 state.toml"
+        );
+        let backup_path = backups[0].path();
+        assert_eq!(
+            std::fs::read(&backup_path).expect("read preserved backup"),
+            corrupt_bytes
+        );
+
+        // A subsequent, routine save() must not be blocked by the earlier
+        // corruption -- it writes a fresh state.toml at the original path...
+        assert!(loaded.save());
+        assert!(state_p.exists());
+        // ...leaving the preserved backup of the original bytes untouched.
+        assert_eq!(
+            std::fs::read(&backup_path).expect("read preserved backup after save"),
+            corrupt_bytes
+        );
+
+        drop(home);
+    }
+
+    #[test]
+    fn load_blocks_on_config_lock_instead_of_racing_a_concurrent_writer() {
+        // Regression: load()'s config.toml read, parse, and (on parse
+        // failure) corrupt-file preservation used to run outside any
+        // cross-process lock. A concurrent process performing the same
+        // read-modify-write span as save() (which does hold
+        // config_lock_path()) could land its own valid write in the gap
+        // between load()'s read and its conditional rename, and
+        // preserve_corrupt_file would then move that brand new valid file
+        // aside instead of the corrupt content it was meant to preserve.
+        //
+        // This can't be exercised through two threads both calling the real
+        // load()/save() API: SAVE_LOCK (a single process-wide mutex) already
+        // fully serializes those regardless of the fs2 lock, which would
+        // mask a load() that forgot to take config_lock_path() at all. So
+        // the "concurrent process" side here holds config_lock_path()
+        // directly -- bypassing SAVE_LOCK entirely -- to simulate a second
+        // real OS process mid-save, and the assertion is on wall-clock time:
+        // load() can only take as long as the lock hold below if it actually
+        // blocks waiting for that lock, rather than reading straight through.
+        // A content-based assertion alone doesn't distinguish this: the
+        // helper thread's write only takes microseconds, so even an unlocked
+        // load() reliably observes it by the time its (slower) call chain
+        // reaches the read -- passing for the wrong reason and masking a
+        // load() that never acquired the lock at all.
+        const HOLD: Duration = Duration::from_millis(300);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tokensave_dir = dir.path().to_path_buf();
+        set_test_home_dir(Some(tokensave_dir.clone()));
+
+        std::fs::create_dir_all(&tokensave_dir).expect("create tokensave dir");
+        let config_p = tokensave_dir.join("config.toml");
+        std::fs::write(&config_p, "wildcard_permissions = [not valid toml")
+            .expect("seed corrupt config.toml");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let other_process = {
+            let tokensave_dir = tokensave_dir.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let lock_p = tokensave_dir.join("config.toml.lock");
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&lock_p)
+                    .expect("open lock file");
+                f.lock_exclusive().expect("acquire lock");
+                barrier.wait();
+                // Simulate this "other process" being mid-critical-section
+                // (e.g. between its own read and rename/write) for a while
+                // before releasing the lock.
+                std::thread::sleep(HOLD);
+                let _ = f.unlock();
+            })
+        };
+
+        barrier.wait();
+        let start = std::time::Instant::now();
+        let loaded = UserConfig::load();
+        let elapsed = start.elapsed();
+
+        other_process.join().expect("other_process thread panicked");
+
+        assert!(
+            elapsed >= HOLD / 2,
+            "load() returned in {elapsed:?} without waiting for the concurrent lock holder \
+             (held for {HOLD:?}) -- it isn't taking the cross-process config lock at all"
+        );
+        assert!(
+            !loaded.wildcard_permissions,
+            "unrecoverable config fields should fall back to defaults"
+        );
+        assert!(
+            !config_p.exists(),
+            "corrupt config.toml should have been moved aside only after the lock was free"
+        );
+
+        set_test_home_dir(None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_preserves_corrupt_config_file_through_symlink_without_detaching_it() {
+        // Regression: preserve_corrupt_file() renamed `path` directly. For a
+        // dotfiles-managed config.toml (a symlink into a repo elsewhere),
+        // `rename` on a symlink moves the *link*, not its target: the real
+        // corrupt content would stay behind untouched at the old target
+        // (reachable again through the relocated link, so not exactly lost,
+        // but not really "preserved" as a backup either), while config.toml
+        // itself would go missing until the next save() -- silently
+        // recreating it as a plain file instead of writing through the
+        // symlink, breaking the dotfiles setup. Resolving the symlink first
+        // and preserving the resolved target instead leaves the symlink
+        // chain intact but dangling, which write_atomic already knows how to
+        // write through on the next save().
+        let home = test_home();
+
+        let repo_dir = tempfile::tempdir().expect("repo tempdir");
+        let repo_config = repo_dir.path().join("config.toml");
+        let corrupt_contents = "wildcard_permissions = [not valid toml";
+        std::fs::write(&repo_config, corrupt_contents).expect("seed corrupt repo config");
+
+        let config_p = config_path().expect("config path");
+        if let Some(parent) = config_p.parent() {
+            std::fs::create_dir_all(parent).expect("create tokensave dir");
+        }
+        std::os::unix::fs::symlink(&repo_config, &config_p).expect("symlink config");
+
+        let loaded = UserConfig::load();
+        assert!(
+            !loaded.wildcard_permissions,
+            "unrecoverable config fields should fall back to defaults"
+        );
+
+        // The symlink itself must survive -- now dangling, since its target
+        // was moved aside -- rather than being replaced or removed.
+        let meta = std::fs::symlink_metadata(&config_p).expect("symlink metadata");
+        assert!(
+            meta.file_type().is_symlink(),
+            "the config.toml symlink itself should survive corrupt-file preservation"
+        );
+        assert!(
+            !repo_config.exists(),
+            "the corrupt content at the symlink's target should have been moved aside"
+        );
+
+        // The backup lives next to the resolved target (inside the repo
+        // dir), not next to the symlink in ~/.tokensave.
+        let backups: Vec<_> = std::fs::read_dir(repo_dir.path())
+            .expect("read repo dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("config.toml.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "expected exactly one preserved backup of the corrupt repo config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).expect("read preserved backup"),
+            corrupt_contents
+        );
+
+        // The next routine save() writes through the now-dangling symlink,
+        // recreating the repo copy rather than replacing the symlink with a
+        // plain file in ~/.tokensave.
+        assert!(loaded.save());
+        let meta = std::fs::symlink_metadata(&config_p).expect("symlink metadata after save");
+        assert!(
+            meta.file_type().is_symlink(),
+            "save() should write through the dangling symlink, not replace it"
+        );
+        assert!(
+            repo_config.exists(),
+            "save() should recreate the repo target"
         );
 
         drop(home);
