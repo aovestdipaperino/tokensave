@@ -84,12 +84,13 @@ pub(super) async fn handle_search(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    if literal {
-        return handle_literal_search(cg, query, limit, scope_prefix).await;
-    }
-
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
+
+    if literal {
+        return handle_literal_search(cg, query, limit, scope_prefix, &path_include, &path_exclude)
+            .await;
+    }
 
     let mut results = if path_include.is_empty() && path_exclude.is_empty() {
         let results = cg.search(query, limit).await?;
@@ -158,6 +159,8 @@ async fn handle_literal_search(
     query: &str,
     limit: usize,
     scope_prefix: Option<&str>,
+    path_include: &[String],
+    path_exclude: &[String],
 ) -> Result<ToolResult> {
     if query.is_empty() {
         return Err(TokenSaveError::Config {
@@ -168,6 +171,10 @@ async fn handle_literal_search(
     let project_root = cg.project_root();
     let mut files = cg.get_all_files().await?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // Honor the same `path_include`/`path_exclude` substring filters the
+    // ranked search path applies — literal mode used to ignore them (#258).
+    // `path_exclude` takes precedence, matching `filter_by_path_lists`.
+    files = filter_by_path_lists(files, path_include, path_exclude, |f| f.path.as_str());
 
     let mut matches: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();

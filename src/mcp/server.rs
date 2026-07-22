@@ -1094,7 +1094,7 @@ impl McpServer {
     async fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
         let node_count = self.cg.get_stats().await.map_or(0, |s| s.node_count);
         let budget = explore_call_budget(node_count);
-        let tools = get_tool_definitions_with_budget(node_count, budget);
+        let tools = get_tool_definitions_with_budget(budget);
         // Marks the schema as actually delivered so `handle_tools_call` knows
         // it's fair to debit `schema_overhead_tokens` against this session —
         // see `schema_served`.

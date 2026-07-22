@@ -191,6 +191,71 @@ async fn test_search_literal_respects_limit() {
 }
 
 #[tokio::test]
+async fn test_search_literal_respects_path_include() {
+    let (cg, _dir) = setup_project().await;
+    // `helper` appears as a literal substring in src/main.rs, src/utils.rs and
+    // tests/test_utils.rs. Restricting to src/utils.rs must drop the others.
+    // Regression for #258: literal mode used to ignore path_include entirely.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({
+            "query": "helper",
+            "literal": true,
+            "path_include": ["src/utils.rs"],
+            "limit": 20,
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    let matches = parsed["matches"].as_array().expect("matches array");
+    assert!(
+        !matches.is_empty(),
+        "expected at least one match in src/utils.rs"
+    );
+    for m in matches {
+        assert_eq!(
+            m["file"], "src/utils.rs",
+            "every literal match must be inside the path_include target, got: {m}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_search_literal_respects_path_exclude() {
+    let (cg, _dir) = setup_project().await;
+    // path_exclude must take precedence and drop matches under tests/.
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({
+            "query": "helper",
+            "literal": true,
+            "path_exclude": ["tests/"],
+            "limit": 20,
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    let matches = parsed["matches"].as_array().expect("matches array");
+    assert!(!matches.is_empty(), "expected matches outside tests/");
+    for m in matches {
+        assert!(
+            !m["file"].as_str().unwrap().contains("tests/"),
+            "path_exclude should have dropped this match: {m}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_search_literal_case_sensitive() {
     let (cg, _dir) = setup_project().await;
     // Source has `Hello` (capital H) only; lowercase `hello` must not match.
