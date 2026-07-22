@@ -259,37 +259,44 @@ fn test_silent_reinstall_preserves_user_wildcard_grant() {
 }
 
 #[test]
-fn test_install_creates_claude_md_with_rules() {
+fn test_install_creates_managed_rules_file() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
+    // Issue #256: rules live in a tokensave-owned managed file, not appended
+    // to the user's CLAUDE.md.
     assert!(
-        claude_md.contains("## MANDATORY: No Explore Agents When Tokensave Is Available"),
-        "CLAUDE.md should contain the mandatory rules marker"
+        !home.join(".claude/CLAUDE.md").exists(),
+        "install should not create/touch CLAUDE.md"
+    );
+
+    let rules = std::fs::read_to_string(home.join(".claude/rules/tokensave.md")).unwrap();
+    assert!(
+        rules.contains("## MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "managed rules file should contain the mandatory rules marker"
     );
     assert!(
-        claude_md.contains("tokensave_context"),
-        "CLAUDE.md should mention tokensave tools"
+        rules.contains("tokensave_context"),
+        "managed rules file should mention tokensave tools"
     );
     assert!(
-        claude_md.contains("NEVER use Agent(subagent_type=Explore)"),
-        "CLAUDE.md should contain the no-explore-agent rule"
+        rules.contains("NEVER use Agent(subagent_type=Explore)"),
+        "managed rules file should contain the no-explore-agent rule"
     );
     assert!(
-        claude_md.contains("When you spawn an Explore agent"),
-        "CLAUDE.md should contain the explore agent guidance paragraph"
+        rules.contains("When you spawn an Explore agent"),
+        "managed rules file should contain the explore agent guidance paragraph"
     );
     assert!(
-        claude_md.contains("exclude_node_ids"),
-        "CLAUDE.md should mention exclude_node_ids for dedup"
+        rules.contains("exclude_node_ids"),
+        "managed rules file should mention exclude_node_ids for dedup"
     );
 }
 
 #[test]
-fn test_claude_md_contains_explore_agent_paragraph() {
+fn test_install_does_not_touch_existing_claude_md() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -302,57 +309,66 @@ fn test_claude_md_contains_explore_agent_paragraph() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert_eq!(
+        content, "# Existing content\n",
+        "CLAUDE.md should be left untouched by install"
+    );
+
+    let rules = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
     assert!(
-        content.contains("When you spawn an Explore agent"),
-        "should contain explore agent paragraph"
+        rules.contains("When you spawn an Explore agent"),
+        "managed rules file should contain explore agent paragraph"
     );
     assert!(
-        content.contains("tokensave_context"),
-        "should reference tokensave_context as the tool"
+        rules.contains("tokensave_context"),
+        "managed rules file should reference tokensave_context as the tool"
     );
     assert!(
-        content.contains("exclude_node_ids"),
-        "should mention exclude_node_ids for dedup"
+        rules.contains("exclude_node_ids"),
+        "managed rules file should mention exclude_node_ids for dedup"
     );
 }
 
 #[test]
-fn test_uninstall_removes_explore_agent_paragraph() {
+fn test_install_migrates_legacy_claude_md_block() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
-    // Pre-populate CLAUDE.md with existing content
+    // Pre-populate CLAUDE.md with the pre-#256 inline block.
     let claude_dir = home.join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
     std::fs::write(
         claude_dir.join("CLAUDE.md"),
-        "# My Rules\n\nKeep it clean.\n",
+        "# My Rules\n\nKeep it clean.\n\n\
+        ## MANDATORY: No Explore Agents When Tokensave Is Available\n\n\
+        **NEVER use Agent(subagent_type=Explore)** ...\n\n\
+        ## When you spawn an Explore agent in a tokensave-enabled project\n\n\
+        Some legacy guidance.\n",
     )
     .unwrap();
 
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    // Verify install added the explore agent paragraph
-    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
-    assert!(content.contains("When you spawn an Explore agent"));
-
-    // Now uninstall
-    ClaudeIntegration.uninstall(&ctx).unwrap();
-
     let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
     assert!(
-        !content.contains("When you spawn an Explore agent"),
-        "explore agent paragraph should be removed after uninstall"
+        !content.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "install should strip the legacy inline block from CLAUDE.md"
     );
     assert!(
         content.contains("My Rules"),
-        "existing content should be preserved after uninstall"
+        "install should preserve unrelated CLAUDE.md content"
+    );
+
+    let rules = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
+    assert!(
+        rules.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "managed rules file should contain the rules (no duplication, no loss)"
     );
 }
 
 #[test]
-fn test_install_idempotent_claude_md() {
+fn test_install_idempotent_managed_rules_file() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
@@ -360,9 +376,9 @@ fn test_install_idempotent_claude_md() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
+    let rules = std::fs::read_to_string(home.join(".claude/rules/tokensave.md")).unwrap();
     let marker = "## MANDATORY: No Explore Agents When Tokensave Is Available";
-    let count = claude_md.matches(marker).count();
+    let count = rules.matches(marker).count();
     assert_eq!(
         count, 1,
         "marker should appear exactly once after double install, found {count}"
@@ -629,25 +645,21 @@ fn test_uninstall_preserves_other_permissions() {
 }
 
 #[test]
-fn test_uninstall_removes_claude_md_rules() {
+fn test_uninstall_removes_managed_rules_file() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md_path = home.join(".claude/CLAUDE.md");
-    assert!(claude_md_path.exists());
+    let rules_path = home.join(".claude/rules/tokensave.md");
+    assert!(rules_path.exists());
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    // CLAUDE.md had only tokensave rules, should be removed
-    if claude_md_path.exists() {
-        let content = std::fs::read_to_string(&claude_md_path).unwrap();
-        assert!(
-            !content.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
-            "CLAUDE.md should not contain tokensave marker after uninstall"
-        );
-    }
+    assert!(
+        !rules_path.exists(),
+        "managed rules file should be removed after uninstall"
+    );
 }
 
 #[test]
@@ -667,14 +679,17 @@ fn test_uninstall_preserves_other_claude_md_content() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    // Verify install appended rules
+    // Install should leave CLAUDE.md untouched and put rules in the managed file.
     let md_content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
     assert!(md_content.contains("My Custom Rules"));
-    assert!(md_content.contains("MANDATORY: No Explore Agents"));
+    assert!(!md_content.contains("MANDATORY: No Explore Agents"));
+
+    let rules_content = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
+    assert!(rules_content.contains("MANDATORY: No Explore Agents"));
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    // After uninstall, custom content should remain
+    // After uninstall, custom content should remain untouched
     let md_content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
     assert!(
         md_content.contains("My Custom Rules"),
@@ -685,8 +700,8 @@ fn test_uninstall_preserves_other_claude_md_content() {
         "custom content body should be preserved"
     );
     assert!(
-        !md_content.contains("MANDATORY: No Explore Agents"),
-        "tokensave marker should be removed after uninstall"
+        !claude_dir.join("rules/tokensave.md").exists(),
+        "managed rules file should be removed after uninstall"
     );
 }
 
@@ -813,8 +828,8 @@ fn test_healthcheck_detects_missing_claude_md() {
     let ctx = make_install_ctx_with_real_bin(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    // Delete CLAUDE.md
-    std::fs::remove_file(home.join(".claude/CLAUDE.md")).unwrap();
+    // Delete the managed rules file
+    std::fs::remove_file(home.join(".claude/rules/tokensave.md")).unwrap();
 
     let mut dc = DoctorCounters::new();
     let hctx = HealthcheckContext {
@@ -823,8 +838,8 @@ fn test_healthcheck_detects_missing_claude_md() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
     assert!(
-        dc.warnings > 0,
-        "healthcheck should warn about missing CLAUDE.md"
+        dc.issues > 0,
+        "healthcheck should flag a missing managed rules file"
     );
 }
 
