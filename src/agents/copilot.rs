@@ -2,7 +2,15 @@
 //! GitHub Copilot integration.
 //!
 //! Handles registration of the tokensave MCP server in:
-//! - VS Code's `settings.json` under `mcp.servers.tokensave`
+//! - VS Code's dedicated `User/mcp.json` (1.102+, GA MCP, parsed as JSONC)
+//!   under `servers.tokensave`. `install` never writes `settings.json`; a
+//!   pre-#266 `mcp.servers.tokensave` entry there is read as a fallback by
+//!   `doctor`/`has_tokensave` so those checks don't nag, and it's cleaned up
+//!   on `uninstall`. Note that entry isn't inert: VS Code itself actively
+//!   migrates it into its own MCP registry (making it the live
+//!   registration) and strips the key back out of `settings.json` once
+//!   done, so the fallback mostly only matters in the transient window
+//!   before that migration runs (see issue #266).
 //! - Copilot CLI's `~/.copilot/mcp-config.json` under `mcpServers.tokensave`
 //! - `JetBrains` plugin's `~/.config/github-copilot/intellij/mcp.json` under
 //!   `servers.tokensave` (only when the plugin's config dir exists)
@@ -15,7 +23,7 @@ use crate::errors::Result;
 
 use super::{
     backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
-    load_jsonc_file, load_jsonc_file_strict, safe_write_json_file, AgentIntegration,
+    load_jsonc_file, load_jsonc_file_strict, parse_jsonc, safe_write_json_file, AgentIntegration,
     DoctorCounters, HealthcheckContext, InstallContext,
 };
 
@@ -32,17 +40,18 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let vscode_settings_path = super::vscode_data_dir(&ctx.home).join("User/settings.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home).join("User/mcp.json");
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
 
-        install_vscode_mcp_server(&vscode_settings_path, &ctx.tokensave_bin)?;
-        let insiders_settings_path =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
-        if insiders_settings_path
+        install_vscode_mcp_json_server(&vscode_mcp_json_path, &ctx.tokensave_bin)?;
+
+        let insiders_mcp_json_path =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/mcp.json");
+        if insiders_mcp_json_path
             .parent()
             .is_some_and(std::path::Path::exists)
         {
-            install_vscode_mcp_server(&insiders_settings_path, &ctx.tokensave_bin)?;
+            install_vscode_mcp_json_server(&insiders_mcp_json_path, &ctx.tokensave_bin)?;
         }
         install_cli_mcp_server(&cli_settings_path, &ctx.tokensave_bin)?;
 
@@ -91,10 +100,15 @@ impl AgentIntegration for CopilotIntegration {
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
         let vscode_settings_path = super::vscode_data_dir(&ctx.home).join("User/settings.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home).join("User/mcp.json");
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
+        uninstall_vscode_mcp_json_server(&vscode_mcp_json_path);
         uninstall_vscode_mcp_server(&vscode_settings_path);
         let insiders_settings_path =
             super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
+        let insiders_mcp_json_path =
+            super::vscode_insiders_data_dir(&ctx.home).join("User/mcp.json");
+        uninstall_vscode_mcp_json_server(&insiders_mcp_json_path);
         uninstall_vscode_mcp_server(&insiders_settings_path);
         uninstall_cli_mcp_server(&cli_settings_path);
         let jetbrains_dir = super::copilot_jetbrains_dir(&ctx.home);
@@ -140,19 +154,40 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(super::vscode_data_dir(home).join("User/settings.json"))
+        Some(super::vscode_data_dir(home).join("User/mcp.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
+        let vscode_mcp_json_path = super::vscode_data_dir(home).join("User/mcp.json");
         let vscode_settings_path = super::vscode_data_dir(home).join("User/settings.json");
+        let insiders_mcp_json_path = super::vscode_insiders_data_dir(home).join("User/mcp.json");
         let insiders_settings_path =
             super::vscode_insiders_data_dir(home).join("User/settings.json");
         let cli_settings_path = super::copilot_cli_dir(home).join("mcp-config.json");
 
+        let vscode_mcp_json_has_tokensave = if vscode_mcp_json_path.exists() {
+            let json = load_jsonc_file(&vscode_mcp_json_path);
+            json.get("servers")
+                .and_then(|v| v.get("tokensave"))
+                .is_some()
+        } else {
+            false
+        };
+
+        // Legacy fallback: settings.json may still hold a pre-#266 registration.
         let vscode_has_tokensave = if vscode_settings_path.exists() {
             let json = load_jsonc_file(&vscode_settings_path);
             json.get("mcp")
                 .and_then(|v| v.get("servers"))
+                .and_then(|v| v.get("tokensave"))
+                .is_some()
+        } else {
+            false
+        };
+
+        let insiders_mcp_json_has_tokensave = if insiders_mcp_json_path.exists() {
+            let json = load_jsonc_file(&insiders_mcp_json_path);
+            json.get("servers")
                 .and_then(|v| v.get("tokensave"))
                 .is_some()
         } else {
@@ -188,21 +223,29 @@ impl AgentIntegration for CopilotIntegration {
             false
         };
 
-        vscode_has_tokensave
+        vscode_mcp_json_has_tokensave
+            || vscode_has_tokensave
+            || insiders_mcp_json_has_tokensave
             || insiders_has_tokensave
             || cli_has_tokensave
             || jetbrains_has_tokensave
     }
 }
 
-/// Register MCP server in VS Code settings.json.
-fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
-    if let Some(parent) = settings_path.parent() {
+/// Register MCP server in VS Code's dedicated `User/mcp.json` (1.102+, GA
+/// MCP). This is the authoritative user-level MCP config on modern VS Code —
+/// the legacy `settings.json` `mcp.servers` key is migrated out of and no
+/// longer read for MCP by current releases (issue #266).
+///
+/// Uses the same top-level `servers` shape as the `JetBrains` plugin's
+/// `mcp.json`, but — unlike `JetBrains` — VS Code expects a `type` field.
+fn install_vscode_mcp_json_server(mcp_json_path: &Path, tokensave_bin: &str) -> Result<()> {
+    if let Some(parent) = mcp_json_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
 
-    let backup = backup_config_file(settings_path)?;
-    let mut settings = match load_jsonc_file_strict(settings_path) {
+    let backup = backup_config_file(mcp_json_path)?;
+    let mut config = match load_jsonc_file_strict(mcp_json_path) {
         Ok(v) => v,
         Err(e) => {
             if let Some(ref b) = backup {
@@ -212,19 +255,19 @@ fn install_vscode_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Resul
         }
     };
     let bin = crate::agents::preserve_mcp_command(
-        settings.pointer("/mcp/servers/tokensave/command"),
+        config.pointer("/servers/tokensave/command"),
         tokensave_bin,
     );
-    settings["mcp"]["servers"]["tokensave"] = json!({
+    config["servers"]["tokensave"] = json!({
         "type": "stdio",
         "command": bin,
         "args": ["serve"]
     });
 
-    safe_write_json_file(settings_path, &settings, backup.as_deref())?;
+    safe_write_json_file(mcp_json_path, &config, backup.as_deref())?;
     crate::agent_note!(
         "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
-        settings_path.display()
+        mcp_json_path.display()
     );
     Ok(())
 }
@@ -357,6 +400,43 @@ fn uninstall_vscode_mcp_server(settings_path: &Path) {
         crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             settings_path.display()
+        );
+    }
+}
+
+/// Remove MCP server entry from VS Code's `User/mcp.json`.
+fn uninstall_vscode_mcp_json_server(mcp_json_path: &Path) {
+    if !mcp_json_path.exists() {
+        return;
+    }
+    let Ok(contents) = std::fs::read_to_string(mcp_json_path) else {
+        return;
+    };
+    let mut config = parse_jsonc(&contents);
+    let Some(servers) = config.get_mut("servers").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    if servers.remove("tokensave").is_none() {
+        crate::agent_note!(
+            "  No tokensave MCP server in {}, skipping",
+            mcp_json_path.display()
+        );
+        return;
+    }
+    if servers.is_empty() {
+        config.as_object_mut().map(|o| o.remove("servers"));
+    }
+    let is_empty = config.as_object().is_some_and(serde_json::Map::is_empty);
+    if is_empty {
+        std::fs::remove_file(mcp_json_path).ok();
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
+            mcp_json_path.display()
+        );
+    } else if backup_and_write_json(mcp_json_path, &config) {
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
+            mcp_json_path.display()
         );
     }
 }
@@ -541,37 +621,8 @@ fn uninstall_prompt_rules(instructions_path: &Path) {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check VS Code (or VS Code Insiders) settings.json has tokensave MCP server registered.
-fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, label: &str) {
-    let settings_path = vscode_dir.join("User/settings.json");
-
-    if !settings_path.exists() {
-        dc.warn(&format!(
-            "{} not found — run `tokensave install --agent copilot` if you use GitHub Copilot in {label}",
-            settings_path.display()
-        ));
-        return;
-    }
-
-    let settings = load_jsonc_file(&settings_path);
-    let server = settings
-        .get("mcp")
-        .and_then(|v| v.get("servers"))
-        .and_then(|v| v.get("tokensave"));
-
-    let Some(server) = server.and_then(|v| v.as_object()) else {
-        dc.fail(&format!(
-            "MCP server NOT registered in {} — run `tokensave install --agent copilot`",
-            settings_path.display()
-        ));
-        return;
-    };
-    dc.pass(&format!(
-        "MCP server registered in {}",
-        settings_path.display()
-    ));
-
-    // Check args include "serve"
+/// Report whether an MCP server entry's `args` include `"serve"`.
+fn report_serve_arg(dc: &mut DoctorCounters, server: &serde_json::Map<String, serde_json::Value>) {
     let has_serve = server
         .get("args")
         .and_then(|v| v.as_array())
@@ -580,6 +631,73 @@ fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, labe
         dc.pass("MCP server args include \"serve\"");
     } else {
         dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent copilot`");
+    }
+}
+
+/// Check VS Code (or VS Code Insiders) has the tokensave MCP server
+/// registered in the modern `User/mcp.json`, falling back to the legacy
+/// `settings.json` `mcp.servers` entry (issue #266). Passes if either is
+/// valid; warns if both are present since that's a stale duplicate.
+fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, label: &str) {
+    let mcp_json_path = vscode_dir.join("User/mcp.json");
+    let settings_path = vscode_dir.join("User/settings.json");
+
+    if !mcp_json_path.exists() && !settings_path.exists() {
+        dc.warn(&format!(
+            "{} not found — run `tokensave install --agent copilot` if you use GitHub Copilot in {label}",
+            mcp_json_path.display()
+        ));
+        return;
+    }
+
+    let mcp_json_server = if mcp_json_path.exists() {
+        load_jsonc_file(&mcp_json_path)
+            .get("servers")
+            .and_then(|v| v.get("tokensave"))
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+    } else {
+        None
+    };
+
+    let legacy_server = if settings_path.exists() {
+        load_jsonc_file(&settings_path)
+            .get("mcp")
+            .and_then(|v| v.get("servers"))
+            .and_then(|v| v.get("tokensave"))
+            .and_then(serde_json::Value::as_object)
+            .cloned()
+    } else {
+        None
+    };
+
+    match (&mcp_json_server, &legacy_server) {
+        (Some(server), _) => {
+            dc.pass(&format!(
+                "MCP server registered in {}",
+                mcp_json_path.display()
+            ));
+            report_serve_arg(dc, server);
+            if legacy_server.is_some() {
+                dc.warn(&format!(
+                    "tokensave is also registered in legacy {} — modern VS Code migrates this into its own MCP registry and clears the key automatically, so it's likely just a stale leftover; you can remove mcp.servers.tokensave there to avoid confusion",
+                    settings_path.display()
+                ));
+            }
+        }
+        (None, Some(server)) => {
+            dc.pass(&format!(
+                "MCP server registered in legacy {}",
+                settings_path.display()
+            ));
+            report_serve_arg(dc, server);
+        }
+        (None, None) => {
+            dc.fail(&format!(
+                "MCP server NOT registered in {} — run `tokensave install --agent copilot`",
+                mcp_json_path.display()
+            ));
+        }
     }
 }
 
