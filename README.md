@@ -345,6 +345,11 @@ Each repo is shallow-cloned (`git init` + `git fetch --progress --depth 1 origin
 
 ```bash
 # Required: a writable cache directory for the cloned repos + their indexes.
+
+<p align="center">
+  <a href="https://ai.enzolombardi.net/"><img src="https://img.shields.io/badge/built%20with-AI-D97757?style=flat-square&labelColor=101010&logo=anthropic&logoColor=white" alt="Built with AI — part of Enzo Lombardi's AI portfolio"></a>
+</p>
+
 # Expect several GB of disk and a long first run (shallow clone + full index of each repo).
 export TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache
 
