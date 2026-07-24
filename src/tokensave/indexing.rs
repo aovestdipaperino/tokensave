@@ -2,6 +2,139 @@
 use super::query::resolve_symbol_for_edit;
 use super::*;
 
+/// Extensions that are never source code — binary assets, media, archives,
+/// lockfiles, and plain-data formats. These are excluded from the
+/// skipped-extension diagnostic (#262, #270) so a verbose sync highlights
+/// genuinely unsupported languages instead of `.png` / `.lock` noise.
+const NON_SOURCE_EXTS: &[&str] = &[
+    // Images / fonts
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "bmp",
+    "ico",
+    "icns",
+    "svg",
+    "webp",
+    "avif",
+    "tiff",
+    "psd",
+    "woff",
+    "woff2",
+    "ttf",
+    "otf",
+    "eot", // Audio / video
+    "mp3",
+    "mp4",
+    "m4a",
+    "wav",
+    "ogg",
+    "flac",
+    "avi",
+    "mov",
+    "webm",
+    "mkv",
+    // Archives / packages
+    "zip",
+    "gz",
+    "tgz",
+    "tar",
+    "bz2",
+    "xz",
+    "zst",
+    "7z",
+    "rar",
+    "jar",
+    "war",
+    "whl",
+    "deb",
+    "rpm",
+    "dmg",
+    "pkg",
+    "apk",
+    "nupkg",
+    "crate", // Compiled / binary artifacts
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "a",
+    "o",
+    "obj",
+    "lib",
+    "bin",
+    "dat",
+    "wasm",
+    "class",
+    "pyc",
+    "pyo",
+    "pdb",
+    "rlib",
+    "rmeta",
+    "node",
+    "onnx",
+    "pt",
+    "safetensors",
+    // Databases / caches / logs / locks
+    "db",
+    "sqlite",
+    "sqlite3",
+    "lock",
+    "log",
+    "tmp",
+    "bak",
+    "cache",
+    "sum",
+    // Documents
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "odt",
+    "rtf",
+    // Plain data / config formats (structured data, not code)
+    "json",
+    "jsonl",
+    "yaml",
+    "yml",
+    "xml",
+    "plist",
+    "csv",
+    "tsv",
+    "txt",
+    "map",
+    "min",
+    "properties",
+    "env",
+    "cfg",
+    "ini",
+    "conf",
+];
+
+/// Cap on how many per-extension lines the verbose skipped-extension
+/// summary emits; anything beyond the cap is rolled up into one line.
+const MAX_SKIPPED_EXT_LINES: usize = 15;
+
+/// Emit one verbose line per skipped extension, e.g.
+/// `.mcfunction: 12 file(s) skipped (no registered extractor)`.
+fn report_skipped_extensions<V: Fn(&str)>(skipped: &[(String, usize)], on_verbose: &V) {
+    for (ext, count) in skipped.iter().take(MAX_SKIPPED_EXT_LINES) {
+        on_verbose(&format!(
+            ".{ext}: {count} file(s) skipped (no registered extractor)"
+        ));
+    }
+    let rest = skipped.len().saturating_sub(MAX_SKIPPED_EXT_LINES);
+    if rest > 0 {
+        on_verbose(&format!(
+            "…and {rest} more extension(s) skipped (no registered extractor)"
+        ));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -63,13 +196,14 @@ impl TokenSave {
 
         // 2. Scan for source files
         let phase_start = Instant::now();
-        let files = self.scan_files();
+        let (files, skipped_extensions) = self.scan_files_diagnostics();
         let total = files.len();
         on_verbose(&format!(
             "scanned {} files in {:.1}s",
             total,
             phase_start.elapsed().as_secs_f64()
         ));
+        report_skipped_extensions(&skipped_extensions, &on_verbose);
 
         // 3. Parallel extraction: read + parse + hash on all cores
         let project_root = self.project_root.clone();
@@ -494,12 +628,13 @@ impl TokenSave {
 
         on_progress(0, 0, "scanning files");
         let phase_start = Instant::now();
-        let current_files = self.scan_files();
+        let (current_files, skipped_extensions) = self.scan_files_diagnostics();
         on_verbose(&format!(
             "scanned {} files in {:.1}s",
             current_files.len(),
             phase_start.elapsed().as_secs_f64()
         ));
+        report_skipped_extensions(&skipped_extensions, &on_verbose);
 
         // Stat all files in parallel to get (mtime, size) — ~11ms for 20k files
         on_progress(0, 0, "checking file timestamps");
@@ -763,6 +898,7 @@ impl TokenSave {
             modified_paths: stale,
             skipped_paths: skipped,
             removed_paths: removed,
+            skipped_extensions,
         })
     }
 
@@ -789,6 +925,19 @@ impl TokenSave {
     }
 
     pub(crate) fn scan_files(&self) -> Vec<String> {
+        self.scan_files_diagnostics().0
+    }
+
+    /// Like [`Self::scan_files`], but also reports how many source-like
+    /// files were skipped because no registered extractor handles their
+    /// extension (#262, #270). Returns `(files, skipped_extensions)` where
+    /// `skipped_extensions` is sorted by count (descending), then name.
+    ///
+    /// Known non-source extensions (images, archives, lockfiles, …) are
+    /// excluded from the summary so it highlights genuinely unsupported
+    /// languages instead of asset noise; exclude globs, gitignore rules,
+    /// and the hidden-directory filter all apply before a file is counted.
+    pub(crate) fn scan_files_diagnostics(&self) -> (Vec<String>, Vec<(String, usize)>) {
         debug_assert!(
             self.project_root.is_dir(),
             "scan_files: project_root is not a directory"
@@ -799,7 +948,8 @@ impl TokenSave {
             "scan_files: no supported extensions registered"
         );
 
-        let mut files = self.scan_project_files(&supported_exts);
+        let mut skipped_map: HashMap<String, usize> = HashMap::new();
+        let mut files = self.scan_project_files(&supported_exts, &mut skipped_map);
         // Manifest external entries (absolute / `~` paths) are additive
         // opt-ins indexed under their resolved absolute path (#194).
         if let Some(manifest) = self.manifest() {
@@ -807,12 +957,18 @@ impl TokenSave {
             files.sort();
             files.dedup();
         }
-        files
+        let mut skipped: Vec<(String, usize)> = skipped_map.into_iter().collect();
+        skipped.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        (files, skipped)
     }
 
-    fn scan_project_files(&self, supported_exts: &[&str]) -> Vec<String> {
+    fn scan_project_files(
+        &self,
+        supported_exts: &[&str],
+        skipped_exts: &mut HashMap<String, usize>,
+    ) -> Vec<String> {
         if self.config.git_ignore {
-            let files = self.scan_files_with_gitignore(supported_exts);
+            let files = self.scan_files_with_gitignore(supported_exts, skipped_exts);
             if files.is_empty() {
                 // The project directory may be gitignored by a parent repo,
                 // causing the ignore-aware walker to skip everything. Fall
@@ -831,12 +987,14 @@ impl TokenSave {
                     });
                 if has_source {
                     eprintln!("warning: gitignore-aware scan found no files; falling back to plain walk (project may be gitignored by parent repo)");
-                    return self.scan_files_walkdir(supported_exts);
+                    // Don't double-count skips from the aborted first walk.
+                    skipped_exts.clear();
+                    return self.scan_files_walkdir(supported_exts, skipped_exts);
                 }
             }
             files
         } else {
-            self.scan_files_walkdir(supported_exts)
+            self.scan_files_walkdir(supported_exts, skipped_exts)
         }
     }
 
@@ -844,7 +1002,11 @@ impl TokenSave {
     ///
     /// Hidden (dot-prefixed) entries that match a configured `include` glob
     /// are allowed through despite the default filter.
-    pub(crate) fn scan_files_walkdir(&self, supported_exts: &[&str]) -> Vec<String> {
+    pub(crate) fn scan_files_walkdir(
+        &self,
+        supported_exts: &[&str],
+        skipped_exts: &mut HashMap<String, usize>,
+    ) -> Vec<String> {
         let mut files = Vec::new();
         let root = &self.project_root;
         let config = &self.config;
@@ -887,7 +1049,7 @@ impl TokenSave {
             if !entry.file_type().is_file() {
                 continue;
             }
-            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts) {
+            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, skipped_exts) {
                 files.push(rel_str);
             }
         }
@@ -906,7 +1068,11 @@ impl TokenSave {
     /// When `include` globs are configured, the crate's built-in hidden filter
     /// is disabled and hidden entries are filtered manually so that included
     /// dot-paths can pass through.
-    pub(crate) fn scan_files_with_gitignore(&self, supported_exts: &[&str]) -> Vec<String> {
+    pub(crate) fn scan_files_with_gitignore(
+        &self,
+        supported_exts: &[&str],
+        skipped_exts: &mut HashMap<String, usize>,
+    ) -> Vec<String> {
         let manifest = self.manifest();
         // Manifest entries behave like include globs for hidden-path
         // filtering, so disable the crate's hidden filter when either exists.
@@ -970,7 +1136,7 @@ impl TokenSave {
             if !ft.is_file() {
                 continue;
             }
-            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts) {
+            if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, skipped_exts) {
                 files.push(rel_str);
             }
         }
@@ -979,7 +1145,16 @@ impl TokenSave {
 
     /// Checks whether a file should be included: correct extension, not
     /// excluded by config globs, and within the max file size.
-    pub(crate) fn accept_file(&self, path: &Path, supported_exts: &[&str]) -> Option<String> {
+    ///
+    /// Files rejected because no registered extractor handles their
+    /// extension are tallied into `skipped_exts` (source-like extensions
+    /// only) so verbose sync can report them (#262, #270).
+    pub(crate) fn accept_file(
+        &self,
+        path: &Path,
+        supported_exts: &[&str],
+        skipped_exts: &mut HashMap<String, usize>,
+    ) -> Option<String> {
         let relative = path.strip_prefix(&self.project_root).ok()?;
         // Normalize to forward slashes so paths are consistent across
         // platforms and between different directory walkers on Windows.
@@ -992,6 +1167,12 @@ impl TokenSave {
                 .manifest()
                 .is_some_and(|m| m.matches_local_file(&rel_str));
             if !manifest_match {
+                if !ext.is_empty() && !is_excluded(&rel_str, &self.config) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    if !NON_SOURCE_EXTS.contains(&ext_lower.as_str()) {
+                        *skipped_exts.entry(ext_lower).or_insert(0) += 1;
+                    }
+                }
                 return None;
             }
         }

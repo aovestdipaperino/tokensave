@@ -25,6 +25,8 @@ async fn index_with_manifest(manifest: &str) -> (TokenSave, TempDir) {
     (cg, dir)
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
+#[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn manifest_indexes_extensionless_and_wrong_extension_files_as_bash() {
     let (cg, _dir) = index_with_manifest(
@@ -59,6 +61,8 @@ async fn manifest_indexes_extensionless_and_wrong_extension_files_as_bash() {
         .any(|n| n.file_path == "homedir/.bashrc.d/prompt.shrc"));
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
+#[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn manifest_external_absolute_path_is_indexed() {
     // The "external" file lives in its own temp dir, outside the project.
@@ -121,6 +125,8 @@ async fn unknown_language_fails_the_sync_loudly() {
     assert!(msg.contains("valid languages"), "{msg}");
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
+#[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn sync_picks_up_manifest_files_too() {
     let (cg, dir) = index_with_manifest(

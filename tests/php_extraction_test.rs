@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-php")]
+
 #[cfg(feature = "lang-php")]
 mod php_tests {
 

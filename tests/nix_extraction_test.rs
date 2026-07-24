@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-nix")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::NixExtractor;
 use tokensave::types::*;

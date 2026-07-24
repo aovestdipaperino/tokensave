@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-pascal")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PascalExtractor;
 use tokensave::types::*;

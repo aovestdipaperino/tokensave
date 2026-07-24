@@ -326,23 +326,27 @@ mod tests {
         assert!(err.to_string().contains("valid languages"), "{err}");
     }
 
+    // These tests use "python" as the override language because it lives in
+    // the always-compiled lite tier — "bash" (lang-bash, medium) made them
+    // fail under `--no-default-features --features lite`. The override
+    // mechanics under test are language-agnostic.
     #[test]
     fn language_override_matches_globs_and_literals() {
         let m = compile(vec![
-            entry("homedir/.bash_profile", Some("bash")),
-            entry("homedir/.bashrc.d/*.shrc", Some("bash")),
+            entry("homedir/.bash_profile", Some("python")),
+            entry("homedir/.bashrc.d/*.shrc", Some("python")),
         ]);
-        assert_eq!(m.language_for("homedir/.bash_profile"), Some("bash"));
+        assert_eq!(m.language_for("homedir/.bash_profile"), Some("python"));
         assert_eq!(
             m.language_for("homedir/.bashrc.d/prompt.shrc"),
-            Some("bash")
+            Some("python")
         );
         assert_eq!(m.language_for("src/main.rs"), None);
     }
 
     #[test]
     fn local_file_and_dir_matching() {
-        let m = compile(vec![entry("homedir/.bashrc.d/*.shrc", Some("bash"))]);
+        let m = compile(vec![entry("homedir/.bashrc.d/*.shrc", Some("python"))]);
         assert!(m.matches_local_file("homedir/.bashrc.d/a.shrc"));
         assert!(!m.matches_local_file("homedir/.bashrc.d/a.txt"));
         assert!(m.local_dir_may_contain("homedir"));
@@ -362,12 +366,12 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();
         std::fs::write(
             dir.path().join(".tokensave/project.json"),
-            r#"{"version":1,"entries":[{"path":"dotfiles/.bash_profile","language":"bash"}]}"#,
+            r#"{"version":1,"entries":[{"path":"dotfiles/.bash_profile","language":"python"}]}"#,
         )
         .unwrap();
         let reg = registry();
         let e = resolve_extractor(&reg, dir.path(), "dotfiles/.bash_profile").unwrap();
-        assert_eq!(e.language_name(), "Bash");
+        assert_eq!(e.language_name(), "Python");
         // No override → normal dispatch still applies.
         assert!(resolve_extractor(&reg, dir.path(), "x.unknownext").is_none());
         assert!(resolve_extractor(&reg, dir.path(), "x.rs").is_some());
@@ -378,10 +382,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join(".bash_profile");
         std::fs::write(&f, "export A=1\n").unwrap();
-        let m = compile(vec![entry(&f.to_string_lossy(), Some("bash"))]);
+        let m = compile(vec![entry(&f.to_string_lossy(), Some("python"))]);
         let files = m.expand_external_files(1_000_000);
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with(".bash_profile"));
-        assert_eq!(m.language_for(&files[0]), Some("bash"));
+        assert_eq!(m.language_for(&files[0]), Some("python"));
     }
 }

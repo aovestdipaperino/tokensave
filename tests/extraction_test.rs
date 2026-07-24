@@ -360,6 +360,47 @@ fn test_language_registry_supported_extensions() {
     assert!(exts.contains(&"cjs"));
     assert!(exts.contains(&"mts"));
     assert!(exts.contains(&"cts"));
+    // #262: Minecraft datapack functions.
+    #[cfg(feature = "lang-mcfunction")]
+    assert!(exts.contains(&"mcfunction"));
+    // #270: Godot shaders route through the GLSL extractor.
+    #[cfg(feature = "lang-glsl")]
+    {
+        assert!(exts.contains(&"gdshader"));
+        assert!(exts.contains(&"gdshaderinc"));
+    }
+}
+
+#[cfg(feature = "lang-mcfunction")]
+#[test]
+fn test_language_registry_finds_mcfunction_extractor() {
+    // #262: .mcfunction files were filtered out before extraction because
+    // the extension was unregistered.
+    let registry = LanguageRegistry::new();
+    for path in [
+        "data/example/function/a.mcfunction",
+        "data/example/functions/legacy.mcfunction",
+        "world/datapacks/pack/data/ns/function/deep/nested.mcfunction",
+    ] {
+        assert!(
+            registry.extractor_for_file(path).is_some(),
+            "no extractor found for {path}"
+        );
+    }
+}
+
+#[cfg(feature = "lang-glsl")]
+#[test]
+fn test_language_registry_finds_gdshader_extractor() {
+    // #270: .gdshader files were filtered out before extraction because
+    // the extension was unregistered.
+    let registry = LanguageRegistry::new();
+    assert!(registry
+        .extractor_for_file("shaders/wind.gdshader")
+        .is_some());
+    assert!(registry
+        .extractor_for_file("shaders/common.gdshaderinc")
+        .is_some());
 }
 
 #[test]
