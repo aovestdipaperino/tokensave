@@ -431,6 +431,75 @@ fn test_gdshader_extracts_varying_and_const() {
     assert!(names.contains(&"PI"), "nodes: {names:?}");
 }
 
+// Ported from PR #272 (Jan Štol): signatures and excerpts must be built from
+// the ORIGINAL source, not the dialect-blanked copy that only exists to help
+// the parser — a hinted uniform's signature keeps its `: hint...` text.
+#[test]
+fn test_gdshader_signatures_keep_original_hint_text() {
+    let source = std::fs::read_to_string("tests/fixtures/sample.gdshader").unwrap();
+    let result = GlslExtractor.extract("sample.gdshader", &source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let const_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Const)
+        .collect();
+    let consts: Vec<_> = const_nodes.iter().map(|n| n.name.as_str()).collect();
+    for name in [
+        "albedo",
+        "roughness_value",
+        "tint_color",
+        "global_wind",
+        "instance_tint",
+    ] {
+        assert!(consts.contains(&name), "consts: {consts:?}");
+    }
+
+    let sig = |name: &str| -> String {
+        const_nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap()
+            .signature
+            .clone()
+            .unwrap_or_default()
+    };
+    assert!(
+        sig("albedo").contains("source_color"),
+        "signature: {:?}",
+        sig("albedo")
+    );
+    assert!(
+        sig("roughness_value").contains("hint_range(0.0, 1.0)"),
+        "signature: {:?}",
+        sig("roughness_value")
+    );
+    assert!(
+        sig("global_wind").contains("global"),
+        "signature: {:?}",
+        sig("global_wind")
+    );
+    assert!(
+        sig("instance_tint").contains("instance"),
+        "signature: {:?}",
+        sig("instance_tint")
+    );
+
+    let includes: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        includes
+            .iter()
+            .any(|name| name.contains("common.gdshaderinc")),
+        "includes: {includes:?}"
+    );
+}
+
 #[test]
 fn test_gdshader_registry_dispatch() {
     use tokensave::extraction::LanguageRegistry;
