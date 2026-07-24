@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Fixed
+- **`.gdshader` node signatures keep the original Godot hint/qualifier text instead of the blanked copy fed to the parser (#272).** The Godot-dialect support shipped in 7.6.1 (#270, #275) rewrites `: hint_…` clauses and `global`/`instance` qualifiers into same-length spaces so the vanilla GLSL grammar can parse the file — but it then extracted every node's signature and excerpt from that rewritten copy, so `uniform sampler2D albedo : source_color;` indexed with the hint text silently dropped from its signature. Extraction now parses the normalized copy while reading all node text from the original source — the two are byte-length- and line-identical by construction, so tree-sitter's byte ranges index both interchangeably — and a hinted or `global`/`instance` uniform's indexed signature shows the real declaration text. Ported from PR #272 by @janstol, whose independently developed `.gdshader` support crossed mid-air with #275; the surviving delta (original-source signatures, its regression fixture, and the `MORE-LANGUAGES-SUPPORT` documentation note) is landed here with attribution.
+
 ## [7.6.1] - 2026-07-24
 
 ### Added

@@ -27,10 +27,21 @@ struct GodotDirective {
 
 impl GlslExtractor {
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_source_inner(file_path, source, source)
+    }
+
+    /// Extract from `parse_src` (a possibly dialect-normalized copy of
+    /// `source`) while reading all node text — signatures, excerpts,
+    /// docstrings — from the original `source`. The two must have identical
+    /// byte length and line structure so tree-sitter byte ranges index both
+    /// interchangeably; `rewrite_godot_dialect` guarantees this by blanking
+    /// with spaces. This keeps e.g. a `: hint_range(…)` clause visible in a
+    /// uniform's indexed signature even though the parser never sees it.
+    fn extract_source_inner(file_path: &str, source: &str, parse_src: &str) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
 
-        let tree = match Self::parse_source(source) {
+        let tree = match Self::parse_source(parse_src) {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
@@ -95,7 +106,7 @@ impl GlslExtractor {
     /// nodes under the file.
     pub fn extract_gdshader(file_path: &str, source: &str) -> ExtractionResult {
         let (rewritten, directives) = Self::rewrite_godot_dialect(source);
-        let mut result = Self::extract_source(file_path, &rewritten);
+        let mut result = Self::extract_source_inner(file_path, source, &rewritten);
 
         let file_info = result
             .nodes
