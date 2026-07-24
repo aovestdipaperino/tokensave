@@ -255,6 +255,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             // Check for updates in parallel with indexing
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
+
+            // Memory instrumentation for #253: the initial full index is
+            // the largest single graph build; record its phases (emitted
+            // from inside indexing.rs) against this process.
+            tokensave::memstats::init("index", &project_path);
+            tokensave::memstats::record("start");
+
             commands::init_and_index(&project_path, &skip_folders, false).await?;
 
             // Print update notice from parallel check (suppressed for 15 min)
@@ -303,6 +310,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             // Check for updates in parallel with indexing
             let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
+
+            // Memory instrumentation for #253: the sync/indexing path is
+            // the suspected transient RSS peak; phases are recorded from
+            // inside the indexing code itself.
+            tokensave::memstats::init("sync", &project_path);
+            tokensave::memstats::record("start");
 
             if force {
                 commands::init_and_index(&project_path, &skip_folders, verbose).await?;
@@ -918,6 +931,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             };
 
+            // Memory instrumentation for #253: mark this process as a
+            // long-lived MCP server and take a baseline RSS sample.
+            tokensave::memstats::init("serve", cg.project_root());
+            tokensave::memstats::record("start");
+
             // Compute scope prefix: relative path from project root to original cwd
             let scope_prefix = original_cwd.and_then(|cwd| {
                 cwd.strip_prefix(cg.project_root())
@@ -1216,6 +1234,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Err(e) = tokensave::monitor::run() {
                 eprintln!("Monitor error: {e}");
                 process::exit(1);
+            }
+        }
+        Commands::Memory { clean } => {
+            // Diagnostic tool: always exits 0, even when the report or
+            // the --clean purge fails — it must never break scripts
+            // that poll it while investigating an incident (#253).
+            if let Err(e) = tokensave::memstats::run(clean) {
+                eprintln!("Memory report error: {e}");
             }
         }
         Commands::Branch { action } => {
