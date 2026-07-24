@@ -210,6 +210,7 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
+        crate::memstats::record("index:extract");
         let (extractions, _skipped) =
             extract_files_isolated(&project_root, registry, files.clone());
 
@@ -254,7 +255,11 @@ impl TokenSave {
 
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
+        crate::memstats::set_graph_nodes(all_nodes.len() as u64);
         if !all_unresolved.is_empty() {
+            // Suspected RSS peak for #253: `from_nodes` clones every node
+            // into its name caches while `all_nodes` stays alive.
+            crate::memstats::record("index:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
             all_edges.extend(resolver.create_edges(&resolution.resolved));
@@ -264,6 +269,7 @@ impl TokenSave {
             let variant_edges = crate::resolution::propagate_variant_edges(&all_nodes, &all_edges);
             all_edges.extend(variant_edges);
         }
+        crate::memstats::record("index:resolve:done");
         on_verbose(&format!(
             "resolved {} references in {:.1}s",
             all_unresolved.len(),
@@ -288,6 +294,7 @@ impl TokenSave {
 
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         let phase_start = Instant::now();
+        crate::memstats::record("index:insert");
         self.db.insert_nodes(&all_nodes).await?;
         self.db
             .insert_executable_body_documents(&body_documents)
@@ -344,6 +351,7 @@ impl TokenSave {
             "non-empty index completed in zero milliseconds"
         );
         clear_dirty_sentinel(&self.project_root);
+        crate::memstats::record("index:done");
         Ok(result)
     }
 
@@ -496,6 +504,7 @@ impl TokenSave {
 
         // Extract graph data from the files in parallel (subprocess-isolated)
         let _ = stat_map; // worker re-stats internally; map kept for potential future use
+        crate::memstats::record("sync:extract");
         let (sync_extractions, _skipped_extractions) =
             extract_files_isolated(project_root, registry, file_paths.clone());
 
@@ -544,8 +553,15 @@ impl TokenSave {
 
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
+            // Suspected RSS peak for #253: `get_all_nodes` materializes the
+            // whole graph, then `from_nodes` clones every node into its
+            // name caches — ~3x the graph resident simultaneously.
+            crate::memstats::record("sync:resolve:load_nodes");
             let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+            crate::memstats::set_graph_nodes(all_nodes.len() as u64);
+            crate::memstats::record("sync:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            crate::memstats::record("sync:resolve:done");
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolution = resolver.resolve_all(&unresolved);
@@ -576,6 +592,7 @@ impl TokenSave {
             .await?;
 
         clear_dirty_sentinel(&self.project_root);
+        crate::memstats::record("sync:done");
         Ok(())
     }
 
@@ -758,6 +775,7 @@ impl TokenSave {
 
         let phase_start = Instant::now();
         let _ = stat_map; // worker re-stats internally
+        crate::memstats::record("sync:extract");
         let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) =
             extract_files_isolated(project_root, registry, to_index.clone());
         // Surface extractor timeouts/crashes in `SyncResult.skipped_paths`
@@ -831,8 +849,15 @@ impl TokenSave {
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
+                // Suspected RSS peak for #253: `get_all_nodes` materializes
+                // the whole graph, then `from_nodes` clones every node into
+                // its name caches — ~3x the graph resident simultaneously.
+                crate::memstats::record("sync:resolve:load_nodes");
                 let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+                crate::memstats::set_graph_nodes(all_nodes.len() as u64);
+                crate::memstats::record("sync:resolve:build_caches");
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+                crate::memstats::record("sync:resolve:done");
                 let resolution = resolver.resolve_all(&unresolved);
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
@@ -863,6 +888,7 @@ impl TokenSave {
             .await?;
 
         clear_dirty_sentinel(&self.project_root);
+        crate::memstats::record("sync:done");
         Ok(SyncResult {
             files_added: new_files.len(),
             files_modified: stale.len(),

@@ -1704,6 +1704,12 @@ impl McpServer {
                     net_saved,
                     before_tokens,
                 );
+                // Memory instrumentation for #253: one RSS sample per
+                // handled tool call, attributed to the tool name. This
+                // generically covers every handler that materializes the
+                // graph (get_all_nodes callers included) at the single
+                // dispatch point.
+                crate::memstats::record(tool_name);
                 self.maybe_flush_worldwide().await;
 
                 // Append per-call token savings to the response content.

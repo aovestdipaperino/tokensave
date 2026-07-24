@@ -5894,3 +5894,115 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
     let primary_content = fs::read_to_string(primary_root.join("src/lib.rs")).unwrap();
     assert_eq!(primary_content, original_source);
 }
+
+// ---------------------------------------------------------------------------
+// tokensave_status vs. an in-flight / interrupted full rebuild (#267)
+// ---------------------------------------------------------------------------
+
+/// Runs a git command in `dir`, panicking with stderr on failure.
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run git");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Turns an already-indexed test project into a git repo with two commits.
+fn init_git_with_commits(project: &std::path::Path) {
+    run_git(project, &["init"]);
+    run_git(project, &["config", "user.email", "test@test.com"]);
+    run_git(project, &["config", "user.name", "Test"]);
+    run_git(project, &["config", "commit.gpgsign", "false"]);
+    run_git(project, &["add", "."]);
+    run_git(project, &["commit", "-m", "initial"]);
+    fs::write(project.join("src/extra.rs"), "pub fn extra() {}\n").unwrap();
+    run_git(project, &["add", "."]);
+    run_git(project, &["commit", "-m", "second"]);
+}
+
+/// #267: `index_all()` clears nodes/edges/files up front and only repopulates
+/// them at the end. A status call racing that window used to report an empty,
+/// "149 commits stale" graph while search served current data moments later.
+/// Status must flag the in-flight rebuild and must not emit a whole-history
+/// staleness warning derived from `last_updated == 0`.
+#[tokio::test]
+async fn test_status_mid_rebuild_reports_rebuild_in_progress() {
+    let (cg, dir) = setup_project().await;
+    let project = dir.path();
+    init_git_with_commits(project);
+
+    // Simulate the window inside `index_all()` after `Database::clear()` has
+    // emptied the graph tables but before the bulk re-insert lands: tables
+    // empty, metadata intact, and the sync lock held by a live process.
+    cg.db().clear().await.unwrap();
+    let _lock = tokensave::tokensave::try_acquire_sync_lock(project).unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let status: Value = serde_json::from_str(text).expect("status must be JSON");
+
+    assert_eq!(status["node_count"], json!(0));
+    assert_eq!(
+        status["index_rebuild_in_progress"],
+        json!(true),
+        "status must flag an in-flight rebuild instead of silently presenting \
+         an empty graph as the true index state (#267), got: {text}"
+    );
+    assert!(
+        status.get("stale_warning").is_none(),
+        "an in-flight rebuild must not produce a bogus whole-history \
+         staleness warning (#267), got: {text}"
+    );
+}
+
+/// #267: with the files table empty (interrupted rebuild, mid-clear snapshot)
+/// `last_updated` reads 0 and the staleness check used to call
+/// `git_commits_since(0)`, counting every commit in the branch history. It
+/// must fall back to the `last_sync_at` metadata timestamp, which survives
+/// `Database::clear()`.
+#[tokio::test]
+async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
+    let (cg, dir) = setup_project().await;
+    let project = dir.path();
+    init_git_with_commits(project);
+
+    cg.db().clear().await.unwrap();
+    // Deterministic guard against same-second commit timestamps: a sync
+    // "just happened", so no commit can be newer than it.
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    cg.db()
+        .set_metadata("last_sync_at", &future.to_string())
+        .await
+        .unwrap();
+
+    let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    let status: Value = serde_json::from_str(text).expect("status must be JSON");
+
+    assert!(
+        status.get("stale_commits").is_none(),
+        "stale_commits must not count the entire branch history when the \
+         files table is empty (#267), got: {text}"
+    );
+    // Reporter's side request in #267: status must carry the server version.
+    assert_eq!(
+        status["version"],
+        json!(env!("CARGO_PKG_VERSION")),
+        "status must report the running tokensave version, got: {text}"
+    );
+}

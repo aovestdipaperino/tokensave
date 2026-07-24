@@ -36,6 +36,21 @@ pub(crate) fn has_dirty_sentinel(project_root: &Path) -> bool {
     get_tokensave_dir(project_root).join("dirty").exists()
 }
 
+/// Returns `true` if a sync or full reindex currently holds the sync lock
+/// (the lockfile exists and the PID recorded inside it is alive).
+///
+/// Used by read-only paths such as `tokensave_status` to recognise the
+/// transient window in which `index_all` has cleared the graph tables but
+/// not yet repopulated them, so an empty graph can be reported as "rebuild
+/// in progress" instead of being presented as the true index state (#267).
+pub(crate) fn sync_in_progress(project_root: &Path) -> bool {
+    let lock_path = get_tokensave_dir(project_root).join("sync.lock");
+    std::fs::read_to_string(&lock_path)
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u32>().ok())
+        .is_some_and(is_pid_alive)
+}
+
 /// Deletes the database and its WAL/SHM sidecars.
 pub(crate) fn delete_db_files(db_path: &std::path::Path) {
     let _ = std::fs::remove_file(db_path);
