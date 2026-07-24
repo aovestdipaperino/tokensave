@@ -2208,6 +2208,7 @@ impl CppExtractor {
                 if child.kind() == "call_expression" {
                     if let Some(callee) = child.named_child(0) {
                         let callee_name = state.node_text(callee);
+                        Self::extract_godot_binding(state, child, &callee_name, fn_node_id);
                         state.unresolved_refs.push(UnresolvedRef {
                             from_node_id: fn_node_id.to_string(),
                             reference_name: callee_name,
@@ -2224,6 +2225,84 @@ impl CppExtractor {
                 if !cursor.goto_next_sibling() {
                     break;
                 }
+            }
+        }
+    }
+
+    /// Link godot-cpp `ClassDB::bind_method` / `bind_static_method` registrations
+    /// to the C++ method they expose to the engine (issue #269).
+    ///
+    /// A `GDExtension` registers methods for `GDScript` inside `_bind_methods`:
+    ///
+    /// ```cpp
+    /// ClassDB::bind_method(D_METHOD("register_item", "cfg"), &MyRegistry::register_item);
+    /// ClassDB::bind_static_method("MyRegistry", D_METHOD("register_global"), &MyRegistry::register_global);
+    /// ```
+    ///
+    /// The exposed method is passed as a pointer-to-member argument
+    /// (`&Class::method`). The generic call-site walker only records the
+    /// *callee* (`ClassDB::bind_method`, `D_METHOD`) — none of which resolve —
+    /// so the bound method receives no incoming edge and is misreported as
+    /// dead code, while `callers`/`impact` on it come back empty. Here we emit
+    /// an extra `Calls` reference from the enclosing function (`_bind_methods`)
+    /// to the qualified method name (`MyRegistry::register_item`), which the
+    /// resolver links via its qualified-name match. `GDScript` call sites already
+    /// resolve to the same method by its short name, because the `D_METHOD`
+    /// exposed name matches the C++ method name by godot-cpp convention.
+    ///
+    /// Detection is name-based only (no type resolution): the callee's final
+    /// path segment must be `bind_method` or `bind_static_method`, and only
+    /// pointer-to-member arguments (`&Class::method`) are followed, which
+    /// avoids picking up `DEFVAL(...)` default-argument expressions.
+    fn extract_godot_binding(
+        state: &mut ExtractionState,
+        call_node: TsNode<'_>,
+        callee_name: &str,
+        fn_node_id: &str,
+    ) {
+        let last_segment = callee_name.rsplit("::").next().unwrap_or(callee_name);
+        if last_segment != "bind_method" && last_segment != "bind_static_method" {
+            return;
+        }
+        let Some(args) = call_node.child_by_field_name("arguments") else {
+            return;
+        };
+        Self::collect_bound_method_pointers(state, args, fn_node_id);
+    }
+
+    /// Recursively scan `node` for pointer-to-member expressions (`&Class::method`)
+    /// and emit a `Calls` reference from `fn_node_id` to each qualified method
+    /// name found. Used by [`Self::extract_godot_binding`].
+    fn collect_bound_method_pointers(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "pointer_expression" {
+                if let Some(qid) = Self::find_descendant_by_kind(child, "qualified_identifier") {
+                    let name = state.node_text(qid);
+                    if name.contains("::") {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_node_id.to_string(),
+                            reference_name: name,
+                            reference_kind: EdgeKind::Calls,
+                            line: qid.start_position().row as u32,
+                            column: qid.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                }
+            } else {
+                Self::collect_bound_method_pointers(state, child, fn_node_id);
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }
