@@ -21,6 +21,7 @@ pub(super) async fn handle_status(
 ) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
+    output["version"] = json!(env!("CARGO_PKG_VERSION"));
     if let Some(ss) = server_stats {
         output["server"] = ss;
     }
@@ -44,14 +45,38 @@ pub(super) async fn handle_status(
         }
     }
 
-    // Git commit staleness: count commits since last index
-    let stale_commit_count = cg.git_commits_since(stats.last_updated as i64);
-    if stale_commit_count > 0 {
-        output["stale_commits"] = json!(stale_commit_count);
-        output["stale_warning"] = json!(format!(
-            "{} commit(s) since last sync. Run `tokensave sync` to update the index.",
-            stale_commit_count
-        ));
+    // A full reindex (`index_all`) commits its up-front `Database::clear()`
+    // seconds before it repopulates the graph tables. A status call landing in
+    // that window reads empty counts and `last_updated == 0` while the DB file,
+    // `last_sync_at`, and search results are all still current — issue #267. Flag
+    // the in-flight rebuild so the transient empty graph is not presented as the
+    // true index state, and skip the staleness warning below (which would
+    // otherwise count the entire branch history).
+    let rebuild_in_progress = crate::tokensave::sync_in_progress(cg.project_root());
+    if rebuild_in_progress {
+        output["index_rebuild_in_progress"] = json!(true);
+    }
+
+    // Git commit staleness: count commits since last index. `last_updated` is
+    // MAX(files.indexed_at) and reads 0 whenever the files table is empty — an
+    // in-flight or interrupted rebuild — so fall back to the `last_sync_at`
+    // metadata timestamp, which survives `Database::clear()`. Without this, an
+    // empty files table makes `git_commits_since(0)` count every commit in
+    // history (#267).
+    if !rebuild_in_progress {
+        let staleness_since = if stats.last_updated > 0 {
+            stats.last_updated as i64
+        } else {
+            stats.last_sync_at as i64
+        };
+        let stale_commit_count = cg.git_commits_since(staleness_since);
+        if stale_commit_count > 0 {
+            output["stale_commits"] = json!(stale_commit_count);
+            output["stale_warning"] = json!(format!(
+                "{} commit(s) since last sync. Run `tokensave sync` to update the index.",
+                stale_commit_count
+            ));
+        }
     }
 
     // File-level staleness summary (sample up to 100 files for efficiency)

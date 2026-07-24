@@ -1155,3 +1155,54 @@ async fn test_incremental_sync_edge_count_matches_full_reindex() {
          into target_fn after incremental sync"
     );
 }
+
+/// #262 / #270: verbose sync must explain files skipped because no
+/// registered extractor handles their extension — aggregated per extension
+/// and filtered so binary/asset noise (.png, .lock, …) is not reported.
+#[tokio::test]
+async fn test_verbose_sync_reports_skipped_extensions() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    // Two files of an unsupported source-like language, plus binary noise.
+    fs::write(project.join("a.coolscript"), "print 1\n").unwrap();
+    fs::write(project.join("b.coolscript"), "print 2\n").unwrap();
+    fs::write(project.join("logo.png"), [0x89u8, 0x50, 0x4e, 0x47]).unwrap();
+    fs::write(project.join("deps.lock"), "lockfile\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let lines = std::sync::Mutex::new(Vec::<String>::new());
+    let result = cg
+        .sync_with_progress_verbose(
+            |_, _, _| {},
+            |msg| lines.lock().unwrap().push(msg.to_string()),
+        )
+        .await
+        .unwrap();
+    let lines = lines.into_inner().unwrap();
+
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(".coolscript: 2 file(s) skipped (no registered extractor)")),
+        "verbose output must summarize the skipped extension; got: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(".png") || l.contains(".lock")),
+        "binary/asset extensions must not be reported; got: {lines:?}"
+    );
+
+    // The same summary is carried on SyncResult for `sync --doctor`.
+    assert_eq!(
+        result.skipped_extensions,
+        vec![("coolscript".to_string(), 2)],
+        "skipped_extensions: {:?}",
+        result.skipped_extensions
+    );
+}

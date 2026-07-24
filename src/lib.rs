@@ -38,6 +38,7 @@ pub mod go_import;
 pub mod graph;
 pub mod hooks;
 pub mod mcp;
+pub mod memstats;
 pub mod monitor;
 pub mod project_manifest;
 pub mod redundancy;

@@ -6,12 +6,9 @@ use std::fs;
 use tempfile::TempDir;
 use tokensave::tokensave::TokenSave;
 
-#[cfg(feature = "lang-bash")]
 const BASH_PROFILE: &str = "export PATH=\"$HOME/bin:$PATH\"\n\nmy_greet() {\n    echo hello\n}\n";
-#[cfg(feature = "lang-bash")]
 const SHRC: &str = "my_prompt() {\n    echo prompt\n}\n";
 
-#[cfg(feature = "lang-bash")]
 async fn index_with_manifest(manifest: &str) -> (TokenSave, TempDir) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -28,6 +25,7 @@ async fn index_with_manifest(manifest: &str) -> (TokenSave, TempDir) {
     (cg, dir)
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
 #[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn manifest_indexes_extensionless_and_wrong_extension_files_as_bash() {
@@ -63,6 +61,7 @@ async fn manifest_indexes_extensionless_and_wrong_extension_files_as_bash() {
         .any(|n| n.file_path == "homedir/.bashrc.d/prompt.shrc"));
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
 #[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn manifest_external_absolute_path_is_indexed() {
@@ -126,6 +125,7 @@ async fn unknown_language_fails_the_sync_loudly() {
     assert!(msg.contains("valid languages"), "{msg}");
 }
 
+// Requires the medium-tier bash extractor; skipped under lite.
 #[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn sync_picks_up_manifest_files_too() {

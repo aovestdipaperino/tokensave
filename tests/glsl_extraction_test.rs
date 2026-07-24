@@ -306,3 +306,140 @@ fn test_glsl_complexity_metrics() {
     let main_fn = result.nodes.iter().find(|n| n.name == "main").unwrap();
     assert!(main_fn.loops > 0, "main should have loop complexity");
 }
+
+// -------------------------------------------------------------------------
+// Godot .gdshader dialect (#270)
+// -------------------------------------------------------------------------
+
+const GDSHADER_SOURCE: &str = r#"shader_type spatial;
+render_mode blend_mix, depth_draw_opaque;
+
+#include "res://shaders/common.gdshaderinc"
+
+uniform float wind_strength : hint_range(0.0, 2.0) = 1.0;
+uniform sampler2D albedo_tex : source_color;
+uniform vec4 tint;
+instance uniform float sway_offset;
+varying vec3 world_pos;
+const float PI = 3.14159;
+
+float wave(float t) {
+    return sin(t * wind_strength);
+}
+
+void vertex() {
+    world_pos = VERTEX;
+    VERTEX.y += wave(TIME) * wind_strength;
+}
+"#;
+
+#[test]
+fn test_gdshader_extracts_uniforms() {
+    let result = GlslExtractor.extract("shaders/wind.gdshader", GDSHADER_SOURCE);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"wind_strength"), "nodes: {names:?}");
+    assert!(names.contains(&"albedo_tex"), "nodes: {names:?}");
+    assert!(names.contains(&"tint"), "nodes: {names:?}");
+    assert!(names.contains(&"sway_offset"), "nodes: {names:?}");
+
+    // The repro in #270 searches for `wind_strength` — the uniform's
+    // signature must carry the declaration text.
+    let wind = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "wind_strength")
+        .unwrap();
+    assert_eq!(wind.kind, NodeKind::Const, "uniforms map to Const");
+    assert!(
+        wind.signature.as_deref().unwrap().contains("wind_strength"),
+        "signature: {:?}",
+        wind.signature
+    );
+}
+
+#[test]
+fn test_gdshader_extracts_functions_and_calls() {
+    let result = GlslExtractor.extract("shaders/wind.gdshader", GDSHADER_SOURCE);
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"wave"), "functions: {fns:?}");
+    assert!(fns.contains(&"vertex"), "functions: {fns:?}");
+
+    let calls: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(calls.contains(&"wave"), "calls: {calls:?}");
+}
+
+#[test]
+fn test_gdshader_extracts_include_and_directives() {
+    let result = GlslExtractor.extract("shaders/wind.gdshader", GDSHADER_SOURCE);
+    let uses: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        uses.iter().any(|u| u.contains("common.gdshaderinc")),
+        "uses: {uses:?}"
+    );
+
+    let shader_type = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "shader_type")
+        .expect("shader_type directive node");
+    assert!(
+        shader_type
+            .signature
+            .as_deref()
+            .unwrap()
+            .contains("spatial"),
+        "signature: {:?}",
+        shader_type.signature
+    );
+    let render_mode = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "render_mode")
+        .expect("render_mode directive node");
+    assert!(
+        render_mode
+            .signature
+            .as_deref()
+            .unwrap()
+            .contains("blend_mix"),
+        "signature: {:?}",
+        render_mode.signature
+    );
+}
+
+#[test]
+fn test_gdshader_extracts_varying_and_const() {
+    let result = GlslExtractor.extract("shaders/wind.gdshader", GDSHADER_SOURCE);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"world_pos"), "nodes: {names:?}");
+    assert!(names.contains(&"PI"), "nodes: {names:?}");
+}
+
+#[test]
+fn test_gdshader_registry_dispatch() {
+    use tokensave::extraction::LanguageRegistry;
+    let registry = LanguageRegistry::new();
+    let extractor = registry
+        .extractor_for_file("assets/shaders/wind.gdshader")
+        .expect(".gdshader must be handled");
+    assert_eq!(extractor.language_name(), "GLSL");
+    assert!(registry
+        .extractor_for_file("assets/shaders/common.gdshaderinc")
+        .is_some());
+}

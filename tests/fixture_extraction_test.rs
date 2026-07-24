@@ -684,6 +684,7 @@ fn test_fixture_kotlin() {
 
 // ── Dart ────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-dart")]
 #[test]
 fn test_fixture_dart() {
     let source = read_fixture("sample.dart");
@@ -881,6 +882,7 @@ fn test_fixture_csharp() {
 
 // ── PHP ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-php")]
 #[test]
 fn test_fixture_php() {
     let source = read_fixture("sample.php");
@@ -1013,6 +1015,7 @@ fn test_fixture_php() {
 
 // ── Pascal ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-pascal")]
 #[test]
 fn test_fixture_pascal() {
     let source = read_fixture("sample.pas");
@@ -1101,6 +1104,7 @@ fn test_fixture_pascal() {
 
 // ── Ruby ────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-ruby")]
 #[test]
 fn test_fixture_ruby() {
     let source = read_fixture("sample.rb");
@@ -1417,6 +1421,7 @@ fn test_fixture_swift() {
 
 // ── Bash ────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-bash")]
 #[test]
 fn test_fixture_bash() {
     let source = read_fixture("sample.sh");
@@ -1482,6 +1487,7 @@ fn test_fixture_bash() {
 
 // ── Lua ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-lua")]
 #[test]
 fn test_fixture_lua() {
     let source = read_fixture("sample.lua");
@@ -1562,6 +1568,7 @@ fn test_fixture_lua() {
 
 // ── Zig ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-zig")]
 #[test]
 fn test_fixture_zig() {
     let source = read_fixture("sample.zig");
@@ -1734,6 +1741,7 @@ fn test_fixture_zig() {
 
 // ── Protobuf ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-protobuf")]
 #[test]
 fn test_fixture_proto() {
     let source = read_fixture("sample.proto");
@@ -1870,6 +1878,7 @@ fn test_fixture_proto() {
 
 // ── Nix ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-nix")]
 #[test]
 fn test_fixture_nix() {
     let source = read_fixture("sample.nix");
@@ -1974,6 +1983,7 @@ fn test_fixture_nix() {
 
 // ── VB.NET ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-vbnet")]
 #[test]
 fn test_fixture_vbnet() {
     let source = read_fixture("sample.vb");
@@ -2143,6 +2153,7 @@ fn test_fixture_vbnet() {
 
 // ── PowerShell ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-powershell")]
 #[test]
 fn test_fixture_powershell() {
     let source = read_fixture("sample.ps1");
@@ -2216,6 +2227,7 @@ fn test_fixture_powershell() {
 
 // ── Batch ───────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-batch")]
 #[test]
 fn test_fixture_batch() {
     let source = read_fixture("sample.bat");
@@ -2276,6 +2288,7 @@ fn test_fixture_batch() {
 
 // ── Perl ────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-perl")]
 #[test]
 fn test_fixture_perl() {
     let source = read_fixture("sample.pl");
@@ -2402,6 +2415,7 @@ fn test_fixture_perl() {
 
 // ── Objective-C ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-objc")]
 #[test]
 fn test_fixture_objc() {
     let source = read_fixture("sample.m");
@@ -2563,6 +2577,7 @@ fn test_fixture_objc() {
 
 // -- Fortran ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-fortran")]
 #[test]
 fn test_fixture_fortran() {
     let source = read_fixture("sample.f90");
@@ -2721,6 +2736,7 @@ fn test_fixture_fortran() {
 
 // -- COBOL ────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-cobol")]
 #[test]
 fn test_fixture_cobol() {
     let source = read_fixture("sample.cob");
@@ -2828,6 +2844,7 @@ fn test_fixture_cobol() {
 
 // ── MS BASIC 2.0 ────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-msbasic2")]
 #[test]
 fn test_fixture_msbasic2() {
     let source = read_fixture("sample.bas");
@@ -2910,6 +2927,7 @@ fn test_fixture_msbasic2() {
 
 // ── GW-BASIC ────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-gwbasic")]
 #[test]
 fn test_fixture_gwbasic() {
     let source = read_fixture("sample.gw");
@@ -2996,6 +3014,7 @@ fn test_fixture_gwbasic() {
 
 // ── QBasic ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "lang-qbasic")]
 #[test]
 fn test_fixture_qbasic() {
     let source = read_fixture("sample.qb");

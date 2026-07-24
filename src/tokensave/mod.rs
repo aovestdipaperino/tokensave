@@ -115,6 +115,10 @@ pub struct SyncResult {
     pub removed_paths: Vec<String>,
     /// Files that were found on disk but could not be read (path, error message).
     pub skipped_paths: Vec<(String, String)>,
+    /// Source-like extensions skipped because no registered extractor
+    /// handles them, as `(extension, file_count)` sorted by count
+    /// descending (#262, #270). Known binary/asset extensions are omitted.
+    pub skipped_extensions: Vec<(String, usize)>,
 }
 
 /// Returns the current UNIX timestamp in seconds.

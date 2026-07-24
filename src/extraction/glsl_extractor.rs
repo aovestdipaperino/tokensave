@@ -1,7 +1,9 @@
 /// Tree-sitter based GLSL (OpenGL Shading Language) source code extractor.
 ///
 /// Parses GLSL source files and emits nodes and edges for the code graph.
-/// Handles `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese` files.
+/// Handles `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese`
+/// files, plus Godot's GLSL-dialect shaders (`.gdshader`, `.gdshaderinc`,
+/// #270) via a light dialect rewrite before parsing.
 use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -14,6 +16,14 @@ use crate::types::{
 
 /// Extracts code graph nodes and edges from GLSL source files using tree-sitter.
 pub struct GlslExtractor;
+
+/// A Godot shader file-level directive (`shader_type`, `render_mode`)
+/// captured while rewriting the dialect to plain GLSL.
+struct GodotDirective {
+    keyword: &'static str,
+    text: String,
+    line: u32,
+}
 
 impl GlslExtractor {
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
@@ -69,6 +79,164 @@ impl GlslExtractor {
         state.node_stack.pop();
 
         state.build_result(start)
+    }
+
+    /// Extract a Godot `.gdshader` / `.gdshaderinc` file (#270).
+    ///
+    /// Godot's shading language is GLSL-family with a handful of dialect
+    /// additions the vanilla GLSL grammar rejects: `shader_type` /
+    /// `render_mode` / `group_uniforms` / `stencil_mode` file directives,
+    /// `global` / `instance` uniform qualifiers, and `: hint_…` clauses on
+    /// uniform declarations. Rather than bundling a dedicated grammar, the
+    /// source is rewritten to plain GLSL first — every rewrite replaces
+    /// text with spaces of identical byte length, so all node positions in
+    /// the parsed output still match the original file. Captured
+    /// `shader_type` / `render_mode` directives are re-emitted as `Const`
+    /// nodes under the file.
+    pub fn extract_gdshader(file_path: &str, source: &str) -> ExtractionResult {
+        let (rewritten, directives) = Self::rewrite_godot_dialect(source);
+        let mut result = Self::extract_source(file_path, &rewritten);
+
+        let file_info = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::File)
+            .map(|n| (n.id.clone(), n.updated_at));
+        if let Some((file_id, timestamp)) = file_info {
+            for directive in directives {
+                let id = generate_node_id(
+                    file_path,
+                    &NodeKind::Const,
+                    directive.keyword,
+                    directive.line,
+                );
+                result.nodes.push(Node {
+                    id: id.clone(),
+                    kind: NodeKind::Const,
+                    name: directive.keyword.to_string(),
+                    qualified_name: format!("{file_path}::{}", directive.keyword),
+                    file_path: file_path.to_string(),
+                    start_line: directive.line,
+                    attrs_start_line: directive.line,
+                    end_line: directive.line,
+                    start_column: 0,
+                    end_column: 0,
+                    signature: Some(directive.text),
+                    docstring: None,
+                    visibility: Visibility::Pub,
+                    is_async: false,
+                    branches: 0,
+                    loops: 0,
+                    returns: 0,
+                    max_nesting: 0,
+                    unsafe_blocks: 0,
+                    unchecked_calls: 0,
+                    assertions: 0,
+                    cognitive_complexity: 0,
+                    distinct_operators: 0,
+                    distinct_operands: 0,
+                    total_operators: 0,
+                    total_operands: 0,
+                    updated_at: timestamp,
+                    parent_id: None,
+                });
+                result.edges.push(Edge {
+                    source: file_id.clone(),
+                    target: id,
+                    kind: EdgeKind::Contains,
+                    line: Some(directive.line),
+                });
+            }
+        }
+        result
+    }
+
+    /// Rewrite Godot shader dialect constructs into space padding so the
+    /// GLSL grammar parses the remainder. Byte length and line structure
+    /// are preserved exactly.
+    fn rewrite_godot_dialect(source: &str) -> (String, Vec<GodotDirective>) {
+        let mut out = String::with_capacity(source.len());
+        let mut directives = Vec::new();
+        for (line_no, raw) in source.split_inclusive('\n').enumerate() {
+            let (line, newline) = match raw.strip_suffix('\n') {
+                Some(stripped) => (stripped, "\n"),
+                None => (raw, ""),
+            };
+            out.push_str(&Self::rewrite_godot_line(
+                line,
+                line_no as u32,
+                &mut directives,
+            ));
+            out.push_str(newline);
+        }
+        (out, directives)
+    }
+
+    /// Rewrite a single line of Godot shader dialect (see
+    /// [`Self::rewrite_godot_dialect`]).
+    fn rewrite_godot_line(
+        line: &str,
+        line_no: u32,
+        directives: &mut Vec<GodotDirective>,
+    ) -> String {
+        let trimmed = line.trim();
+        let first = trimmed.split_whitespace().next().unwrap_or("");
+        match first {
+            "shader_type" | "render_mode" => {
+                let keyword = if first == "shader_type" {
+                    "shader_type"
+                } else {
+                    "render_mode"
+                };
+                directives.push(GodotDirective {
+                    keyword,
+                    text: trimmed.trim_end_matches(';').trim().to_string(),
+                    line: line_no,
+                });
+                return Self::blank_span(line, 0, line.len());
+            }
+            // Godot-only grouping/stencil directives carry no symbols.
+            "group_uniforms" | "stencil_mode" => {
+                return Self::blank_span(line, 0, line.len());
+            }
+            _ => {}
+        }
+
+        // Uniform declarations: blank the Godot-only `global` / `instance`
+        // qualifier and any `: hint_…` clause (up to the default value or
+        // terminator) so the declaration parses as plain GLSL.
+        if matches!(first, "uniform" | "global" | "instance") {
+            let mut rewritten = line.to_string();
+            if first != "uniform" {
+                if let Some(pos) = rewritten.find(first) {
+                    rewritten = Self::blank_span(&rewritten, pos, pos + first.len());
+                }
+            }
+            if let Some(colon) = rewritten.find(':') {
+                let tail = &rewritten[colon..];
+                let end_rel = tail.find(['=', ';']).unwrap_or(tail.len());
+                rewritten = Self::blank_span(&rewritten, colon, colon + end_rel);
+            }
+            return rewritten;
+        }
+        line.to_string()
+    }
+
+    /// Replace `[start, end)` (byte offsets) with spaces, one per byte, so
+    /// the result has identical byte length and all positions outside the
+    /// span are unchanged.
+    fn blank_span(line: &str, start: usize, end: usize) -> String {
+        let mut out = String::with_capacity(line.len());
+        for (i, ch) in line.char_indices() {
+            if i >= start && i < end {
+                for _ in 0..ch.len_utf8() {
+                    out.push(' ');
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
     }
 
     fn parse_source(source: &str) -> Result<Tree, String> {
@@ -741,7 +909,17 @@ impl GlslExtractor {
 
 impl crate::extraction::LanguageExtractor for GlslExtractor {
     fn extensions(&self) -> &[&str] {
-        &["glsl", "vert", "frag", "geom", "comp", "tesc", "tese"]
+        &[
+            "glsl",
+            "vert",
+            "frag",
+            "geom",
+            "comp",
+            "tesc",
+            "tese",
+            "gdshader",
+            "gdshaderinc",
+        ]
     }
 
     fn language_name(&self) -> &'static str {
@@ -749,6 +927,10 @@ impl crate::extraction::LanguageExtractor for GlslExtractor {
     }
 
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
-        GlslExtractor::extract_source(file_path, source)
+        if file_path.ends_with(".gdshader") || file_path.ends_with(".gdshaderinc") {
+            GlslExtractor::extract_gdshader(file_path, source)
+        } else {
+            GlslExtractor::extract_source(file_path, source)
+        }
     }
 }
