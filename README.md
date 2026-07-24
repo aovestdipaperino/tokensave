@@ -785,7 +785,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | QBasic | `.qb` | `lang-qbasic` |
 | QuickBASIC 4.5 | `.bi`, `.bm` | `lang-qbasic` |
 | Dockerfile | `Dockerfile`, `.dockerfile` | `lang-dockerfile` |
-| GLSL | `.glsl`, `.vert`, `.frag`, `.comp` | `lang-glsl` |
+| GLSL | `.glsl`, `.vert`, `.frag`, `.comp`, `.gdshader` | `lang-glsl` |
 | WGSL | `.wgsl` | `lang-wgsl` |
 | HLSL | `.hlsl`, `.fx` | `lang-hlsl` |
 | Metal | `.metal` | `lang-metal` |

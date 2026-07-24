@@ -86,7 +86,7 @@ Languages with growing communities or specific ecosystem value.
 |----------|-----------|---------------|------------|-------|
 | **Gleam** | `.gleam` | `tree-sitter-gleam` (1.0.0) | Low-medium | Functions, types, imports, externals. Clean syntax, good graph potential. BEAM ecosystem. |
 | **Odin** | `.odin` | `tree-sitter-odin` (1.3.0) | Medium | Procedures, structs, enums, imports, packages. Systems programming language gaining traction. |
-| **GDScript** | `.gd` | `tree-sitter-gdscript` (6.1.0) | Medium | Classes, functions, signals, exports, `extends`. Godot engine scripting — large gamedev community. |
+| **GDScript** | `.gd` | `tree-sitter-gdscript` (6.1.0) | Medium | Classes, functions, signals, exports, `extends`. Godot engine scripting — large gamedev community. Godot's `.gdshader` shader files are indexed separately via the GLSL extractor (see Full tier above). |
 | **Solidity** | `.sol` | `tree-sitter-solidity` (1.2.13) | Medium | Contracts, functions, events, modifiers, inheritance. Contract→contract `extends` edges. Web3 niche but high demand. |
 | **Elm** | `.elm` | `tree-sitter-elm` (5.9.0) | Low-medium | Modules, functions, type aliases, custom types, ports, imports. Clean ML-like syntax. |
 | **Groovy** | `.groovy`, `.gradle` | `tree-sitter-groovy` (0.1.2) | Medium | Classes, methods, closures. `.gradle` files are Groovy — useful for build graph analysis. |

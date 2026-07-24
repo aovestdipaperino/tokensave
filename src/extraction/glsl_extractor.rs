@@ -1,7 +1,7 @@
 /// Tree-sitter based GLSL (OpenGL Shading Language) source code extractor.
 ///
 /// Parses GLSL source files and emits nodes and edges for the code graph.
-/// Handles `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese` files.
+/// Handles `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese`, `.gdshader` files.
 use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -18,9 +18,23 @@ pub struct GlslExtractor;
 impl GlslExtractor {
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+
+        // Godot's `.gdshader` files extend GLSL with `: hint...` uniform annotations and
+        // `global`/`instance` uniform qualifiers that the plain GLSL grammar cannot parse.
+        // Blank out just those spans before parsing so uniforms still resolve to correct
+        // Const nodes. Normalization is length-preserving, so we parse the normalized text
+        // but keep the original source in `state` for signatures/excerpts.
+        let normalized;
+        let parse_src: &str = if file_path.rsplit('.').next() == Some("gdshader") {
+            normalized = Self::normalize_gdshader(source);
+            &normalized
+        } else {
+            source
+        };
+
         let mut state = ExtractionState::new(file_path, source);
 
-        let tree = match Self::parse_source(source) {
+        let tree = match Self::parse_source(parse_src) {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
@@ -80,6 +94,58 @@ impl GlslExtractor {
         parser
             .parse(source, None)
             .ok_or_else(|| "tree-sitter parse returned None".to_string())
+    }
+
+    /// Blanks out Godot-only syntax so the GLSL grammar can parse the declaration,
+    /// without shifting any byte/line/column offsets: the `: hint...` uniform
+    /// annotation clause, and the leading `global `/`instance ` keyword (which has
+    /// no GLSL equivalent and would otherwise stop the declaration from parsing as
+    /// a `uniform`, misclassifying it as `Static` instead of `Const`).
+    fn normalize_gdshader(source: &str) -> String {
+        const QUALIFIERS: &[&str] = &[
+            "uniform ",
+            "varying ",
+            "global uniform ",
+            "instance uniform ",
+        ];
+        const GODOT_ONLY: &[&str] = &["global ", "instance "];
+
+        let mut out = String::with_capacity(source.len());
+        for (i, line) in source.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+
+            let trimmed_start = line.trim_start();
+            if !QUALIFIERS.iter().any(|q| trimmed_start.starts_with(q)) {
+                out.push_str(line);
+                continue;
+            }
+
+            let leading_ws = line.len() - trimmed_start.len();
+            let mut blanked = line.as_bytes().to_vec();
+
+            for kw in GODOT_ONLY {
+                if trimmed_start.starts_with(kw) {
+                    for b in &mut blanked[leading_ws..leading_ws + kw.len()] {
+                        *b = b' ';
+                    }
+                }
+            }
+
+            if let Some(colon_rel) = trimmed_start.find(':') {
+                let colon = leading_ws + colon_rel;
+                let end = line[colon..]
+                    .find(['=', ';'])
+                    .map_or(line.len(), |rel| colon + rel);
+                for b in &mut blanked[colon..end] {
+                    *b = b' ';
+                }
+            }
+
+            out.push_str(std::str::from_utf8(&blanked).unwrap_or(line));
+        }
+        out
     }
 
     fn visit_children(state: &mut ExtractionState, node: TsNode<'_>) {
@@ -741,7 +807,9 @@ impl GlslExtractor {
 
 impl crate::extraction::LanguageExtractor for GlslExtractor {
     fn extensions(&self) -> &[&str] {
-        &["glsl", "vert", "frag", "geom", "comp", "tesc", "tese"]
+        &[
+            "glsl", "vert", "frag", "geom", "comp", "tesc", "tese", "gdshader",
+        ]
     }
 
     fn language_name(&self) -> &'static str {

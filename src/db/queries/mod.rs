@@ -314,7 +314,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "vb" => "VB.NET",
         "bas" => "BASIC",
         "bat" | "cmd" => "Batch",
-        "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" => "GLSL",
+        "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" | "gdshader" => "GLSL",
         "qnt" => "Quint",
         "gd" => "GDScript",
         _ => "Other",

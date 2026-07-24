@@ -2,6 +2,7 @@
 
 use tokensave::extraction::GlslExtractor;
 use tokensave::extraction::LanguageExtractor;
+use tokensave::extraction::LanguageRegistry;
 use tokensave::types::*;
 
 #[test]
@@ -286,6 +287,69 @@ fn test_glsl_extensions() {
     assert!(extensions.contains(&"frag"));
     assert!(extensions.contains(&"geom"));
     assert!(extensions.contains(&"comp"));
+}
+
+#[test]
+fn test_gdshader_dispatches_to_glsl() {
+    let registry = LanguageRegistry::new();
+    let extractor = registry
+        .extractor_for_file("x.gdshader")
+        .expect("gdshader should resolve to an extractor");
+    assert_eq!(extractor.language_name(), "GLSL");
+}
+
+#[test]
+fn test_gdshader_extract_uniforms_and_functions() {
+    let source = std::fs::read_to_string("tests/fixtures/sample.gdshader").unwrap();
+    let result = GlslExtractor.extract("sample.gdshader", &source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // Godot's `: hint...` uniform annotations are stripped before parsing, so
+    // hinted uniforms (`albedo`, `roughness_value`) are extracted correctly
+    // alongside the plain `tint_color` uniform. `global`/`instance` uniform
+    // qualifiers are also stripped so they classify as `Const`, not `Static`.
+    let const_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Const)
+        .collect();
+    let consts: Vec<_> = const_nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(consts.contains(&"albedo"), "consts: {consts:?}");
+    assert!(consts.contains(&"roughness_value"), "consts: {consts:?}");
+    assert!(consts.contains(&"tint_color"), "consts: {consts:?}");
+    assert!(consts.contains(&"global_wind"), "consts: {consts:?}");
+    assert!(consts.contains(&"instance_tint"), "consts: {consts:?}");
+
+    // Signatures/excerpts must retain the original source, not the blanked-out
+    // hint clause used only to help the parser.
+    let albedo = const_nodes.iter().find(|n| n.name == "albedo").unwrap();
+    let albedo_signature = albedo.signature.as_deref().unwrap_or("");
+    assert!(
+        albedo_signature.contains("source_color"),
+        "signature: {albedo_signature:?}"
+    );
+
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"fragment"), "functions: {fns:?}");
+    assert!(fns.contains(&"compute_fresnel"), "functions: {fns:?}");
+
+    let includes: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        includes
+            .iter()
+            .any(|name| name.contains("common.gdshaderinc")),
+        "includes: {includes:?}"
+    );
 }
 
 #[test]
