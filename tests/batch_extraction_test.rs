@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-batch")]
 use tokensave::extraction::BatchExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

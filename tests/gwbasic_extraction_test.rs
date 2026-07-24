@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-gwbasic")]
 use tokensave::extraction::GwBasicExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

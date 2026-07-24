@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-bash")]
 use tokensave::extraction::BashExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

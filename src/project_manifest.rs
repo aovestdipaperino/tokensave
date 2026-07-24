@@ -326,6 +326,9 @@ mod tests {
         assert!(err.to_string().contains("valid languages"), "{err}");
     }
 
+    // The following tests use the `bash` language override, which is only
+    // registered when the `lang-bash` (medium-tier) feature is compiled in.
+    #[cfg(feature = "lang-bash")]
     #[test]
     fn language_override_matches_globs_and_literals() {
         let m = compile(vec![
@@ -340,6 +343,7 @@ mod tests {
         assert_eq!(m.language_for("src/main.rs"), None);
     }
 
+    #[cfg(feature = "lang-bash")]
     #[test]
     fn local_file_and_dir_matching() {
         let m = compile(vec![entry("homedir/.bashrc.d/*.shrc", Some("bash"))]);
@@ -356,6 +360,7 @@ mod tests {
         assert!(m.is_empty());
     }
 
+    #[cfg(feature = "lang-bash")]
     #[test]
     fn resolve_extractor_honors_override() {
         let dir = tempfile::tempdir().unwrap();
@@ -373,6 +378,7 @@ mod tests {
         assert!(resolve_extractor(&reg, dir.path(), "x.rs").is_some());
     }
 
+    #[cfg(feature = "lang-bash")]
     #[test]
     fn expand_external_files_finds_concrete_files() {
         let dir = tempfile::tempdir().unwrap();

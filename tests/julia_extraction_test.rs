@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-julia")]
 use tokensave::extraction::JuliaExtractor;
 use tokensave::types::{EdgeKind, NodeKind};
 

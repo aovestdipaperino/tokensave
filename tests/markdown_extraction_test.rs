@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-markdown")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::MarkdownExtractor;
 use tokensave::types::*;

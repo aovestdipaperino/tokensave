@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-quint")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::QuintExtractor;
 use tokensave::types::*;

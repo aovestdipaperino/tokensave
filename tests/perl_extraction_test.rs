@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-perl")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PerlExtractor;
 use tokensave::types::*;

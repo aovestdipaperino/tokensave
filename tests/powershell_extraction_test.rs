@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-powershell")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PowerShellExtractor;
 use tokensave::types::*;

@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-vbnet")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::VbNetExtractor;
 use tokensave::types::*;

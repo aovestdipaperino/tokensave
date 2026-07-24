@@ -1,3 +1,24 @@
+#![cfg(all(
+    feature = "lang-bash",
+    feature = "lang-batch",
+    feature = "lang-cobol",
+    feature = "lang-dart",
+    feature = "lang-fortran",
+    feature = "lang-gwbasic",
+    feature = "lang-lua",
+    feature = "lang-msbasic2",
+    feature = "lang-nix",
+    feature = "lang-objc",
+    feature = "lang-pascal",
+    feature = "lang-perl",
+    feature = "lang-php",
+    feature = "lang-powershell",
+    feature = "lang-protobuf",
+    feature = "lang-qbasic",
+    feature = "lang-ruby",
+    feature = "lang-vbnet",
+    feature = "lang-zig"
+))]
 //! Integration tests that run each language extractor against realistic sample files.
 //!
 //! These tests verify that extractors handle real-world code patterns correctly,

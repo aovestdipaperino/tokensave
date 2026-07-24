@@ -1,3 +1,4 @@
+#![cfg(feature = "lang-lua")]
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::LuaExtractor;
 use tokensave::types::*;
