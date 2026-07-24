@@ -272,6 +272,12 @@ pub enum Commands {
     },
     /// Live token savings monitor (global, all projects)
     Monitor,
+    /// Report memory usage of all tokensave instances on this machine (#253 diagnostics)
+    Memory {
+        /// Purge slots left behind by dead processes
+        #[arg(long)]
+        clean: bool,
+    },
     /// Manage multi-branch indexing
     Branch {
         #[command(subcommand)]
