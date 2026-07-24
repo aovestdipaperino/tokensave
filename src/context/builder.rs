@@ -1,5 +1,5 @@
 // Rust guideline compliant 2025-10-17
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
@@ -234,6 +234,15 @@ impl<'a> ContextBuilder<'a> {
         let body_terms = conceptual_query_terms(query, &options.extra_keywords);
         for term in &body_terms {
             push_term(term.clone(), &mut fts_terms, &mut fts_seen);
+            // The symbol FTS tokenizer (unicode61) does not stem, so a prose
+            // verb like "generates" never prefix-matches an indexed name such
+            // as `generateLauncherIcon`. Fold a trailing plural/third-person
+            // `s` into a second search term (#264).
+            if let Some(stem) = term.strip_suffix('s') {
+                if stem.len() >= 4 && !stem.ends_with('s') {
+                    push_term(stem.to_string(), &mut fts_terms, &mut fts_seen);
+                }
+            }
         }
         for s in symbols {
             push_term(s.clone(), &mut fts_terms, &mut fts_seen);
@@ -246,15 +255,32 @@ impl<'a> ContextBuilder<'a> {
             push_term(k.clone(), &mut fts_terms, &mut fts_seen);
         }
 
+        // Fetch each term's ranked top-K up front, then fill the candidate
+        // pool round-robin — one candidate per term per round — instead of
+        // exhausting terms in prose order. Early broad terms ("icon",
+        // "screen") previously consumed the whole pool cap before later, more
+        // discriminating terms ("favicon", "oauth") were ever searched
+        // (#264). Per-term work stays bounded: each fetch is a ranked
+        // top-`search_limit` query.
+        let mut per_term: Vec<VecDeque<SearchResult>> = Vec::with_capacity(fts_terms.len());
         for term in &fts_terms {
-            if candidates.len() >= cap {
-                break;
-            }
-            let results = self
-                .db
-                .search_nodes_bounded(term, options.search_limit)
-                .await?;
-            for sr in results {
+            per_term.push(
+                self.db
+                    .search_nodes_bounded(term, options.search_limit)
+                    .await?
+                    .into(),
+            );
+        }
+        'fill: loop {
+            let mut advanced = false;
+            for queue in &mut per_term {
+                if candidates.len() >= cap {
+                    break 'fill;
+                }
+                let Some(sr) = queue.pop_front() else {
+                    continue;
+                };
+                advanced = true;
                 if !Self::score_passes(sr.score, options.min_score)
                     || excluded.contains(&sr.node.id)
                 {
@@ -268,6 +294,9 @@ impl<'a> ContextBuilder<'a> {
                     index_of.insert(sr.node.id.clone(), candidates.len());
                     candidates.push(sr);
                 }
+            }
+            if !advanced {
+                break;
             }
         }
 

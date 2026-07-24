@@ -239,10 +239,15 @@ impl Database {
         Ok(results)
     }
 
-    /// Returns a bounded FTS candidate set without globally BM25-ranking every
-    /// match. Context building applies its own multi-signal ranking after
-    /// merging several search channels, so paying for a repository-wide sort
-    /// here is both redundant and pathological for common conceptual terms.
+    /// Returns the BM25-ranked top-`limit` FTS candidates for one search term.
+    ///
+    /// Ranking is per term, not repository-wide: the caller quotes a single
+    /// prefix term, so `ORDER BY bm25(...)` only scores rows matching that
+    /// term before `LIMIT` applies. Without the ordering the returned rows are
+    /// effectively arbitrary (ascending rowid), which made context building
+    /// miss strongly matching symbols for generic terms like "icon" (#264).
+    /// Scores stay flat at `1.0` because context building layers its own
+    /// multi-signal ranking after merging several search channels.
     pub async fn search_nodes_bounded(
         &self,
         query: &str,
@@ -281,6 +286,7 @@ impl Database {
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0)
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
