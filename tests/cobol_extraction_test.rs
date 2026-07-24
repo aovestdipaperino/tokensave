@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-cobol")]
+
 use tokensave::extraction::CobolExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

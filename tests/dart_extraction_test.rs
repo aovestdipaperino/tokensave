@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-dart")]
+
 use tokensave::extraction::DartExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

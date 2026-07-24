@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-fortran")]
+
 use tokensave::extraction::FortranExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;

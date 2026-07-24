@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-lean")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::LeanExtractor;
 use tokensave::types::*;

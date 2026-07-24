@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-objc")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::ObjcExtractor;
 use tokensave::types::*;

@@ -77,6 +77,8 @@ mod lean_extractor;
 mod lua_extractor;
 #[cfg(feature = "lang-markdown")]
 mod markdown_extractor;
+#[cfg(feature = "lang-mcfunction")]
+mod mcfunction_extractor;
 #[cfg(feature = "lang-metal")]
 mod metal_extractor;
 #[cfg(feature = "lang-msbasic2")]
@@ -180,6 +182,8 @@ pub use lean_extractor::LeanExtractor;
 pub use lua_extractor::LuaExtractor;
 #[cfg(feature = "lang-markdown")]
 pub use markdown_extractor::MarkdownExtractor;
+#[cfg(feature = "lang-mcfunction")]
+pub use mcfunction_extractor::McFunctionExtractor;
 #[cfg(feature = "lang-metal")]
 pub use metal_extractor::MetalExtractor;
 #[cfg(feature = "lang-msbasic2")]
@@ -344,6 +348,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(TomlExtractor));
         #[cfg(feature = "lang-gdscript")]
         extractors.push(Box::new(GdScriptExtractor));
+        #[cfg(feature = "lang-mcfunction")]
+        extractors.push(Box::new(McFunctionExtractor));
 
         Self { extractors }
     }

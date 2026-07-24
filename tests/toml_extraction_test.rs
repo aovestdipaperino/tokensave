@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-toml")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::TomlExtractor;
 use tokensave::types::*;

@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-markdown")]
+
 //! Migration smoke tests for `tree-sitter-grammars/tree-sitter-markdown`.
 //!
 //! Pre-migration these inputs caused the markdown extractor to hang or

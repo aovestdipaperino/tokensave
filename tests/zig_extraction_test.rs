@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-zig")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::ZigExtractor;
 use tokensave::types::*;

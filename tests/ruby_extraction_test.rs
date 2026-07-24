@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-ruby")]
+
 #[cfg(feature = "lang-ruby")]
 mod ruby_tests {
 

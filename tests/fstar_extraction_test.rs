@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-fstar")]
+
 //! F* extractor tests.
 //!
 //! All assertions run against a single fixture, `tests/fixtures/sample.fst`,

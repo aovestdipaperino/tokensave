@@ -735,6 +735,15 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
 
 /// Print the `--doctor` report after an incremental sync.
 pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
+    // Unsupported-extension summary (#262, #270): makes "not indexed because
+    // no extractor exists" distinguishable from a wrong project root, an
+    // ignore rule, or a stale index.
+    if !result.skipped_extensions.is_empty() {
+        eprintln!("\n\x1b[33mSkipped extensions (no registered extractor):\x1b[0m");
+        for (ext, count) in &result.skipped_extensions {
+            eprintln!("  .{ext}: {count} file(s)");
+        }
+    }
     let has_changes = !result.added_paths.is_empty()
         || !result.modified_paths.is_empty()
         || !result.removed_paths.is_empty();
