@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
-## [Unreleased]
+## [7.6.1] - 2026-07-24
 
 ### Added
 - **Minecraft datapack `.mcfunction` indexing (#262).** Java Edition datapack function files were filtered out before extraction because no extractor claimed the extension, so a datapack project indexed zero files and grew zero call edges. A new lightweight line-based extractor (no tree-sitter grammar needed — the format is one command per line with `#` comments and no sub-file structure) now treats each `data/<namespace>/function/<path>.mcfunction` file as a function-like node named by its resource location `<namespace>:<path>` (the file *is* the function; the legacy plural `functions` directory used before Minecraft 1.21 is accepted too, and nested directories become `/`-separated path segments). Call edges are created for `function <id>`, `execute … run function <id>`, `return run function <id>`, and `schedule function <id> …` commands, including on `$`-prefixed macro lines; namespace-less targets are normalized to the implicit `minecraft:` namespace so they resolve consistently. Macro-generated targets (`foo:$(name)`) and function tags (`#ns:tag`) are preserved verbatim as unresolved references — the standard representation for dynamic targets — so they never fabricate a false edge. A leading `#` comment block becomes the function's docstring. Ships in the `full` feature tier as `lang-mcfunction`.

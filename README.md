@@ -555,6 +555,14 @@ A global TUI that shows MCP tool calls from all projects in real time, via a sha
   <img src="src/resources/monitor-screenshot.png" alt="tokensave monitor TUI" width="800">
 </p>
 
+### Memory diagnostics
+
+```bash
+tokensave memory [--clean]
+```
+
+A machine-wide memory report for every tokensave process (MCP servers, syncs, index runs), via a shared memory-mapped table at `~/.tokensave/memory.mmap`. Each instance self-samples its RSS best-effort at startup, per MCP tool call, and around the sync/resolution phases, so the report shows current and peak RSS **with the phase that produced the peak** — the data needed to attribute high memory use (see #253). Rows are flagged `alive`, `dead` (an OOM-killed process leaves its peak/phase behind as a forensic record), or `orphan` (still running but reparented to init). `--clean` purges dead slots.
+
 ### Session and lifetime counters
 
 ```bash
@@ -670,6 +678,7 @@ tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
 tokensave serve                    # Start MCP server
 tokensave monitor                  # Live TUI showing MCP calls across all projects
+tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
 tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
@@ -786,6 +795,8 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | QuickBASIC 4.5 | `.bi`, `.bm` | `lang-qbasic` |
 | Dockerfile | `Dockerfile`, `.dockerfile` | `lang-dockerfile` |
 | GLSL | `.glsl`, `.vert`, `.frag`, `.comp` | `lang-glsl` |
+| Godot Shader | `.gdshader`, `.gdshaderinc` | `lang-glsl` |
+| Minecraft Function | `.mcfunction` | `lang-mcfunction` |
 | WGSL | `.wgsl` | `lang-wgsl` |
 | HLSL | `.hlsl`, `.fx` | `lang-hlsl` |
 | Metal | `.metal` | `lang-metal` |
