@@ -1175,3 +1175,201 @@ async fn executable_body_index_is_replaced_by_incremental_sync() {
         .iter()
         .any(|node| node.name == "policy"));
 }
+
+/// Builds a `Pub` function node for the issue #264 regression fixture.
+fn issue_264_function(id: &str, name: &str, file_path: &str, docstring: Option<&str>) -> Node {
+    Node {
+        id: id.to_string(),
+        kind: NodeKind::Function,
+        name: name.to_string(),
+        qualified_name: format!("{file_path}::{name}"),
+        file_path: file_path.to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 6,
+        start_column: 0,
+        end_column: 1,
+        signature: Some(format!("function {name}()")),
+        docstring: docstring.map(str::to_string),
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    }
+}
+
+/// #264: a natural-language task naming a top-level asset generator must
+/// surface the indexed generator module, not only unrelated UI screens that
+/// happen to share generic words ("icon", "screen", "logo"). The generic UI
+/// decoys are inserted first so an unranked bounded FTS scan (ascending
+/// rowid) returns only decoys for every shared term; per-term BM25 ranking
+/// must pull the generator's strong name/qualified-name matches into the
+/// candidate pool regardless of insertion order.
+#[tokio::test]
+async fn test_context_surfaces_asset_generator_over_generic_ui_decoys() {
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+
+    // Unrelated UI screens sharing the query's generic vocabulary. Every
+    // conceptual term the generator can match is also matched by at least
+    // three decoys with smaller rowids, so unfixed (unranked) LIMIT-based
+    // retrieval never reaches the generator.
+    let decoys = [
+        (
+            "settingsScreen",
+            "Generates the settings screen markup with a consistent header logo.",
+        ),
+        (
+            "profileScreen",
+            "Generates the profile screen and browser preview icon.",
+        ),
+        (
+            "homeScreen",
+            "Generates the home screen launcher shortcuts and favicon badge.",
+        ),
+        (
+            "loginScreen",
+            "Renders the OAuth consent screen with the partner logo.",
+        ),
+        (
+            "signupScreen",
+            "Renders the OAuth consent flow and browser splash overlay.",
+        ),
+        (
+            "onboardingScreen",
+            "Shows the splash screen with consistent geometry hints.",
+        ),
+        (
+            "dashboardScreen",
+            "Lays out dashboard cards with consistent geometry and icon grid.",
+        ),
+        (
+            "galleryScreen",
+            "Displays the icon gallery with launcher badges.",
+        ),
+        (
+            "aboutScreen",
+            "Shows the about screen with the company logo and favicon links.",
+        ),
+        (
+            "helpScreen",
+            "Opens help topics from the launcher with geometry aware layout.",
+        ),
+        (
+            "browserScreen",
+            "Embedded browser screen with favicon display.",
+        ),
+        (
+            "splashOverlay",
+            "Splash overlay shown while the OAuth consent logo loads.",
+        ),
+    ];
+    for (i, (name, doc)) in decoys.iter().enumerate() {
+        let file = format!("src/ui/{}.ts", name.to_lowercase());
+        db.insert_node(&issue_264_function(
+            &format!("function:decoy{i}"),
+            name,
+            &file,
+            Some(doc),
+        ))
+        .await
+        .unwrap();
+    }
+
+    // The asset generator module the task actually asks for, indexed after
+    // the decoys (larger rowids).
+    let generator_file = "src/tools/icon_generator.ts";
+    let generators = [
+        (
+            "generateLauncherIcon",
+            "Generates the launcher icon set for every density.",
+        ),
+        (
+            "generateSplashScreen",
+            "Generates the splash screen artwork and keeps consistent geometry.",
+        ),
+        ("generateOAuthLogo", "Generates the OAuth consent logo."),
+        ("generateFavicon", "Generates the browser favicon."),
+    ];
+    for (i, (name, doc)) in generators.iter().enumerate() {
+        db.insert_node(&issue_264_function(
+            &format!("function:generator{i}"),
+            name,
+            generator_file,
+            Some(doc),
+        ))
+        .await
+        .unwrap();
+    }
+
+    // Adjacent test file exercising the generator.
+    let generator_test_file = "src/tools/icon_generator.test.ts";
+    db.insert_node(&issue_264_function(
+        "function:generator_tests",
+        "iconGeneratorTests",
+        generator_test_file,
+        None,
+    ))
+    .await
+    .unwrap();
+    for i in 0..generators.len() {
+        db.insert_edge(&Edge {
+            source: "function:generator_tests".to_string(),
+            target: format!("function:generator{i}"),
+            kind: EdgeKind::Calls,
+            line: Some(2),
+        })
+        .await
+        .unwrap();
+    }
+
+    let options = BuildContextOptions {
+        max_nodes: 16,
+        include_code: false,
+        ..Default::default()
+    };
+    let builder = ContextBuilder::new(&db, project);
+    let ctx = builder
+        .build_context(
+            "Find the code that generates application icon assets and controls consistent \
+             geometry across the launcher, splash screen, OAuth consent logo, and browser \
+             favicon. Include its tests and build configuration.",
+            &options,
+        )
+        .await
+        .unwrap();
+
+    let returned_files: Vec<&str> = ctx
+        .entry_points
+        .iter()
+        .chain(ctx.subgraph.nodes.iter())
+        .map(|node| node.file_path.as_str())
+        .collect();
+    assert!(
+        returned_files.contains(&generator_file),
+        "generator module missing from context: {returned_files:?}"
+    );
+    assert!(
+        returned_files.contains(&generator_test_file),
+        "generator test file missing from context: {returned_files:?}"
+    );
+}
