@@ -111,6 +111,11 @@ impl<'a> GraphQueryManager<'a> {
     ///
     /// Excludes:
     /// - Nodes named `"main"` (program entry points).
+    /// - Nodes named `"_bind_methods"` (godot-cpp `GDExtension` binding
+    ///   callbacks). This method is invoked by the Godot engine's `ClassDB`
+    ///   registration machinery, never by indexed code, so it carries no
+    ///   incoming edge and was misreported as dead (issue #269). It is an
+    ///   engine-contract name, exempted like other entry points.
     /// - Nodes whose name starts with `"test"` (likely test functions).
     /// - Nodes annotated with a test-marker attribute — `#[test]`,
     ///   `#[tokio::test]`, `#[async_std::test]`, `#[wasm_bindgen_test]`, etc.
@@ -260,6 +265,7 @@ impl<'a> GraphQueryManager<'a> {
                     unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
              WHERE name != 'main'
+             AND name != '_bind_methods'
              AND name NOT LIKE 'test%'
              {visibility_filter}
              {kind_filter}
