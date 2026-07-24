@@ -550,23 +550,20 @@ fn test_copilot_install_creates_config() {
     let ctx = make_install_ctx(home);
     CopilotIntegration.install(&ctx).unwrap();
 
-    // Check VS Code settings.json
+    // Check VS Code's dedicated mcp.json (1.102+, GA MCP — issue #266)
     #[cfg(target_os = "macos")]
-    let vscode_settings = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_mcp_json = home.join("Library/Application Support/Code/User/mcp.json");
     #[cfg(target_os = "linux")]
-    let vscode_settings = home.join(".config/Code/User/settings.json");
+    let vscode_mcp_json = home.join(".config/Code/User/mcp.json");
     #[cfg(target_os = "windows")]
-    let vscode_settings = home.join("AppData/Roaming/Code/User/settings.json");
+    let vscode_mcp_json = home.join("AppData/Roaming/Code/User/mcp.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let vscode_settings = home.join(".config/Code/User/settings.json");
+    let vscode_mcp_json = home.join(".config/Code/User/mcp.json");
 
-    assert!(
-        vscode_settings.exists(),
-        "VS Code settings.json should exist"
-    );
+    assert!(vscode_mcp_json.exists(), "VS Code mcp.json should exist");
     let content: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&vscode_settings).unwrap()).unwrap();
-    assert!(content["mcp"]["servers"]["tokensave"].is_object());
+        serde_json::from_str(&std::fs::read_to_string(&vscode_mcp_json).unwrap()).unwrap();
+    assert!(content["servers"]["tokensave"].is_object());
 
     // Check CLI config
     let cli_config = home.join(".copilot/mcp-config.json");

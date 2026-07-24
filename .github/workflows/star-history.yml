@@ -3,11 +3,13 @@ name: Star History
 # Regenerates the README star history chart in CI. Needed since GitHub's
 # 2026-06-30 stargazers API restriction broke the hosted star-history.com
 # embed; this runs with the repo's own token, which can still read stars.
+# No `watch` trigger: a star-triggered run is attributed to the stargazer,
+# so when the run fails (e.g. expired STAR_HISTORY_TOKEN) GitHub emails the
+# failure to that third party (#265). The daily schedule keeps the chart
+# fresh enough.
 on:
   schedule:
     - cron: '17 4 * * *' # daily
-  watch:
-    types: [started] # refresh right after a new star
   workflow_dispatch:
 
 permissions:
