@@ -200,9 +200,11 @@ The database runs with these pragmas applied on every connection:
 
 Each source file is parsed by a language-specific extractor that wraps a tree-sitter grammar. The `LanguageRegistry` dispatches to the correct extractor based on file extension.
 
-**Always-available languages (Lite build):** Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift.
+**Always-available languages (Lite build):** Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro.
 
-**Feature-gated languages (Medium/Full build):** Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MS-BASIC, GW-BASIC, QBasic.
+**Feature-gated languages (Medium/Full build):** Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET, ActionScript, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MS-BASIC, GW-BASIC, QBasic, QuickBASIC, Dockerfile, GLSL, WGSL, HLSL, Metal, CUDA/HIP, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean, GDScript, XAML, mcfunction. See `docs/MORE-LANGUAGES-SUPPORT.md` for the tier table of record.
+
+Some extractors delegate rather than bundling a grammar of their own: Metal and CUDA/HIP both run through the C++ extractor (both are C++ supersets), and the Godot `.gdshader` dialect runs through GLSL. Where a dialect has syntax the base grammar cannot parse — CUDA's `<<<grid, block>>>` kernel launches, Godot's `: hint_…` uniform clauses — the extractor blanks those spans to same-length spaces before parsing and reads all node text from the original source, so byte offsets stay valid and signatures keep their real text.
 
 ### Phase 2: AST Walk
 

@@ -165,6 +165,25 @@ Don't forget to add `.tokensave` to your `.gitignore` so the database doesn't ge
 echo .tokensave >> .gitignore
 ```
 
+#### Projects without a Git repository
+
+`.gitignore` filtering does **not** require a Git repository. tokensave reads
+ignore files directly rather than asking Git, so a `.gitignore` in your project
+root is honored even when there is no `.git` directory — useful under TFVC,
+Perforce, SVN, or no version control at all.
+
+What a non-repo project does lose is the exclude sources Git itself supplies:
+`.git/info/exclude` and your global excludes file. If you need SCM-independent
+rules, set `exclude` globs in `.tokensave/config.json`:
+
+```json
+{
+  "exclude": ["**/build/**", "**/obj/**", "bin/**"]
+}
+```
+
+`tokensave init --skip-folder <dir>` writes to that same list.
+
 ---
 
 ## Connecting to Your Agent

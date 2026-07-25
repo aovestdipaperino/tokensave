@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
-## [Unreleased]
+## [7.6.2] - 2026-07-25
 
 ### Added
 - **CUDA/HIP `.cu`/`.cuh` files are now indexed (`lang-cuda`, `full` tier).** These extensions had no registered extractor, so every `.cu`/`.cuh` file indexed as zero symbols regardless of size. CUDA is a C++ superset, so a new extractor delegates to `CppExtractor` — the same pattern as Metal, no new grammar dependency. The one exception is `<<<grid, block>>>` kernel-launch syntax, which derails tree-sitter-cpp badly enough to drop the *enclosing function* entirely; every `<<<...>>>` span is now blanked to same-length spaces before parsing, the same technique the GLSL/Godot extractor uses for its own dialect syntax.
