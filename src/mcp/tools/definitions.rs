@@ -286,7 +286,9 @@ fn def_search() -> ToolDefinition {
     def_always_load(
         "tokensave_search",
         "Search Symbols",
-        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.",
+        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword. \
+         Persistent noise (vendored trees, docs) can be suppressed project-wide via gitignore-style \
+         patterns in .tokensave/queryignore.",
         json!({
             "type": "object",
             "properties": {

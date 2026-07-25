@@ -7,6 +7,12 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+- **`tokensave_context` output ends with a `### Retrieval` footer, so a retrieval miss is visible instead of silent.** The footer reports the hit count for each searched term, the best post-boost candidate score, and a match tier (`exact`, `strong`, `fts-only`). When query terms match nothing in the index, the footer lists them (capped at 6, with a `+N more` tail) and tells the agent to re-query with `keywords` synonyms or to switch to `tokensave_search`. Without this, weak entry points look the same as a sparse graph, and an agent burns follow-up calls on rephrased guesses. The tier floor for `strong` is a named constant beside `EXACT_MATCH_SCORE`, calibrated to the negated-BM25 band that #314 introduced. The `RetrievalDiagnostics` field on `TaskContext` is additive and `#[serde(default)]`, so stored contexts without it still deserialize.
+
+### Changed
+- **The Related Symbols section collapses test files to one line.** A large test file could dominate the section with dozens of `test_*` entries that cost tokens without informing the agent. A test file now shows as a single count line with a pointer to `tokensave_callers` for detail. The test-file decision uses the same path classification as ranking (`is_test_path` wraps `path_boost`), so the formatter and the ranker cannot disagree about what a test file is.
+
 ### Documentation
 - **SECURITY.md described the database as structural metadata only, which understated what it retains (#377).** The policy named `read_cache` as the sole place source text is kept, but `executable_body_fts` is declared without `content=''`, so FTS5 retains the original text of every column in `executable_body_fts_content` — including `body`, which holds complete function bodies. The enumeration above the sentence said "FTS5 search index", which does not tell a reader that full source is retained. Corrected in three places: the storage list, the sentence that follows it, and the Best Practices note, which likewise mentioned only symbol names and `read_cache`. No storage change is involved: the bodies are load-bearing for `tokensave_context`, and a contentless table would return NULL for `SELECT node_id, body`. The "Supported Versions" table, still listing 6.x as current, is updated to 7.x in the same pass.
 

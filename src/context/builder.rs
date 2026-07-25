@@ -41,7 +41,7 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(options.max_nodes > 0, "max_nodes must be positive");
         // Step 1-3: find relevant subgraph and entry points
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        let (entry_points, diagnostics) = self.find_entry_points(query, &symbols, options).await?;
         let subgraph = self.expand_subgraph(&entry_points, options).await?;
 
         // Step 4: extract code blocks from source files
@@ -75,6 +75,7 @@ impl<'a> ContextBuilder<'a> {
             code_blocks,
             related_files,
             seen_node_ids,
+            diagnostics,
         })
     }
 
@@ -88,7 +89,7 @@ impl<'a> ContextBuilder<'a> {
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        let (entry_points, _) = self.find_entry_points(query, &symbols, options).await?;
         self.expand_subgraph(&entry_points, options).await
     }
 
@@ -189,12 +190,15 @@ impl<'a> ContextBuilder<'a> {
         query: &str,
         symbols: &[String],
         options: &BuildContextOptions,
-    ) -> Result<Vec<Node>> {
+    ) -> Result<(Vec<Node>, RetrievalDiagnostics)> {
         // Base score for an exact name match. Negated-BM25 scores from
         // `search_nodes_bounded` run roughly 5–30 before structural boosts,
         // so this must sit well above that band for a perfect name match to
         // win the MAX merge over FTS hits and rank ahead of them.
         const EXACT_MATCH_SCORE: f64 = 100.0;
+        // Floor for the "strong" diagnostics tier: supplements and solidly
+        // boosted FTS hits land above this; weak lexical matches fall below.
+        const STRONG_MATCH_SCORE: f64 = 10.0;
         debug_assert!(
             !query.is_empty(),
             "find_entry_points called with empty query"
@@ -274,6 +278,14 @@ impl<'a> ContextBuilder<'a> {
                     .into(),
             );
         }
+        // Record per-term hit counts before the fill loop consumes the queues.
+        // Counts are capped at `search_limit` by the bounded query; zero-hit
+        // terms are the signal the caller needs to reformulate.
+        let term_hits: Vec<(String, usize)> = fts_terms
+            .iter()
+            .zip(&per_term)
+            .map(|(term, queue)| (term.clone(), queue.len()))
+            .collect();
         'fill: loop {
             let mut advanced = false;
             for queue in &mut per_term {
@@ -464,6 +476,31 @@ impl<'a> ContextBuilder<'a> {
         // boosts all re-sort). Apply diversity before the final root limit so
         // a large file's executable owner is still available to the cap.
         // --- Per-file diversity cap + final BFS root limit ---
+        // Best post-boost score, captured before `candidates` is consumed by
+        // the partition below. Tier thresholds follow the scoring constants:
+        // exact-name/exact-source supplements score >= EXACT_MATCH_SCORE, and
+        // boosted negated-BM25 hits land in the ~5–30 band, so a strong match
+        // clears STRONG_MATCH_SCORE while weak lexical matches fall below it.
+        let best_score = candidates
+            .iter()
+            .map(|candidate| candidate.score)
+            .fold(None, |best: Option<f64>, score| {
+                Some(best.map_or(score, |b| b.max(score)))
+            });
+        let match_quality = best_score.map(|score| {
+            if score >= EXACT_MATCH_SCORE {
+                "exact".to_string()
+            } else if score >= STRONG_MATCH_SCORE {
+                "strong".to_string()
+            } else {
+                "fts-only".to_string()
+            }
+        });
+        let diagnostics = RetrievalDiagnostics {
+            term_hits,
+            best_score,
+            match_quality,
+        };
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
         // `search_limit` and per-file diversity bound ranked semantic BFS roots
         // (#120), but exact source hits are correctness-sensitive seeds rather
@@ -499,7 +536,7 @@ impl<'a> ContextBuilder<'a> {
             entry_points.len() <= options.max_nodes,
             "entry_points exceeds max_nodes"
         );
-        Ok(entry_points)
+        Ok((entry_points, diagnostics))
     }
 
     /// Finds the innermost indexed symbol enclosing each exact qualified
