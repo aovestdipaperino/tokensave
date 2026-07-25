@@ -711,9 +711,15 @@ impl<'a> ContextBuilder<'a> {
                 let truncated = if code.len() > options.max_code_block_size {
                     let prefix =
                         crate::text::utf8_prefix_at_or_before(&code, options.max_code_block_size);
-                    // Prefer a line boundary within the truncated prefix.
+                    // Prefer a line boundary within the truncated prefix, and
+                    // leave the caller a handle to fetch the rest instead of
+                    // a dead-end ellipsis.
                     let end = prefix.rfind('\n').unwrap_or(prefix.len());
-                    format!("{}...", &prefix[..end])
+                    format!(
+                        "{}\n... [truncated — full body: tokensave_body node_id={}]",
+                        &prefix[..end],
+                        node.id
+                    )
                 } else {
                     code
                 };
