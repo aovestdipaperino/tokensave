@@ -409,9 +409,116 @@ fn test_grep_blocks_when_only_glob_set() {
 
 #[test]
 fn test_grep_allows_glob_for_non_code() {
-    let input = r#"{"pattern": "FooBar", "glob": "**/*.md"}"#;
+    let input = r#"{"pattern": "FooBar", "glob": "**/*.md", "output_mode": "content"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(result.is_empty(), "glob over .md should pass through");
+}
+
+#[test]
+fn test_grep_non_code_glob_overrides_project_root_path() {
+    let input =
+        r#"{"pattern": "FooBar", "path": ".", "glob": "**/*.md", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an explicit Markdown glob should narrow a broad project-root path"
+    );
+}
+
+#[test]
+fn test_grep_non_code_glob_overrides_code_directory_path() {
+    let input =
+        r#"{"pattern": "FooBar", "path": "src", "glob": "**/*.md", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an explicit Markdown glob should narrow a code-directory path"
+    );
+}
+
+#[test]
+fn test_grep_code_glob_overrides_non_code_path() {
+    let input =
+        r#"{"pattern": "FooBar", "path": "docs", "glob": "**/*.rs", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        !result.is_empty(),
+        "an explicit Rust glob should classify the effective target as code"
+    );
+    assert!(is_blocked(&result));
+}
+
+#[test]
+fn test_grep_mixed_code_and_non_code_glob_passes() {
+    let input =
+        r#"{"pattern": "FooBar", "path": ".", "glob": "**/*.{rs,md}", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "a mixed glob can return documentation and must pass through"
+    );
+}
+
+#[test]
+fn test_grep_terminal_non_code_suffix_after_brace_passes() {
+    let input = r#"{"pattern": "FooBar", "path": ".", "glob": "**/*.{ts,js}.bak", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "the terminal .bak suffix determines the effective file type"
+    );
+}
+
+#[test]
+fn test_grep_terminal_code_suffix_after_brace_blocks() {
+    let input = r#"{"pattern": "FooBar", "path": ".", "glob": "**/*.{spec,test}.ts", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        !result.is_empty(),
+        "the terminal .ts suffix determines the effective file type"
+    );
+    assert!(is_blocked(&result));
+}
+
+#[test]
+fn test_grep_ignores_directory_brace_when_final_file_glob_is_code() {
+    let input = r#"{"pattern": "FooBar", "path": ".", "glob": "dir.{a,b}/**/*.rs", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        !result.is_empty(),
+        "a brace in an earlier path segment must not hide the final Rust extension"
+    );
+    assert!(is_blocked(&result));
+}
+
+#[test]
+fn test_grep_unclassifiable_glob_falls_back_to_path() {
+    let input = r#"{"pattern": "FooBar", "path": "src", "glob": "**/generated/**", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "a glob without an extension should preserve the existing path classification"
+    );
+}
+
+#[test]
+fn test_grep_unclassifiable_glob_without_path_preserves_pass_through() {
+    let input = r#"{"pattern": "FooBar", "glob": "**/generated/**", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "an extensionless glob without a path should preserve the conservative pass-through"
+    );
+}
+
+#[test]
+fn test_grep_type_filter_has_priority_over_non_code_glob() {
+    let input = r#"{"pattern": "FooBar", "path": ".", "glob": "**/*.md", "type": "rust", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "an explicit code type remains the highest-priority filter"
+    );
 }
 
 #[test]
@@ -1030,6 +1137,39 @@ fn test_droid_native_grep_uses_glob_pattern_field() {
     assert!(
         evaluate_droid_pre_tool_use_with_env(on_docs, &env_indexed()).is_none(),
         "glob_pattern over .md should pass through"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_non_code_glob_overrides_project_root_path() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {
+            "pattern": "FooBar",
+            "path": ".",
+            "glob_pattern": "**/*.md",
+            "output_mode": "content"
+        }
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none(),
+        "Droid's explicit Markdown glob should narrow its broad path"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_unclassifiable_glob_without_path_passes() {
+    let input = r#"{
+        "tool_name": "Grep",
+        "tool_input": {
+            "pattern": "FooBar",
+            "glob_pattern": "**/generated/**",
+            "output_mode": "content"
+        }
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none(),
+        "Droid's extensionless glob should preserve the conservative pass-through"
     );
 }
 
