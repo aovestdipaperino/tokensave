@@ -1624,6 +1624,70 @@ end
     }
 
     #[test]
+    fn test_ruby_compact_class_name_is_fully_qualified() {
+        let source = r#"
+class Outer::Inner
+  def foo; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("compact.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class)
+            .expect("expected class node");
+        assert_eq!(class.name, "Outer::Inner");
+        assert!(class.qualified_name.ends_with("Outer::Inner"));
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method");
+        assert!(foo.qualified_name.ends_with("Outer::Inner::foo"));
+    }
+
+    #[test]
+    fn test_ruby_compact_module_name_is_fully_qualified() {
+        let source = r#"
+module A::B
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("compact.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module)
+            .expect("expected module node");
+        assert_eq!(module.name, "A::B");
+    }
+
+    #[test]
+    fn test_ruby_compact_class_qualified_singleton_receiver_targets_enclosing_class() {
+        let source = r#"
+class Outer::Inner
+  class << Outer::Inner
+    def foo; end
+  end
+
+  private_class_method :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("compact.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method");
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
     fn test_ruby_empty_source() {
         let extractor = RubyExtractor;
         let result = extractor.extract("empty.rb", "");

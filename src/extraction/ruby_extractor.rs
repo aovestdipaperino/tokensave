@@ -389,8 +389,11 @@ impl RubyExtractor {
 
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        // In tree-sitter-ruby, class node children include: "class", constant (name), superclass?, body
-        let name = find_child_by_kind(node, "constant")
+        // The grammar types the name field as choice($.constant, $.scope_resolution),
+        // so a compact `class Outer::Inner` has no direct `constant` child - only the
+        // `name` field (whose text is the full path) covers both forms.
+        let name = node
+            .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -466,7 +469,10 @@ impl RubyExtractor {
 
     /// Extract a module definition.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = find_child_by_kind(node, "constant")
+        // See visit_class: the name field covers both a bare constant and a
+        // compact `module A::B`'s scope_resolution.
+        let name = node
+            .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
