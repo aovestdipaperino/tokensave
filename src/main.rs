@@ -226,18 +226,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 std::process::exit(1);
             }
             // Guard against indexing a large non-project tree (e.g. a home dir).
-            // Outside a git working tree, `git_ignore` filtering is inert, so
+            // Outside a git working tree the Git-supplied exclude sources are
+            // unavailable, and with no `.gitignore` to constrain the walk,
             // toolchain trees (site-packages, conda envs, caches) get indexed
             // wholesale and the DB grows unbounded (#174). Confirm before
             // proceeding; skip the prompt when stdin isn't a TTY (CI/scripts).
             if !tokensave::config::is_inside_git_repo(&project_path) {
-                eprintln!(
-                    "\x1b[33mwarning:\x1b[0m '{}' is not inside a git repository.\n  \
-                     `.gitignore` filtering will not apply, so large non-project trees \
-                     (e.g. site-packages, virtualenvs, caches) may be indexed and the \
-                     index can grow very large.",
-                    project_path.display()
-                );
+                eprintln!("{}", tokensave::config::non_git_scan_warning(&project_path));
                 if std::io::stdin().is_terminal() {
                     eprint!("Continue initializing here anyway? [y/N] ");
                     io::stderr().flush().ok();
