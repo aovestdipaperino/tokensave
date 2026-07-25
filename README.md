@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.aovestdipaperino%2Ftokensave.svg)](https://mcptoplist.com/server/io.github.aovestdipaperino%2Ftokensave)
+
 <p align="center">
   <img src="src/resources/logo.png" alt="TokenSave" width="300">
 </p>
