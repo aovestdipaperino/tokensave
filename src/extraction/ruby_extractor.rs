@@ -129,11 +129,24 @@ impl RubyExtractor {
             "assignment" => Self::visit_assignment_for_const(state, node),
             // Bare `private`/`protected`/`public` mode switches parse as a plain
             // identifier statement; defensively also handle a no-arg call.
+            // A receiverless include/prepend/extend is a mixin directive; the two
+            // handlers are gated on disjoint method names, so both run.
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
+                Self::visit_mixin_directive(state, node);
             }
-            // Traverse blocks (do...end) for nested definitions
-            "do_block" | "block" => Self::visit_children(state, node),
+            // Statement containers: they wrap statements without opening a new
+            // definition scope, so the enclosing class/module stays the parent and
+            // a mixin/definition nested in one is extracted as if written directly
+            // in the body (`include Foo if enabled?`, `if RUBY_VERSION > "3" … end`,
+            // `begin … rescue LoadError … end`). Method bodies are NOT reached from
+            // here — visit_method routes them through extract_call_sites instead.
+            "if" | "unless" | "if_modifier" | "unless_modifier" | "then" | "else" | "elsif"
+            | "case" | "when" | "case_match" | "in_clause" | "while" | "until"
+            | "while_modifier" | "until_modifier" | "do" | "begin" | "rescue" | "ensure"
+            | "rescue_modifier" | "body_statement" | "do_block" | "block" => {
+                Self::visit_children(state, node);
+            }
             _ => {}
         }
     }
@@ -815,6 +828,57 @@ impl RubyExtractor {
             }
         }) {
             node.visibility = visibility;
+        }
+    }
+
+    /// Extract `include`/`prepend`/`extend` of a named module as an
+    /// `Implements` ref from the enclosing class/module to that module.
+    ///
+    /// All three keywords are receiverless calls (`mod.include Bar` is an
+    /// ordinary method call on another object, not a mixin, and is skipped).
+    /// Only `constant`/`scope_resolution` arguments are resolvable
+    /// statically — `extend self`, `include some_variable`, and
+    /// `include mod_returning_method()` name something we can't bind to a
+    /// node, so they're skipped rather than fabricating a ref. A top-level
+    /// `include` (outside any class/module) mixes into `Object`, and there is
+    /// no class/module node to attach the ref to, so it's skipped too.
+    ///
+    /// `extend` (which adds singleton methods) and `include`/`prepend`
+    /// (which add instance methods) all produce the same `Implements` edge
+    /// kind — distinguishing them would need a new `EdgeKind` variant.
+    fn visit_mixin_directive(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let Some(method_node) = node.child_by_field_name("method") else {
+            return;
+        };
+        let method_name = state.node_text(method_node);
+        if !matches!(method_name.as_str(), "include" | "prepend" | "extend") {
+            return;
+        }
+        if state.class_depth == 0 {
+            return;
+        }
+        let Some(from_node_id) = state.parent_node_id().map(str::to_string) else {
+            return;
+        };
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+
+        let mut cursor = arguments.walk();
+        for arg in arguments.named_children(&mut cursor) {
+            if matches!(arg.kind(), "constant" | "scope_resolution") {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: from_node_id.clone(),
+                    reference_name: state.node_text(arg),
+                    reference_kind: EdgeKind::Implements,
+                    line: arg.start_position().row as u32,
+                    column: arg.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
         }
     }
 

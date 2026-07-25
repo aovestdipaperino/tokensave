@@ -1699,4 +1699,370 @@ end
             .collect();
         assert_eq!(files.len(), 1);
     }
+
+    #[test]
+    fn test_ruby_extend_mixin() {
+        let source = r#"
+class C
+  extend M
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "M");
+    }
+
+    #[test]
+    fn test_ruby_extend_self_not_a_mixin_ref() {
+        let source = r#"
+module M
+  extend self
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_kind == EdgeKind::Implements),
+            "extend self should not produce an Implements ref"
+        );
+    }
+
+    #[test]
+    fn test_ruby_include_in_begin_rescue() {
+        let source = r#"
+class C
+  begin
+    include M
+  rescue LoadError
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "M");
+    }
+
+    #[test]
+    fn test_ruby_include_in_if_else_body() {
+        let source = r#"
+class C
+  if RUBY_VERSION > "3"
+    include M
+  else
+    include N
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("class C node")
+            .id
+            .clone();
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 2, "expected two Implements refs");
+        assert_eq!(implements[0].reference_name, "M");
+        assert_eq!(implements[0].from_node_id, class_id);
+        assert_eq!(implements[1].reference_name, "N");
+        assert_eq!(implements[1].from_node_id, class_id);
+    }
+
+    #[test]
+    fn test_ruby_include_in_method_body_is_not_a_mixin_ref() {
+        let source = r#"
+class C
+  def setup
+    include M
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_kind == EdgeKind::Implements),
+            "include inside a method body should not be treated as a mixin"
+        );
+    }
+
+    #[test]
+    fn test_ruby_include_in_module_body() {
+        let source = r#"
+module Outer
+  include Other
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("outer.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module && n.name == "Outer")
+            .expect("module Outer node")
+            .id
+            .clone();
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "Other");
+        assert_eq!(implements[0].from_node_id, module_id);
+    }
+
+    #[test]
+    fn test_ruby_include_mixin() {
+        let source = r#"
+class C
+  include Comparable
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("class C node")
+            .id
+            .clone();
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "Comparable");
+        assert_eq!(implements[0].from_node_id, class_id);
+    }
+
+    #[test]
+    fn test_ruby_include_multiple_modules() {
+        let source = r#"
+class C
+  include A, B
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 2, "expected two Implements refs");
+        assert_eq!(implements[0].reference_name, "A");
+        assert_eq!(implements[1].reference_name, "B");
+    }
+
+    #[test]
+    fn test_ruby_include_scope_resolution() {
+        let source = r#"
+class C
+  include ActiveSupport::Concern
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "ActiveSupport::Concern");
+    }
+
+    #[test]
+    fn test_ruby_include_with_if_modifier() {
+        let source = r#"
+class C
+  include M if enabled?
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("class C node")
+            .id
+            .clone();
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "M");
+        assert_eq!(implements[0].from_node_id, class_id);
+    }
+
+    #[test]
+    fn test_ruby_include_with_receiver_not_a_mixin_ref() {
+        let source = r#"
+class C
+  mod.include Bar
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_kind == EdgeKind::Implements),
+            "mod.include Bar has an explicit receiver, not a mixin"
+        );
+    }
+
+    #[test]
+    fn test_ruby_include_with_unless_modifier() {
+        let source = r#"
+class C
+  include M unless skip?
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "M");
+    }
+
+    #[test]
+    fn test_ruby_method_in_conditional_is_extracted() {
+        let source = r#"
+class C
+  if X
+    def foo
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("class C node")
+            .id
+            .clone();
+        let method = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Method && n.name == "foo")
+            .expect("method foo node");
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_id
+                && e.target == method.id),
+            "expected Contains edge from class C to method foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_prepend_mixin() {
+        let source = r#"
+class C
+  prepend M
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(implements.len(), 1, "expected one Implements ref");
+        assert_eq!(implements[0].reference_name, "M");
+    }
+
+    #[test]
+    fn test_ruby_top_level_include_not_a_mixin_ref() {
+        let source = r#"
+include Foo
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_kind == EdgeKind::Implements),
+            "top-level include has no enclosing class/module to attach to"
+        );
+    }
+
+    #[test]
+    fn test_ruby_visibility_directive_in_conditional_applies_after_end() {
+        // Statement containers don't open a new scope, so a `private` reached only
+        // through a conditional branch still switches the mode for everything that
+        // follows the `end` — matching Ruby's own runtime scoping.
+        let source = r#"
+class C
+  if legacy?
+    private
+  end
+
+  def foo; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method to be extracted");
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
 } // mod ruby_tests
