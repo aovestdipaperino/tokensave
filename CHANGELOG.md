@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+- **CUDA/HIP `.cu`/`.cuh` files are now indexed (`lang-cuda`, `full` tier).** These extensions had no registered extractor, so every `.cu`/`.cuh` file indexed as zero symbols regardless of size. CUDA is a C++ superset, so a new extractor delegates to `CppExtractor` — the same pattern as Metal, no new grammar dependency. The one exception is `<<<grid, block>>>` kernel-launch syntax, which derails tree-sitter-cpp badly enough to drop the *enclosing function* entirely; every `<<<...>>>` span is now blanked to same-length spaces before parsing, the same technique the GLSL/Godot extractor uses for its own dialect syntax.
+
 ### Fixed
 - **Grep guardrails now honor an explicit file glob before a broad search path.** Claude and Factory Droid can send both a root such as `path: "."` and a narrower `glob` / `glob_pattern`; the shared classifier previously discarded the glob whenever `path` was present, so a legitimate Markdown search such as `**/*.md` was hard-blocked as a code search. Explicit code-only globs still redirect, mixed code/non-code globs pass through, unclassifiable globs fall back to the existing path rule, and an explicit `type` filter remains highest priority.
 - **C++ declarations wrapped in `extern "C"` are indexed again, instead of silently vanishing with zero symbols and no error.** Both the single-declaration and block forms parse as a `linkage_specification` node, which had no case in the extractor's dispatch — a pattern near-universal in C/C++ interop headers. `linkage_specification` (and its block-form `declaration_list` body) now dispatch through the existing generic child-walk; namespaces already unwrap their own `declaration_list` before dispatch, so this can't double-visit them.

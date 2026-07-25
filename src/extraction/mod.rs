@@ -47,6 +47,8 @@ mod batch_extractor;
 mod clojure_extractor;
 #[cfg(feature = "lang-cobol")]
 mod cobol_extractor;
+#[cfg(feature = "lang-cuda")]
+mod cuda_extractor;
 #[cfg(feature = "lang-dockerfile")]
 mod dockerfile_extractor;
 #[cfg(feature = "lang-elixir")]
@@ -152,6 +154,8 @@ pub use batch_extractor::BatchExtractor;
 pub use clojure_extractor::ClojureExtractor;
 #[cfg(feature = "lang-cobol")]
 pub use cobol_extractor::CobolExtractor;
+#[cfg(feature = "lang-cuda")]
+pub use cuda_extractor::CudaExtractor;
 #[cfg(feature = "lang-dockerfile")]
 pub use dockerfile_extractor::DockerfileExtractor;
 #[cfg(feature = "lang-elixir")]
@@ -318,6 +322,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(XamlExtractor));
         #[cfg(feature = "lang-hlsl")]
         extractors.push(Box::new(HlslExtractor));
+        #[cfg(feature = "lang-cuda")]
+        extractors.push(Box::new(CudaExtractor));
         #[cfg(feature = "lang-metal")]
         extractors.push(Box::new(MetalExtractor));
         #[cfg(feature = "lang-markdown")]
