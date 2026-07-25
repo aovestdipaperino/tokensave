@@ -144,10 +144,10 @@ fn is_doc_file(normalized: &str) -> bool {
 pub fn path_rank_multiplier(file_path: &str) -> f64 {
     let normalized = file_path.replace('\\', "/");
     // Documentation files are indexed (headings become Module nodes with Pub
-    // visibility), which hands them a kind/visibility boost that outranks
-    // actual code on shared vocabulary. Down-rank by extension — between the
-    // fixture (0.1) and test (0.4) factors — so a code query surfaces code
-    // first while an exact heading match stays reachable.
+    // visibility), which can outrank actual code on shared vocabulary.
+    // Down-rank by extension. The 0.3 factor is chosen between existing
+    // `path_boost` penalties for fixtures (0.1) and tests (0.4), so code queries
+    // surface code first while an exact heading match stays reachable.
     if is_doc_file(&normalized) {
         return 0.3;
     }
