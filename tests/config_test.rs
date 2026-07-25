@@ -255,6 +255,41 @@ fn test_add_to_git_info_exclude_outside_repo_is_noop() {
     assert!(!dir.path().join(".gitignore").exists());
 }
 
+// ── non-git scan warning (#283) ─────────────────────────────────────────────
+
+#[test]
+fn test_non_git_warning_without_gitignore_warns_about_unconstrained_walk() {
+    let dir = TempDir::new().unwrap();
+    let warning = non_git_scan_warning(dir.path());
+    assert!(
+        warning.contains("no `.gitignore` here"),
+        "with nothing to constrain the walk the size caution is the point: {warning}"
+    );
+    assert!(
+        warning.contains("`.tokensave/config.json`"),
+        "the caution should point at the available remedies: {warning}"
+    );
+}
+
+#[test]
+fn test_non_git_warning_with_gitignore_does_not_claim_filtering_is_off() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    let warning = non_git_scan_warning(dir.path());
+    assert!(
+        warning.contains("still applies"),
+        "a root .gitignore is honored without a git repo and the message must say so: {warning}"
+    );
+    assert!(
+        !warning.contains("will not apply"),
+        "the old wording asserted the opposite of what the scanner does: {warning}"
+    );
+    assert!(
+        warning.contains(".git/info/exclude"),
+        "what is genuinely lost outside a repo should still be named: {warning}"
+    );
+}
+
 // ── exclusion helpers report what they actually did (#288) ──────────────────
 
 #[test]

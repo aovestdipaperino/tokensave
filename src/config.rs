@@ -312,11 +312,41 @@ pub fn add_to_git_info_exclude(project_path: &Path) -> bool {
     true
 }
 
+/// The caution shown before indexing a directory that isn't inside a Git
+/// working tree (#174), worded for what actually still filters there (#283).
+///
+/// The scanner reads every `.gitignore` it walks past as a standalone ignore
+/// file (`add_custom_ignore_filename` in `scan_files_with_gitignore`), so those
+/// patterns apply with or without a `.git` directory. What a non-repo tree
+/// loses is everything Git itself supplies: `.git/info/exclude` and the user's
+/// global excludes file. The risk that matters — indexing a home directory or
+/// another large non-project tree wholesale — is therefore real only when the
+/// root has no `.gitignore` to constrain the walk, so say that rather than
+/// claiming `.gitignore` filtering is off.
+pub fn non_git_scan_warning(project_path: &Path) -> String {
+    let root_gitignore = project_path.join(".gitignore");
+    let detail = if root_gitignore.is_file() {
+        "Its `.gitignore` still applies (tokensave reads ignore files directly), but \
+         `.git/info/exclude` and your global excludes do not, so anything only those \
+         cover will be indexed."
+    } else {
+        "There is no `.gitignore` here, so nothing constrains the walk: large \
+         non-project trees (e.g. site-packages, virtualenvs, caches) may be indexed \
+         and the index can grow very large. Add a `.gitignore` — tokensave honors it \
+         without a git repository — or set `exclude` globs in `.tokensave/config.json`."
+    };
+    format!(
+        "\x1b[33mwarning:\x1b[0m '{}' is not inside a git repository.\n  {detail}",
+        project_path.display()
+    )
+}
+
 /// Returns `true` when `project_path` is inside a Git working tree.
 ///
 /// Used to warn before indexing a non-repo tree (e.g. a home directory), where
-/// `git_ignore` filtering is inert and large toolchain trees would be indexed
-/// wholesale — see issue #174.
+/// Git's own exclude sources are unavailable and — absent a `.gitignore` —
+/// large toolchain trees would be indexed wholesale; see issue #174 and
+/// [`non_git_scan_warning`].
 pub fn is_inside_git_repo(project_path: &Path) -> bool {
     gix::discover(project_path).is_ok()
 }
