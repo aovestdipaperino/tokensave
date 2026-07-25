@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Fixed
+- **Prose documentation files no longer outrank code in `tokensave_search` and `tokensave_context` results.** Markdown headings are indexed as `Module` nodes with `Pub` visibility, so the kind (1.2×) and visibility (1.5×) boosts handed doc headings a 1.8× multiplier over neutral code that merely shares vocabulary with the query — a search for a config symbol could put `CHANGELOG.md` above the defining module. `path_rank_multiplier` now applies a 0.3× factor to doc extensions (`md`, `markdown`, `mdx`, `rst`, `adoc`, `txt`), between the existing fixture (0.1×) and test (0.4×) factors, and shared by both ranking paths. Proportional, not a filter: an exact heading match still surfaces, and `path_include` overrides when docs are the target.
+
 ## [7.6.2] - 2026-07-25
 
 ### Added

@@ -111,6 +111,18 @@ fn has_path_segment(normalized: &str, segment: &str) -> bool {
     normalized.split('/').any(|c| c == segment)
 }
 
+/// File extensions of prose documentation formats the indexer extracts
+/// symbols from (Markdown headings and friends).
+const DOC_FILE_EXTENSIONS: &[&str] = &["md", "markdown", "mdx", "rst", "adoc", "txt"];
+
+/// Returns `true` for prose documentation files, matched by extension.
+fn is_doc_file(normalized: &str) -> bool {
+    normalized
+        .rsplit('.')
+        .next()
+        .is_some_and(|ext| DOC_FILE_EXTENSIONS.iter().any(|d| ext.eq_ignore_ascii_case(d)))
+}
+
 /// Path-based ranking multiplier applied during both search and context
 /// re-ranking. Returns a factor relative to a neutral baseline of `1.0`:
 ///
@@ -131,6 +143,14 @@ fn has_path_segment(normalized: &str, segment: &str) -> bool {
 /// or an `examples` dir under `target`).
 pub fn path_rank_multiplier(file_path: &str) -> f64 {
     let normalized = file_path.replace('\\', "/");
+    // Documentation files are indexed (headings become Module nodes with Pub
+    // visibility), which hands them a kind/visibility boost that outranks
+    // actual code on shared vocabulary. Down-rank by extension — between the
+    // fixture (0.1) and test (0.4) factors — so a code query surfaces code
+    // first while an exact heading match stays reachable.
+    if is_doc_file(&normalized) {
+        return 0.3;
+    }
     if VENDOR_PATH_SEGMENTS
         .iter()
         .any(|seg| has_path_segment(&normalized, seg))
@@ -411,8 +431,36 @@ mod tests {
     #[test]
     fn test_path_rank_multiplier_neutral_is_baseline() {
         assert_eq!(path_rank_multiplier("foo/bar.rs"), 1.0);
-        assert_eq!(path_rank_multiplier("README.md"), 1.0);
-        assert_eq!(path_rank_multiplier("docs/guide.md"), 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_docs_below_tests() {
+        // Doc headings are Module+Pub nodes (1.8× kind/vis boost); the doc
+        // factor must be low enough that code still outranks them.
+        for path in [
+            "README.md",
+            "docs/guide.md",
+            "CHANGELOG.markdown",
+            "notes.TXT",
+            "book/src/intro.rst",
+            "guide.adoc",
+            "blog/post.mdx",
+        ] {
+            assert!(path_rank_multiplier(path) < path_boost("tests/sync_test.rs"), "{path}");
+        }
+        // Extension match only — a directory named docs with code inside is
+        // not a doc file.
+        assert_eq!(path_rank_multiplier("mdbook/render.rs"), 1.0);
+    }
+
+    #[test]
+    fn test_code_outranks_doc_heading_in_rerank() {
+        let mut doc = make_result(NodeKind::Module, Visibility::Pub, "docs/guide.md", 10.0);
+        doc.node.name = "Configuration".to_string();
+        let code = make_result(NodeKind::Function, Visibility::Private, "src/config.rs", 10.0);
+        let mut candidates = vec![doc, code];
+        rerank_candidates(&mut candidates);
+        assert_eq!(candidates[0].node.file_path, "src/config.rs");
     }
 
     #[test]
