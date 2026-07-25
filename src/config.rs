@@ -253,7 +253,10 @@ fn is_in_local_gitignore(project_path: &Path) -> bool {
 /// Appends `.tokensave` to the project's `.gitignore`, creating the file if
 /// needed. Ensures the entry starts on its own line (adds a trailing newline
 /// to existing content if missing).
-pub fn add_to_gitignore(project_path: &Path) {
+///
+/// Returns whether the entry is now present, so the caller only reports
+/// success when the write actually happened (#288).
+pub fn add_to_gitignore(project_path: &Path) -> bool {
     let gitignore = project_path.join(".gitignore");
     let mut content = fs::read_to_string(&gitignore).unwrap_or_default();
     if !content.is_empty() && !content.ends_with('\n') {
@@ -262,7 +265,9 @@ pub fn add_to_gitignore(project_path: &Path) {
     content.push_str(".tokensave\n");
     if let Err(e) = fs::write(&gitignore, content) {
         eprintln!("warning: failed to update .gitignore: {e}");
+        return false;
     }
+    true
 }
 
 /// Appends `.tokensave/` to the repository's local `.git/info/exclude`.
@@ -272,22 +277,27 @@ pub fn add_to_gitignore(project_path: &Path) {
 /// Resolves the exclude path via `git` (so worktrees and
 /// custom `$GIT_DIR` layouts are handled), creates the file if missing, and is
 /// idempotent — an existing `.tokensave` entry is left untouched.
-pub fn add_to_git_info_exclude(project_path: &Path) {
+///
+/// Returns whether the entry is now present. Every bail-out path (no locatable
+/// git dir, unwritable parent, failed write) returns `false` so the caller
+/// never reports an exclusion it did not make (#288); an already-present entry
+/// returns `true`, since the desired end state holds.
+pub fn add_to_git_info_exclude(project_path: &Path) -> bool {
     let Some(exclude) = git_info_exclude_path(project_path) else {
         eprintln!("warning: could not locate .git/info/exclude");
-        return;
+        return false;
     };
     let content = fs::read_to_string(&exclude).unwrap_or_default();
     if content.lines().any(|line| {
         let trimmed = line.trim();
         trimmed == ".tokensave" || trimmed == ".tokensave/" || trimmed == "/.tokensave"
     }) {
-        return;
+        return true;
     }
     if let Some(parent) = exclude.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("warning: failed to create {}: {e}", parent.display());
-            return;
+            return false;
         }
     }
     let mut content = content;
@@ -297,7 +307,9 @@ pub fn add_to_git_info_exclude(project_path: &Path) {
     content.push_str(".tokensave/\n");
     if let Err(e) = fs::write(&exclude, content) {
         eprintln!("warning: failed to update .git/info/exclude: {e}");
+        return false;
     }
+    true
 }
 
 /// Returns `true` when `project_path` is inside a Git working tree.

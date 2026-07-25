@@ -255,6 +255,46 @@ fn test_add_to_git_info_exclude_outside_repo_is_noop() {
     assert!(!dir.path().join(".gitignore").exists());
 }
 
+// ── exclusion helpers report what they actually did (#288) ──────────────────
+
+#[test]
+fn test_add_to_git_info_exclude_outside_repo_reports_failure() {
+    let dir = TempDir::new().unwrap();
+    // No `git init` — the entry cannot be written, so the caller must not
+    // print "Added .tokensave/ to .git/info/exclude".
+    assert!(
+        !add_to_git_info_exclude(dir.path()),
+        "outside a repository the helper must report that it wrote nothing"
+    );
+}
+
+#[test]
+fn test_add_to_git_info_exclude_reports_success() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    assert!(add_to_git_info_exclude(dir.path()));
+    // Already present: the desired end state holds, so this still reports true.
+    assert!(add_to_git_info_exclude(dir.path()));
+}
+
+#[test]
+fn test_add_to_gitignore_reports_success() {
+    let dir = TempDir::new().unwrap();
+    assert!(add_to_gitignore(dir.path()));
+    assert!(dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn test_add_to_gitignore_reports_failure_when_unwritable() {
+    let dir = TempDir::new().unwrap();
+    // A directory where the file belongs makes the write fail.
+    std::fs::create_dir(dir.path().join(".gitignore")).unwrap();
+    assert!(
+        !add_to_gitignore(dir.path()),
+        "a failed write must not be reported as success"
+    );
+}
+
 // ── resolve_path ────────────────────────────────────────────────────────────
 
 #[test]
