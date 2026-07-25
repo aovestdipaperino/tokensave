@@ -400,6 +400,10 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str) -> bool {
         return CODE_TYPE_FILTERS.contains(&ty.to_ascii_lowercase().as_str());
     }
 
+    if let Some(glob_is_code) = classify_glob_target(glob) {
+        return glob_is_code;
+    }
+
     let raw = if path.is_empty() { glob } else { path };
     let trimmed = raw.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
@@ -427,6 +431,45 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str) -> bool {
         .next()
         .unwrap_or("");
     CODE_DIRS.contains(&last)
+}
+
+fn classify_glob_target(glob: &str) -> Option<bool> {
+    let trimmed = glob.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let file_glob = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    let extensions = if file_glob.ends_with('}') {
+        let brace_start = file_glob.rfind(".{")?;
+        let values = &file_glob[brace_start + 2..file_glob.len() - 1];
+        let extensions = values
+            .split(',')
+            .map(str::trim)
+            .map(|ext| {
+                (!ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '+'))
+                    .then(|| ext.to_ascii_lowercase())
+            })
+            .collect::<Option<Vec<_>>>()?;
+        extensions
+    } else {
+        let idx = file_glob.rfind('.')?;
+        let ext = file_glob[idx + 1..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '+')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if ext.is_empty() {
+            return None;
+        }
+        vec![ext]
+    };
+
+    (!extensions.is_empty()).then(|| {
+        extensions
+            .iter()
+            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str()))
+    })
 }
 
 #[derive(Debug)]
