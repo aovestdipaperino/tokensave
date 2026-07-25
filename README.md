@@ -944,7 +944,7 @@ Large projects take longer on the first full index.
 
 ### Disabling tokensave for specific projects
 
-If a project is too large and tokensave uses too much RAM, you can disable it per-project by setting `DISABLE_TOKENSAVE=true` in the MCP server environment. The server exits cleanly without initializing.
+If a project is too large and tokensave uses too much RAM, you can disable the MCP server per-project by setting `TOKENSAVE_DISABLE_SERVER=true` in its environment. The server exits cleanly without initializing.
 
 **Claude Code** — add to your project's `.claude/settings.json`:
 
@@ -955,7 +955,7 @@ If a project is too large and tokensave uses too much RAM, you can disable it pe
       "command": "tokensave",
       "args": ["serve"],
       "env": {
-        "DISABLE_TOKENSAVE": "true"
+        "TOKENSAVE_DISABLE_SERVER": "true"
       }
     }
   }
@@ -964,7 +964,9 @@ If a project is too large and tokensave uses too much RAM, you can disable it pe
 
 **Other agents** — set the environment variable in whatever config your agent uses to launch MCP servers.
 
-You can also set it globally via the shell (`DISABLE_TOKENSAVE=true claude`), but this disables tokensave for every project in the session.
+You can also set it globally via the shell (`TOKENSAVE_DISABLE_SERVER=true claude`), but this disables the tokensave MCP server for every project in the session.
+
+`DISABLE_TOKENSAVE=true` remains supported as a deprecated compatibility alias for configurations created before this variable was namespaced.
 
 ---
 

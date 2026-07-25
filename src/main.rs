@@ -886,9 +886,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Serve { path, timings } => {
-            if std::env::var("DISABLE_TOKENSAVE").as_deref() == Ok("true") {
+            let canonical_disable = std::env::var("TOKENSAVE_DISABLE_SERVER").ok();
+            let legacy_disable = std::env::var("DISABLE_TOKENSAVE").ok();
+            if server_disabled_from_env(canonical_disable.as_deref(), legacy_disable.as_deref()) {
                 // Allow users to opt out per-project by setting
-                // DISABLE_TOKENSAVE=true in their MCP server config (#19).
+                // TOKENSAVE_DISABLE_SERVER=true in their MCP server config.
+                // DISABLE_TOKENSAVE=true remains compatible with issue #19.
                 // The process exits cleanly so the host does not retry.
                 return Ok(());
             }
@@ -1297,9 +1300,40 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
     )
 }
 
+fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bool {
+    match canonical {
+        Some("true") => true,
+        Some("false") => false,
+        Some(_) | None => legacy == Some("true"),
+    }
+}
+
 #[cfg(test)]
 mod startup_tests {
-    use super::{should_skip_agent_install_maintenance, Commands};
+    use super::{server_disabled_from_env, should_skip_agent_install_maintenance, Commands};
+
+    #[test]
+    fn canonical_server_disable_env_controls_serve() {
+        assert!(server_disabled_from_env(Some("true"), None));
+        assert!(!server_disabled_from_env(Some("false"), None));
+        assert!(!server_disabled_from_env(None, None));
+    }
+
+    #[test]
+    fn legacy_server_disable_env_remains_compatible() {
+        assert!(server_disabled_from_env(None, Some("true")));
+        assert!(!server_disabled_from_env(None, Some("false")));
+        assert!(!server_disabled_from_env(None, Some("1")));
+    }
+
+    #[test]
+    fn canonical_server_disable_env_has_precedence() {
+        assert!(server_disabled_from_env(Some("true"), Some("false")));
+        assert!(!server_disabled_from_env(Some("false"), Some("true")));
+        assert!(server_disabled_from_env(Some("TRUE"), Some("true")));
+        assert!(server_disabled_from_env(Some("1"), Some("true")));
+        assert!(server_disabled_from_env(Some(""), Some("true")));
+    }
 
     #[test]
     fn doctor_skips_agent_install_maintenance() {
