@@ -6,7 +6,7 @@
 |------|-----------|
 | **Lite** (always compiled) | Rust, Go, Java, Scala, TypeScript/JavaScript/TSX/JSX, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro |
 | **Medium** (feature flags) | Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET |
-| **Full** (feature flags) | ActionScript, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic, QuickBASIC, Dockerfile, GLSL, WGSL, HLSL, Metal, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean |
+| **Full** (feature flags) | ActionScript, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MSBASIC2, GW-BASIC, QBasic, QuickBASIC, Dockerfile, GLSL, WGSL, HLSL, Metal, CUDA/HIP, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean |
 
 ## How to add a language
 
