@@ -178,6 +178,14 @@ impl CppExtractor {
             "preproc_def" => Self::visit_preproc_def(state, node),
             "preproc_include" => Self::visit_preproc_include(state, node),
             "access_specifier" => Self::visit_access_specifier(state, node),
+            // Both `extern "C" void foo() {}` and `extern "C" { ... }` parse
+            // as `linkage_specification`, which carries no symbol itself --
+            // unwrap it so the wrapped declaration(s) get visited.
+            // `declaration_list` (the block form's body) only reaches here
+            // via `extern "C"`; namespaces already unwrap their own
+            // `declaration_list` before dispatch, so this can't double-visit
+            // them.
+            "linkage_specification" | "declaration_list" => Self::visit_children(state, node),
             _ => {
                 // For other node types, skip. Comments are picked up as docstrings.
             }

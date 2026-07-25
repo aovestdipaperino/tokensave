@@ -813,3 +813,73 @@ class [[nodiscard]] Result {
         .collect();
     assert!(annot_refs.len() >= 3, "expected at least 3 Annotates refs");
 }
+
+// -------------------------------------------------------------------------
+// extern "C" linkage specifications
+// -------------------------------------------------------------------------
+//
+// `linkage_specification` (and, for the braced form, the `declaration_list`
+// inside it) previously had no case in the extractor's dispatch, so anything
+// wrapped in `extern "C"` -- ubiquitous in C/C++ interop headers, and in
+// CUDA/HIP source exposing kernels to host code -- was silently invisible.
+
+#[test]
+fn test_cpp_extern_c_single_declaration() {
+    let source = r#"
+extern "C" void plain_func(int x) {
+    x = x + 1;
+}
+"#;
+    let result = CppExtractor.extract("extern_c.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"plain_func"), "functions: {fns:?}");
+}
+
+#[test]
+fn test_cpp_extern_c_block() {
+    let source = r#"
+extern "C" {
+    void declared_only(int x);
+    void with_body(int y) {
+        y = y + 1;
+    }
+}
+"#;
+    let result = CppExtractor.extract("extern_c_block.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"declared_only"), "functions: {fns:?}");
+    assert!(fns.contains(&"with_body"), "functions: {fns:?}");
+}
+
+#[test]
+fn test_cpp_extern_c_does_not_affect_normal_functions() {
+    let source = r#"
+extern "C" void wrapped(int x) {}
+
+void normal_func(int x) {
+    x = x + 1;
+}
+"#;
+    let result = CppExtractor.extract("mixed.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"wrapped"), "functions: {fns:?}");
+    assert!(fns.contains(&"normal_func"), "functions: {fns:?}");
+}
