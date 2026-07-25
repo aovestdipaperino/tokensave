@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::Node as TsNode;
 
-use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef};
+use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef, Visibility};
 
 /// Internal state used during AST traversal.
 pub(crate) struct ExtractionState {
@@ -26,6 +26,14 @@ pub(crate) struct ExtractionState {
     /// Nesting depth of enclosing class-like scopes (used by extractors that
     /// treat top-level and member functions differently; others leave it 0).
     pub(crate) class_depth: usize,
+    /// Current Ruby visibility mode inside a class/module body (private/protected/
+    /// public switches). Other extractors leave it at the default Pub.
+    pub(crate) visibility_mode: Visibility,
+    /// Node IDs of Ruby singleton methods (`def self.foo` / `def obj.foo`), so
+    /// retroactive visibility (`private_class_method :foo` vs `private :foo`) can
+    /// tell a singleton from a same-named instance method — they share a kind and
+    /// qualified name. Other extractors leave it empty.
+    pub(crate) singleton_method_ids: Vec<String>,
 }
 
 impl ExtractionState {
@@ -44,6 +52,8 @@ impl ExtractionState {
             source: source.as_bytes().to_vec(),
             timestamp,
             class_depth: 0,
+            visibility_mode: Visibility::Pub,
+            singleton_method_ids: Vec::new(),
         }
     }
 

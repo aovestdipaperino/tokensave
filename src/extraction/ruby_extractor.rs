@@ -109,6 +109,11 @@ impl RubyExtractor {
             "class" => Self::visit_class(state, node),
             "module" => Self::visit_module(state, node),
             "assignment" => Self::visit_assignment_for_const(state, node),
+            // Bare `private`/`protected`/`public` mode switches parse as a plain
+            // identifier statement; defensively also handle a no-arg call.
+            "identifier" | "call" | "method_call" => {
+                Self::visit_visibility_directive(state, node);
+            }
             // Traverse blocks (do...end) for nested definitions
             "do_block" | "block" => Self::visit_children(state, node),
             _ => {}
@@ -120,7 +125,11 @@ impl RubyExtractor {
     /// `is_singleton` controls whether this becomes a Method regardless of class depth
     /// (singleton methods are always `NodeKind::Method`).
     fn visit_method(state: &mut ExtractionState, node: TsNode<'_>, is_singleton: bool) {
-        let name = find_child_by_kind(node, "identifier")
+        // tree-sitter-ruby's `method` node exposes a `name` field typed `_method_name`,
+        // which covers plain identifiers as well as operator defs (`def []=`, `def <=>`)
+        // and setter defs (`def name=`) — neither of which is an `identifier` node kind.
+        let name = node
+            .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0 || is_singleton;
@@ -129,7 +138,11 @@ impl RubyExtractor {
         } else {
             NodeKind::Function
         };
-        let visibility = Visibility::Pub;
+        let visibility = if is_singleton {
+            Visibility::Pub
+        } else {
+            state.visibility_mode.clone()
+        };
         let signature = Self::extract_method_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -236,6 +249,7 @@ impl RubyExtractor {
             parent_id: None,
         };
         state.nodes.push(graph_node);
+        state.singleton_method_ids.push(id.clone());
 
         // Contains edge from parent.
         if let Some(parent_id) = state.parent_node_id() {
@@ -315,9 +329,12 @@ impl RubyExtractor {
         // Visit class body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
+        let saved_visibility_mode = state.visibility_mode.clone();
+        state.visibility_mode = Visibility::Pub;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
     }
@@ -389,9 +406,12 @@ impl RubyExtractor {
         // Visit module body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
+        let saved_visibility_mode = state.visibility_mode.clone();
+        state.visibility_mode = Visibility::Pub;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
     }
@@ -456,6 +476,185 @@ impl RubyExtractor {
                     });
                 }
             }
+        }
+    }
+
+    /// Resolve a Ruby visibility modifier name to a `Visibility`, if the name
+    /// is one of `public`/`private`/`protected`. Ruby has no `protected`
+    /// variant in our enum; both `private` and `protected` map to
+    /// `Visibility::Private` since the distortion this fixes only requires
+    /// distinguishing public API from non-public.
+    fn resolve_visibility_keyword(name: &str) -> Option<Visibility> {
+        match name {
+            "public" => Some(Visibility::Pub),
+            "private" | "protected" => Some(Visibility::Private),
+            _ => None,
+        }
+    }
+
+    /// Resolve a Ruby *singleton* visibility directive name to a `Visibility`.
+    /// These target `def self.foo` methods by symbol rather than switching the
+    /// default mode. Ruby core has no `protected_class_method`, so only these two.
+    fn resolve_class_method_keyword(name: &str) -> Option<Visibility> {
+        match name {
+            "public_class_method" => Some(Visibility::Pub),
+            "private_class_method" => Some(Visibility::Private),
+            _ => None,
+        }
+    }
+
+    /// Handle `private`/`protected`/`public`/`private_class_method`/
+    /// `public_class_method` directives: bare mode switches (`private`),
+    /// symbol-list retroactive marking (`private :foo, :bar`), and inline
+    /// `def` (`private def foo; end`).
+    fn visit_visibility_directive(state: &mut ExtractionState, node: TsNode<'_>) {
+        match node.kind() {
+            "identifier" => {
+                let name = state.node_text(node);
+                if let Some(visibility) = Self::resolve_visibility_keyword(&name) {
+                    state.visibility_mode = visibility;
+                }
+            }
+            "call" | "method_call" => {
+                // Real visibility directives are receiverless. A call with an explicit
+                // receiver (e.g. `policy.private`, `config.public(:run)`) is an ordinary
+                // method call that merely shares a name — it must not change visibility.
+                if node.child_by_field_name("receiver").is_some() {
+                    return;
+                }
+                let Some(method_node) = node.child_by_field_name("method") else {
+                    return;
+                };
+                let name = state.node_text(method_node);
+                let class_method_visibility = Self::resolve_class_method_keyword(&name);
+                let is_class_method = class_method_visibility.is_some();
+                let Some(visibility) =
+                    class_method_visibility.or_else(|| Self::resolve_visibility_keyword(&name))
+                else {
+                    return;
+                };
+
+                let Some(args) = node.child_by_field_name("arguments") else {
+                    // Bare call with no argument list (e.g. `private()`): only a
+                    // mode switch makes sense here.
+                    if !is_class_method {
+                        state.visibility_mode = visibility;
+                    }
+                    return;
+                };
+
+                let mut saw_arg = false;
+                let mut cursor = args.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        let arg = cursor.node();
+                        match arg.kind() {
+                            "simple_symbol" => {
+                                saw_arg = true;
+                                let symbol_name =
+                                    state.node_text(arg).trim_start_matches(':').to_string();
+                                Self::mark_method_visibility(
+                                    state,
+                                    &symbol_name,
+                                    is_class_method,
+                                    visibility.clone(),
+                                );
+                            }
+                            "delimited_symbol" => {
+                                // Any symbol argument counts, so the mode isn't switched
+                                // below — even an interpolated one we can't resolve.
+                                saw_arg = true;
+                                if let Some(symbol_name) =
+                                    Self::static_delimited_symbol_name(state, arg)
+                                {
+                                    Self::mark_method_visibility(
+                                        state,
+                                        &symbol_name,
+                                        is_class_method,
+                                        visibility.clone(),
+                                    );
+                                }
+                            }
+                            "method" => {
+                                saw_arg = true;
+                                let saved_visibility_mode = state.visibility_mode.clone();
+                                state.visibility_mode = visibility.clone();
+                                Self::visit_method(state, arg, false);
+                                state.visibility_mode = saved_visibility_mode;
+                            }
+                            "singleton_method" => {
+                                saw_arg = true;
+                                Self::visit_singleton_method(state, arg);
+                                // `visit_singleton_method` always hardcodes `Pub` (singletons
+                                // sit outside the `visibility_mode` path), so a plain `private
+                                // def self.foo; end` is correctly left public (a no-op in
+                                // Ruby). Only `private_class_method` actually privatizes it.
+                                if is_class_method {
+                                    if let Some(node) = state.nodes.last_mut() {
+                                        node.visibility = visibility.clone();
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Any other named argument (e.g. `private attr_reader :foo`,
+                                // whose arg is a nested `call`) is still an argument: Ruby
+                                // applies the directive to it and returns without switching
+                                // the default visibility. Unnamed nodes (punctuation like
+                                // `(`, `)`, `,`) don't count, so `private()` still switches
+                                // the mode.
+                                if arg.is_named() {
+                                    saw_arg = true;
+                                }
+                            }
+                        }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+
+                if !saw_arg && !is_class_method {
+                    state.visibility_mode = visibility;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Retroactively mark the method named `name` defined in the *current*
+    /// class/module body (the owner on top of `state.node_stack` at directive
+    /// time) as having `visibility`. Matches on `qualified_name` rather than
+    /// bare `name` + `file_path`, so a same-named method in an unrelated or
+    /// ancestor class elsewhere in the file is left untouched — only the
+    /// method actually defined in the enclosing body of this directive is
+    /// affected.
+    ///
+    /// `want_singleton` selects which same-named node to target: instance methods
+    /// and singleton methods (`def self.foo`) share both `NodeKind::Method` and
+    /// `qualified_name`, so `state.singleton_method_ids` disambiguates them.
+    /// `want_singleton == true` (`private_class_method`/`public_class_method`)
+    /// matches only the singleton; `false` (`private`/`protected`/`public`)
+    /// matches the instance method, or a top-level `Function` (file-scope
+    /// `private :foo`).
+    fn mark_method_visibility(
+        state: &mut ExtractionState,
+        name: &str,
+        want_singleton: bool,
+        visibility: Visibility,
+    ) {
+        let target_qn = format!("{}::{}", state.qualified_prefix(), name);
+        let singleton_ids = &state.singleton_method_ids;
+        if let Some(node) = state.nodes.iter_mut().rev().find(|n| {
+            n.qualified_name == target_qn && {
+                let is_singleton = singleton_ids.contains(&n.id);
+                if want_singleton {
+                    n.kind == NodeKind::Method && is_singleton
+                } else {
+                    !is_singleton && (n.kind == NodeKind::Method || n.kind == NodeKind::Function)
+                }
+            }
+        }) {
+            node.visibility = visibility;
         }
     }
 
@@ -581,6 +780,29 @@ impl RubyExtractor {
         // Comments were collected in reverse order; reverse them back.
         comments.reverse();
         Some(comments.join("\n"))
+    }
+
+    /// Decode a static `delimited_symbol` (`:"foo"`, `:"[]="`) to its method
+    /// name. Returns `None` for symbols we can't resolve at extraction time —
+    /// anything containing an `interpolation` (`:"#{x}"`) or `escape_sequence`
+    /// (method names never need escapes) — so those are skipped rather than
+    /// marked on the wrong method.
+    fn static_delimited_symbol_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let mut name = String::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "string_content" {
+                name.push_str(&state.node_text(child));
+            } else {
+                // interpolation / escape_sequence — not statically decodable.
+                return None;
+            }
+        }
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     }
 
     /// Find the method name identifier in a singleton method.
