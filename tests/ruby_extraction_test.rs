@@ -783,6 +783,847 @@ end
     }
 
     #[test]
+    fn test_ruby_singleton_class_self_extracts_methods() {
+        let source = r#"
+class Report
+  class << self
+    def generate; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generate = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method to be extracted from class << self, not dropped");
+        assert_eq!(generate.kind, NodeKind::Method);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_qualified_name_matches_def_self() {
+        let shovel_source = r#"
+class Report
+  class << self
+    def generate; end
+  end
+end
+"#;
+        let def_self_source = r#"
+class Report
+  def self.generate; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let shovel_result = extractor.extract("report.rb", shovel_source);
+        assert!(
+            shovel_result.errors.is_empty(),
+            "errors: {:?}",
+            shovel_result.errors
+        );
+        let def_self_result = extractor.extract("report.rb", def_self_source);
+        assert!(
+            def_self_result.errors.is_empty(),
+            "errors: {:?}",
+            def_self_result.errors
+        );
+        let shovel_generate = shovel_result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method from class << self");
+        let def_self_generate = def_self_result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method from def self.generate");
+        assert_eq!(
+            shovel_generate.qualified_name, def_self_generate.qualified_name,
+            "class << self; def foo should produce the same qualified name as def self.foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_contains_edge_from_enclosing_class() {
+        let source = r#"
+class Report
+  class << self
+    def generate; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "Report")
+            .expect("expected Report class");
+        let generate = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method");
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == generate.id),
+            "expected Contains edge from Report directly to generate"
+        );
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_bare_private_privatizes_following_defs() {
+        let source = r#"
+class Report
+  class << self
+    def generate; end
+
+    private
+
+    def helper; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let visibility_of = |name: &str| {
+            result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("expected method {name}"))
+                .visibility
+                .clone()
+        };
+        assert_eq!(visibility_of("generate"), Visibility::Pub);
+        assert_eq!(visibility_of("helper"), Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_private_does_not_leak_out_to_instance_methods() {
+        let source = r#"
+class Report
+  class << self
+    private
+
+    def helper; end
+  end
+
+  def instance_method; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let visibility_of = |name: &str| {
+            result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("expected method {name}"))
+                .visibility
+                .clone()
+        };
+        assert_eq!(visibility_of("helper"), Visibility::Private);
+        assert_eq!(visibility_of("instance_method"), Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_does_not_inherit_outer_private() {
+        let source = r#"
+class Report
+  private
+
+  class << self
+    def generate; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generate = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method");
+        assert_eq!(generate.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_symbol_form_marks_singleton_method() {
+        let source = r#"
+class Report
+  class << self
+    def helper; end
+
+    private :helper
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("expected helper method");
+        assert_eq!(helper.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_private_class_method_targets_method_defined_in_singleton_class() {
+        let source = r#"
+class Report
+  class << self
+    def helper; end
+  end
+
+  private_class_method :helper
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("expected helper method");
+        assert_eq!(helper.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_private_class_method_targets_singleton_not_instance_via_shovel() {
+        let source = r#"
+class Widget
+  def run; end
+
+  class << self
+    def run; end
+  end
+
+  private_class_method :run
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let run_nodes: Vec<_> = result.nodes.iter().filter(|n| n.name == "run").collect();
+        assert_eq!(run_nodes.len(), 2);
+        let instance = run_nodes
+            .iter()
+            .copied()
+            .min_by_key(|n| n.start_line)
+            .unwrap();
+        let singleton = run_nodes
+            .iter()
+            .copied()
+            .max_by_key(|n| n.start_line)
+            .unwrap();
+        assert_eq!(instance.visibility, Visibility::Pub);
+        assert_eq!(singleton.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_private_symbol_targets_instance_not_singleton_via_shovel() {
+        let source = r#"
+class Widget
+  def run; end
+
+  class << self
+    def run; end
+  end
+
+  private :run
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let run_nodes: Vec<_> = result.nodes.iter().filter(|n| n.name == "run").collect();
+        assert_eq!(run_nodes.len(), 2);
+        let instance = run_nodes
+            .iter()
+            .copied()
+            .min_by_key(|n| n.start_line)
+            .unwrap();
+        let singleton = run_nodes
+            .iter()
+            .copied()
+            .max_by_key(|n| n.start_line)
+            .unwrap();
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert_eq!(singleton.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_call_sites() {
+        let source = r#"
+class Report
+  class << self
+    def generate
+      prepare()
+    end
+
+    def prepare; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_kind == EdgeKind::Calls && r.reference_name == "prepare"),
+            "expected a Calls ref for prepare from inside class << self"
+        );
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_nested_in_module() {
+        let source = r#"
+module Utils
+  class << self
+    def format(val)
+      val.to_s
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("utils.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let format_method = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "format")
+            .expect("expected format method inside module's class << self");
+        assert_eq!(format_method.kind, NodeKind::Method);
+        assert!(format_method.qualified_name.ends_with("Utils::format"));
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_non_self_receiver_not_registered_as_singleton() {
+        let source = r#"
+class Report
+  class << some_object
+    def helper; end
+  end
+
+  private_class_method :helper
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("expected helper method to still be extracted from class << some_object");
+        // private_class_method must not match it: it's not the enclosing class's singleton.
+        assert_eq!(helper.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_method_foreign_receiver_not_targeted_by_private_class_method() {
+        let source = r#"
+class Report
+  def obj.foo; end
+
+  private_class_method :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected def obj.foo to still be extracted");
+        // `foo`'s receiver is `obj`, not `Report`, so `private_class_method` must not match it.
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_method_foreign_receiver_not_targeted_by_private() {
+        let source = r#"
+class Report
+  def obj.foo; end
+
+  private :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected def obj.foo to still be extracted");
+        // `foo` isn't an instance method of Report either, so `private` must not match it -
+        // it should land in neither the singleton nor the instance-method bucket.
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_method_distinguishes_self_from_other_receiver() {
+        let source = r#"
+class Report
+  def self.foo; end
+  def obj.foo; end
+
+  private_class_method :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo_nodes: Vec<_> = result.nodes.iter().filter(|n| n.name == "foo").collect();
+        assert_eq!(foo_nodes.len(), 2);
+        let self_foo = foo_nodes
+            .iter()
+            .copied()
+            .find(|n| n.signature.as_deref() == Some("def self.foo; end"))
+            .expect("expected def self.foo");
+        let obj_foo = foo_nodes
+            .iter()
+            .copied()
+            .find(|n| n.signature.as_deref() == Some("def obj.foo; end"))
+            .expect("expected def obj.foo");
+        assert_eq!(self_foo.visibility, Visibility::Private);
+        assert_eq!(obj_foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_method_enclosing_constant_receiver_is_equivalent_to_self() {
+        let source = r#"
+class Report
+  def Report.generate; end
+
+  private_class_method :generate
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generate = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method");
+        assert_eq!(generate.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_scope_does_not_leak_into_nested_class() {
+        let source = r#"
+class Report
+  class << self
+    class Inner
+      def foo; end
+      def self.foo; end
+      private :foo
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo_nodes: Vec<_> = result.nodes.iter().filter(|n| n.name == "foo").collect();
+        assert_eq!(foo_nodes.len(), 2);
+        let is_singleton = |n: &Node| n.signature.as_deref().unwrap_or("").contains("self.");
+        let singleton = foo_nodes
+            .iter()
+            .copied()
+            .find(|&n| is_singleton(n))
+            .expect("singleton foo");
+        let instance = foo_nodes
+            .iter()
+            .copied()
+            .find(|&n| !is_singleton(n))
+            .expect("instance foo");
+        // Without the fix, the leaked singleton scope makes `private :foo` retarget
+        // `def self.foo` inside Inner instead of the plain instance `def foo`.
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert_eq!(singleton.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_scope_does_not_leak_into_nested_module() {
+        let source = r#"
+class Report
+  class << self
+    module Helpers
+      def foo; end
+      def self.foo; end
+      private :foo
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo_nodes: Vec<_> = result.nodes.iter().filter(|n| n.name == "foo").collect();
+        assert_eq!(foo_nodes.len(), 2);
+        let is_singleton = |n: &Node| n.signature.as_deref().unwrap_or("").contains("self.");
+        let singleton = foo_nodes
+            .iter()
+            .copied()
+            .find(|&n| is_singleton(n))
+            .expect("singleton foo");
+        let instance = foo_nodes
+            .iter()
+            .copied()
+            .find(|&n| !is_singleton(n))
+            .expect("instance foo");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert_eq!(singleton.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_nested_foreign_singleton_class_does_not_inherit_outer_enclosing_scope() {
+        let source = r#"
+class Report
+  class << self
+    class << other
+      def bar; end
+    end
+  end
+
+  private_class_method :bar
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar method inside nested class << other");
+        // `bar` belongs to `other`, not `Report`, even though it's nested inside
+        // `class << self` - it must not inherit the outer Enclosing scope.
+        assert_eq!(bar.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_foreign_singleton_class_method_not_targeted_by_private() {
+        let source = r#"
+class Report
+  class << some_object
+    def bar; end
+  end
+
+  private :bar
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar method inside class << some_object");
+        assert_eq!(bar.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_def_self_inside_class_shovel_self_targets_outer_singleton_class() {
+        let source = r#"
+class Report
+  class << self
+    def self.meta_only; end
+  end
+
+  private_class_method :meta_only
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let meta_only = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "meta_only")
+            .expect("expected meta_only method");
+        // `self` inside `class << self` is the singleton class itself, so
+        // `def self.meta_only` defines a method one level further out than
+        // `Report` (`Report.singleton_class.meta_only`). `private_class_method`
+        // at the `Report` level must not match it.
+        assert_eq!(meta_only.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_def_inside_nested_class_shovel_self_targets_outer_singleton_class() {
+        let source = r#"
+class Report
+  class << self
+    class << self
+      def deep; end
+    end
+  end
+
+  private_class_method :deep
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let deep = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "deep")
+            .expect("expected deep method");
+        // The inner `class << self` is judged against the outer `Enclosing`
+        // scope, so its `self` is the singleton class, not `Report` - `deep`
+        // belongs one level further out and `private_class_method` here must
+        // not match it.
+        assert_eq!(deep.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_def_constant_inside_class_shovel_self_still_targets_enclosing_class() {
+        let source = r#"
+class Report
+  class << self
+    def Report.generate; end
+  end
+
+  private_class_method :generate
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generate = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generate")
+            .expect("expected generate method");
+        // Unlike a literal `self`, the constant receiver names the enclosing
+        // class regardless of singleton scope, so `def Report.generate` here
+        // is still `Report.generate` and `private_class_method` must match it.
+        assert_eq!(generate.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_directive_inside_foreign_singleton_class_does_not_retarget_enclosing_instance_method(
+    ) {
+        let source = r#"
+class Report
+  def process; end
+  class << config
+    def process; end
+    private :process
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let process_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "process")
+            .collect();
+        assert_eq!(process_nodes.len(), 2);
+        let instance = process_nodes
+            .iter()
+            .copied()
+            .min_by_key(|n| n.start_line)
+            .unwrap();
+        let foreign = process_nodes
+            .iter()
+            .copied()
+            .max_by_key(|n| n.start_line)
+            .unwrap();
+        // `private :process` is written inside `class << config`'s body, so it
+        // must mark `config`'s `process`, not fall through to `Report#process`.
+        assert_eq!(instance.visibility, Visibility::Pub);
+        assert_eq!(foreign.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_private_class_method_inside_class_shovel_self_targets_only_nested_def_self() {
+        let source = r#"
+class Report
+  class << self
+    def plain; end
+    def self.deep; end
+
+    private_class_method :deep
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let plain = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "plain")
+            .expect("expected plain method");
+        let deep = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "deep")
+            .expect("expected deep method");
+        // `plain` is `Report`'s own class method (registered as the enclosing
+        // singleton); `def self.deep` here is one level further out, so
+        // `private_class_method :deep`, written inside the same `class <<
+        // self` body, must mark only `deep` and leave `plain` untouched.
+        assert_eq!(plain.visibility, Visibility::Pub);
+        assert_eq!(deep.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_qualified_receiver_targets_enclosing_class() {
+        let source = r#"
+module Outer
+  class Inner
+    class << Outer::Inner
+      def foo; end
+    end
+
+    private_class_method :foo
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method");
+        // `Outer::Inner` names the class we're inside, so `class << Outer::Inner`
+        // reopens its singleton class just like `class << self` would.
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_partial_relative_qualified_receiver_targets_enclosing_class() {
+        let source = r#"
+module A
+  module B
+    class C
+      class << B::C
+        def bar; end
+      end
+
+      private_class_method :bar
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar method");
+        // `B::C` is a relative path resolving up the lexical scope from `C`,
+        // matching a suffix of the enclosing node stack (A, B, C).
+        assert_eq!(bar.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_unrelated_qualified_receiver_not_targeted() {
+        let source = r#"
+module Outer
+  class Inner
+    class << Other::Thing
+      def baz; end
+    end
+
+    private_class_method :baz
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let baz = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "baz")
+            .expect("expected baz method");
+        // `Other::Thing` names neither `Inner` nor any suffix of the enclosing
+        // node stack, so it must not be treated as the enclosing class.
+        assert_eq!(baz.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_absolute_qualified_receiver_targets_enclosing_class() {
+        let source = r#"
+module Outer
+  class Inner
+    class << ::Outer::Inner
+      def foo; end
+    end
+
+    private_class_method :foo
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method");
+        // A leading `::` is an absolute path anchored at top level; it must
+        // still match when it names the same object as the full node stack.
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_absolute_qualified_receiver_is_different_object() {
+        let source = r#"
+module A
+  class B
+    class << ::B
+      def foo; end
+    end
+
+    private_class_method :foo
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo method");
+        // `::B` is the top-level constant `B`, a different object from `A::B` -
+        // an absolute path must never match via a relative suffix.
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
     fn test_ruby_empty_source() {
         let extractor = RubyExtractor;
         let result = extractor.extract("empty.rb", "");
