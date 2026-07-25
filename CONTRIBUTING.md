@@ -39,7 +39,7 @@ tokensave supports more than 50 languages via feature flags (see the README for 
 |---------|-----------|
 | `lite` (default subset) | Rust, Go, Java, Scala, TypeScript/JS, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro |
 | `medium` | +Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET |
-| `full` (default) | +ActionScript, Lua, Zig, Obj-C, Perl, Batch, Fortran, COBOL, the BASIC family, Dockerfile, shader languages (GLSL/WGSL/HLSL/Metal), Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean |
+| `full` (default) | +ActionScript, Lua, Zig, Obj-C, Perl, Batch, Fortran, COBOL, the BASIC family, Dockerfile, shader languages (GLSL/WGSL/HLSL/Metal), CUDA/HIP, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean |
 
 Build with fewer languages for faster compile times during development:
 
