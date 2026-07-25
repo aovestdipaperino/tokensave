@@ -81,6 +81,15 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
             if let Some(ref sig) = node.signature {
                 let _ = writeln!(out, "  `{sig}`");
             }
+            // A docstring's first line often answers the question without a
+            // code fetch — cheap to include, expensive to omit.
+            if let Some(first) = node
+                .docstring
+                .as_deref()
+                .and_then(|doc| doc.lines().find(|line| !line.trim().is_empty()))
+            {
+                let _ = writeln!(out, "  {}", first.trim());
+            }
         }
         out.push('\n');
     }
@@ -298,6 +307,44 @@ mod tests {
         assert!(md.contains("#### my_fn (src/main.rs:2)"));
         assert!(md.contains("```rust"));
         assert!(md.contains("fn my_fn()"));
+    }
+
+    #[test]
+    fn test_entry_point_docstring_first_line_shown() {
+        let mut ctx = make_test_context();
+        ctx.entry_points = vec![Node {
+            id: "function:doc".to_string(),
+            kind: NodeKind::Function,
+            name: "documented".to_string(),
+            qualified_name: "src/lib.rs::documented".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: None,
+            docstring: Some("Parses the config file.\n\nLong detail here.".to_string()),
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        }];
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("  Parses the config file."), "{md}");
+        assert!(!md.contains("Long detail here"), "{md}");
     }
 
     #[test]
