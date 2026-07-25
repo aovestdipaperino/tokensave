@@ -4960,6 +4960,57 @@ async fn pr_context_collapses_cargo_toml_keys() {
     );
 }
 
+/// Regression: `tokensave_pr_context` hardcoded `"main"` as the default
+/// base ref, causing a git error on repos whose default branch is `master`.
+/// The fix reads from `branch-meta.json` when no `base_ref` is provided.
+#[tokio::test]
+async fn pr_context_uses_branch_meta_default_branch() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|_| panic!("git {args:?} failed"));
+    }
+    git(project, &["init", "-b", "master"]);
+    git(project, &["config", "user.email", "t@t"]);
+    git(project, &["config", "user.name", "t"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-m", "init"]);
+
+    git(project, &["checkout", "-b", "feature"]);
+    fs::write(project.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+    git(project, &["add", "."]);
+    git(project, &["commit", "-m", "add b"]);
+
+    let cg = TokenSave::init(project).await.unwrap();
+
+    // Write branch-meta with default_branch = "master"
+    let tokensave_dir = tokensave::config::get_tokensave_dir(cg.project_root());
+    let meta = tokensave::branch_meta::BranchMeta::new("master");
+    tokensave::branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    // Call pr_context WITHOUT base_ref — should resolve to "master", not "main".
+    let result = handle_tool_call(&cg, "tokensave_pr_context", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value);
+    // Must not contain "git error" — that was the symptom of the bug.
+    assert!(
+        !text.contains("git error"),
+        "pr_context should resolve default branch from branch-meta, got: {text}"
+    );
+    let output: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        output.get("added").is_some() || output.get("modified").is_some(),
+        "expected pr_context to return diff data, got: {text}"
+    );
+}
+
 /// Regression for new bug-report batch (#21): `tokensave_unused_imports`
 /// must flag genuinely unused identifiers inside grouped `use foo::{A, B}`
 /// imports. Real-world Rust style is dominated by grouped imports
