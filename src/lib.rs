@@ -29,6 +29,7 @@ pub mod derive_table;
 pub mod diagnose;
 pub mod diagnostics;
 pub mod display;
+pub mod docs;
 pub mod doctor;
 pub mod errors;
 pub mod extraction;

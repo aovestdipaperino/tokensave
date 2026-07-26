@@ -330,6 +330,7 @@ pub async fn handle_tool_call(
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
         "tokensave_blame" => blame::handle_blame(cg, args).await,
         "tokensave_body" => info::handle_body(cg, args, scope_prefix).await,
+        "tokensave_doc" => info::handle_doc(cg, args, scope_prefix).await,
         "tokensave_todos" => info::handle_todos(cg, args, scope_prefix).await,
         "tokensave_read" => info::handle_read(cg, args).await,
         "tokensave_entities" => info::handle_outline(cg, args).await,
@@ -387,13 +388,14 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            82
+            83
         } else {
-            81
+            82
         };
         assert_eq!(tools.len(), expected_total);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(tool_names.contains(&"tokensave_doc"));
         assert!(tool_names.contains(&"tokensave_search"));
         assert!(tool_names.contains(&"tokensave_context"));
         assert!(tool_names.contains(&"tokensave_callers"));

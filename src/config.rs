@@ -22,6 +22,12 @@ pub const QUERYIGNORE_FILENAME: &str = "queryignore";
 /// Controls which files are indexed, size limits, and feature toggles.
 /// Language inclusion is derived automatically from the installed
 /// `LanguageExtractor` set — only exclude patterns live in the config.
+/// Serde default for [`TokenSaveConfig::docs_dir`], so configs written before
+/// #154 keep discovering docs in the conventional location.
+fn default_docs_dir() -> String {
+    crate::docs::DEFAULT_DOCS_DIR.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
     /// Schema version of the configuration.
@@ -58,6 +64,13 @@ pub struct TokenSaveConfig {
     /// `__tests__/`, `*.test.*`, and `*.spec.*` still take precedence.
     #[serde(default)]
     pub source_path_overrides: Vec<String>,
+    /// Directory (project-relative) scanned for companion documentation that
+    /// declares its coverage via `applies_to` front matter (#154). Defaults to
+    /// `tokensave-docs`; set it to relocate the directory, or to an empty
+    /// string to disable docs-directory discovery entirely. Sidecar
+    /// `*.readme.md` files are unaffected by this setting.
+    #[serde(default = "default_docs_dir")]
+    pub docs_dir: String,
     /// tokensave version that last fully indexed this project.
     ///
     /// Used to decide whether a major-version upgrade requires a forced
@@ -110,6 +123,7 @@ impl Default for TokenSaveConfig {
             default_path_include: Vec::new(),
             default_path_exclude: Vec::new(),
             source_path_overrides: Vec::new(),
+            docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: false,
         }

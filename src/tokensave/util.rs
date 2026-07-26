@@ -89,6 +89,10 @@ pub(crate) fn kind_tier(kind: &NodeKind) -> u8 {
         | NodeKind::PascalUnit
         | NodeKind::Library
         | NodeKind::File
+        // A companion doc is never the answer to "find symbol X" — it is
+        // surfaced via the doc marker and `tokensave_doc`, not by outranking
+        // the code it describes (#154).
+        | NodeKind::Doc
         | NodeKind::GenericParam
         | NodeKind::PascalProgram => 3,
         // Tier 4: pure references / annotations — always rank last.
@@ -156,6 +160,9 @@ pub(crate) fn kind_rank_bonus(kind: &NodeKind) -> f64 {
         | NodeKind::Export => 0.5,
         // File / generic-parameter — neutral
         NodeKind::File | NodeKind::GenericParam | NodeKind::PascalProgram => 0.0,
+        // Companion docs describe code rather than being it, so they sit with
+        // the other containers below real definitions (#154).
+        NodeKind::Doc => -1.5,
         // References & containers — push below definitions
         NodeKind::Use | NodeKind::Include => -3.0,
         NodeKind::AnnotationUsage | NodeKind::Decorator => -2.0,
