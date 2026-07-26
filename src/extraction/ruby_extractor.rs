@@ -6,13 +6,30 @@ use std::time::Instant;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, RUBY_COMPLEXITY};
-use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, SingletonScope};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Ruby source files using tree-sitter.
 pub struct RubyExtractor;
+
+/// Which same-named node a Ruby visibility directive should retroactively
+/// mark. Instance methods, the enclosing class's singleton methods, and
+/// methods on an unresolvable receiver all share `NodeKind::Method` and
+/// `qualified_name`, so the id lists in `ExtractionState` are what tell them
+/// apart.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VisibilityTarget {
+    /// The instance method, or a file-scope `Function`.
+    Instance,
+    /// A singleton method of the enclosing class (`def self.foo`, or `def
+    /// foo` inside `class << self`).
+    EnclosingSingleton,
+    /// A method defined on an unresolvable receiver — inside `class <<
+    /// other`, or `def self.foo` inside a `class << …` body.
+    Foreign,
+}
 
 impl RubyExtractor {
     /// Extract code graph nodes and edges from a Ruby source file.
@@ -104,27 +121,44 @@ impl RubyExtractor {
     /// Visit a single AST node, dispatching on its type.
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
-            "method" => Self::visit_method(state, node, false),
+            "method" => Self::visit_method(state, node),
             "singleton_method" => Self::visit_singleton_method(state, node),
+            "singleton_class" => Self::visit_singleton_class(state, node),
             "class" => Self::visit_class(state, node),
             "module" => Self::visit_module(state, node),
             "assignment" => Self::visit_assignment_for_const(state, node),
             // Bare `private`/`protected`/`public` mode switches parse as a plain
             // identifier statement; defensively also handle a no-arg call.
+            // A receiverless include/prepend/extend is a mixin directive; the two
+            // handlers are gated on disjoint method names, so both run.
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
+                Self::visit_mixin_directive(state, node);
             }
-            // Traverse blocks (do...end) for nested definitions
-            "do_block" | "block" => Self::visit_children(state, node),
+            // Statement containers: they wrap statements without opening a new
+            // definition scope, so the enclosing class/module stays the parent and
+            // a mixin/definition nested in one is extracted as if written directly
+            // in the body (`include Foo if enabled?`, `if RUBY_VERSION > "3" … end`,
+            // `begin … rescue LoadError … end`). Method bodies are NOT reached from
+            // here — visit_method routes them through extract_call_sites instead.
+            "if" | "unless" | "if_modifier" | "unless_modifier" | "then" | "else" | "elsif"
+            | "case" | "when" | "case_match" | "in_clause" | "while" | "until"
+            | "while_modifier" | "until_modifier" | "do" | "begin" | "rescue" | "ensure"
+            | "rescue_modifier" | "body_statement" | "do_block" | "block" => {
+                Self::visit_children(state, node);
+            }
             _ => {}
         }
     }
 
     /// Extract a regular method definition (`def method_name`).
     ///
-    /// `is_singleton` controls whether this becomes a Method regardless of class depth
-    /// (singleton methods are always `NodeKind::Method`).
-    fn visit_method(state: &mut ExtractionState, node: TsNode<'_>, is_singleton: bool) {
+    /// Inside a `class << self` body (`state.singleton_scope`), this is a
+    /// class (singleton) method regardless of `class_depth` — same as
+    /// `def self.foo` — and gets registered in `singleton_method_ids` (or
+    /// `foreign_singleton_method_ids` if the receiver wasn't the enclosing
+    /// class) so retroactive `private_class_method :foo` can find it.
+    fn visit_method(state: &mut ExtractionState, node: TsNode<'_>) {
         // tree-sitter-ruby's `method` node exposes a `name` field typed `_method_name`,
         // which covers plain identifiers as well as operator defs (`def []=`, `def <=>`)
         // and setter defs (`def name=`) — neither of which is an `identifier` node kind.
@@ -132,17 +166,13 @@ impl RubyExtractor {
             .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
-        let in_class = state.class_depth > 0 || is_singleton;
+        let in_class = state.class_depth > 0 || state.singleton_scope != SingletonScope::Outside;
         let kind = if in_class {
             NodeKind::Method
         } else {
             NodeKind::Function
         };
-        let visibility = if is_singleton {
-            Visibility::Pub
-        } else {
-            state.visibility_mode.clone()
-        };
+        let visibility = state.visibility_mode.clone();
         let signature = Self::extract_method_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -184,6 +214,11 @@ impl RubyExtractor {
             parent_id: None,
         };
         state.nodes.push(graph_node);
+        match state.singleton_scope {
+            SingletonScope::Enclosing => state.singleton_method_ids.push(id.clone()),
+            SingletonScope::Foreign => state.foreign_singleton_method_ids.push(id.clone()),
+            SingletonScope::Outside => {}
+        }
 
         // Contains edge from parent.
         if let Some(parent_id) = state.parent_node_id() {
@@ -197,6 +232,52 @@ impl RubyExtractor {
 
         // Extract call sites from the method body.
         Self::extract_call_sites(state, node, &id);
+    }
+
+    /// True if a singleton receiver denotes the enclosing class/module: a literal
+    /// `self`, or the constant naming the scope we are currently inside
+    /// (`class Report; def Report.generate`, equivalent to `def self.generate`).
+    ///
+    /// A literal `self` only means "the enclosing class" outside a `class << …`
+    /// body: inside one, `self` *is* the singleton class, so `def self.foo`
+    /// there defines a method one level further out (`Report.singleton_class`,
+    /// not `Report`). Constant lookup is unaffected by singleton scope, so the
+    /// `"constant"` arm doesn't need the same guard.
+    fn is_enclosing_receiver(state: &ExtractionState, receiver: TsNode<'_>) -> bool {
+        match receiver.kind() {
+            "self" => state.singleton_scope == SingletonScope::Outside,
+            "constant" | "scope_resolution" => {
+                state.class_depth > 0
+                    && Self::matches_enclosing_scope_path(state, &state.node_text(receiver))
+            }
+            _ => false,
+        }
+    }
+
+    /// True if `path` (the source text of a `constant` or `scope_resolution`
+    /// receiver) names the same object as some suffix of the enclosing
+    /// class/module scopes, at node-stack-entry granularity — never splitting
+    /// an entry's own name on `::` (a compact `class Outer::Inner` pushes one
+    /// entry, and a bare `Inner` must not resolve inside it, since Ruby
+    /// wouldn't resolve it either).
+    ///
+    /// `node_stack[0]` is always the file's own root entry (pushed once for
+    /// the whole traversal, never a Ruby scope), so it's excluded from both
+    /// the suffix search and the absolute path below.
+    ///
+    /// A leading `::` anchors the match to the *whole* scope chain (absolute
+    /// path): inside `module A; class B`, `::B` names the top-level `B`, not
+    /// `A::B`, so it must not match via a relative suffix.
+    fn matches_enclosing_scope_path(state: &ExtractionState, path: &str) -> bool {
+        let scopes = &state.node_stack[1..];
+        let scope_names = || scopes.iter().map(|(name, _)| name.as_str());
+
+        if let Some(absolute) = path.strip_prefix("::") {
+            return scope_names().collect::<Vec<_>>().join("::") == absolute;
+        }
+
+        (0..scopes.len())
+            .any(|start| scope_names().skip(start).collect::<Vec<_>>().join("::") == path)
     }
 
     /// Extract a singleton method definition (`def self.method_name` or `def obj.method_name`).
@@ -249,7 +330,14 @@ impl RubyExtractor {
             parent_id: None,
         };
         state.nodes.push(graph_node);
-        state.singleton_method_ids.push(id.clone());
+        if node
+            .child_by_field_name("object")
+            .is_some_and(|obj| Self::is_enclosing_receiver(state, obj))
+        {
+            state.singleton_method_ids.push(id.clone());
+        } else {
+            state.foreign_singleton_method_ids.push(id.clone());
+        }
 
         // Contains edge from parent.
         if let Some(parent_id) = state.parent_node_id() {
@@ -265,10 +353,60 @@ impl RubyExtractor {
         Self::extract_call_sites(state, node, &id);
     }
 
+    /// Extract a `class << self` (or `class << expr`) body.
+    ///
+    /// This reopens the enclosing object's singleton class: `def foo` inside
+    /// defines a class method exactly like `def self.foo` would. We don't push
+    /// onto `node_stack` or bump `class_depth` — the qualified name and the
+    /// `Contains` edge source must stay the enclosing class, so
+    /// `class << self; def foo; end; end` matches `def self.foo`'s
+    /// `file::Report::foo`.
+    ///
+    /// The block has its own visibility scope (starts public, doesn't leak
+    /// either direction), mirroring `visit_class`/`visit_module`. Only
+    /// `class << self` (or `class << EnclosingConstant`) marks methods as
+    /// singletons of the enclosing class — `class << some_object` still has
+    /// its body visited (so methods aren't dropped) but its defs are
+    /// registered as foreign, since we can't resolve `some_object` and
+    /// registering them as the enclosing class's singletons would let an
+    /// unrelated `private_class_method` match them. The scope is assigned
+    /// unconditionally (not just when it resolves to `Enclosing`) so a
+    /// `class << other` nested inside `class << self` doesn't inherit the
+    /// outer `Enclosing` scope.
+    ///
+    /// `scope` must be computed *before* `state.singleton_scope` is updated
+    /// below: it judges this `class << …`'s own receiver against the scope
+    /// *enclosing* it, so a `class << self` nested inside another `class <<
+    /// self` sees the outer `Enclosing` scope and correctly resolves to
+    /// `Foreign` (that inner `self` is the outer singleton class, not
+    /// `Report`).
+    fn visit_singleton_class(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(body) = node.child_by_field_name("body") else {
+            return;
+        };
+        let scope = match node.child_by_field_name("value") {
+            Some(v) if Self::is_enclosing_receiver(state, v) => SingletonScope::Enclosing,
+            _ => SingletonScope::Foreign,
+        };
+
+        let saved_visibility_mode = state.visibility_mode.clone();
+        state.visibility_mode = Visibility::Pub;
+        let saved_singleton_scope = state.singleton_scope;
+        state.singleton_scope = scope;
+
+        Self::visit_children(state, body);
+
+        state.singleton_scope = saved_singleton_scope;
+        state.visibility_mode = saved_visibility_mode;
+    }
+
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        // In tree-sitter-ruby, class node children include: "class", constant (name), superclass?, body
-        let name = find_child_by_kind(node, "constant")
+        // The grammar types the name field as choice($.constant, $.scope_resolution),
+        // so a compact `class Outer::Inner` has no direct `constant` child - only the
+        // `name` field (whose text is the full path) covers both forms.
+        let name = node
+            .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -331,9 +469,12 @@ impl RubyExtractor {
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_singleton_scope = state.singleton_scope;
+        state.singleton_scope = SingletonScope::Outside;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.singleton_scope = saved_singleton_scope;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
@@ -341,7 +482,10 @@ impl RubyExtractor {
 
     /// Extract a module definition.
     fn visit_module(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = find_child_by_kind(node, "constant")
+        // See visit_class: the name field covers both a bare constant and a
+        // compact `module A::B`'s scope_resolution.
+        let name = node
+            .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Visibility::Pub;
@@ -408,9 +552,12 @@ impl RubyExtractor {
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_singleton_scope = state.singleton_scope;
+        state.singleton_scope = SingletonScope::Outside;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.singleton_scope = saved_singleton_scope;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
@@ -533,6 +680,25 @@ impl RubyExtractor {
                 else {
                     return;
                 };
+                // Which same-named node this directive should mark. Kept as one
+                // arm per (scope, is_class_method) combination, even where two
+                // arms produce the same target, so each has room for its own
+                // rationale below.
+                #[allow(clippy::match_same_arms)]
+                let target = match (state.singleton_scope, is_class_method) {
+                    (SingletonScope::Outside, false) => VisibilityTarget::Instance,
+                    (SingletonScope::Outside, true) => VisibilityTarget::EnclosingSingleton,
+                    // Inside `class << self`, `private :foo` (not just
+                    // `private_class_method`) must target the singleton method,
+                    // since that's what `foo` was registered as — there is no
+                    // instance-method node for it to fall back to.
+                    (SingletonScope::Enclosing, false) => VisibilityTarget::EnclosingSingleton,
+                    // `private_class_method` here would target `def self.foo`, one
+                    // level further out (Report.singleton_class, not Report) —
+                    // Ruby raises `NameError` if aimed at the plain `def foo`.
+                    (SingletonScope::Enclosing, true) => VisibilityTarget::Foreign,
+                    (SingletonScope::Foreign, _) => VisibilityTarget::Foreign,
+                };
 
                 let Some(args) = node.child_by_field_name("arguments") else {
                     // Bare call with no argument list (e.g. `private()`): only a
@@ -556,7 +722,7 @@ impl RubyExtractor {
                                 Self::mark_method_visibility(
                                     state,
                                     &symbol_name,
-                                    is_class_method,
+                                    target,
                                     visibility.clone(),
                                 );
                             }
@@ -570,7 +736,7 @@ impl RubyExtractor {
                                     Self::mark_method_visibility(
                                         state,
                                         &symbol_name,
-                                        is_class_method,
+                                        target,
                                         visibility.clone(),
                                     );
                                 }
@@ -579,7 +745,7 @@ impl RubyExtractor {
                                 saw_arg = true;
                                 let saved_visibility_mode = state.visibility_mode.clone();
                                 state.visibility_mode = visibility.clone();
-                                Self::visit_method(state, arg, false);
+                                Self::visit_method(state, arg);
                                 state.visibility_mode = saved_visibility_mode;
                             }
                             "singleton_method" => {
@@ -629,32 +795,90 @@ impl RubyExtractor {
     /// method actually defined in the enclosing body of this directive is
     /// affected.
     ///
-    /// `want_singleton` selects which same-named node to target: instance methods
-    /// and singleton methods (`def self.foo`) share both `NodeKind::Method` and
-    /// `qualified_name`, so `state.singleton_method_ids` disambiguates them.
-    /// `want_singleton == true` (`private_class_method`/`public_class_method`)
-    /// matches only the singleton; `false` (`private`/`protected`/`public`)
-    /// matches the instance method, or a top-level `Function` (file-scope
-    /// `private :foo`).
+    /// `target` selects which same-named node to mark: instance methods, the
+    /// enclosing class's singleton methods, and methods on an unresolvable
+    /// receiver all share `NodeKind::Method` and `qualified_name`, so
+    /// `state.singleton_method_ids`/`foreign_singleton_method_ids` are what
+    /// disambiguate them. One approximation remains: inside a `Foreign` body,
+    /// `def foo` and `def self.foo` both land in `foreign_singleton_method_ids`,
+    /// so a directive there can't tell them apart.
     fn mark_method_visibility(
         state: &mut ExtractionState,
         name: &str,
-        want_singleton: bool,
+        target: VisibilityTarget,
         visibility: Visibility,
     ) {
         let target_qn = format!("{}::{}", state.qualified_prefix(), name);
         let singleton_ids = &state.singleton_method_ids;
+        let foreign_ids = &state.foreign_singleton_method_ids;
         if let Some(node) = state.nodes.iter_mut().rev().find(|n| {
-            n.qualified_name == target_qn && {
-                let is_singleton = singleton_ids.contains(&n.id);
-                if want_singleton {
-                    n.kind == NodeKind::Method && is_singleton
-                } else {
-                    !is_singleton && (n.kind == NodeKind::Method || n.kind == NodeKind::Function)
+            if n.qualified_name != target_qn {
+                return false;
+            }
+            let is_singleton = singleton_ids.contains(&n.id);
+            let is_foreign = foreign_ids.contains(&n.id);
+            match target {
+                VisibilityTarget::Instance => {
+                    !is_singleton
+                        && !is_foreign
+                        && (n.kind == NodeKind::Method || n.kind == NodeKind::Function)
                 }
+                VisibilityTarget::EnclosingSingleton => is_singleton && n.kind == NodeKind::Method,
+                VisibilityTarget::Foreign => is_foreign && n.kind == NodeKind::Method,
             }
         }) {
             node.visibility = visibility;
+        }
+    }
+
+    /// Extract `include`/`prepend`/`extend` of a named module as an
+    /// `Implements` ref from the enclosing class/module to that module.
+    ///
+    /// All three keywords are receiverless calls (`mod.include Bar` is an
+    /// ordinary method call on another object, not a mixin, and is skipped).
+    /// Only `constant`/`scope_resolution` arguments are resolvable
+    /// statically — `extend self`, `include some_variable`, and
+    /// `include mod_returning_method()` name something we can't bind to a
+    /// node, so they're skipped rather than fabricating a ref. A top-level
+    /// `include` (outside any class/module) mixes into `Object`, and there is
+    /// no class/module node to attach the ref to, so it's skipped too.
+    ///
+    /// `extend` (which adds singleton methods) and `include`/`prepend`
+    /// (which add instance methods) all produce the same `Implements` edge
+    /// kind — distinguishing them would need a new `EdgeKind` variant.
+    fn visit_mixin_directive(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let Some(method_node) = node.child_by_field_name("method") else {
+            return;
+        };
+        let method_name = state.node_text(method_node);
+        if !matches!(method_name.as_str(), "include" | "prepend" | "extend") {
+            return;
+        }
+        if state.class_depth == 0 {
+            return;
+        }
+        let Some(from_node_id) = state.parent_node_id().map(str::to_string) else {
+            return;
+        };
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+
+        let mut cursor = arguments.walk();
+        for arg in arguments.named_children(&mut cursor) {
+            if matches!(arg.kind(), "constant" | "scope_resolution") {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: from_node_id.clone(),
+                    reference_name: state.node_text(arg),
+                    reference_kind: EdgeKind::Implements,
+                    line: arg.start_position().row as u32,
+                    column: arg.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
         }
     }
 
@@ -867,9 +1091,9 @@ impl RubyExtractor {
                         // Recurse into the call for nested calls.
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
-                    // Skip nested method/singleton_method/class/module definitions to avoid
-                    // polluting call sites with their internal calls.
-                    "method" | "singleton_method" | "class" | "module" => {}
+                    // Skip nested method/singleton_method/class/module/singleton_class
+                    // definitions to avoid polluting call sites with their internal calls.
+                    "method" | "singleton_method" | "class" | "module" | "singleton_class" => {}
                     _ => {
                         Self::extract_call_sites(state, child, fn_node_id);
                     }

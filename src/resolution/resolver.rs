@@ -565,10 +565,7 @@ impl<'a> ReferenceResolver<'a> {
     fn try_qualified_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Direct lookup first
         if let Some(candidates) = self.qualified_name_cache.get(&uref.reference_name) {
-            if let Some(node) = candidates
-                .iter()
-                .find(|n| kind_compatible(uref.reference_kind, &n.kind))
-            {
+            if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
                 return Some(ResolvedRef {
                     original: uref.clone(),
                     target_node_id: node.id.clone(),
@@ -583,10 +580,7 @@ impl<'a> ReferenceResolver<'a> {
         if let Some(full_names) = self.suffix_cache.get(&uref.reference_name) {
             for full_name in full_names {
                 if let Some(candidates) = self.qualified_name_cache.get(full_name) {
-                    if let Some(node) = candidates
-                        .iter()
-                        .find(|n| kind_compatible(uref.reference_kind, &n.kind))
-                    {
+                    if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
                         return Some(ResolvedRef {
                             original: uref.clone(),
                             target_node_id: node.id.clone(),
@@ -627,7 +621,7 @@ impl<'a> ReferenceResolver<'a> {
         let candidates = self.name_cache.get(name)?;
         let mut matched: Vec<&Node> = candidates
             .iter()
-            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .filter(|n| kind_compatible(uref, &n.kind))
             .filter(|n| go_file_in_package(&n.file_path, import_path))
             .collect();
         // A single unambiguous match in the imported package is the answer.
@@ -668,7 +662,7 @@ impl<'a> ReferenceResolver<'a> {
             let same_file: Vec<_> = candidates
                 .iter()
                 .filter(|n| n.file_path == uref.file_path)
-                .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+                .filter(|n| kind_compatible(uref, &n.kind))
                 .collect();
             if same_file.len() == 1 {
                 return Some(ResolvedRef {
@@ -689,7 +683,7 @@ impl<'a> ReferenceResolver<'a> {
         // poisons `tokensave_rank` and every downstream graph query.
         let kind_filtered: Vec<&Node> = raw_candidates
             .iter()
-            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
         if kind_filtered.is_empty() {
             return None;
@@ -745,7 +739,7 @@ impl<'a> ReferenceResolver<'a> {
             let same_file: Vec<_> = candidates
                 .iter()
                 .filter(|n| n.file_path == uref.file_path)
-                .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+                .filter(|n| kind_compatible(uref, &n.kind))
                 .collect();
             if same_file.len() == 1 {
                 return Some(ResolvedRef {
@@ -761,7 +755,7 @@ impl<'a> ReferenceResolver<'a> {
         let raw_candidates = self.name_cache.get(simple_name)?;
         let kind_filtered: Vec<&Node> = raw_candidates
             .iter()
-            .filter(|n| kind_compatible(uref.reference_kind, &n.kind))
+            .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
         if kind_filtered.is_empty() {
             return None;
@@ -901,20 +895,35 @@ impl<'a> ReferenceResolver<'a> {
 /// target a callable), we enforce it. Everything else stays permissive
 /// (e.g. `Uses` accepts any kind because imports cover the full type
 /// system).
-fn kind_compatible(ref_kind: EdgeKind, target_kind: &NodeKind) -> bool {
-    match ref_kind {
-        EdgeKind::Implements | EdgeKind::Extends | EdgeKind::DerivesMacro => matches!(
-            target_kind,
-            NodeKind::Trait
-                | NodeKind::Interface
-                | NodeKind::InterfaceType
-                | NodeKind::Class
-                | NodeKind::InnerClass
-                | NodeKind::AbstractMethod
-                | NodeKind::SealedClass
-                | NodeKind::Annotation
-                | NodeKind::TypeAlias
-        ),
+///
+/// A Ruby `Implements` ref (`include`/`prepend`/`extend Mixin`, indexed by
+/// the extractor as `NodeKind::Module`) resolves *exclusively* to a
+/// `NodeKind::Module` target — never to the shared Trait/Class/etc. list.
+/// Ruby itself enforces this: `include SomeClass` raises `TypeError: wrong
+/// argument type Class (expected Module)`. Keeping the allowance exclusive
+/// (rather than additive to the shared list) also matters when a project
+/// indexes both a `class Foo` and a `module Foo` — an additive rule would let
+/// `try_qualified_match` bind to whichever sorts first in the suffix index,
+/// silently picking the class.
+fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
+    match uref.reference_kind {
+        EdgeKind::Implements if lang_from_path(&uref.file_path) == "ruby" => {
+            matches!(target_kind, NodeKind::Module)
+        }
+        EdgeKind::Implements | EdgeKind::Extends | EdgeKind::DerivesMacro => {
+            matches!(
+                target_kind,
+                NodeKind::Trait
+                    | NodeKind::Interface
+                    | NodeKind::InterfaceType
+                    | NodeKind::Class
+                    | NodeKind::InnerClass
+                    | NodeKind::AbstractMethod
+                    | NodeKind::SealedClass
+                    | NodeKind::Annotation
+                    | NodeKind::TypeAlias
+            )
+        }
         EdgeKind::Calls => matches!(
             target_kind,
             NodeKind::Function

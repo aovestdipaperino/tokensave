@@ -176,6 +176,14 @@ async fn handle_literal_search(
     // `path_exclude` takes precedence, matching `filter_by_path_lists`.
     files = filter_by_path_lists(files, path_include, path_exclude, |f| f.path.as_str());
 
+    // Project-level query-ignore applies to literal mode too — it used to
+    // return before the ranked path's queryignore filter, so suppressed
+    // paths (vendored trees, changelogs) still leaked into literal hits.
+    let query_ignore = crate::config::load_query_ignore(project_root);
+    if !query_ignore.is_empty() {
+        files.retain(|f| !query_ignore.is_ignored(&f.path));
+    }
+
     let mut matches: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
 

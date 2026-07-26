@@ -456,6 +456,261 @@ async fn test_resolve_all_dotted_method_call() {
 }
 
 // ---------------------------------------------------------------------------
+// Ruby mixins: `kind_compatible` resolves a Ruby `Implements` ref
+// exclusively to a `NodeKind::Module` target, and only when the ref comes
+// from a Ruby file. The tests below lock the language guard from both
+// directions, then lock the exclusivity (no Class/Extends leakage).
+// ---------------------------------------------------------------------------
+
+/// `include Comparable` in a `.rb` file must resolve to a `NodeKind::Module`
+/// node — this fails before the `kind_compatible` change, since `Module`
+/// wasn't in the allowed target-kind list for `Implements` refs at all.
+#[tokio::test]
+async fn test_ruby_module_target_resolves_for_ruby_implements_ref() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let module_node = variant_node(
+        &generate_node_id(
+            "app/models/concerns/comparable.rb",
+            &NodeKind::Module,
+            "Comparable",
+            1,
+        ),
+        NodeKind::Module,
+        "Comparable",
+        "app/models/concerns/comparable.rb::Comparable",
+        "app/models/concerns/comparable.rb",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "class:c".to_string(),
+        reference_name: "Comparable".to_string(),
+        reference_kind: EdgeKind::Implements,
+        line: 2,
+        column: 2,
+        file_path: "app/models/c.rb".to_string(),
+    };
+
+    let result = resolver.resolve_one(&uref);
+    assert!(
+        result.is_some(),
+        "a Ruby Implements ref should resolve to a Module target"
+    );
+    assert_eq!(result.unwrap().target_node_id, module_node.id);
+}
+
+/// Regression guard: the same `NodeKind::Module` target must NOT resolve an
+/// Implements ref coming from a non-Ruby (`.rs`) file. If someone later
+/// widens the `kind_compatible` allowance to every language instead of
+/// gating it on `lang_from_path(&uref.file_path) == "ruby"`, this test
+/// fails.
+#[tokio::test]
+async fn test_ruby_module_target_does_not_resolve_for_non_ruby_implements_ref() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let module_node = variant_node(
+        &generate_node_id("src/comparable.rs", &NodeKind::Module, "comparable", 1),
+        NodeKind::Module,
+        "comparable",
+        "src/comparable.rs::comparable",
+        "src/comparable.rs",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "struct:c".to_string(),
+        reference_name: "comparable".to_string(),
+        reference_kind: EdgeKind::Implements,
+        line: 2,
+        column: 2,
+        file_path: "src/c.rs".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref).is_none(),
+        "a non-Ruby Implements ref must not resolve to a Module target"
+    );
+}
+
+/// Ruby forbids mixing in a class (`include SomeClass` raises `TypeError:
+/// wrong argument type Class (expected Module)`), so a Ruby `Implements` ref
+/// must never resolve to a `NodeKind::Class` target — even though `Class` is
+/// in the shared Implements/Extends/DerivesMacro allow-list for every other
+/// language. Fails before the fix, since the old rule was additive
+/// (shared list `||` Module) rather than exclusive for Ruby.
+#[tokio::test]
+async fn test_ruby_implements_does_not_resolve_to_class() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let class_node = variant_node(
+        &generate_node_id("app/models/foo.rb", &NodeKind::Class, "Foo", 1),
+        NodeKind::Class,
+        "Foo",
+        "app/models/foo.rb::Foo",
+        "app/models/foo.rb",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&class_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "class:c".to_string(),
+        reference_name: "Foo".to_string(),
+        reference_kind: EdgeKind::Implements,
+        line: 2,
+        column: 2,
+        file_path: "app/models/c.rb".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref).is_none(),
+        "a Ruby Implements ref must not resolve to a Class target"
+    );
+}
+
+/// When a project indexes both a `class Foo` and a `module Foo`, a Ruby
+/// `Implements` ref for `Foo` must resolve to the module, not the class.
+/// The class's qualified name (`app/models/a_klass.rb::Foo`) sorts before
+/// the module's (`app/models/concerns/z_mixin.rb::Foo`) in the
+/// lexicographically sorted suffix index, so before the fix `try_qualified_match`
+/// deterministically picks the class first.
+#[tokio::test]
+async fn test_ruby_implements_prefers_module_over_same_named_class() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let class_node = variant_node(
+        &generate_node_id("app/models/a_klass.rb", &NodeKind::Class, "Foo", 1),
+        NodeKind::Class,
+        "Foo",
+        "app/models/a_klass.rb::Foo",
+        "app/models/a_klass.rb",
+    );
+    let module_node = variant_node(
+        &generate_node_id(
+            "app/models/concerns/z_mixin.rb",
+            &NodeKind::Module,
+            "Foo",
+            1,
+        ),
+        NodeKind::Module,
+        "Foo",
+        "app/models/concerns/z_mixin.rb::Foo",
+        "app/models/concerns/z_mixin.rb",
+    );
+
+    let nodes = vec![class_node.clone(), module_node.clone()];
+    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+
+    let uref = UnresolvedRef {
+        from_node_id: "class:c".to_string(),
+        reference_name: "Foo".to_string(),
+        reference_kind: EdgeKind::Implements,
+        line: 2,
+        column: 2,
+        file_path: "app/models/c.rb".to_string(),
+    };
+
+    let result = resolver.resolve_one(&uref);
+    assert!(
+        result.is_some(),
+        "a Ruby Implements ref for a duplicate name should still resolve"
+    );
+    assert_eq!(
+        result.unwrap().target_node_id,
+        module_node.id,
+        "the module must win over the same-named class"
+    );
+}
+
+/// Ruby's `class Foo < Bar` superclass ref must not resolve to a
+/// `NodeKind::Module` target — a superclass must be a class. Guards the
+/// second half of the over-permissive guard: it applied to `Extends` too,
+/// even though Ruby never emits an `Extends` ref that could plausibly target
+/// a module.
+#[tokio::test]
+async fn test_ruby_extends_does_not_resolve_to_module() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let module_node = variant_node(
+        &generate_node_id("app/models/concerns/bar.rb", &NodeKind::Module, "Bar", 1),
+        NodeKind::Module,
+        "Bar",
+        "app/models/concerns/bar.rb::Bar",
+        "app/models/concerns/bar.rb",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "class:c".to_string(),
+        reference_name: "Bar".to_string(),
+        reference_kind: EdgeKind::Extends,
+        line: 2,
+        column: 2,
+        file_path: "app/models/c.rb".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref).is_none(),
+        "a Ruby Extends ref must not resolve to a Module target"
+    );
+}
+
+/// Positive control: Ruby superclass resolution (`class Foo < Bar`) must
+/// still work for an ordinary class target — proves the narrowing didn't
+/// break the one Ruby `Extends` path, which has no other coverage.
+#[tokio::test]
+async fn test_ruby_extends_resolves_to_class() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let class_node = variant_node(
+        &generate_node_id("app/models/bar.rb", &NodeKind::Class, "Bar", 1),
+        NodeKind::Class,
+        "Bar",
+        "app/models/bar.rb::Bar",
+        "app/models/bar.rb",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&class_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "class:c".to_string(),
+        reference_name: "Bar".to_string(),
+        reference_kind: EdgeKind::Extends,
+        line: 2,
+        column: 2,
+        file_path: "app/models/c.rb".to_string(),
+    };
+
+    let result = resolver.resolve_one(&uref);
+    assert!(
+        result.is_some(),
+        "a Ruby Extends ref should still resolve to a Class target"
+    );
+    assert_eq!(result.unwrap().target_node_id, class_node.id);
+}
+
+// ---------------------------------------------------------------------------
 // #141 Option 2: build-variant call-edge propagation
 // ---------------------------------------------------------------------------
 
