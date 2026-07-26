@@ -342,10 +342,19 @@ impl TokenSave {
             return (default_db, None, None);
         };
 
+        // The default branch is not necessarily mapped to `tokensave.db`: a
+        // project whose default branch was added via `branch add` has it under
+        // `branches/<name>.db`. Resolve it from branch-meta rather than
+        // assuming the conventional filename (#300), falling back to
+        // `tokensave.db` only when the metadata has no entry for it.
+        let default_branch_db =
+            branch::resolve_branch_db_path(tokensave_dir, &meta.default_branch, &meta)
+                .unwrap_or_else(|| default_db.clone());
+
         let Some(branch) = branch else {
             // Detached HEAD — use default branch DB
             return (
-                default_db,
+                default_branch_db,
                 Some(meta.default_branch.clone()),
                 Some("detached HEAD — using default branch index".to_string()),
             );
@@ -377,7 +386,7 @@ impl TokenSave {
         // Last resort: default branch DB
         let serving = meta.default_branch.clone();
         (
-            default_db,
+            default_branch_db,
             Some(serving),
             Some(format!(
                 "branch '{branch}' is not tracked — serving from '{}'. \
@@ -439,5 +448,100 @@ impl TokenSave {
         get_tokensave_dir(project_root)
             .join("tokensave.db")
             .exists()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod resolve_db_tests {
+    use super::*;
+    use crate::branch_meta::BranchEntry;
+
+    /// Builds a `.tokensave` dir whose default branch lives in a non-default
+    /// DB file, the shape that exposes hardcoded `tokensave.db` fallbacks.
+    fn setup(default_branch: &str, db_file: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tokensave_dir = dir.path().join(".tokensave");
+        std::fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+        let mut branches = HashMap::new();
+        branches.insert(
+            default_branch.to_string(),
+            BranchEntry {
+                db_file: db_file.to_string(),
+                parent: None,
+                created_at: "0".to_string(),
+                last_synced_at: "0".to_string(),
+            },
+        );
+        let meta = BranchMeta {
+            default_branch: default_branch.to_string(),
+            branches,
+        };
+        branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+        std::fs::write(tokensave_dir.join(db_file), b"").unwrap();
+        (dir, tokensave_dir)
+    }
+
+    #[test]
+    fn last_resort_resolves_default_branch_db_file() {
+        // #300: an untracked branch with no tracked ancestor must open the
+        // default branch's real db_file, not a hardcoded `tokensave.db`.
+        let (dir, tokensave_dir) = setup("master", "branches/master.db");
+        let (path, serving, warning) =
+            TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("untracked-branch"));
+        assert_eq!(
+            path,
+            tokensave_dir.join("branches/master.db"),
+            "must resolve the default branch's db_file"
+        );
+        assert_eq!(serving.as_deref(), Some("master"));
+        assert!(warning.is_some(), "fallback must still warn");
+    }
+
+    #[test]
+    fn detached_head_resolves_default_branch_db_file() {
+        // Same bug on the detached-HEAD arm: it reports serving the default
+        // branch, so it must open that branch's DB.
+        let (dir, tokensave_dir) = setup("master", "branches/master.db");
+        let (path, serving, warning) =
+            TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, None);
+        assert_eq!(path, tokensave_dir.join("branches/master.db"));
+        assert_eq!(serving.as_deref(), Some("master"));
+        assert!(warning.is_some());
+    }
+
+    #[test]
+    fn conventional_default_branch_layout_is_unchanged() {
+        // The common case (default branch mapped to tokensave.db) must not move.
+        let (dir, tokensave_dir) = setup("main", "tokensave.db");
+        let (path, serving, _) =
+            TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("untracked"));
+        assert_eq!(path, tokensave_dir.join("tokensave.db"));
+        assert_eq!(serving.as_deref(), Some("main"));
+
+        let (path, _, _) = TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, None);
+        assert_eq!(path, tokensave_dir.join("tokensave.db"));
+    }
+
+    #[test]
+    fn tracked_branch_still_wins_over_fallback() {
+        let (dir, tokensave_dir) = setup("master", "branches/master.db");
+        let (path, serving, warning) =
+            TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("master"));
+        assert_eq!(path, tokensave_dir.join("branches/master.db"));
+        assert_eq!(serving.as_deref(), Some("master"));
+        assert!(warning.is_none(), "exact match must not warn");
+    }
+
+    #[test]
+    fn missing_branch_meta_keeps_single_db_mode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tokensave_dir = dir.path().join(".tokensave");
+        std::fs::create_dir_all(&tokensave_dir).unwrap();
+        let (path, serving, warning) =
+            TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("anything"));
+        assert_eq!(path, tokensave_dir.join("tokensave.db"));
+        assert_eq!(serving, None);
+        assert_eq!(warning, None);
     }
 }
