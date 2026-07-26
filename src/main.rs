@@ -969,8 +969,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             server.run(&mut transport).await?;
             server.shutdown().await;
         }
-        Commands::Upgrade => {
-            tokensave::upgrade::run_upgrade()?;
+        Commands::Upgrade { kill } => {
+            tokensave::upgrade::run_upgrade(kill)?;
         }
         Commands::Channel { channel } => match channel {
             Some(target) => {
