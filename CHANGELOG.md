@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.8.0] - 2026-07-26
+
 ### Added
 - **`tokensave upgrade` now offers to kill the tokensave processes that are still running, and takes `--kill` to do it without asking.** The processes in question are almost always MCP servers a running agent spawned: they hold the old binary's DB handles open and keep serving code that no longer matches the on-disk index after the upgrade, which is why the guide has always told you to restart your agent afterwards. `upgrade` now lists every other tokensave process by pid and command line and asks once, right after it has confirmed a newer version exists — so an already-up-to-date run never prompts, and neither does a machine with nothing else running. `--kill` skips the question for scripted upgrades. A non-interactive run without `--kill` prints the list, warns, and continues rather than blocking on a prompt nobody can answer. On Homebrew installs the check runs before delegating to `brew upgrade`, since Homebrew decides for itself whether there is anything to do. A process that exits between being listed and being signalled counts as killed, not as a failure.
 - **The `tokensave` entry plank writes now carries `primaryTools`, capping what plank inlines into its system prompt.** Plank expands the full JSON schema of every advertised MCP tool into its system prompt; with all ~80 tokensave tools that is roughly 66 KB of schema, enough prompt bloat that plank's model starts emitting malformed tool calls — which surfaces as an apparent connection failure rather than as the prompt-budget problem it is. `install --agent plank` now writes a six-tool primary set (`tokensave_context`, `tokensave_search`, `tokensave_read`, `tokensave_callers`, `tokensave_callees`, `tokensave_status`); every other tool remains reachable through plank's compact one-line-per-tool directory and its `mcp_describe`, so nothing is lost, only deferred. A user's own non-empty `primaryTools` list is preserved across reinstalls and upgrades; an absent key, a non-array value, or an empty array is replaced with the default, since an empty array is indistinguishable from a botched edit. `tokensave doctor` reports the tool count and warns when an entry written before this change has no `primaryTools`.
@@ -1726,3 +1729,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.5.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.5.0
 [7.6.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.6.0
 [7.7.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.7.0
+[7.8.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.8.0
