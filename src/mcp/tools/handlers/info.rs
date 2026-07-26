@@ -1451,7 +1451,21 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
     };
 
     let kinds_slice: Option<&[String]> = kinds.as_deref();
-    let value = render_map(cg.db(), &display_file, kinds_slice).await?;
+    let mut value = render_map(cg.db(), &display_file, kinds_slice).await?;
+    // Companion-doc marker (#154): tell the agent a prose summary exists
+    // *before* it decides to read a 3000-line file. Cheap — one edge lookup
+    // against the file's `File` node.
+    let doc_paths = companion_doc_paths(cg, &display_file).await;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("has_doc".to_string(), json!(!doc_paths.is_empty()));
+        if !doc_paths.is_empty() {
+            obj.insert("doc_path".to_string(), json!(doc_paths));
+            obj.insert(
+                "doc_hint".to_string(),
+                json!("call tokensave_doc for the summary before reading this file"),
+            );
+        }
+    }
     let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();
 
     Ok(ToolResult {
@@ -1774,4 +1788,165 @@ fn params_substring(signature: &str) -> &str {
         }
     }
     signature
+}
+
+/// Returns the UNIX timestamp of the last commit touching `relative`, or
+/// `None` when the path is untracked or the project is not a git repository.
+fn last_commit_timestamp(project_root: &std::path::Path, relative: &str) -> Option<i64> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["log", "-1", "--format=%ct", "--"])
+        .arg(relative)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim().parse::<i64>().ok()
+}
+
+/// Handles `tokensave_doc` tool calls (#154).
+///
+/// Resolves the companion documentation covering a source file by walking
+/// `Documents` edges backwards from the file's `File` node.
+pub(super) async fn handle_doc(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let file = args
+        .get("file")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: file".to_string(),
+        })?;
+    let include_content = args
+        .get("include_content")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
+    // Normalize the caller's path the same way indexed paths are stored, so a
+    // Windows-style or `./`-prefixed argument still resolves (#242).
+    let file = crate::tokensave::normalize_rel_path(file);
+    let file = file.strip_prefix("./").unwrap_or(&file).to_string();
+    // Honour an active scope: a path outside it is not this server's to answer.
+    if let Some(prefix) = scope_prefix {
+        if !file.starts_with(prefix) {
+            let output = json!({
+                "file": file,
+                "has_doc": false,
+                "docs": [],
+                "count": 0,
+            });
+            let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": formatted }]
+                }),
+                touched_files: Vec::new(),
+            });
+        }
+    }
+
+    let file_node_id = crate::types::generate_node_id(&file, &NodeKind::File, &file, 0);
+    let incoming = cg
+        .get_incoming_edges(&file_node_id)
+        .await
+        .unwrap_or_default();
+
+    let mut docs: Vec<Value> = Vec::new();
+    let project_root = cg.project_root();
+    for edge in incoming
+        .iter()
+        .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+    {
+        let Some(node) = cg.get_node(&edge.source).await? else {
+            continue;
+        };
+        // Which files this doc covers, so the caller can tell a shared
+        // instructions doc from a one-file summary.
+        let covers: Vec<String> = cg
+            .get_outgoing_edges(&node.id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+            .map(|e| e.target.clone())
+            .collect();
+        let mut covered_paths: Vec<String> = Vec::new();
+        for target in &covers {
+            if let Ok(Some(n)) = cg.get_node(target).await {
+                covered_paths.push(n.file_path);
+            }
+        }
+        covered_paths.sort_unstable();
+
+        // Drift signal: code committed after the doc means the summary may no
+        // longer describe it. Absent git history this is simply unknown, which
+        // is reported as `null` rather than a false negative.
+        let doc_commit = last_commit_timestamp(project_root, &node.file_path);
+        let doc_stale = doc_commit.map(|doc_ts| {
+            covered_paths
+                .iter()
+                .filter_map(|p| last_commit_timestamp(project_root, p))
+                .any(|code_ts| code_ts > doc_ts)
+        });
+
+        let content = if include_content {
+            std::fs::read_to_string(project_root.join(&node.file_path)).ok()
+        } else {
+            None
+        };
+
+        docs.push(json!({
+            "doc_path": node.file_path,
+            "origin": node.signature,
+            "summary": node.docstring,
+            "covers": covered_paths,
+            "doc_stale": doc_stale,
+            "content": content,
+        }));
+    }
+    docs.sort_by(|a, b| a["doc_path"].as_str().cmp(&b["doc_path"].as_str()));
+
+    let touched_files = unique_file_paths(
+        std::iter::once(file.as_str()).chain(docs.iter().filter_map(|d| d["doc_path"].as_str())),
+    );
+    let output = json!({
+        "file": file,
+        "has_doc": !docs.is_empty(),
+        "docs": docs,
+        "count": docs.len(),
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Returns the paths of companion docs covering `file`, sorted.
+///
+/// Shared by `tokensave_entities` (the marker) and `tokensave_doc` (the
+/// content), so the two can never disagree about whether a doc exists.
+async fn companion_doc_paths(cg: &TokenSave, file: &str) -> Vec<String> {
+    let file_node_id = crate::types::generate_node_id(file, &NodeKind::File, file, 0);
+    let Ok(incoming) = cg.get_incoming_edges(&file_node_id).await else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for edge in incoming
+        .iter()
+        .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+    {
+        if let Ok(Some(node)) = cg.get_node(&edge.source).await {
+            paths.push(node.file_path);
+        }
+    }
+    paths.sort_unstable();
+    paths
 }
