@@ -1056,6 +1056,34 @@ fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// Warns when agent config will reference a disposable Cargo build artifact.
+pub fn cargo_build_binary_warning(path: &str) -> Option<String> {
+    let components: Vec<_> = Path::new(path)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    let is_profile = |value: &str| matches!(value, "debug" | "release");
+    let cargo_build = components
+        .windows(2)
+        .any(|parts| parts[0] == "target" && is_profile(parts[1]))
+        || components
+            .windows(3)
+            .any(|parts| parts[0] == "target" && is_profile(parts[2]));
+
+    cargo_build.then(|| {
+        format!(
+            "\x1b[33mwarning:\x1b[0m agent config references Cargo build output:\n  \
+             {path}\n  `cargo clean` or removing its worktree will break tokensave hooks and MCP \
+             servers.\n  Re-run `tokensave install` from a stable `cargo install`, Homebrew, or \
+             release binary."
+        )
+    })
+}
+
 /// Keeps the user's existing MCP command when it still resolves (issue #161).
 ///
 /// Reinstalls used to overwrite whatever command the config held with this
@@ -1457,6 +1485,39 @@ mod migrate_tests {
 #[cfg(test)]
 mod which_tokensave_tests {
     use super::*;
+
+    #[test]
+    fn warns_for_cargo_profile_paths() {
+        for path in [
+            "/repo/target/debug/tokensave",
+            "/repo/target/release/tokensave",
+            "/repo/target/aarch64-apple-darwin/release/tokensave",
+            "C:/repo/target/x86_64-pc-windows-msvc/debug/tokensave.exe",
+        ] {
+            let warning = cargo_build_binary_warning(path)
+                .unwrap_or_else(|| panic!("expected warning for {path}"));
+            assert!(warning.contains(path));
+            assert!(warning.contains("cargo clean"));
+            assert!(warning.contains("cargo install"));
+        }
+    }
+
+    #[test]
+    fn ignores_stable_and_near_miss_paths() {
+        for path in [
+            "/Users/me/.cargo/bin/tokensave",
+            "/opt/homebrew/bin/tokensave",
+            "/repo/mytarget/release/tokensave",
+            "/repo/target/profile/tokensave",
+            "/repo/target/foo/bar/release/tokensave",
+        ] {
+            assert_eq!(
+                cargo_build_binary_warning(path),
+                None,
+                "unexpected warning for {path}"
+            );
+        }
+    }
 
     // Regression for #146: hooks embedded a version-pinned Homebrew Cellar
     // path, which `brew upgrade`/`brew cleanup` later removes. The stable
