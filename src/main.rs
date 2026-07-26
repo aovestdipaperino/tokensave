@@ -200,6 +200,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     ag.install(&ctx).is_ok()
                 });
             tokensave::agents::set_quiet_install(false);
+            if outcome.ran {
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&bin) {
+                    eprintln!("{warning}");
+                }
+            }
             if !outcome.failed.is_empty() {
                 eprintln!(
                     "\x1b[33mwarning:\x1b[0m could not refresh tokensave config for: {}.\n  \
@@ -721,6 +726,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if !local {
                 user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
                 user_cfg.save();
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
+                {
+                    eprintln!("{warning}");
+                }
             }
 
             tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
@@ -781,6 +790,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
                 user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
                 user_cfg.save();
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
+                {
+                    eprintln!("{warning}");
+                }
             }
         }
         Commands::Uninstall { agent, local } => {
