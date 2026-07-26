@@ -261,15 +261,22 @@ pub struct ReferenceResolver<'a> {
     #[allow(dead_code)]
     db: &'a Database,
     /// Nodes grouped by their short name.
-    name_cache: HashMap<String, Vec<Node>>,
+    ///
+    /// Keys and values borrow from the caller's node slice rather than owning
+    /// copies: on a large graph the previous `HashMap<String, Vec<Node>>`
+    /// held a second full copy of every node, and the qualified-name cache a
+    /// third, which is what drove `serve` to multi-GiB RSS peaks (#253).
+    name_cache: HashMap<&'a str, Vec<&'a Node>>,
     /// Nodes grouped by their qualified name.
-    qualified_name_cache: HashMap<String, Vec<Node>>,
+    qualified_name_cache: HashMap<&'a str, Vec<&'a Node>>,
     /// Suffix index: maps every `::suffix` of a qualified name to the full
     /// qualified name(s). Enables O(1) suffix lookups instead of scanning
-    /// the entire `qualified_name_cache`.
-    suffix_cache: HashMap<String, Vec<String>>,
+    /// the entire `qualified_name_cache`. Both sides borrow from the nodes'
+    /// `qualified_name` strings — a deep path such as `a::b::c::d` previously
+    /// allocated one full copy of the name per `::` segment (#253).
+    suffix_cache: HashMap<&'a str, Vec<&'a str>>,
     /// All known symbol names (short + qualified + suffixes) for pre-filtering.
-    known_names: HashSet<String>,
+    known_names: HashSet<&'a str>,
     /// Maps `file_path` to the set of qualified names imported by that file.
     /// Built from Use nodes. Used to prefer candidates that the caller imports.
     import_index: HashMap<String, HashSet<String>>,
@@ -283,10 +290,10 @@ pub struct ReferenceResolver<'a> {
 
 impl<'a> ReferenceResolver<'a> {
     /// Creates a resolver from pre-loaded nodes.
-    pub fn from_nodes(db: &'a Database, all_nodes: &[Node]) -> Self {
-        let mut name_cache: HashMap<String, Vec<Node>> = HashMap::new();
-        let mut qualified_name_cache: HashMap<String, Vec<Node>> = HashMap::new();
-        let mut suffix_cache: HashMap<String, Vec<String>> = HashMap::new();
+    pub fn from_nodes(db: &'a Database, all_nodes: &'a [Node]) -> Self {
+        let mut name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
+        let mut qualified_name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
+        let mut suffix_cache: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
 
         for node in all_nodes {
             // Skip Use nodes — they represent import statements, not definitions.
@@ -295,25 +302,16 @@ impl<'a> ReferenceResolver<'a> {
             if node.kind == NodeKind::Use {
                 continue;
             }
-            name_cache
-                .entry(node.name.clone())
-                .or_default()
-                .push(node.clone());
-            let qn = &node.qualified_name;
-            qualified_name_cache
-                .entry(qn.clone())
-                .or_default()
-                .push(node.clone());
+            name_cache.entry(node.name.as_str()).or_default().push(node);
+            let qn = node.qualified_name.as_str();
+            qualified_name_cache.entry(qn).or_default().push(node);
             // Build suffix index: for "a::b::c", index "b::c" and "c"
             // (but not the full name — that's in qualified_name_cache already)
             let mut pos = 0;
             while let Some(idx) = qn[pos..].find("::") {
                 let suffix = &qn[pos + idx + 2..];
                 if !suffix.is_empty() {
-                    suffix_cache
-                        .entry(suffix.to_string())
-                        .or_default()
-                        .push(qn.clone());
+                    suffix_cache.entry(suffix).or_default().push(qn);
                 }
                 pos += idx + 2;
             }
@@ -325,17 +323,12 @@ impl<'a> ReferenceResolver<'a> {
             entries.dedup();
         }
 
-        // Build known_names set for pre-filtering unresolvable refs.
-        let mut known_names: HashSet<String> = HashSet::new();
-        for key in name_cache.keys() {
-            known_names.insert(key.clone());
-        }
-        for key in qualified_name_cache.keys() {
-            known_names.insert(key.clone());
-        }
-        for key in suffix_cache.keys() {
-            known_names.insert(key.clone());
-        }
+        // Build known_names set for pre-filtering unresolvable refs. Borrows
+        // the map keys rather than cloning every one of them (#253).
+        let mut known_names: HashSet<&'a str> = HashSet::new();
+        known_names.extend(name_cache.keys().copied());
+        known_names.extend(qualified_name_cache.keys().copied());
+        known_names.extend(suffix_cache.keys().copied());
 
         // Build import index: for each Use node, record which qualified names
         // the file imports. The Use node's `name` is the import path (e.g.
@@ -564,7 +557,7 @@ impl<'a> ReferenceResolver<'a> {
     /// Strategy 1: try matching the reference name against qualified names.
     fn try_qualified_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Direct lookup first
-        if let Some(candidates) = self.qualified_name_cache.get(&uref.reference_name) {
+        if let Some(candidates) = self.qualified_name_cache.get(uref.reference_name.as_str()) {
             if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
                 return Some(ResolvedRef {
                     original: uref.clone(),
@@ -577,7 +570,7 @@ impl<'a> ReferenceResolver<'a> {
 
         // Suffix match via pre-built suffix index — O(1) lookup instead of
         // scanning the entire qualified_name_cache.
-        if let Some(full_names) = self.suffix_cache.get(&uref.reference_name) {
+        if let Some(full_names) = self.suffix_cache.get(uref.reference_name.as_str()) {
             for full_name in full_names {
                 if let Some(candidates) = self.qualified_name_cache.get(full_name) {
                     if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
@@ -621,6 +614,7 @@ impl<'a> ReferenceResolver<'a> {
         let candidates = self.name_cache.get(name)?;
         let mut matched: Vec<&Node> = candidates
             .iter()
+            .copied()
             .filter(|n| kind_compatible(uref, &n.kind))
             .filter(|n| go_file_in_package(&n.file_path, import_path))
             .collect();
@@ -637,8 +631,7 @@ impl<'a> ReferenceResolver<'a> {
         // but only among the package-restricted set so a same-named function in
         // a *different* package can never win.
         if matched.len() > 1 {
-            let owned: Vec<Node> = matched.iter().map(|n| (*n).clone()).collect();
-            let best = Self::find_best_match(uref, &owned, &self.import_index)?;
+            let best = Self::find_best_match(uref, &matched, &self.import_index)?;
             return Some(ResolvedRef {
                 original: uref.clone(),
                 target_node_id: best.id.clone(),
@@ -658,9 +651,10 @@ impl<'a> ReferenceResolver<'a> {
             // otherwise a `Calls` ref to `new()` happily binds to a
             // same-file `struct new` because that's the only same-file
             // node with the name.
-            let candidates = self.name_cache.get(&uref.reference_name)?;
-            let same_file: Vec<_> = candidates
+            let candidates = self.name_cache.get(uref.reference_name.as_str())?;
+            let same_file: Vec<&Node> = candidates
                 .iter()
+                .copied()
                 .filter(|n| n.file_path == uref.file_path)
                 .filter(|n| kind_compatible(uref, &n.kind))
                 .collect();
@@ -675,7 +669,7 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
-        let raw_candidates = self.name_cache.get(&uref.reference_name)?;
+        let raw_candidates = self.name_cache.get(uref.reference_name.as_str())?;
         // Filter by node-kind compatibility with the reference kind. An
         // `Implements`/`Extends`/`DerivesMacro` ref like `impl Default for X`
         // must NOT bind to an unrelated node kind (e.g. a local
@@ -683,12 +677,13 @@ impl<'a> ReferenceResolver<'a> {
         // poisons `tokensave_rank` and every downstream graph query.
         let kind_filtered: Vec<&Node> = raw_candidates
             .iter()
+            .copied()
             .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
         if kind_filtered.is_empty() {
             return None;
         }
-        let candidates: &[Node] = if kind_filtered.len() == raw_candidates.len() {
+        let candidates: &[&Node] = if kind_filtered.len() == raw_candidates.len() {
             raw_candidates
         } else {
             // Cache the filtered subset in a local Vec so the downstream
@@ -736,8 +731,9 @@ impl<'a> ReferenceResolver<'a> {
             let candidates = self.name_cache.get(simple_name)?;
             // Same fix as `try_exact_name_match`: filter by kind before
             // returning a same-file blocklisted match.
-            let same_file: Vec<_> = candidates
+            let same_file: Vec<&Node> = candidates
                 .iter()
+                .copied()
                 .filter(|n| n.file_path == uref.file_path)
                 .filter(|n| kind_compatible(uref, &n.kind))
                 .collect();
@@ -755,12 +751,13 @@ impl<'a> ReferenceResolver<'a> {
         let raw_candidates = self.name_cache.get(simple_name)?;
         let kind_filtered: Vec<&Node> = raw_candidates
             .iter()
+            .copied()
             .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
         if kind_filtered.is_empty() {
             return None;
         }
-        let candidates: &[Node] = if kind_filtered.len() == raw_candidates.len() {
+        let candidates: &[&Node] = if kind_filtered.len() == raw_candidates.len() {
             raw_candidates
         } else {
             return resolve_from_filtered_named(uref, &kind_filtered, "simple-name-match");
@@ -807,7 +804,7 @@ impl<'a> ReferenceResolver<'a> {
     /// - Import match (caller imports this name): +30
     fn find_best_match(
         uref: &UnresolvedRef,
-        candidates: &[Node],
+        candidates: &[&Node],
         import_index: &HashMap<String, HashSet<String>>,
     ) -> Option<Node> {
         if candidates.is_empty() {
