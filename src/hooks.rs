@@ -744,6 +744,11 @@ fn strip_leading_cd(s: &str) -> Option<&str> {
 /// Minimal shell tokenizer covering single/double quotes and backslash
 /// escapes. Stops at unquoted pipe / semicolon / redirect / background — the
 /// pattern always appears before any of those in a normal grep invocation.
+///
+/// On Windows, `\` is a path separator (not an escape) in the unquoted context,
+/// so absolute targets like `C:\Users\me\project` survive intact for the
+/// project-root classifier. Inside double quotes `\` still escapes only before
+/// `"`, `\`, `$`, and `` ` `` on every platform.
 fn shell_split(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -778,7 +783,12 @@ fn shell_split(s: &str) -> Vec<String> {
                 '\'' => in_single = true,
                 '"' => in_double = true,
                 '\\' => {
-                    if let Some(next) = chars.next() {
+                    if cfg!(windows) {
+                        // On Windows `\` is a path separator, not an escape;
+                        // treating it as one would strip every backslash from
+                        // an absolute target and break the root classifier.
+                        cur.push(c);
+                    } else if let Some(next) = chars.next() {
                         cur.push(next);
                     }
                 }
