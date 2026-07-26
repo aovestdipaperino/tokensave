@@ -155,6 +155,33 @@ async fn test_search_literal_finds_string_in_body() {
 }
 
 #[tokio::test]
+async fn test_search_literal_respects_queryignore() {
+    let (cg, _dir) = setup_project().await;
+    // Same query as test_search_literal_finds_string_in_body, but with the
+    // matching file suppressed via .tokensave/queryignore — literal mode must
+    // honor the project-level ignore just like the ranked path does.
+    let ts_dir = cg.project_root().join(".tokensave");
+    std::fs::create_dir_all(&ts_dir).unwrap();
+    std::fs::write(ts_dir.join("queryignore"), "utils\n").unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "Hello, {}!", "literal": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        parsed["count"], 0,
+        "queryignore-suppressed file must not appear in literal matches: {parsed}"
+    );
+}
+
+#[tokio::test]
 async fn test_search_literal_no_match_returns_empty() {
     let (cg, _dir) = setup_project().await;
     let result = handle_tool_call(
