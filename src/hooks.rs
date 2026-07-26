@@ -217,8 +217,8 @@ fn evaluate_hook_decision_core(tool_input: &str, env: &HookEnv) -> Option<String
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
-        // Block Claude Code's built-in `Explore` research agent outright — that
-        // is exactly the search/read fan-out tokensave's MCP tools replace.
+        // Block Claude Code's built-in `Explore` research agent outright.
+        // Droid normalizes its exact lowercase built-in type in its adapter.
         if subagent == Some("Explore") {
             return Some(TOKENSAVE_RESEARCH_BLOCK_REASON.to_string());
         }
@@ -816,12 +816,10 @@ fn is_kiro_delegation_tool(tool_name: &str) -> bool {
 /// nested under `tool_input` — the same envelope shape Claude Code uses —
 /// but blocks a tool call via **exit code 2 + stderr**, the same mechanism
 /// Kiro uses (not Claude's stdout JSON decision). The install side registers
-/// this hook for the `^(Execute|Grep)$` matcher, so a symbol-shaped shell
-/// `grep`/`rg`/`ag` (`Execute`) and a symbol-shaped `Grep` `pattern` on a code
-/// target are the only calls that ever reach this handler; `Read`/`LS`/`Glob`
-/// and sub-agent/task launches are never routed here (see the matcher doc in
-/// `agents/droid.rs`), and this hook fails open for anything it isn't told to
-/// inspect.
+/// this hook for the `^(Execute|Grep|Task)$` matcher, so symbol-shaped shell
+/// searches (`Execute`), native content searches (`Grep`), and typed subagent
+/// launches (`Task`) reach the shared classifier. `Read`/`LS`/`Glob` remain
+/// excluded, and this hook fails open for anything it isn't told to inspect.
 pub fn hook_droid_pre_tool_use() -> i32 {
     let event = read_stdin_to_string();
     if let Some(reason) = evaluate_droid_pre_tool_use(&event) {
@@ -842,17 +840,30 @@ pub fn evaluate_droid_pre_tool_use(raw: &str) -> Option<String> {
 /// environment snapshot. Tests use this to avoid touching the real process
 /// state.
 ///
-/// Unwraps the nested `tool_input` object (falling back to treating the
-/// whole payload as the tool input if it isn't wrapped) and delegates to the
-/// same [`evaluate_hook_decision_core`] the Claude and Kiro adapters share.
+/// Unwraps the nested `tool_input` object (falling back to treating the whole
+/// payload as the tool input if it isn't wrapped), normalizes Droid's exact
+/// lowercase built-in `explorer` type to the shared core's `Explore` sentinel,
+/// and delegates to the same [`evaluate_hook_decision_core`] the Claude and
+/// Kiro adapters share. Other `Task` subagent types pass without entering the
+/// generic research-prompt classifier.
 /// Returns the raw block reason text for the caller to print to stderr —
 /// Droid's channel is exit code + stderr, not a stdout decision object.
 pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<String> {
-    let tool_input = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|v| v.get("tool_input").cloned())
-        .map_or_else(|| raw.to_string(), |ti| ti.to_string());
-    evaluate_hook_decision_core(&tool_input, env)
+    let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        return evaluate_hook_decision_core(raw, env);
+    };
+    let is_task = event.get("tool_name").and_then(Value::as_str) == Some("Task");
+    let mut tool_input = event.get("tool_input").cloned().unwrap_or(event);
+    let subagent_type = tool_input.get("subagent_type").and_then(Value::as_str);
+
+    if is_task && subagent_type != Some("explorer") {
+        return None;
+    }
+    if subagent_type == Some("explorer") {
+        tool_input["subagent_type"] = Value::String("Explore".to_string());
+    }
+
+    evaluate_hook_decision_core(&tool_input.to_string(), env)
 }
 
 fn kiro_event_has_research_text(value: &Value) -> bool {
