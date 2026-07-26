@@ -83,6 +83,10 @@ cargo test test_find_stale_files
 cargo test sync
 ```
 
+## Environment Variables
+
+Tokensave-owned environment variables must start with `TOKENSAVE_`. Runtime Rust sources are checked by `tests/env_var_namespace_test.rs`; operating-system, Cargo, Git, and agent-owned variables require an explicit allowlist rationale. Use qualified environment APIs such as `std::env::var` so the policy check can identify accesses. Keep variable names as string literals at their access site unless a shared constant is required, and never print environment-variable values because some carry authentication material.
+
 ## Commit Messages
 
 Follow conventional commit style:
