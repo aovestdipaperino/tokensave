@@ -5206,6 +5206,74 @@ pub mod e;
     );
 }
 
+/// Doc down-ranking on the `tokensave_search` path (`query.rs`), where
+/// `path_rank_multiplier` scales an ADDITIVE score that includes the
+/// exact-name +10 bonus — unlike the purely multiplicative context path.
+/// Pins the invariants that matter there:
+/// 1. Code definitions rank above doc headings even when the heading matches
+///    the query verbatim. This is enforced by the tier-first sort (headings
+///    are `Module` nodes, tier 3; definitions are tier 0) before score is
+///    consulted, so no value of the doc factor can regress it.
+/// 2. Headings still surface (proportional penalty, not a filter).
+/// 3. Within the doc results — the only place the factor decides order on
+///    this path — every candidate shares the 0.3×, so the exact-named
+///    heading keeps its bonus-driven lead over partial heading matches.
+#[tokio::test]
+async fn search_doc_penalty_on_additive_query_path() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("docs")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub mod config;\n").unwrap();
+    fs::write(
+        project.join("src/config.rs"),
+        "pub fn parse_configuration() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("README.md"),
+        "# Configuration\n\nHow to configure the thing.\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("docs/guide.md"),
+        "# Configuration Guide\n\nLonger prose.\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "Configuration", "limit": 10}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let items: Value = serde_json::from_str(text).unwrap();
+    let arr = items.as_array().unwrap();
+
+    let first_kind = arr[0]["kind"].as_str().unwrap_or("");
+    assert_eq!(
+        first_kind, "function",
+        "code definition must rank above the verbatim-matching doc heading, got {arr:?}"
+    );
+
+    let doc_names: Vec<&str> = arr
+        .iter()
+        .filter(|r| r["file"].as_str().is_some_and(|f| f.ends_with(".md")))
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    assert_eq!(
+        doc_names,
+        vec!["Configuration", "Configuration Guide"],
+        "headings must stay reachable, exact-named heading first, got {arr:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // McpServer::refresh_file_token_map
 // ---------------------------------------------------------------------------

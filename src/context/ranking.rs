@@ -111,6 +111,21 @@ fn has_path_segment(normalized: &str, segment: &str) -> bool {
     normalized.split('/').any(|c| c == segment)
 }
 
+/// File extensions of prose documentation formats the indexer extracts
+/// symbols from (Markdown headings and friends). `.txt` is deliberately
+/// absent: it is as often fixture or data content as prose, and its
+/// "headings" are not headings.
+const DOC_FILE_EXTENSIONS: &[&str] = &["md", "markdown", "mdx", "rst", "adoc"];
+
+/// Returns `true` for prose documentation files, matched by extension.
+fn is_doc_file(normalized: &str) -> bool {
+    normalized.rsplit('.').next().is_some_and(|ext| {
+        DOC_FILE_EXTENSIONS
+            .iter()
+            .any(|d| ext.eq_ignore_ascii_case(d))
+    })
+}
+
 /// Path-based ranking multiplier applied during both search and context
 /// re-ranking. Returns a factor relative to a neutral baseline of `1.0`:
 ///
@@ -126,9 +141,10 @@ fn has_path_segment(normalized: &str, segment: &str) -> bool {
 ///
 /// The effect is proportional, not a filter: a strong exact-name match in
 /// `node_modules` or `examples/` can still appear, just ranked lower. Vendor
-/// classification wins over both non-production and app classification when a
-/// path matches more than one (e.g. a `src` dir nested inside `node_modules`,
-/// or an `examples` dir under `target`).
+/// classification wins over documentation, non-production, and app
+/// classification when a path matches more than one (e.g. a `src` dir nested
+/// inside `node_modules`, an `examples` dir under `target`, or a README
+/// inside `node_modules`).
 pub fn path_rank_multiplier(file_path: &str) -> f64 {
     let normalized = file_path.replace('\\', "/");
     if VENDOR_PATH_SEGMENTS
@@ -136,6 +152,16 @@ pub fn path_rank_multiplier(file_path: &str) -> f64 {
         .any(|seg| has_path_segment(&normalized, seg))
     {
         return 0.4;
+    }
+    // Documentation files are indexed (headings become Module nodes with Pub
+    // visibility), which can outrank actual code on shared vocabulary.
+    // Down-rank by extension. The 0.3 factor is chosen between existing
+    // `path_boost` penalties for fixtures (0.1) and tests (0.4), so code queries
+    // surface code first while an exact heading match stays reachable.
+    // Checked after the vendor branch so vendor classification wins for docs
+    // in vendored trees.
+    if is_doc_file(&normalized) {
+        return 0.3;
     }
     if NON_PROD_PATH_SEGMENTS
         .iter()
@@ -411,8 +437,42 @@ mod tests {
     #[test]
     fn test_path_rank_multiplier_neutral_is_baseline() {
         assert_eq!(path_rank_multiplier("foo/bar.rs"), 1.0);
-        assert_eq!(path_rank_multiplier("README.md"), 1.0);
-        assert_eq!(path_rank_multiplier("docs/guide.md"), 1.0);
+    }
+
+    #[test]
+    fn test_path_rank_multiplier_doc_factor() {
+        for path in [
+            "README.md",
+            "docs/guide.md",
+            "CHANGELOG.markdown",
+            "book/src/intro.rst",
+            "guide.adoc",
+            "blog/post.MDX",
+        ] {
+            assert_eq!(path_rank_multiplier(path), 0.3, "{path}");
+        }
+        // Vendor classification wins over the doc factor.
+        assert_eq!(path_rank_multiplier("node_modules/foo/README.md"), 0.4);
+        // .txt is not classified as documentation — often fixture/data files.
+        assert_eq!(path_rank_multiplier("notes.txt"), 1.0);
+        // Extension match only — a directory named docs with code inside is
+        // not a doc file.
+        assert_eq!(path_rank_multiplier("mdbook/render.rs"), 1.0);
+    }
+
+    #[test]
+    fn test_code_outranks_doc_heading_in_rerank() {
+        let mut doc = make_result(NodeKind::Module, Visibility::Pub, "docs/guide.md", 10.0);
+        doc.node.name = "Configuration".to_string();
+        let code = make_result(
+            NodeKind::Function,
+            Visibility::Private,
+            "src/config.rs",
+            10.0,
+        );
+        let mut candidates = vec![doc, code];
+        rerank_candidates(&mut candidates);
+        assert_eq!(candidates[0].node.file_path, "src/config.rs");
     }
 
     #[test]
