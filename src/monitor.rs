@@ -352,14 +352,22 @@ pub fn run() -> std::io::Result<()> {
 }
 
 /// Cached cost data for the monitor panel, refreshed periodically.
-struct CostCache {
-    today_cost: f64,
-    week_cost: f64,
-    tokens_saved: u64,
-    efficiency_pct: f64,
-    top_model: String,
-    top_model_cost: f64,
-    last_refresh: std::time::Instant,
+pub struct CostCache {
+    pub today_cost: f64,
+    pub week_cost: f64,
+    pub tokens_saved: u64,
+    pub efficiency_pct: f64,
+    pub top_model: String,
+    pub top_model_cost: f64,
+    /// Droid Factory credits spent today (`None` when the window query returned no credit data).
+    pub today_credits: Option<u64>,
+    /// Droid Factory credits spent in the past 7 days (`None` when the window query returned no credit data).
+    pub week_credits: Option<u64>,
+    /// Sum of all Droid raw tokens (input + output + `cache_write` + `cache_read`) for the week.
+    pub week_droid_tokens: u64,
+    /// Coverage quality of the Droid accounting source.
+    pub droid_state: crate::accounting::parser::CoverageState,
+    pub last_refresh: std::time::Instant,
 }
 
 impl CostCache {
@@ -371,6 +379,10 @@ impl CostCache {
             efficiency_pct: 0.0,
             top_model: String::new(),
             top_model_cost: 0.0,
+            today_credits: None,
+            week_credits: None,
+            week_droid_tokens: 0,
+            droid_state: crate::accounting::parser::CoverageState::Absent,
             last_refresh: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(999))
                 .unwrap_or_else(std::time::Instant::now),
@@ -380,6 +392,74 @@ impl CostCache {
     fn is_stale(&self) -> bool {
         self.last_refresh.elapsed() > std::time::Duration::from_secs(30)
     }
+
+    /// Returns true if there is any meaningful activity to display:
+    /// USD today/week, Droid credits (Some and positive), or Droid raw tokens.
+    pub fn has_activity(&self) -> bool {
+        self.today_cost >= 0.001
+            || self.week_cost >= 0.001
+            || self.week_credits.is_some_and(|c| c > 0)
+            || self.week_droid_tokens > 0
+    }
+}
+
+/// Truncate a string to at most `width` Unicode scalar values.
+pub fn truncate_to_chars(s: &str, width: usize) -> String {
+    let mut chars = s.chars();
+    let collected: String = (&mut chars).take(width).collect();
+    collected
+}
+
+/// Build the three cost-panel display lines from cached data.
+///
+/// Returns `[usd_line, droid_line, efficiency_line]`.
+/// Each line starts with two spaces of indent. Does **not** pad or truncate —
+/// callers truncate to terminal width before padding.
+pub fn cost_panel_lines(cache: &CostCache) -> [String; 3] {
+    use crate::accounting::parser::CoverageState;
+
+    let saved_str = crate::display::format_token_count(cache.tokens_saved);
+    let line1 = format!(
+        "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+        cache.today_cost, cache.week_cost, saved_str
+    );
+
+    let line2 = if cache.droid_state == CoverageState::Absent {
+        "  Coverage: Claude local; Droid absent".to_string()
+    } else {
+        let week_t = crate::display::format_token_count(cache.week_droid_tokens);
+        match cache.week_credits {
+            Some(wc) => {
+                let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
+                let week_c = crate::display::format_token_count(wc);
+                let note = if cache.droid_state == CoverageState::Partial {
+                    "observed locally, partial source, session-start"
+                } else {
+                    "session-start"
+                };
+                format!(
+                    "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
+                )
+            }
+            None => {
+                format!(
+                    "  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)"
+                )
+            }
+        }
+    };
+
+    let top_model_part = if cache.top_model.is_empty() {
+        "n/a".to_string()
+    } else {
+        format!("{} (${:.2})", cache.top_model, cache.top_model_cost)
+    };
+    let line3 = format!(
+        "  Efficiency: {:.0}%    Top priced model: {}",
+        cache.efficiency_pct, top_model_part
+    );
+
+    [line1, line2, line3]
 }
 
 /// Refresh cost data from the global DB. Best-effort, non-blocking.
@@ -390,8 +470,17 @@ fn refresh_cost_cache(cache: &mut CostCache) {
             return;
         };
 
-        // Ingest any new data first
-        crate::accounting::parser::ingest(&gdb).await;
+        // Full coordinated ingest (Claude + Droid); capture coverage.
+        let stats = crate::accounting::parser::ingest(&gdb).await;
+
+        // Capture Droid coverage state from ingest stats.
+        cache.droid_state = stats
+            .coverage
+            .iter()
+            .find(|c| c.agent == "droid")
+            .map_or(crate::accounting::parser::CoverageState::Absent, |c| {
+                c.state
+            });
 
         let now_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -400,6 +489,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
         let today_start = now_epoch - (now_epoch % 86400);
         let week_start = now_epoch.saturating_sub(7 * 86400);
 
+        // Claude USD costs (legacy by-model query is Claude-only).
         cache.today_cost = gdb.total_cost_since(today_start).await.unwrap_or(0.0);
         cache.week_cost = gdb.total_cost_since(week_start).await.unwrap_or(0.0);
 
@@ -416,6 +506,26 @@ fn refresh_cost_cache(cache: &mut CostCache) {
         if let Some((model, cost, _)) = models.first() {
             cache.top_model.clone_from(model);
             cache.top_model_cost = *cost;
+        }
+
+        // Droid credits and raw tokens.
+        cache.today_credits = None;
+        cache.week_credits = None;
+        cache.week_droid_tokens = 0;
+
+        let today_agents = gdb.cost_by_agent_since(today_start).await;
+        if let Some(d) = today_agents.iter().find(|s| s.agent == "droid") {
+            cache.today_credits = d.credits;
+        }
+
+        let week_agents = gdb.cost_by_agent_since(week_start).await;
+        if let Some(d) = week_agents.iter().find(|s| s.agent == "droid") {
+            cache.week_credits = d.credits;
+            cache.week_droid_tokens = d
+                .input_tokens
+                .saturating_add(d.output_tokens)
+                .saturating_add(d.cache_write_tokens)
+                .saturating_add(d.cache_read_tokens);
         }
     };
     // monitor::run() is always invoked from inside #[tokio::main]'s
@@ -499,39 +609,28 @@ fn monitor_loop(
 
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
-        // Layout: cost panel (3 lines) + separator + log + separator + footer (2 lines)
-        let has_cost = cost_cache.today_cost >= 0.001 || cost_cache.week_cost >= 0.001;
-        let cost_lines = if has_cost { 4 } else { 0 }; // 3 lines + separator
+        // Layout: cost panel (4 lines: 3 content + separator) + log + separator + footer (2 lines)
+        let has_activity = cost_cache.has_activity();
+        let cost_lines = if has_activity { 4 } else { 0 }; // 3 lines + separator
         let footer_lines = 4; // separator + 2 footer lines + bottom separator
         let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
         last_log_lines = log_lines;
 
         // ── Cost panel ──
-        if has_cost {
+        if has_activity {
             let sep = "\u{2500}".repeat(w);
+            let [line1, line2, line3] = cost_panel_lines(&cost_cache);
 
-            let saved_str = crate::display::format_token_count(cost_cache.tokens_saved);
-            let line1 = format!(
-                "  Spent: ${:.2} today | ${:.2} 7d    Saved: {}",
-                cost_cache.today_cost, cost_cache.week_cost, saved_str
-            );
-            let line2 = format!(
-                "  Efficiency: {:.0}%    Top model: {} (${:.2})",
-                cost_cache.efficiency_pct, cost_cache.top_model, cost_cache.top_model_cost
-            );
-
-            write!(
-                stdout,
-                "\r\x1b[36m{}\x1b[0m{}\r\n",
-                line1,
-                " ".repeat(w.saturating_sub(line1.len()))
-            )?;
-            write!(
-                stdout,
-                "\r\x1b[36m{}\x1b[0m{}\r\n",
-                line2,
-                " ".repeat(w.saturating_sub(line2.len()))
-            )?;
+            for line in [&line1, &line2, &line3] {
+                let truncated = truncate_to_chars(line, w);
+                let padding = w.saturating_sub(truncated.chars().count());
+                write!(
+                    stdout,
+                    "\r\x1b[36m{}\x1b[0m{}\r\n",
+                    truncated,
+                    " ".repeat(padding)
+                )?;
+            }
             write!(stdout, "\r{sep}\r\n")?;
         }
 

@@ -15,11 +15,25 @@ use crate::accounting::pricing;
 use crate::global_db::GlobalDb;
 use crate::types::CostTurn;
 
-/// Find all JSONL session files under `~/.claude/projects/`.
-fn find_session_files() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
+/// Whether a data source contributes complete, partial, or no coverage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CoverageState {
+    Complete,
+    Partial,
+    Absent,
+}
+
+/// Coverage summary for one accounting data source.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceCoverage {
+    pub agent: &'static str,
+    pub state: CoverageState,
+    pub sessions: u64,
+}
+
+/// Find all JSONL session files under `<home>/.claude/projects/`, sorted.
+pub(crate) fn find_session_files(home: &Path) -> Vec<PathBuf> {
     let projects_dir = home.join(".claude").join("projects");
     if !projects_dir.is_dir() {
         return Vec::new();
@@ -27,6 +41,7 @@ fn find_session_files() -> Vec<PathBuf> {
 
     let mut files = Vec::new();
     collect_jsonl_files(&projects_dir, &mut files, 0);
+    files.sort();
     files
 }
 
@@ -159,11 +174,13 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
         cost_usd,
         category: category.as_str().to_string(),
         tool_names: tool_names_vec.join(","),
+        agent: "claude".to_string(),
+        credits: None,
     })
 }
 
 /// Parse an ISO 8601 timestamp to unix epoch seconds.
-fn parse_timestamp(ts: &str) -> Option<u64> {
+pub(crate) fn parse_timestamp(ts: &str) -> Option<u64> {
     // Handle "2026-04-14T10:32:15.039Z" format
     // Simple parsing without pulling in chrono: split on known positions
     if ts.len() < 19 {
@@ -199,18 +216,45 @@ fn is_leap(y: i64) -> bool {
 
 /// Stats returned by the `ingest` function.
 pub struct IngestStats {
-    /// Number of new turns inserted.
+    /// Number of new Claude turns inserted (receipt-only; does not count historical Droid scans).
     pub turns_inserted: u64,
-    /// Total cost of the newly-inserted turns.
+    /// Number of Droid turns inserted or updated.
+    pub turns_updated: u64,
+    /// Total cost of newly-inserted Claude turns.
     pub cost_usd: f64,
-    /// Total input + output tokens of the newly-inserted turns.
+    /// Total input + output tokens of newly-inserted Claude turns.
     pub tokens_consumed: u64,
+    /// Per-source coverage information.
+    pub coverage: Vec<SourceCoverage>,
 }
 
-/// Ingest all Claude Code session files into the global DB.
-/// Uses offset tracking to only parse new lines since the last run.
-pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
-    let files = find_session_files();
+impl IngestStats {
+    /// Returns an empty stats value with no coverage information.
+    pub fn empty() -> Self {
+        Self {
+            turns_inserted: 0,
+            turns_updated: 0,
+            cost_usd: 0.0,
+            tokens_consumed: 0,
+            coverage: Vec::new(),
+        }
+    }
+}
+
+/// Ingest only Claude Code session files from `home`, skipping any Droid scan.
+///
+/// Shared by the Claude Stop hook (via [`ingest_claude_only`]) and the full
+/// coordinated ingest (via [`ingest_from_home`]).  Keeping this as a private
+/// helper avoids duplicating the offset-tracking loop.
+async fn ingest_claude_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
+    let files = find_session_files(home);
+    let claude_state = if files.is_empty() {
+        CoverageState::Absent
+    } else {
+        CoverageState::Complete
+    };
+    let claude_sessions = files.len() as u64;
+
     let mut total_inserted = 0u64;
     let mut total_cost = 0.0f64;
     let mut total_tokens = 0u64;
@@ -218,7 +262,6 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
     for file_path in &files {
         let path_str = file_path.to_string_lossy().to_string();
 
-        // Check file mtime
         let Ok(meta) = fs::metadata(file_path) else {
             continue;
         };
@@ -228,21 +271,15 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs());
 
-        // Check if we've already parsed this file up to this mtime
         let (prev_offset, prev_mtime) = gdb.get_parse_offset(&path_str).await.unwrap_or((0, 0));
 
         if mtime == prev_mtime && prev_offset > 0 {
-            // File hasn't changed since last parse
             continue;
         }
 
-        let seek_to = if mtime == prev_mtime {
-            prev_offset
-        } else if prev_mtime > 0 && mtime > prev_mtime {
-            // File was appended to -- seek to previous offset
+        let seek_to = if mtime == prev_mtime || (prev_mtime > 0 && mtime > prev_mtime) {
             prev_offset
         } else {
-            // File is new or was rewritten -- start from beginning
             0
         };
 
@@ -253,7 +290,6 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
         };
         let mut reader = BufReader::new(f);
 
-        // Seek to the saved offset
         if seek_to > 0 && reader.seek(SeekFrom::Start(seek_to)).is_err() {
             continue;
         }
@@ -284,21 +320,94 @@ pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
             }
         }
 
-        // Save the new offset
         gdb.set_parse_offset(&path_str, current_offset, mtime).await;
     }
 
     IngestStats {
         turns_inserted: total_inserted,
+        turns_updated: 0,
         cost_usd: total_cost,
         tokens_consumed: total_tokens,
+        coverage: vec![SourceCoverage {
+            agent: "claude",
+            state: claude_state,
+            sessions: claude_sessions,
+        }],
     }
+}
+
+/// Ingest Claude sessions from `home` and Droid sessions from
+/// `home/.factory/sessions`.  Returns combined [`IngestStats`].
+pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
+    let mut stats = ingest_claude_from_home(gdb, home).await;
+
+    // Droid ingestion from ~/.factory/sessions
+    let droid_root = home.join(".factory").join("sessions");
+    let droid = crate::accounting::droid::ingest_dir(gdb, &droid_root).await;
+
+    stats.turns_updated = droid.rows_changed;
+    stats.coverage.push(droid.coverage);
+
+    stats
+}
+
+/// Ingest only Claude Code session files, skipping any Droid scan.
+///
+/// Use this from the Claude Stop hook to keep the hot path free of Droid
+/// filesystem and JSON I/O.  The general [`ingest`] function performs the full
+/// Claude + Droid scan and is reserved for cost/monitor/status callers.
+pub async fn ingest_claude_only(gdb: &GlobalDb) -> IngestStats {
+    let Some(home) = dirs::home_dir() else {
+        return IngestStats::empty();
+    };
+    ingest_claude_from_home(gdb, &home).await
+}
+
+/// Ingest all Claude Code session files into the global DB.
+/// Uses offset tracking to only parse new lines since the last run.
+pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
+    let Some(home) = dirs::home_dir() else {
+        return IngestStats::empty();
+    };
+    ingest_from_home(gdb, &home).await
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    async fn open_test_db(tmp: &TempDir) -> GlobalDb {
+        let db_path = tmp.path().join(".tokensave").join("global.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        GlobalDb::open_at(&db_path).await.unwrap()
+    }
+
+    /// `ingest_claude_from_home` must not populate Droid coverage or `turns_updated`.
+    #[tokio::test]
+    async fn claude_only_ingest_has_no_droid_coverage() {
+        let home_tmp = TempDir::new().unwrap();
+        let db_tmp = TempDir::new().unwrap();
+        let gdb = open_test_db(&db_tmp).await;
+
+        let stats = ingest_claude_from_home(&gdb, home_tmp.path()).await;
+
+        assert_eq!(
+            stats.turns_updated, 0,
+            "claude-only must not update Droid rows"
+        );
+        assert!(
+            !stats.coverage.iter().any(|c| c.agent == "droid"),
+            "claude-only must not include droid coverage"
+        );
+        assert_eq!(
+            stats.coverage.len(),
+            1,
+            "exactly one coverage entry (claude)"
+        );
+        assert_eq!(stats.coverage[0].agent, "claude");
+    }
 
     #[test]
     fn test_parse_timestamp() {

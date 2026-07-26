@@ -24,6 +24,20 @@ pub struct SavingsDay {
     pub calls: u64,
 }
 
+/// Per-agent cost summary returned by `cost_by_agent_since`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentCostSummary {
+    pub agent: String,
+    pub cost_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// None if any row in the group has NULL credits (i.e. Claude turns).
+    pub credits: Option<u64>,
+    pub turns: u64,
+}
+
 /// User-level database tracking all `TokenSave` projects.
 pub struct GlobalDb {
     conn: Connection,
@@ -76,7 +90,9 @@ impl GlobalDb {
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 cost_usd REAL NOT NULL,
                 category TEXT NOT NULL,
-                tool_names TEXT NOT NULL DEFAULT ''
+                tool_names TEXT NOT NULL DEFAULT '',
+                agent TEXT NOT NULL DEFAULT 'claude',
+                credits INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
             CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project_hash);
@@ -100,6 +116,9 @@ impl GlobalDb {
         .await
         .ok()?;
 
+        // Migrate existing DBs: add agent/credits columns if absent.
+        Self::migrate_turns_columns(&conn).await;
+
         Some(Self { conn, _db: db })
     }
 
@@ -108,6 +127,38 @@ impl GlobalDb {
     pub async fn open() -> Option<Self> {
         let db_path = global_db_path()?;
         Self::open_at(&db_path).await
+    }
+
+    /// Add `agent` and `credits` columns to an existing turns table if absent.
+    /// Best-effort: failures are silently ignored (matches `open_at` pattern).
+    async fn migrate_turns_columns(conn: &Connection) {
+        let Ok(mut rows) = conn.query("PRAGMA table_info(turns)", ()).await else {
+            return;
+        };
+        let mut has_agent = false;
+        let mut has_credits = false;
+        while let Ok(Some(row)) = rows.next().await {
+            if let Ok(name) = row.get::<String>(1) {
+                match name.as_str() {
+                    "agent" => has_agent = true,
+                    "credits" => has_credits = true,
+                    _ => {}
+                }
+            }
+        }
+        if !has_agent {
+            let _ = conn
+                .execute(
+                    "ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+                    (),
+                )
+                .await;
+        }
+        if !has_credits {
+            let _ = conn
+                .execute("ALTER TABLE turns ADD COLUMN credits INTEGER", ())
+                .await;
+        }
     }
 
     /// Registers or updates a project's tokens-saved count. Best-effort.
@@ -303,8 +354,8 @@ impl GlobalDb {
                 "INSERT OR IGNORE INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  cost_usd, category, tool_names, agent, credits)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     turn.message_id.clone(),
                     turn.project_hash.clone(),
@@ -318,6 +369,75 @@ impl GlobalDb {
                     turn.cost_usd,
                     turn.category.clone(),
                     turn.tool_names.clone(),
+                    turn.agent.clone(),
+                    turn.credits.map(|c| c as i64),
+                ],
+            )
+            .await
+            .is_ok_and(|n| n > 0)
+    }
+
+    /// Upsert a Droid cumulative-snapshot turn (monotonic semantics).
+    ///
+    /// On conflict, the row is updated only when **every** token counter in the
+    /// candidate is ≥ the stored value, credits do not regress, and **at least
+    /// one** counter or credit strictly increases.  `timestamp` is never
+    /// updated (it is the stable session-start bucket).
+    ///
+    /// Returns `true` if a row was inserted or updated, `false` otherwise.
+    pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
+        self.conn
+            .execute(
+                "INSERT INTO turns
+                 (message_id, project_hash, session_id, model, timestamp,
+                  input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+                  cost_usd, category, tool_names, agent, credits)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(message_id) DO UPDATE SET
+                     project_hash        = excluded.project_hash,
+                     session_id          = excluded.session_id,
+                     model               = excluded.model,
+                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
+                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
+                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
+                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     cost_usd            = excluded.cost_usd,
+                     category            = excluded.category,
+                     tool_names          = excluded.tool_names,
+                     agent               = excluded.agent,
+                     credits             = COALESCE(excluded.credits, turns.credits)
+                 WHERE
+                     excluded.input_tokens        >= turns.input_tokens
+                     AND excluded.output_tokens       >= turns.output_tokens
+                     AND excluded.cache_write_tokens  >= turns.cache_write_tokens
+                     AND excluded.cache_read_tokens   >= turns.cache_read_tokens
+                     AND (excluded.credits IS NULL
+                          OR turns.credits IS NULL
+                          OR excluded.credits >= turns.credits)
+                     AND (
+                         excluded.input_tokens        > turns.input_tokens
+                         OR excluded.output_tokens       > turns.output_tokens
+                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                         OR (excluded.credits IS NOT NULL
+                             AND (turns.credits IS NULL
+                                  OR excluded.credits > turns.credits))
+                     )",
+                params![
+                    turn.message_id.clone(),
+                    turn.project_hash.clone(),
+                    turn.session_id.clone(),
+                    turn.model.clone(),
+                    turn.timestamp as i64,
+                    turn.input_tokens as i64,
+                    turn.output_tokens as i64,
+                    turn.cache_write_tokens as i64,
+                    turn.cache_read_tokens as i64,
+                    turn.cost_usd,
+                    turn.category.clone(),
+                    turn.tool_names.clone(),
+                    turn.agent.clone(),
+                    turn.credits.map(|c| c as i64),
                 ],
             )
             .await
@@ -353,6 +473,7 @@ impl GlobalDb {
     }
 
     /// Token breakdown (input, output, `cache_read`) since a given timestamp.
+    /// Claude-only: Droid turns are excluded so legacy USD views remain accurate.
     pub async fn token_breakdown_since(&self, since: u64) -> Option<(u64, u64, u64)> {
         let mut rows = self
             .conn
@@ -360,7 +481,7 @@ impl GlobalDb {
                 "SELECT COALESCE(SUM(input_tokens), 0),
                         COALESCE(SUM(output_tokens), 0),
                         COALESCE(SUM(cache_read_tokens), 0)
-                 FROM turns WHERE timestamp >= ?1",
+                 FROM turns WHERE timestamp >= ?1 AND agent = 'claude'",
                 params![since as i64],
             )
             .await
@@ -373,14 +494,14 @@ impl GlobalDb {
         ))
     }
 
-    /// Cost grouped by model since a given timestamp.
+    /// Cost grouped by model since a given timestamp. Claude-only.
     /// Returns `(model, cost, total_tokens)`.
     pub async fn cost_by_model_since(&self, since: u64) -> Vec<(String, f64, u64)> {
         let Ok(mut rows) = self
             .conn
             .query(
                 "SELECT model, SUM(cost_usd), SUM(input_tokens + output_tokens)
-                 FROM turns WHERE timestamp >= ?1
+                 FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
                  GROUP BY model ORDER BY SUM(cost_usd) DESC",
                 params![since as i64],
             )
@@ -398,14 +519,14 @@ impl GlobalDb {
         out
     }
 
-    /// Cost grouped by category since a given timestamp.
+    /// Cost grouped by category since a given timestamp. Claude-only.
     /// Returns `(category, cost, turn_count)`.
     pub async fn cost_by_category_since(&self, since: u64) -> Vec<(String, f64, u64)> {
         let Ok(mut rows) = self
             .conn
             .query(
                 "SELECT category, SUM(cost_usd), COUNT(*)
-                 FROM turns WHERE timestamp >= ?1
+                 FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
                  GROUP BY category ORDER BY SUM(cost_usd) DESC",
                 params![since as i64],
             )
@@ -423,17 +544,15 @@ impl GlobalDb {
         out
     }
 
-    /// Fetch `(tool_names, input_tokens)` for every turn since a timestamp.
+    /// Fetch `(tool_names, input_tokens)` for every Claude turn since a timestamp.
     ///
-    /// Used by the "missed opportunity" analyzer (`tokensave discover`), which
-    /// inspects `tool_names` to decide whether a turn was pure file navigation
-    /// that a graph query could have served more cheaply. Returns an empty
-    /// vector on any DB error.
+    /// Claude-only: the discover analyzer works on Claude Code navigation patterns.
+    /// Returns an empty vector on any DB error.
     pub async fn nav_turns_since(&self, since: u64) -> Vec<(String, u64)> {
         let Ok(mut rows) = self
             .conn
             .query(
-                "SELECT tool_names, input_tokens FROM turns WHERE timestamp >= ?1",
+                "SELECT tool_names, input_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'",
                 params![since as i64],
             )
             .await
@@ -445,6 +564,53 @@ impl GlobalDb {
             let tool_names: String = row.get(0).unwrap_or_default();
             let input_tokens: i64 = row.get(1).unwrap_or(0);
             out.push((tool_names, input_tokens.max(0) as u64));
+        }
+        out
+    }
+
+    /// Cost grouped by agent since a given timestamp.
+    ///
+    /// Credits aggregate to `None` if any row in the group has a NULL credit value.
+    pub async fn cost_by_agent_since(&self, since: u64) -> Vec<AgentCostSummary> {
+        let Ok(mut rows) = self
+            .conn
+            .query(
+                "SELECT agent,
+                        COALESCE(SUM(cost_usd), 0.0),
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(cache_write_tokens), 0),
+                        COALESCE(SUM(cache_read_tokens), 0),
+                        CASE WHEN COUNT(credits) = COUNT(*) THEN SUM(credits) ELSE NULL END,
+                        COUNT(*)
+                 FROM turns WHERE timestamp >= ?1
+                 GROUP BY agent ORDER BY agent",
+                params![since as i64],
+            )
+            .await
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let agent: String = row.get(0).unwrap_or_default();
+            let cost_usd: f64 = row.get(1).unwrap_or(0.0);
+            let input_tokens: i64 = row.get(2).unwrap_or(0);
+            let output_tokens: i64 = row.get(3).unwrap_or(0);
+            let cache_write_tokens: i64 = row.get(4).unwrap_or(0);
+            let cache_read_tokens: i64 = row.get(5).unwrap_or(0);
+            let credits: Option<i64> = row.get(6).ok();
+            let turns: i64 = row.get(7).unwrap_or(0);
+            out.push(AgentCostSummary {
+                agent,
+                cost_usd,
+                input_tokens: input_tokens.max(0) as u64,
+                output_tokens: output_tokens.max(0) as u64,
+                cache_write_tokens: cache_write_tokens.max(0) as u64,
+                cache_read_tokens: cache_read_tokens.max(0) as u64,
+                credits: credits.map(|c| c.max(0) as u64),
+                turns: turns.max(0) as u64,
+            });
         }
         out
     }
