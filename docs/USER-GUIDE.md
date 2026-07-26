@@ -501,6 +501,7 @@ When running as an MCP server, tokensave exposes more than 80 tools that AI agen
 | `tokensave_files` | List indexed files, optionally filtered by directory or glob pattern. |
 | `tokensave_status` | Index statistics: file counts, symbol counts, language distribution, and tokens saved. |
 | `tokensave_annotations` | Attribute/annotation/decorator introspection: histogram of all annotations in the project, or per-site listings filtered by name, file, or target kind. |
+| `tokensave_doc` | Companion Markdown documentation for a source file: the doc's content, every file it covers, and whether the code changed after the doc was last touched. Often answers the question without reading the file at all. |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems: workspace summary with license surface and version drift, per-package lookup, and per-member listings. |
 
 ### Navigating relationships
@@ -758,6 +759,46 @@ Semantics:
 - Hidden (dot-prefixed) paths matched by an entry are walked automatically — no separate `include` glob needed.
 - External paths are opt-in and project-local; only add paths you trust, since their content is parsed and indexed.
 
+### Companion Markdown documentation
+
+A large file often has a short prose explanation next to it. Tokensave indexes
+those explanations so an agent can read the summary instead of the 3000-line
+class. Two conventions are discovered, and both work at once:
+
+- **Sidecar** — `BigClass.cs` next to `BigClass.readme.md`. No configuration:
+  the doc is matched by filename and travels with the code in review.
+- **Docs directory** — `tokensave-docs/` at the project root, where each
+  Markdown file declares which files it covers with an `applies_to` glob list
+  in YAML front matter. One doc can cover a whole family of files:
+
+  ```markdown
+  ---
+  applies_to:
+    - "**/*.es8.cs"
+    - "src/legacy/**/*.cs"
+  ---
+
+  These files target the ES8 runtime; prefer the ES7 variants for new work.
+  ```
+
+Rename or relocate the directory with `docs_dir` in `.tokensave/config.json`,
+or disable docs-directory discovery entirely by setting it to an empty string
+(sidecar discovery is unaffected):
+
+```json
+"docs_dir": "architecture-notes"
+```
+
+Retrieve a file's documentation with `tokensave_doc`, which returns the doc
+path, its content, every file that doc covers, and a `doc_stale` signal (true
+when the covered code was committed after the doc; `null` when there is no git
+history to compare against). `tokensave_entities` also reports `has_doc` and
+`doc_path`, so an agent can see that a summary exists *before* deciding to read
+the file. Docs whose globs match nothing are dropped rather than indexed, and
+unparseable front matter degrades to "covers nothing" instead of failing the
+sync. Section-level anchors (line ranges, `m:MethodName`) are not supported
+yet — granularity is whole-doc.
+
 ### Per-user: `~/.tokensave/`
 
 Created in your home directory. Contains:
@@ -844,6 +885,26 @@ warning: could not refresh tokensave config for: copilot.
 ```
 
 The automatic post-upgrade refresh could not write one agent's config. The usual causes are an agent that is registered but no longer installed, or a config file in a read-only or centrally-managed location. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+
+### "agent config references Cargo build output"
+
+Installing from a source build persists the exact binary you invoked, which is
+usually what you want — but when that binary lives under `target/debug`,
+`target/release`, or `target/<triple>/{debug,release}`, `cargo clean` or
+deleting the worktree leaves your hooks and MCP entries pointing at a file that
+no longer exists. Tokensave now names the path when this happens:
+
+```
+warning: agent config references Cargo build output:
+  /repo/target/debug/tokensave
+  `cargo clean` or removing its worktree will break tokensave hooks and MCP servers.
+  Re-run `tokensave install` from a stable `cargo install`, Homebrew, or release binary.
+```
+
+Nothing is rewritten for you — substituting some other binary found on `PATH`
+could silently install an older version than the one you chose. Re-run
+`tokensave install` from a `cargo install`ed, Homebrew, or downloaded release
+binary when you want the configured path to be durable.
 
 ### Getting help
 

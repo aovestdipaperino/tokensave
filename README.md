@@ -420,6 +420,7 @@ The server exposes more than 80 tools (one fewer when the optional `ast-grep` bi
 | `tokensave_module_api` | Public API surface of a file or directory |
 | `tokensave_similar` | Find symbols with similar names |
 | `tokensave_annotations` | Attribute/annotation/decorator introspection -- histogram of all annotations or per-site listings with target filters |
+| `tokensave_doc` | Companion Markdown documentation for a source file -- doc content, the files it covers, and a staleness signal |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
