@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Stable preferences and machine-local state no longer regress when multiple tokensave processes save concurrently.** Routine state persistence leaves `config.toml` untouched unless stable preferences changed, while locked baseline merging preserves pending-token deltas, cache freshness, intentional version downgrades, and concurrent agent changes; a deleted `state.toml` is safely recreated without resurrecting stale values.
 
 ## [7.7.0] - 2026-07-26
 
