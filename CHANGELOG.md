@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Grep guardrails now recognize the absolute (or `~`-rooted) spelling of the indexed project root, which used to slip through while `.` was redirected.** Agents commonly write the repository target in full (`rg -n handle_request /Users/me/projects/app`, or `path: "/Users/me/projects/app"`), and the classifier only matched `.`, `./`, an omitted target, a recognized code directory basename, or a supported source extension; for an absolute directory it compared just the last path component, so any repository whose folder name is not a known code directory produced no savings. The hook now also treats a target whose canonical path equals the canonical project root as the same whole-project search as `.`. Deliberately exact, and never string-prefix based: a sibling such as `<root>-old`, a parent, and every path inside the project (`<root>/docs`) keep their current behavior, an explicit `type` filter or file glob still wins over the path, and an unknown root, unknown home directory, or any path that cannot be canonicalized fails open. Only absolute (or `~`-rooted) spellings reach the new comparison, so a relative detour such as `../..` keeps its previous handling and the two extra `canonicalize` calls stay off the common path.
+
 
 ## [7.7.0] - 2026-07-26
 

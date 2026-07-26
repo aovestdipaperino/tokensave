@@ -100,19 +100,27 @@ pub struct HookEnv {
     /// `true` when the user has opted out for this invocation via
     /// `TOKENSAVE_DISABLE_GREP_HOOK=1`.
     pub disable_grep_hook: bool,
+
+    /// The indexed project root, i.e. the working directory itself whenever
+    /// `cwd_has_tokensave_db` is `true`. Kept so a target spelled as an
+    /// absolute (or `~`-rooted) path can be recognized as the whole project
+    /// instead of an unknown directory. `None` and `cwd_has_tokensave_db`
+    /// always agree; `from_runtime()` derives both from one probe.
+    pub project_root: Option<PathBuf>,
 }
 
 impl HookEnv {
     /// Snapshot the real environment.
     pub fn from_runtime() -> Self {
-        let cwd_has_tokensave_db = std::env::current_dir()
+        let project_root = std::env::current_dir()
             .ok()
-            .is_some_and(|c| c.join(".tokensave").join("tokensave.db").exists());
+            .filter(|c| c.join(".tokensave").join("tokensave.db").exists());
         let disable_grep_hook = std::env::var("TOKENSAVE_DISABLE_GREP_HOOK")
             .is_ok_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"));
         Self {
-            cwd_has_tokensave_db,
+            cwd_has_tokensave_db: project_root.is_some(),
             disable_grep_hook,
+            project_root,
         }
     }
 }
@@ -306,7 +314,7 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if !target_looks_like_code(path, glob, ty) {
+    if !target_looks_like_code(path, glob, ty, env) {
         return None;
     }
     let shape = classify_symbol_pattern(pattern)?;
@@ -328,7 +336,7 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
         return None;
     }
     let target = inv.targets.first().map_or("", String::as_str);
-    if !target_looks_like_code(target, "", "") {
+    if !target_looks_like_code(target, "", "", env) {
         return None;
     }
     let shape = classify_symbol_pattern(&inv.pattern)?;
@@ -395,7 +403,7 @@ fn is_pure_identifier(s: &str) -> bool {
 ///
 /// Conservative: when the answer is ambiguous we return `false` so the call
 /// passes through unchanged.
-fn target_looks_like_code(path: &str, glob: &str, ty: &str) -> bool {
+fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bool {
     if !ty.is_empty() {
         return CODE_TYPE_FILTERS.contains(&ty.to_ascii_lowercase().as_str());
     }
@@ -407,6 +415,12 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str) -> bool {
     let raw = if path.is_empty() { glob } else { path };
     let trimmed = raw.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
+        return true;
+    }
+
+    // Ahead of the rules below because they only ever see the basename of an
+    // absolute directory.
+    if path_is_project_root(trimmed, env.project_root.as_deref()) {
         return true;
     }
 
@@ -431,6 +445,57 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str) -> bool {
         .next()
         .unwrap_or("");
     CODE_DIRS.contains(&last)
+}
+
+/// Is `raw` an absolute spelling of the indexed project root itself?
+///
+/// Compares canonical paths, so a symlinked or `..`-laden spelling still
+/// matches while a sibling that merely shares the root's string prefix does
+/// not. Deliberately exact: nothing below the root is treated as the whole
+/// project. A relative target, an unknown root, an unknown home directory, or
+/// any path that cannot be canonicalized answers `false`, leaving the caller's
+/// remaining rules in charge.
+fn path_is_project_root(raw: &str, project_root: Option<&Path>) -> bool {
+    path_is_project_root_with_home(raw, project_root, crate::agents::home_dir().as_deref())
+}
+
+fn path_is_project_root_with_home(
+    raw: &str,
+    project_root: Option<&Path>,
+    home: Option<&Path>,
+) -> bool {
+    let Some(root) = project_root else {
+        return false;
+    };
+    let Some(target) = expand_home_prefix(raw, home) else {
+        return false;
+    };
+    // Relative targets stay with the rules below: they cost two `canonicalize`
+    // calls per hook invocation and `.`, the only relative whole-project
+    // spelling in practice, is already handled by the caller.
+    if !target.is_absolute() {
+        return false;
+    }
+    match (target.canonicalize(), root.canonicalize()) {
+        (Ok(target), Ok(root)) => target == root,
+        _ => false,
+    }
+}
+
+/// Strip surrounding quotes/whitespace and expand an exact `~` or `~/…` prefix.
+/// `~user` is left alone: only the current user's home is known here.
+fn expand_home_prefix(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let trimmed = raw.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "~" {
+        return home.map(Path::to_path_buf);
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return home.map(|h| h.join(rest));
+    }
+    Some(PathBuf::from(trimmed))
 }
 
 fn classify_glob_target(glob: &str) -> Option<bool> {
@@ -1069,5 +1134,86 @@ mod cursor_decision_tests {
             v["hookSpecificOutput"]["permissionDecisionReason"].as_str(),
             Some("use tokensave instead")
         );
+    }
+}
+
+#[cfg(test)]
+mod project_root_target_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::path_is_project_root_with_home;
+
+    fn indexed_project() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        (tmp, root)
+    }
+
+    #[test]
+    fn tilde_alone_resolves_to_the_project_root() {
+        let (_tmp, root) = indexed_project();
+        assert!(path_is_project_root_with_home(
+            "~",
+            Some(&root),
+            Some(&root)
+        ));
+    }
+
+    #[test]
+    fn tilde_subpath_resolves_to_the_project_root() {
+        let (tmp, root) = indexed_project();
+        assert!(path_is_project_root_with_home(
+            "~/project",
+            Some(&root),
+            Some(tmp.path())
+        ));
+    }
+
+    #[test]
+    fn tilde_subpath_below_the_root_is_not_the_root() {
+        let (tmp, root) = indexed_project();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        assert!(!path_is_project_root_with_home(
+            "~/project/src",
+            Some(&root),
+            Some(tmp.path())
+        ));
+    }
+
+    #[test]
+    fn tilde_without_a_known_home_fails_open() {
+        let (_tmp, root) = indexed_project();
+        assert!(!path_is_project_root_with_home("~", Some(&root), None));
+    }
+
+    #[test]
+    fn other_users_home_is_not_expanded() {
+        let (tmp, root) = indexed_project();
+        assert!(!path_is_project_root_with_home(
+            "~someone/project",
+            Some(&root),
+            Some(tmp.path())
+        ));
+    }
+
+    #[test]
+    fn quoted_absolute_root_still_matches() {
+        let (_tmp, root) = indexed_project();
+        let quoted = format!("\"{}\"", root.display());
+        assert!(path_is_project_root_with_home(
+            &quoted,
+            Some(&root),
+            Some(&root)
+        ));
+    }
+
+    #[test]
+    fn relative_targets_are_left_to_the_other_rules() {
+        let (tmp, root) = indexed_project();
+        assert!(!path_is_project_root_with_home(
+            "project",
+            Some(&root),
+            Some(tmp.path())
+        ));
     }
 }
