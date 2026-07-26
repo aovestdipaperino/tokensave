@@ -687,6 +687,14 @@ tokensave upgrade
 
 Beta and stable are separate update channels — a beta build only sees beta releases and vice versa. Any attached MCP servers will continue running with the previous binary until you restart your agent.
 
+If other tokensave processes (usually MCP servers) are running, `upgrade` lists them and asks whether to kill them first. Pass `--kill` to terminate them without being asked:
+
+```bash
+tokensave upgrade --kill
+```
+
+When nothing else is running, no prompt appears. In non-interactive runs the upgrade continues without killing anything unless `--kill` is given.
+
 You can also update through your package manager:
 
 ```bash
