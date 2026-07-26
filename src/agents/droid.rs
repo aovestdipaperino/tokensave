@@ -34,25 +34,25 @@ pub struct DroidIntegration;
 /// before a tool call executes.
 const DROID_PRE_TOOL_EVENT: &str = "PreToolUse";
 
-/// Regex matcher (Factory treats the value as a regex) covering Droid's two
+/// Regex matcher (Factory treats the value as a regex) covering Droid's three
 /// tool names whose payloads the shared decision core can classify: `Execute`
 /// (shell, a symbol-shaped `grep`/`rg`/`ag` on a code file) and `Grep`
 /// (Droid's native content search, a symbol-shaped `pattern` on a code
 /// target). Both redirect to `tokensave_search`/`tokensave_callers_for`, which
-/// return a compact symbol list instead of raw match lines. The pattern is
-/// anchored (`^(...)$`) so it can only match those exact tool names, never a
-/// future tool whose name merely contains `Execute`/`Grep` as a substring;
-/// anchored matching was verified live to still fire on both tools.
+/// return a compact symbol list instead of raw match lines. `Task` routes the
+/// built-in lowercase `explorer` research subagent to `tokensave_context`,
+/// while every other typed subagent passes through. The pattern is anchored
+/// (`^(...)$`) so it can only match those exact tool names, never a future tool
+/// whose name merely contains one as a substring; anchored `Task` matching was
+/// verified live.
 ///
 /// Deliberately excluded (see the PR doc for the full per-tool analysis):
 /// `Read`/`LS`/`Glob` have only lossy tokensave equivalents and no way to
 /// infer symbol intent from a bare path, and Droid's hook contract is a hard
 /// block (exit 2 + stderr) with no confirmed soft-steer channel, so blocking
-/// them would strand legitimate reads. `Task` always carries a typed
-/// `subagent_type` on Droid, so the research classifier (which only fires on
-/// Claude's `Explore` or an untyped research prompt) would never trigger.
-/// Unmatched tools never reach our hook subprocess, the safest "fail open".
-const DROID_HOOK_MATCHER: &str = "^(Execute|Grep)$";
+/// them would strand legitimate reads. Unmatched tools never reach our hook
+/// subprocess, the safest "fail open".
+const DROID_HOOK_MATCHER: &str = "^(Execute|Grep|Task)$";
 
 /// Subcommand invoked by the installed hook.
 const DROID_PRE_TOOL_HOOK: &str = "hook-droid-pre-tool-use";
@@ -299,7 +299,7 @@ fn is_tokensave_droid_hook(entry: &serde_json::Value) -> bool {
 /// object (idempotent), preserving every other key, including hook wrappers
 /// Factory or other tools already installed (e.g. the owner's own
 /// `PreToolUse` permission wrapper). Upserts the tokensave entry under the
-/// current `^(Execute|Grep)$` matcher: a tokensave entry already carrying that
+/// current `^(Execute|Grep|Task)$` matcher: an entry already carrying that
 /// matcher is left untouched, while an entry written by an older tokensave
 /// (identified by its `hook-droid-pre-tool-use` subcommand, not its matcher)
 /// is migrated in place, so re-installing never leaves a duplicate.

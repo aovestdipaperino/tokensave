@@ -428,8 +428,8 @@ fn test_install_writes_pre_tool_use_hook() {
     let entries = config["hooks"]["PreToolUse"].as_array().unwrap();
     let entry = entries
         .iter()
-        .find(|e| e["matcher"].as_str() == Some("^(Execute|Grep)$"))
-        .expect("an ^(Execute|Grep)$-matcher entry should be present");
+        .find(|e| e["matcher"].as_str() == Some("^(Execute|Grep|Task)$"))
+        .expect("an ^(Execute|Grep|Task)$-matcher entry should be present");
     let command = entry["hooks"][0]["command"].as_str().unwrap();
     assert!(
         command.contains("/usr/local/bin/tokensave"),
@@ -498,11 +498,11 @@ fn test_install_preserves_existing_hooks_and_settings() {
     assert!(
         pre_tool_use
             .iter()
-            .any(|e| e["matcher"].as_str() == Some("^(Execute|Grep)$")
+            .any(|e| e["matcher"].as_str() == Some("^(Execute|Grep|Task)$")
                 && e["hooks"][0]["command"]
                     .as_str()
                     .is_some_and(|c| c.contains("tokensave"))),
-        "tokensave's ^(Execute|Grep)$-matcher hook should be added"
+        "tokensave's ^(Execute|Grep|Task)$-matcher hook should be added"
     );
     assert_eq!(
         config["hooks"]["Stop"][0]["hooks"][0]["command"]
@@ -598,7 +598,7 @@ fn test_install_hook_idempotent() {
 #[test]
 fn test_install_migrates_stale_execute_only_matcher() {
     // An install written by an older tokensave used the `Execute`-only matcher.
-    // Re-installing must upgrade it in place to `^(Execute|Grep)$`, not leave a
+    // Re-installing must upgrade it in place to `^(Execute|Grep|Task)$`, not leave a
     // duplicate entry that would fire the hook twice.
     let dir = TempDir::new().unwrap();
     let home = dir.path();
@@ -639,8 +639,49 @@ fn test_install_migrates_stale_execute_only_matcher() {
     );
     assert_eq!(
         tokensave_entries[0]["matcher"].as_str(),
-        Some("^(Execute|Grep)$"),
+        Some("^(Execute|Grep|Task)$"),
         "matcher should be upgraded to the widened value"
+    );
+}
+
+#[test]
+fn test_install_migrates_execute_grep_matcher_to_task() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = settings_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"{
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "^(Execute|Grep)$",
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/tokensave hook-droid-pre-tool-use"}]
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    DroidIntegration.install(&make_ctx(home)).unwrap();
+
+    let config = read_json(&path);
+    let tokensave_entries = config["hooks"]["PreToolUse"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| {
+            entry["hooks"][0]["command"]
+                .as_str()
+                .is_some_and(|command| command.contains("hook-droid-pre-tool-use"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tokensave_entries.len(), 1);
+    assert_eq!(
+        tokensave_entries[0]["matcher"].as_str(),
+        Some("^(Execute|Grep|Task)$")
     );
 }
 

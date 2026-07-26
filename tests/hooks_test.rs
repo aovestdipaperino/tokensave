@@ -939,6 +939,20 @@ fn test_claude_blocks_explore_agent_nested_stdin() {
 }
 
 #[test]
+fn test_claude_lowercase_explorer_subagent_passes() {
+    let input = r#"{
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "explorer", "prompt": "find files"}
+    }"#;
+    let result = evaluate_claude_pre_tool_use_with_env(input, &env_indexed());
+    assert!(
+        result.is_empty(),
+        "Claude behavior must remain exact-case Explore only"
+    );
+}
+
+#[test]
 fn test_claude_blocks_research_prompt_nested_stdin() {
     let input = r#"{
         "hook_event_name": "PreToolUse",
@@ -979,10 +993,9 @@ fn test_claude_allows_invalid_json() {
 // with the tool payload nested under `tool_input` (the Claude/Kiro shape),
 // but the block is signaled via the raw reason text (`hook_droid_pre_tool_use`
 // prints it to stderr and exits 2 — the Kiro mechanism), not a stdout JSON
-// object. The `^(Execute|Grep)$` matcher is installed, so grep/bash-shaped
-// `command` payloads and Droid's native `Grep` `pattern` payloads reach this
-// handler; the shared decision core is still exercised directly below for the
-// sub-agent-shaped payload, which no installed matcher routes here.
+// object. The `^(Execute|Grep|Task)$` matcher is installed, so grep/bash-shaped
+// `command` payloads, Droid's native `Grep` `pattern`, and typed subagent
+// payloads all reach this handler.
 // ============================================================================
 
 #[test]
@@ -1058,16 +1071,71 @@ fn test_droid_respects_disable_grep_hook_escape_hatch() {
 #[test]
 fn test_droid_specialized_subagent_with_normal_task_passes() {
     // A specialized sub-agent given a normal (non-research) task must not be
-    // blocked. Droid's own sub-agent/task launch tool name is unconfirmed in
-    // Factory's public docs, so today such a call never reaches this hook
-    // (`^(Execute|Grep)$` is the registered matcher). This test guards the
-    // shared decision core directly in case that matcher scope widens to cover
-    // a delegation tool.
+    // blocked. The installed Task matcher routes this through the shared core,
+    // but an exact non-research type is still a deliberate delegation.
     let input = r#"{
-        "subagent_type": "implementer",
-        "prompt": "Implement the retry logic for the sync client and add tests"
+        "tool_name": "Task",
+        "tool_input": {
+            "subagent_type": "worker",
+            "prompt": "Implement the retry logic for the sync client and add tests"
+        }
     }"#;
     assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_explorer_subagent_blocks_with_tokensave_context_hint() {
+    let input = r#"{
+        "tool_name": "Task",
+        "tool_input": {
+            "subagent_type": "explorer",
+            "description": "Map request flow",
+            "prompt": "Find every caller of handle_request"
+        }
+    }"#;
+    let reason = evaluate_droid_pre_tool_use_with_env(input, &env_indexed())
+        .expect("Droid explorer should redirect to tokensave");
+    assert!(reason.contains("tokensave_context"));
+}
+
+#[test]
+fn test_droid_explorer_subagent_requires_index_and_honors_opt_out() {
+    let input = r#"{
+        "tool_name": "Task",
+        "tool_input": {
+            "subagent_type": "explorer",
+            "prompt": "Map the codebase"
+        }
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_some());
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_not_indexed()).is_none());
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_disabled()).is_none());
+}
+
+#[test]
+fn test_droid_custom_explorer_named_subagent_passes() {
+    let input = r#"{
+        "tool_name": "Task",
+        "tool_input": {
+            "subagent_type": "explorer-writer",
+            "prompt": "Inspect and update the documentation"
+        }
+    }"#;
+    assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
+}
+
+#[test]
+fn test_droid_untyped_research_task_passes() {
+    let input = r#"{
+        "tool_name": "Task",
+        "tool_input": {
+            "prompt": "who calls the process_data function?"
+        }
+    }"#;
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none(),
+        "Droid Task blocking must be limited to exact lowercase explorer"
+    );
 }
 
 #[test]
