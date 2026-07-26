@@ -29,11 +29,39 @@ pub(crate) struct ExtractionState {
     /// Current Ruby visibility mode inside a class/module body (private/protected/
     /// public switches). Other extractors leave it at the default Pub.
     pub(crate) visibility_mode: Visibility,
-    /// Node IDs of Ruby singleton methods (`def self.foo` / `def obj.foo`), so
-    /// retroactive visibility (`private_class_method :foo` vs `private :foo`) can
-    /// tell a singleton from a same-named instance method — they share a kind and
-    /// qualified name. Other extractors leave it empty.
+    /// Node IDs of Ruby singleton methods that belong to the enclosing class
+    /// (`def self.foo`, `def obj.foo` where `obj` resolves to `self`/the
+    /// enclosing constant), so retroactive visibility (`private_class_method
+    /// :foo` vs `private :foo`) can tell a singleton from a same-named
+    /// instance method — they share a kind and qualified name. Other
+    /// extractors leave it empty.
     pub(crate) singleton_method_ids: Vec<String>,
+    /// Node IDs of Ruby singleton methods whose receiver is *not* the
+    /// enclosing class (`def obj.foo`, or anything defined inside
+    /// `class << some_other_object`). These belong to neither the instance
+    /// nor the class-method bucket, so visibility directives must skip them
+    /// rather than let them fall into the instance-method branch by default.
+    /// Other extractors leave it empty.
+    pub(crate) foreign_singleton_method_ids: Vec<String>,
+    /// Which Ruby singleton scope the traversal is currently inside. Other
+    /// extractors leave it at `Outside`.
+    pub(crate) singleton_scope: SingletonScope,
+}
+
+/// Which Ruby singleton scope the traversal is currently inside. `class << expr`
+/// reopens `expr`'s singleton class, so a plain `def foo` there defines a method
+/// on `expr`, not an instance method of the enclosing class. Other extractors
+/// leave this at `Outside`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SingletonScope {
+    /// Not inside any `class << …` body.
+    Outside,
+    /// Inside `class << self` (or `class << EnclosingName`) — defs are class
+    /// methods of the enclosing class.
+    Enclosing,
+    /// Inside `class << some_other_object` — defs belong to an object we cannot
+    /// resolve, so they are not members of the enclosing class.
+    Foreign,
 }
 
 impl ExtractionState {
@@ -54,6 +82,8 @@ impl ExtractionState {
             class_depth: 0,
             visibility_mode: Visibility::Pub,
             singleton_method_ids: Vec::new(),
+            foreign_singleton_method_ids: Vec::new(),
+            singleton_scope: SingletonScope::Outside,
         }
     }
 
