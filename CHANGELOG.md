@@ -10,6 +10,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Added
 - **`tokensave_context` entry points now show the first line of the symbol's docstring** beneath the signature. The one-line summary often answers the query outright, saving the follow-up code fetch; entries without a docstring are unchanged.
 
+### Changed
+- **Truncated `tokensave_context` code blocks now end with a follow-up handle instead of a dead-end ellipsis.** A snippet cut at `max_code_block_size` closes with `... [truncated — full body: tokensave_body node_id=<id>]`, so the caller can fetch the remainder in one call rather than re-deriving which symbol the fragment belonged to.
+
 ### Fixed
 - **Literal search (`tokensave_search` with `literal: true`) now honors `.tokensave/queryignore` like the ranked path.** The literal branch returned before the ranked path's queryignore filter ran, so paths a project had explicitly suppressed (#116) still appeared in literal matches. The indexed file list is now filtered with the same patterns before scanning — the same gap-closure shape as the `path_include`/`path_exclude` literal-mode fix in #258.
 
