@@ -188,10 +188,11 @@ impl<'a> ContextBuilder<'a> {
         symbols: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<Node>> {
-        // Base score for an exact name match. Far above any realistic BM25
-        // score (~1e-6 in practice), so a perfect name match always wins the
-        // MAX merge over FTS noise and ranks ahead of it.
-        const EXACT_MATCH_SCORE: f64 = 20.0;
+        // Base score for an exact name match. Negated-BM25 scores from
+        // `search_nodes_bounded` run roughly 5–30 before structural boosts,
+        // so this must sit well above that band for a perfect name match to
+        // win the MAX merge over FTS hits and rank ahead of them.
+        const EXACT_MATCH_SCORE: f64 = 100.0;
         debug_assert!(
             !query.is_empty(),
             "find_entry_points called with empty query"
@@ -261,12 +262,17 @@ impl<'a> ContextBuilder<'a> {
         // "screen") previously consumed the whole pool cap before later, more
         // discriminating terms ("favicon", "oauth") were ever searched
         // (#264). Per-term work stays bounded: each fetch is a ranked
-        // top-`search_limit` query.
+        // top-`fetch_limit` query.
+        // Fetch wider than the BFS-root cap: `search_limit` (default 3) bounds
+        // how many roots seed traversal (#120), but 3 FTS rows per term is too
+        // few for the right symbol to survive merging — a term's top rows are
+        // often file nodes or tests. The root cap below still applies.
+        let fetch_limit = (options.search_limit * 3).max(10);
         let mut per_term: Vec<VecDeque<SearchResult>> = Vec::with_capacity(fts_terms.len());
         for term in &fts_terms {
             per_term.push(
                 self.db
-                    .search_nodes_bounded(term, options.search_limit)
+                    .search_nodes_bounded(term, fetch_limit)
                     .await?
                     .into(),
             );
