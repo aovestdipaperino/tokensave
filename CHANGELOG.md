@@ -7,6 +7,12 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+- **Symbol FTS now stems at the index (`porter unicode61`), and camelCase inner words are indexed at insert time (schema v14).** Inflected prose in a `tokensave_context` task — "candidates", "truncation", "generates" — previously matched nothing, because the unicode61 tokenizer is exact-token and the identifiers are `candidate`/`truncate`/`generate` (#264 called out the missing `generates` → `generate` normalization). The porter tokenizer makes that class of match work for any suffix at query time instead of patching common cases query-side. A new `search_terms` column carries the words a tokenizer cannot derive on its own — the inner words of a camelCase identifier (`updateCloudClient` → `Cloud Client`), computed once at insert by `text::search_terms` and weighted between `qualified_name` and `name` in `bm25()`; it stays empty for snake_case names, which unicode61 already splits on `_`, so the column adds nothing for codebases like this one and closes the #202 class (spaced natural-language query vs. camelCase TSX symbol) for the TS/Java/Go side of the language table. Migration v14 adds the column, backfills it, and rebuilds `nodes_fts` with the new tokenizer — all derived data, so the worst case is a re-index; nothing user-authored is touched.
+
+### Removed
+- **Both query-side stemming workarounds are deleted, subsumed by the porter tokenizer.** The trailing-`s` strip from #264 and `generate_stem_variants`' hand-rolled suffix table existed only because the index didn't stem. Porter covers every conflation the suffix table targeted — verified directly against FTS5 (authentication ↔ authenticator ↔ authenticate, configuration ↔ configure, serializer ↔ serialization, truncation ↔ truncate, validator ↔ validated); the one jump neither makes is resolution → resolve, so nothing is lost. On a 12-query retrieval eval the entry points are identical with the workarounds removed.
+
 
 ## [7.8.1] - 2026-07-27
 
