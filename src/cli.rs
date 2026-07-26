@@ -100,7 +100,8 @@ pub enum Commands {
         git_hook: GitHookMode,
         /// Install into the current project's config instead of the user's
         /// global config. Only supported for agents with a project-scoped
-        /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie).
+        /// config (claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie,
+        /// plank).
         #[arg(long)]
         local: bool,
         /// Grant Claude Code tokensave tools via a single compact
