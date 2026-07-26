@@ -708,21 +708,7 @@ impl<'a> ContextBuilder<'a> {
             }
 
             if let Some(code) = self.get_code_cached(node, file_cache) {
-                let truncated = if code.len() > options.max_code_block_size {
-                    let prefix =
-                        crate::text::utf8_prefix_at_or_before(&code, options.max_code_block_size);
-                    // Prefer a line boundary within the truncated prefix, and
-                    // leave the caller a handle to fetch the rest instead of
-                    // a dead-end ellipsis.
-                    let end = prefix.rfind('\n').unwrap_or(prefix.len());
-                    format!(
-                        "{}\n... [truncated — full body: tokensave_body node_id={}]",
-                        &prefix[..end],
-                        node.id
-                    )
-                } else {
-                    code
-                };
+                let truncated = truncate_code_block(&code, options.max_code_block_size, &node.id);
 
                 blocks.push(CodeBlock {
                     content: truncated,
@@ -1383,6 +1369,24 @@ fn apply_per_file_cap(
     accepted
 }
 
+/// Truncates a code snippet to `max_size`, preferring a line boundary.
+///
+/// A truncated snippet closes with a `tokensave_body` handle rather than a bare
+/// ellipsis, so the caller can fetch the remainder in one follow-up call instead
+/// of re-deriving which symbol the fragment came from. Snippets at or under
+/// `max_size` are returned unchanged.
+fn truncate_code_block(code: &str, max_size: usize, node_id: &str) -> String {
+    if code.len() <= max_size {
+        return code.to_string();
+    }
+    let prefix = crate::text::utf8_prefix_at_or_before(code, max_size);
+    let end = prefix.rfind('\n').unwrap_or(prefix.len());
+    format!(
+        "{}\n... [truncated — full body: tokensave_body node_id={node_id}]",
+        &prefix[..end]
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
@@ -1604,5 +1608,35 @@ mod tests {
         let names: Vec<_> = result.iter().map(|node| node.name.as_str()).collect();
         assert!(names.contains(&"run_solver"), "selected roots: {names:?}");
         assert!(names.contains(&"helper"), "selected roots: {names:?}");
+    }
+
+    #[test]
+    fn test_truncated_code_block_points_at_tokensave_body() {
+        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let out = truncate_code_block(&code, 60, "abc123");
+        assert!(
+            out.contains("tokensave_body node_id=abc123"),
+            "truncated block must carry a follow-up handle: {out}"
+        );
+        assert!(out.starts_with("fn wide() {"), "{out}");
+        // Truncation still lands on a line boundary, not mid-line.
+        let body = out.split("\n... [truncated").next().unwrap();
+        assert!(!body.ends_with("    line"), "cut mid-line: {body:?}");
+    }
+
+    #[test]
+    fn test_short_code_block_is_returned_verbatim() {
+        let code = "fn small() {}\n";
+        assert_eq!(truncate_code_block(code, 1500, "abc123"), code);
+        // Exactly at the limit is not truncation.
+        assert_eq!(truncate_code_block(code, code.len(), "abc123"), code);
+    }
+
+    #[test]
+    fn test_truncate_code_block_does_not_split_multibyte_char() {
+        // A multi-byte char straddling the cutoff must not panic or corrupt.
+        let code = "fn f() {\n    // ✅✅✅✅✅✅✅✅✅✅\n    body();\n}\n";
+        let out = truncate_code_block(code, 20, "n1");
+        assert!(out.contains("tokensave_body node_id=n1"), "{out}");
     }
 }
