@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Fixed
+- **Literal search (`tokensave_search` with `literal: true`) now honors `.tokensave/queryignore` like the ranked path.** The literal branch returned before the ranked path's queryignore filter ran, so paths a project had explicitly suppressed (#116) still appeared in literal matches. The indexed file list is now filtered with the same patterns before scanning — the same gap-closure shape as the `path_include`/`path_exclude` literal-mode fix in #258.
+
 ## [7.6.2] - 2026-07-25
 
 ### Added
