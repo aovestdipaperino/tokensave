@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeKind {
     File,
+    /// A companion Markdown document describing one or more source files (#154).
+    Doc,
     Module,
     Struct,
     Enum,
@@ -93,6 +95,7 @@ impl NodeKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             NodeKind::File => "file",
+            NodeKind::Doc => "doc",
             NodeKind::Module => "module",
             NodeKind::Struct => "struct",
             NodeKind::Enum => "enum",
@@ -167,6 +170,7 @@ impl NodeKind {
     pub fn from_str(s: &str) -> Option<NodeKind> {
         match s {
             "file" => Some(NodeKind::File),
+            "doc" => Some(NodeKind::Doc),
             "module" => Some(NodeKind::Module),
             "struct" => Some(NodeKind::Struct),
             "enum" => Some(NodeKind::Enum),
@@ -252,6 +256,8 @@ pub enum EdgeKind {
     Extends,
     Annotates,
     Receives,
+    /// A documentation file describes a source file (#154).
+    Documents,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -269,6 +275,7 @@ impl EdgeKind {
             EdgeKind::Extends => "extends",
             EdgeKind::Annotates => "annotates",
             EdgeKind::Receives => "receives",
+            EdgeKind::Documents => "documents",
         }
     }
 
@@ -285,6 +292,7 @@ impl EdgeKind {
             "extends" => Some(EdgeKind::Extends),
             "annotates" => Some(EdgeKind::Annotates),
             "receives" => Some(EdgeKind::Receives),
+            "documents" => Some(EdgeKind::Documents),
             _ => None,
         }
     }

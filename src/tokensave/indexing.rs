@@ -140,6 +140,71 @@ fn report_skipped_extensions<V: Fn(&str)>(skipped: &[(String, usize)], on_verbos
 // ---------------------------------------------------------------------------
 
 impl TokenSave {
+    /// Builds `Doc` nodes and `Documents` edges for companion documentation.
+    ///
+    /// Discovery uses the already-extracted node set as the source of truth for
+    /// what is indexed, so a doc can only ever claim files that made it into
+    /// the graph. Reading doc content is best-effort: an unreadable doc is
+    /// skipped rather than failing the index.
+    fn build_companion_docs(
+        &self,
+        project_root: &Path,
+        all_nodes: &[Node],
+    ) -> (Vec<Node>, Vec<Edge>) {
+        let mut indexed_files: Vec<String> = Vec::new();
+        let mut file_node_ids: HashMap<String, String> = HashMap::new();
+        for node in all_nodes {
+            if node.kind == NodeKind::File {
+                file_node_ids.insert(node.file_path.clone(), node.id.clone());
+            }
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        for node in all_nodes {
+            if seen.insert(node.file_path.as_str()) {
+                indexed_files.push(node.file_path.clone());
+            }
+        }
+        indexed_files.sort_unstable();
+
+        let markdown_files: Vec<String> = indexed_files
+            .iter()
+            .filter(|p| {
+                let ext = std::path::Path::new(p.as_str())
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                ext == "md" || ext == "markdown"
+            })
+            .cloned()
+            .collect();
+        if markdown_files.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        let read_doc = |relative: &str| -> Option<String> {
+            std::fs::read_to_string(crate::docs::absolute_doc_path(project_root, relative)).ok()
+        };
+        let docs = crate::docs::discover_docs(
+            &markdown_files,
+            &indexed_files,
+            &self.config.docs_dir,
+            read_doc,
+        );
+        if docs.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let mut summaries: HashMap<String, String> = HashMap::new();
+        for doc in &docs {
+            if let Some(content) = read_doc(&doc.path) {
+                if let Some(summary) = crate::docs::doc_summary(&content) {
+                    summaries.insert(doc.path.clone(), summary);
+                }
+            }
+        }
+        crate::docs::build_doc_graph(&docs, &file_node_ids, &summaries)
+    }
+
     /// Appends runtime skip-folder patterns to the exclude list.
     ///
     /// Each folder name is converted to a `folder/**` glob so that all
@@ -253,12 +318,25 @@ impl TokenSave {
             phase_start.elapsed().as_secs_f64()
         ));
 
+        // 4b. Companion documentation (#154): map sidecar and docs-directory
+        // Markdown onto the source files they describe, as `Doc` nodes with
+        // `Documents` edges to the covered `File` nodes. Purely additive — a
+        // project with no docs produces nothing here.
+        let (doc_nodes, doc_edges) = self.build_companion_docs(&project_root, &all_nodes);
+        let doc_count = doc_nodes.len();
+        all_nodes.extend(doc_nodes);
+        all_edges.extend(doc_edges);
+        if doc_count > 0 {
+            on_verbose(&format!("discovered {doc_count} companion doc(s)"));
+        }
+
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
         crate::memstats::set_graph_nodes(all_nodes.len() as u64);
         if !all_unresolved.is_empty() {
-            // Suspected RSS peak for #253: `from_nodes` clones every node
-            // into its name caches while `all_nodes` stays alive.
+            // #253: `from_nodes` borrows from `all_nodes` rather than
+            // cloning it into its caches; the remaining peak here is
+            // `all_nodes` itself (#306).
             crate::memstats::record("index:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
@@ -553,9 +631,9 @@ impl TokenSave {
 
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
-            // Suspected RSS peak for #253: `get_all_nodes` materializes the
-            // whole graph, then `from_nodes` clones every node into its
-            // name caches — ~3x the graph resident simultaneously.
+            // #253: `from_nodes` now borrows rather than clones; the
+            // remaining peak is `get_all_nodes` materializing the whole
+            // graph at once (#306).
             crate::memstats::record("sync:resolve:load_nodes");
             let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
@@ -849,9 +927,9 @@ impl TokenSave {
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
-                // Suspected RSS peak for #253: `get_all_nodes` materializes
-                // the whole graph, then `from_nodes` clones every node into
-                // its name caches — ~3x the graph resident simultaneously.
+                // #253: `from_nodes` now borrows rather than clones; the
+                // remaining peak is `get_all_nodes` materializing the whole
+                // graph at once (#306).
                 crate::memstats::record("sync:resolve:load_nodes");
                 let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);

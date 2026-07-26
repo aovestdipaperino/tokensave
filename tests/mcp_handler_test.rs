@@ -6152,3 +6152,280 @@ async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
         "status must report the running tokensave version, got: {text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Companion documentation (#154 phase 1)
+// ---------------------------------------------------------------------------
+
+/// Indexes a project carrying both doc conventions and returns it.
+async fn setup_documented_project() -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("tokensave-docs")).unwrap();
+
+    fs::write(project.join("src/big_class.rs"), "pub fn parse_it() {}\n").unwrap();
+    fs::write(
+        project.join("src/big_class.readme.md"),
+        "# Big Class\n\nOrchestrates parsing; read this before the 3000-line body.\n",
+    )
+    .unwrap();
+
+    fs::write(project.join("src/search_es8.rs"), "pub fn query_es8() {}\n").unwrap();
+    fs::write(project.join("src/feed_es8.rs"), "pub fn feed_es8() {}\n").unwrap();
+    fs::write(project.join("src/plain.rs"), "pub fn plain() {}\n").unwrap();
+    fs::write(
+        project.join("tokensave-docs/es8.md"),
+        "---\napplies_to:\n  - \"**/*_es8.rs\"\n---\n\n# ES8 driver\n\nUse the raw driver, not the standard syntax.\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+#[tokio::test]
+async fn doc_tool_returns_sidecar_documentation() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src/big_class.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+    assert_eq!(parsed["count"], 1, "{parsed:?}");
+    let doc = &parsed["docs"][0];
+    assert_eq!(doc["doc_path"], "src/big_class.readme.md");
+    assert_eq!(doc["covers"], json!(["src/big_class.rs"]));
+    // The summary skips the `# heading` and carries actionable prose.
+    assert_eq!(
+        doc["summary"],
+        "Orchestrates parsing; read this before the 3000-line body."
+    );
+    assert!(
+        doc["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("3000-line body")),
+        "{doc:?}"
+    );
+}
+
+#[tokio::test]
+async fn doc_tool_returns_docs_dir_doc_for_every_covered_file() {
+    let (cg, _dir) = setup_documented_project().await;
+    for file in ["src/search_es8.rs", "src/feed_es8.rs"] {
+        let result = handle_tool_call(&cg, "tokensave_doc", json!({"file": file}), None, None)
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+        assert_eq!(parsed["has_doc"], true, "{file}: {parsed:?}");
+        let doc = &parsed["docs"][0];
+        assert_eq!(doc["doc_path"], "tokensave-docs/es8.md", "{file}");
+        // One doc covering a family of files — the ES7/ES8 case from the issue.
+        assert_eq!(
+            doc["covers"],
+            json!(["src/feed_es8.rs", "src/search_es8.rs"]),
+            "{file}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn doc_tool_reports_no_doc_for_undocumented_file() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src/plain.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(parsed["has_doc"], false, "{parsed:?}");
+    assert_eq!(parsed["count"], 0);
+    assert_eq!(parsed["docs"], json!([]));
+}
+
+#[tokio::test]
+async fn doc_tool_can_omit_content() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src/big_class.rs", "include_content": false}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let doc = &parsed["docs"][0];
+    assert!(doc["content"].is_null(), "{doc:?}");
+    // Coverage metadata is still present without the body.
+    assert_eq!(doc["covers"], json!(["src/big_class.rs"]));
+}
+
+#[tokio::test]
+async fn doc_tool_normalizes_backslash_paths() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src\\big_class.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+}
+
+#[tokio::test]
+async fn doc_staleness_is_unknown_without_git_history() {
+    // The fixture is not a git repo, so drift cannot be determined. That must
+    // read as `null` (unknown), never as a confident "not stale".
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src/big_class.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert!(parsed["docs"][0]["doc_stale"].is_null(), "{parsed:?}");
+}
+
+#[tokio::test]
+async fn doc_tool_is_registered_in_the_tool_list() {
+    let (cg, _dir) = setup_documented_project().await;
+    // A missing definition would leave the handler unreachable over MCP.
+    let defs = tokensave::mcp::tools::get_tool_definitions();
+    assert!(
+        defs.iter().any(|d| d.name == "tokensave_doc"),
+        "tokensave_doc must be advertised"
+    );
+    drop(cg);
+}
+
+#[tokio::test]
+async fn entities_marks_files_that_have_companion_docs() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/big_class.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+    assert_eq!(parsed["doc_path"], json!(["src/big_class.readme.md"]));
+    assert!(parsed["doc_hint"].is_string(), "{parsed:?}");
+}
+
+#[tokio::test]
+async fn entities_marks_undocumented_files_without_a_doc_path() {
+    let (cg, _dir) = setup_documented_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/plain.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(parsed["has_doc"], false, "{parsed:?}");
+    // No dangling key when there is nothing to point at.
+    assert!(parsed.get("doc_path").is_none(), "{parsed:?}");
+}
+
+#[tokio::test]
+async fn doc_staleness_flags_code_committed_after_the_doc() {
+    // Drift detection is the one part that needs real git history: a doc is
+    // stale when its covered code was committed *after* it.
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?} failed");
+    };
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return; // no git available; the unknown-staleness case covers this
+    }
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/thing.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(
+        project.join("src/thing.readme.md"),
+        "# Thing\n\nDescribes thing.\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "doc and code together"]);
+
+    // Now change only the code, in a later commit.
+    fs::write(
+        project.join("src/thing.rs"),
+        "pub fn a() {}\npub fn b() {}\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    // `%ct` reads the *committer* date, so the future timestamp has to be set
+    // through the environment — `--date` only moves the author date.
+    let future = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["commit", "-qm", "code moved on"])
+        .env("GIT_COMMITTER_DATE", "2099-01-01T00:00:00 +0000")
+        .output()
+        .expect("commit");
+    assert!(future.status.success(), "{future:?}");
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_doc",
+        json!({"file": "src/thing.rs", "include_content": false}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let parsed: Value = serde_json::from_str(extract_text(&result.value)).unwrap();
+    assert_eq!(parsed["has_doc"], true, "{parsed:?}");
+    assert_eq!(
+        parsed["docs"][0]["doc_stale"], true,
+        "code committed after the doc must flag drift: {parsed:?}"
+    );
+}

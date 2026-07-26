@@ -163,6 +163,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_session_start(),
         def_session_end(),
         def_body(),
+        def_doc(),
         def_todos(),
         def_callers_for(),
         def_by_qualified_name(),
@@ -1895,6 +1896,33 @@ fn def_body() -> ToolDefinition {
                 }
             },
             "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_doc() -> ToolDefinition {
+    def(
+        "tokensave_doc",
+        "Companion Documentation",
+        "Return the companion Markdown documentation for a source file, if any. \
+         Docs are discovered as sidecar files (Foo.cs -> Foo.readme.md) or in the \
+         docs directory (default 'tokensave-docs/') via an `applies_to` front-matter \
+         glob list. Prefer this over reading a large file: the summary often answers \
+         the question outright. Returns the doc path, its full content, which files it \
+         covers, and whether the covered code changed after the doc was last touched.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative path of a source file whose documentation you want (e.g. 'src/BigClass.cs')."
+                },
+                "include_content": {
+                    "type": "boolean",
+                    "description": "Include the doc's full Markdown body (default: true). Set false for a coverage/staleness check without the text."
+                }
+            },
+            "required": ["file"]
         }),
     )
 }
