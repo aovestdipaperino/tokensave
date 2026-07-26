@@ -139,6 +139,7 @@ pub mod kimi;
 pub mod kiro;
 pub mod opencode;
 pub mod pi;
+pub mod plank;
 pub mod qwen;
 pub mod roo_code;
 pub mod vibe;
@@ -167,6 +168,7 @@ pub use kimi::KimiIntegration;
 pub use kiro::KiroIntegration;
 pub use opencode::OpenCodeIntegration;
 pub use pi::PiIntegration;
+pub use plank::PlankIntegration;
 pub use qwen::QwenIntegration;
 pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
@@ -300,6 +302,7 @@ pub fn get_integration(id: &str) -> Result<Box<dyn AgentIntegration>> {
         "vibe" => Ok(Box::new(VibeIntegration)),
         "grok" => Ok(Box::new(GrokIntegration)),
         "pi" => Ok(Box::new(PiIntegration)),
+        "plank" => Ok(Box::new(PlankIntegration)),
         "auggie" => Ok(Box::new(AugmentIntegration)),
         _ => Err(TokenSaveError::Config {
             message: format!(
@@ -331,6 +334,7 @@ pub fn all_integrations() -> Vec<Box<dyn AgentIntegration>> {
         Box::new(VibeIntegration),
         Box::new(GrokIntegration),
         Box::new(PiIntegration),
+        Box::new(PlankIntegration),
         Box::new(AugmentIntegration),
     ]
 }
@@ -356,6 +360,7 @@ pub fn available_integrations() -> Vec<&'static str> {
         "vibe",
         "grok",
         "pi",
+        "plank",
         "auggie",
     ]
 }
