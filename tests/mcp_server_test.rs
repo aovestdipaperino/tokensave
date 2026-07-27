@@ -1819,7 +1819,7 @@ async fn search_call_writes_savings_ledger_row() {
 // Version-aware forced reindex on first tool call (#v11)
 // ---------------------------------------------------------------------------
 
-/// A fresh project starts with an empty `last_indexed_version`. The first
+/// A pre-7.0 project carries an empty `last_indexed_version`. The first
 /// `tools/call` must trigger a background forced reindex that, on completion,
 /// advances the marker in the persisted project config to the running version.
 #[tokio::test]
@@ -1835,7 +1835,12 @@ async fn test_first_tool_call_backfills_last_indexed_version() {
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
 
-    // Sanity: brand-new config has no recorded indexed version.
+    // `index_all` now stamps the marker (#320), so reset it to reproduce the
+    // pre-7.0 state that this backfill path exists to handle.
+    let mut seed = tokensave::config::load_config(project).unwrap();
+    seed.last_indexed_version = String::new();
+    tokensave::config::save_config(project, &seed).unwrap();
+
     let before = tokensave::config::load_config(project).unwrap();
     assert_eq!(before.last_indexed_version, "");
 
@@ -1888,6 +1893,70 @@ async fn test_first_tool_call_keeps_current_marker() {
     let mut config = tokensave::config::load_config(project).unwrap();
     config.last_indexed_version = env!("CARGO_PKG_VERSION").to_string();
     tokensave::config::save_config(project, &config).unwrap();
+
+    let server = McpServer::new(cg, None).await;
+    let server_for_drive = Arc::clone(&server);
+    let _ = run_server_with_messages(
+        server_for_drive,
+        vec![jsonrpc_request(
+            json!(1),
+            "tools/call",
+            json!({
+                "name": "tokensave_search",
+                "arguments": { "query": "main" }
+            }),
+        )],
+    )
+    .await;
+
+    let completed = server
+        .wait_for_version_reindex(std::time::Duration::from_secs(30))
+        .await;
+    assert!(completed, "version reindex gate did not settle in time");
+
+    let after = tokensave::config::load_config(project).unwrap();
+    assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
+}
+
+/// A full index records the version that produced it, so a CLI-indexed project
+/// is not mistaken for a pre-7.0 one and force-reindexed on the first tool call
+/// of every session (#320).
+#[tokio::test]
+async fn test_index_all_records_running_version() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let config = tokensave::config::load_config(project).unwrap();
+    assert_eq!(
+        config.last_indexed_version,
+        env!("CARGO_PKG_VERSION"),
+        "a full index must record the version that produced it"
+    );
+}
+
+/// A project indexed by the running version must not trigger a forced reindex
+/// on the first tool call, so the index is never cleared for no reason (#320).
+#[tokio::test]
+async fn test_cli_indexed_project_needs_no_forced_reindex() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    let indexed = cg.index_all().await.unwrap();
+    assert!(indexed.node_count > 0, "fixture should produce nodes");
 
     let server = McpServer::new(cg, None).await;
     let server_for_drive = Arc::clone(&server);
