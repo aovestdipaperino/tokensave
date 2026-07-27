@@ -1793,8 +1793,18 @@ end
         assert_eq!(implements[1].from_node_id, class_id);
     }
 
+    // Method bodies are now traversed for definitions (and, incidentally,
+    // directives) so a nested `def` attaches to the enclosing class. A
+    // receiverless `include` inside a plain instance-method body rides the
+    // same dispatch and is (over-permissively) treated as a mixin ref, even
+    // though `self` there is an instance, not the class, so this exact code
+    // would raise NoMethodError at runtime and can't occur in code that
+    // actually runs. Accepted tradeoff, not a regression: see visit_method's
+    // doc comment for the singleton/class-method cases where the identical
+    // dispatch is required for correctness (`def self.setup; class_eval {
+    // include Mixin; ... }; end`).
     #[test]
-    fn test_ruby_include_in_method_body_is_not_a_mixin_ref() {
+    fn test_ruby_include_in_method_body_is_treated_as_mixin_ref() {
         let source = r#"
 class C
   def setup
@@ -1806,11 +1816,13 @@ end
         let result = extractor.extract("c.rb", source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(
-            !result
+            result
                 .unresolved_refs
                 .iter()
-                .any(|r| r.reference_kind == EdgeKind::Implements),
-            "include inside a method body should not be treated as a mixin"
+                .any(|r| r.reference_kind == EdgeKind::Implements && r.reference_name == "M"),
+            "include inside a method body is dispatched the same as any other body \
+             statement, even though this particular receiverless form can't occur in \
+             code that runs"
         );
     }
 
@@ -2064,5 +2076,1653 @@ end
             .find(|n| n.name == "foo")
             .expect("expected foo method to be extracted");
         assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    // ----------------------------
+    // do…end / {…} block bodies
+    // ----------------------------
+    //
+    // Until now, `visit_node`'s "do_block" | "block" arm (and the
+    // `body_statement` it recurses into) was unreachable: a do…end/{…} block
+    // is always the `block` field of a `call` node, and the call arm never
+    // called `visit_children` on itself. These tests pin the new
+    // `visit_block_body` entry point.
+
+    #[test]
+    fn test_ruby_included_do_block_defines_instance_method() {
+        let source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  included do
+    def track; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let track = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "track")
+            .expect("expected track method inside included do block");
+        assert_eq!(track.kind, NodeKind::Method);
+        assert!(track.qualified_name.ends_with("Trackable::track"));
+    }
+
+    #[test]
+    fn test_ruby_class_methods_do_block_matches_def_self() {
+        let class_methods_source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def find_tracked; end
+  end
+
+  private_class_method :find_tracked
+end
+"#;
+        let def_self_source = r#"
+module Trackable
+  def self.find_tracked; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let class_methods_result = extractor.extract("trackable.rb", class_methods_source);
+        assert!(
+            class_methods_result.errors.is_empty(),
+            "errors: {:?}",
+            class_methods_result.errors
+        );
+        let def_self_result = extractor.extract("trackable.rb", def_self_source);
+        assert!(
+            def_self_result.errors.is_empty(),
+            "errors: {:?}",
+            def_self_result.errors
+        );
+        let class_methods_find_tracked = class_methods_result
+            .nodes
+            .iter()
+            .find(|n| n.name == "find_tracked")
+            .expect("expected find_tracked method from class_methods do block");
+        let def_self_find_tracked = def_self_result
+            .nodes
+            .iter()
+            .find(|n| n.name == "find_tracked")
+            .expect("expected find_tracked method from def self.find_tracked");
+        assert_eq!(
+            class_methods_find_tracked.qualified_name, def_self_find_tracked.qualified_name,
+            "class_methods do; def foo should produce the same qualified name as def self.foo"
+        );
+        // Instance and singleton methods share a qualified_name, so the
+        // assertion above alone would still pass if `find_tracked` had been
+        // extracted as an instance method. `private_class_method` only
+        // resolves against `singleton_method_ids` (see
+        // `mark_method_visibility`), so this only goes Private if
+        // `class_methods do` really registered it as a singleton method —
+        // mirrors `test_ruby_private_class_method_targets_singleton_not_instance`.
+        assert_eq!(
+            class_methods_find_tracked.visibility,
+            Visibility::Private,
+            "class_methods do; def foo must register as a singleton method"
+        );
+    }
+
+    #[test]
+    fn test_ruby_receiverless_class_eval_do_block_defines_instance_method() {
+        let source = r#"
+class Foo
+  class_eval do
+    def helper; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("foo.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("expected helper method inside receiverless class_eval do block");
+        assert_eq!(helper.kind, NodeKind::Method);
+        assert!(helper.qualified_name.ends_with("Foo::helper"));
+    }
+
+    #[test]
+    fn test_ruby_class_eval_with_explicit_receiver_not_extracted() {
+        let source = r#"
+Foo.class_eval do
+  def helper; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("foo.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "helper"),
+            "Foo.class_eval has an explicit receiver we can't resolve, so its block body \
+             must not be attached to the enclosing scope"
+        );
+    }
+
+    #[test]
+    fn test_ruby_top_level_describe_do_block_defines_function() {
+        let source = r#"
+describe "widget" do
+  def helper; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget_spec.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let helper = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "helper")
+            .expect("expected helper defined inside a top-level describe do block");
+        assert_eq!(helper.kind, NodeKind::Function);
+    }
+
+    // `included do` is `ActiveSupport::Concern`'s hook, implemented as
+    // `base.class_eval(&@_included_block)` (activesupport-7.2.2.2
+    // lib/active_support/concern.rb:138) — a real definee change, so it gets
+    // its own fresh public visibility frame and `private` inside it does not
+    // leak out. This is a documented exception to the general rule that an
+    // ordinary block (`[1].each { private }`) inherits and *does* propagate
+    // its enclosing visibility frame in both directions — see
+    // `test_ruby_visibility_directive_flows_into_ordinary_block` and
+    // `test_ruby_visibility_directive_flows_out_of_ordinary_block`.
+    #[test]
+    fn test_ruby_visibility_directive_in_included_do_block_is_isolated() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  included do
+    private
+    def secret; end
+  end
+
+  def open_method; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let visibility_of = |name: &str| {
+            result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("expected method {name}"))
+                .visibility
+                .clone()
+        };
+        assert_eq!(visibility_of("secret"), Visibility::Private);
+        assert_eq!(
+            visibility_of("open_method"),
+            Visibility::Pub,
+            "private inside an included do block must not leak past its end"
+        );
+    }
+
+    #[test]
+    fn test_ruby_brace_block_body_defines_function() {
+        let source = r#"
+foo { def x; end }
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x defined inside a brace block body");
+        assert_eq!(x.kind, NodeKind::Function);
+    }
+
+    #[test]
+    fn test_ruby_include_inside_do_block_emits_implements_ref() {
+        let source = r#"
+module M
+  included do
+    include Other
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module_id = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module && n.name == "M")
+            .expect("module M node")
+            .id
+            .clone();
+        let implements: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.reference_kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(
+            implements.len(),
+            1,
+            "expected one Implements ref from include inside included do"
+        );
+        assert_eq!(implements[0].reference_name, "Other");
+        assert_eq!(implements[0].from_node_id, module_id);
+    }
+
+    // Unlike `class_eval`/`module_eval`/`instance_eval` and their `*_exec`
+    // forms — real `Module` methods that retarget the definee for *any*
+    // receiver — `included`/`prepended`/`class_methods` have no intrinsic
+    // scope-changing semantics in Ruby: they're only `ActiveSupport::Concern`
+    // hooks in their receiverless (or `self.`/enclosing-constant) DSL form.
+    // On an arbitrary receiver they're ordinary calls whose block inherits
+    // the enclosing definee, exactly like `each`/`tap` (probed against Ruby
+    // 3.4.7: `C.instance_methods(false) == [:generated]`).
+    #[test]
+    fn test_ruby_included_with_unresolvable_receiver_defines_instance_method() {
+        let source = r#"
+class C
+  registry.included { def generated; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method inside registry.included block");
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("C::generated"));
+    }
+
+    #[test]
+    fn test_ruby_prepended_with_unresolvable_receiver_defines_instance_method() {
+        let source = r#"
+class C
+  registry.prepended { def generated; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method inside registry.prepended block");
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("C::generated"));
+    }
+
+    #[test]
+    fn test_ruby_class_methods_with_unresolvable_receiver_defines_instance_method() {
+        let source = r#"
+class C
+  registry.class_methods { def generated; end }
+  private :generated
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method inside registry.class_methods block");
+        // `private :generated` only resolves against instance method ids
+        // (see `mark_method_visibility`), so this only goes Private if
+        // `registry.class_methods do` registered `generated` as an instance
+        // method — a stale `ReceiverSingleton` classification would leave
+        // it Pub.
+        assert_eq!(
+            generated.visibility,
+            Visibility::Private,
+            "class_methods on an unresolvable receiver must not retarget the singleton class"
+        );
+    }
+
+    // Fills the pre-existing gap: every other `prepended` test above used
+    // `class_methods`/`included`, never `prepended` in its receiverless DSL
+    // form.
+    #[test]
+    fn test_ruby_prepended_do_block_defines_instance_method() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  prepended do
+    def p1; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let p1 = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "p1")
+            .expect("expected p1 method inside prepended do block");
+        assert_eq!(p1.kind, NodeKind::Method);
+        assert!(p1.qualified_name.ends_with("M::p1"));
+    }
+
+    // `self.class_methods` is still the DSL form (receiverless call ≡
+    // `self.<call>`, per `BlockReceiver::Current`'s doc comment) — pins that
+    // the gate keys on the receiver's *denotation*, not merely "has no
+    // receiver at all".
+    #[test]
+    fn test_ruby_self_class_methods_do_block_matches_def_self() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  self.class_methods { def cm; end }
+  private_class_method :cm
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let cm = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "cm")
+            .expect("expected cm method inside self.class_methods block");
+        assert_eq!(
+            cm.visibility,
+            Visibility::Private,
+            "self.class_methods must still register as a singleton method"
+        );
+    }
+
+    // Without any `ActiveSupport::Concern` evidence, a receiverless
+    // `class_methods` call is an ordinary hand-rolled hook (probed against
+    // Ruby 3.4.7: `C.instance_methods(false) == [:generated]`,
+    // `C.singleton_methods(false) == [:class_methods]`), so its block must
+    // land on the *instance* side, not the singleton class.
+    #[test]
+    fn test_ruby_class_methods_without_concern_evidence_defines_instance_method() {
+        let source = r#"
+class C
+  def self.class_methods(&block); block.call; end
+  class_methods { def generated; end }
+  private :generated
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method inside class_methods block");
+        assert_eq!(
+            generated.visibility,
+            Visibility::Private,
+            "without Concern evidence, class_methods must not retarget the singleton class"
+        );
+    }
+
+    // Without any `ActiveSupport::Concern` evidence, a receiverless
+    // `included` call is an ordinary block that inherits the enclosing
+    // visibility frame (probed against Ruby 3.4.7:
+    // `C.private_instance_methods(false) == [:gen]`), unlike the real
+    // Concern hook which resets to a fresh public frame (see
+    // `test_ruby_visibility_directive_in_included_do_block_is_isolated`).
+    #[test]
+    fn test_ruby_included_without_concern_evidence_inherits_visibility_frame() {
+        let source = r#"
+class C
+  def self.included(&b); b.call; end
+  private
+  included { def gen; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let gen = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "gen")
+            .expect("expected gen method inside included block");
+        assert_eq!(
+            gen.visibility,
+            Visibility::Private,
+            "without Concern evidence, included must inherit the enclosing visibility frame"
+        );
+    }
+
+    // Rails' `Module#concerning` builds a module that is already `extend`ed
+    // by `ActiveSupport::Concern`, so its body is genuine DSL with no
+    // visible `extend` to serve as evidence (probed against activesupport
+    // 8.1.3: `C.respond_to?(:find) == true`).
+    #[test]
+    fn test_ruby_class_methods_inside_concerning_block_matches_def_self() {
+        let source = r#"
+class C
+  concerning :T do
+    class_methods do
+      def find; end
+    end
+  end
+
+  private_class_method :find
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let find = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "find")
+            .expect("expected find method inside concerning do block");
+        assert_eq!(
+            find.visibility,
+            Visibility::Private,
+            "class_methods inside a concerning block must register as a singleton method"
+        );
+    }
+
+    // An unrelated `extend` must not be mistaken for Concern evidence.
+    #[test]
+    fn test_ruby_unrelated_extend_is_not_concern_evidence() {
+        let source = r#"
+module M
+  extend Forwardable
+
+  class_methods { def cm; end }
+  private :cm
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let cm = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "cm")
+            .expect("expected cm method inside class_methods block");
+        assert_eq!(
+            cm.visibility,
+            Visibility::Private,
+            "extend Forwardable is not Concern evidence, so class_methods must not retarget \
+             the singleton class"
+        );
+    }
+
+    // `in_concern_scope` is reset on entry to a nested module, so an outer
+    // module's `extend ActiveSupport::Concern` must not leak into it.
+    #[test]
+    fn test_ruby_concern_scope_does_not_leak_into_nested_module() {
+        let source = r#"
+module Outer
+  extend ActiveSupport::Concern
+
+  module Inner
+    class_methods { def cm; end }
+    private :cm
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("outer.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let cm = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "cm")
+            .expect("expected cm method inside nested module's class_methods block");
+        assert_eq!(
+            cm.visibility,
+            Visibility::Private,
+            "Outer's Concern evidence must not leak into the nested Inner module"
+        );
+    }
+
+    // Leading `::` on the extend argument must still count as evidence.
+    #[test]
+    fn test_ruby_extend_leading_scope_resolution_is_concern_evidence() {
+        let source = r#"
+module M
+  extend ::ActiveSupport::Concern
+
+  class_methods { def cm; end }
+  private_class_method :cm
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let cm = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "cm")
+            .expect("expected cm method inside class_methods block");
+        assert_eq!(
+            cm.visibility,
+            Visibility::Private,
+            "extend ::ActiveSupport::Concern must still count as Concern evidence"
+        );
+    }
+
+    // `self` inside a plain instance-method body is the instance, not the
+    // enclosing class, so an `extend ActiveSupport::Concern` seen while
+    // statically walking that body extends the instance and must not leak
+    // out as Concern evidence for the enclosing class body (probe A).
+    #[test]
+    fn test_ruby_extend_in_method_body_is_not_concern_evidence_for_class_body() {
+        let source = r#"
+class C
+  def setup
+    extend ActiveSupport::Concern
+  end
+
+  def self.class_methods(&b)
+    b.call
+  end
+
+  class_methods { def gen; end }
+  private :gen
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let gen = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "gen")
+            .expect("expected gen method inside class_methods block");
+        assert_eq!(
+            gen.visibility,
+            Visibility::Private,
+            "a method-body extend must not leak Concern evidence into the class body"
+        );
+    }
+
+    // `in_concern_scope` is reset (not inherited) into a plain instance-method
+    // body: `class_methods` there would raise `NoMethodError` in real Ruby
+    // (probe C), so the enclosing module's Concern evidence must not make it
+    // retarget the singleton class from in here.
+    #[test]
+    fn test_ruby_concern_scope_not_inherited_into_method_body() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  def helper
+    class_methods { def x; end }
+  end
+
+  private :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside class_methods block");
+        assert_eq!(
+            x.visibility,
+            Visibility::Private,
+            "Concern scope must not be inherited into a plain instance-method body"
+        );
+    }
+
+    // `in_concern_scope` *is* inherited into a singleton-method body (`def
+    // self.x`): `self` there is still the module itself, so `class_methods`
+    // genuinely works from in here in real Ruby (probe D).
+    #[test]
+    fn test_ruby_concern_scope_inherited_into_singleton_method_body() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  def self.setup
+    class_methods { def x; end }
+  end
+
+  private_class_method :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside class_methods block");
+        assert_eq!(
+            x.visibility,
+            Visibility::Private,
+            "Concern scope must be inherited into a singleton-method body"
+        );
+    }
+
+    // `self` inside `class << self` is the singleton class, not the enclosing
+    // class, so an `extend ActiveSupport::Concern` seen while statically
+    // walking that body must not leak out as Concern evidence for the
+    // enclosing class body (probe E).
+    #[test]
+    fn test_ruby_extend_in_singleton_class_body_is_not_concern_evidence_for_class_body() {
+        let source = r#"
+class C
+  class << self
+    extend ActiveSupport::Concern
+  end
+
+  def self.class_methods(&b)
+    b.call
+  end
+
+  class_methods { def gen; end }
+  private :gen
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let gen = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "gen")
+            .expect("expected gen method inside class_methods block");
+        assert_eq!(
+            gen.visibility,
+            Visibility::Private,
+            "a class << self extend must not leak Concern evidence into the class body"
+        );
+    }
+
+    // `in_concern_scope` is reset (not inherited) into a `class << self`
+    // body: `class_methods` there would raise `NoMethodError` in real Ruby
+    // (probe F), so the enclosing module's Concern evidence must not make it
+    // retarget the block's definee from in here.
+    //
+    // `def x` is lexically inside `class << self` either way, so it always
+    // registers as a singleton method regardless of whether the leak
+    // happened — `private`/`private_class_method` can't observe the
+    // difference here (unlike the method-body case). What *is* observable
+    // is `classify_block_scope`'s other effect: a `class_methods`/`included`
+    // block that resolves to `ReceiverBody`/`ReceiverSingleton` unconditionally
+    // resets `visibility_mode` to `Pub` for its body, where `Inherit` leaves
+    // the ambient mode alone. So a `private` set just before the block, still
+    // in effect on `x` afterward, pins the block as `Inherit` — i.e. that
+    // `in_concern_scope` did not leak in.
+    #[test]
+    fn test_ruby_concern_scope_not_inherited_into_singleton_class_body() {
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+
+  class << self
+    private
+
+    class_methods { def x; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside class_methods block");
+        assert_eq!(
+            x.visibility,
+            Visibility::Private,
+            "Concern scope must not be inherited into a class << self body"
+        );
+    }
+
+    // An ordinary block (`each`, `tap`, …) does not change the default
+    // definee, so an explicit receiver on the call it's attached to
+    // (`[1].each`) is irrelevant to extraction, unlike `Foo.class_eval`
+    // (see `test_ruby_class_eval_with_explicit_receiver_not_extracted`).
+    #[test]
+    fn test_ruby_ordinary_block_with_explicit_receiver_defines_method() {
+        let source = r#"
+class C
+  [1].each do
+    def generated; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method inside [1].each do block");
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("C::generated"));
+    }
+
+    #[test]
+    fn test_ruby_visibility_directive_flows_into_ordinary_block() {
+        let source = r#"
+class C
+  private
+
+  [1].each do
+    def in_block; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let in_block = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "in_block")
+            .expect("expected in_block method inside [1].each do block");
+        assert_eq!(
+            in_block.visibility,
+            Visibility::Private,
+            "an ordinary block inherits the enclosing visibility frame"
+        );
+    }
+
+    #[test]
+    fn test_ruby_visibility_directive_flows_out_of_ordinary_block() {
+        let source = r#"
+class C
+  [1].each do
+    private
+  end
+
+  def after; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let after = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "after")
+            .expect("expected after method");
+        assert_eq!(
+            after.visibility,
+            Visibility::Private,
+            "an ordinary block is not a visibility scope boundary, so a mode \
+             switch inside it is still in effect after the block ends"
+        );
+    }
+
+    #[test]
+    fn test_ruby_receiverless_instance_eval_defines_singleton_method() {
+        let source = r#"
+class Widget
+  instance_eval do
+    def ie; end
+  end
+
+  private_class_method :ie
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let ie = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "ie")
+            .expect("expected ie method inside instance_eval do block");
+        assert_eq!(
+            ie.visibility,
+            Visibility::Private,
+            "private_class_method only resolves against singleton_method_ids, so this \
+             only goes Private if instance_eval registered ie as a singleton method"
+        );
+    }
+
+    #[test]
+    fn test_ruby_instance_eval_with_explicit_receiver_not_extracted() {
+        let source = r#"
+Foo.instance_eval do
+  def x; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("foo.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "Foo.instance_eval has an explicit receiver we can't resolve, so its block \
+             body must not be attached to the enclosing scope"
+        );
+    }
+
+    // `CALLBACK = proc do … end` puts the block-bearing call on an
+    // assignment's RHS, never in statement position — regression coverage
+    // for the `visit_expression_blocks` descent from the `"assignment"` arm.
+    #[test]
+    fn test_ruby_block_body_reached_through_assignment_rhs() {
+        let source = r#"
+class C
+  CALLBACK = proc do
+    def generated; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated =
+            result.nodes.iter().find(|n| n.name == "generated").expect(
+                "expected generated method defined inside proc do…end on an assignment RHS",
+            );
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("C::generated"));
+    }
+
+    // `foo([1].map { … })` puts the block-bearing call inside another call's
+    // arguments — regression coverage for the argument-position descent.
+    #[test]
+    fn test_ruby_block_body_reached_through_call_argument() {
+        let source = r#"
+class F
+  foo([1].map { def in_arg; end })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("f.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let in_arg = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "in_arg")
+            .expect("expected in_arg method defined inside a block passed as an argument");
+        assert_eq!(in_arg.kind, NodeKind::Method);
+        assert!(in_arg.qualified_name.ends_with("F::in_arg"));
+    }
+
+    // `[1].map { … }.first` puts the block-bearing call as another call's
+    // receiver — regression coverage for the receiver-position descent.
+    #[test]
+    fn test_ruby_block_body_reached_through_call_receiver() {
+        let source = r#"
+class G
+  [1].map { def in_receiver; end }.first
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("g.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let in_receiver = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "in_receiver")
+            .expect("expected in_receiver method defined inside a block used as a receiver");
+        assert_eq!(in_receiver.kind, NodeKind::Method);
+        assert!(in_receiver.qualified_name.ends_with("G::in_receiver"));
+    }
+
+    // `L = -> { … }` is a lambda literal, not a call with a block field —
+    // regression coverage for the bare `"do_block" | "block"` arm of
+    // `visit_expression_blocks`.
+    #[test]
+    fn test_ruby_block_body_reached_through_lambda_literal() {
+        let source = r#"
+class H
+  L = -> { def in_lambda; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("h.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let in_lambda = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "in_lambda")
+            .expect("expected in_lambda method defined inside a lambda literal body");
+        assert_eq!(in_lambda.kind, NodeKind::Method);
+        assert!(in_lambda.qualified_name.ends_with("H::in_lambda"));
+    }
+
+    // Same explicit-receiver guard as
+    // `test_ruby_class_eval_with_explicit_receiver_not_extracted`, but reached
+    // through the new expression-position descent (an assignment RHS) rather
+    // than statement position — the guard must survive both paths.
+    #[test]
+    fn test_ruby_class_eval_explicit_receiver_not_extracted_through_assignment_rhs() {
+        let source = r#"
+class J
+  X = Other.class_eval { def foreign; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("j.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foreign"),
+            "Other.class_eval has an explicit receiver we can't resolve, so its block \
+             body must not be attached to the enclosing class even when reached through \
+             an assignment RHS"
+        );
+    }
+
+    // Pins the no-double-traversal invariant: `visit_expression_blocks` skips
+    // a call's own `block` field while descending its other children, then
+    // hands the block to `visit_block_body` exactly once. Without that skip,
+    // `once` would be extracted twice.
+    #[test]
+    fn test_ruby_block_body_not_double_traversed() {
+        let source = r#"
+class K
+  foo { def once; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("k.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let count = result.nodes.iter().filter(|n| n.name == "once").count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one node named once, got {count}"
+        );
+    }
+
+    // Method bodies are traversed for definitions too, one level further in
+    // than the block-body work above: `def install; [1].each { def m; end };
+    // end` really does define `m` as an instance method of the enclosing
+    // class once `install` runs (confirmed against Ruby 3.4.7).
+    #[test]
+    fn test_ruby_method_body_block_nested_def_attaches_to_enclosing_class() {
+        let source = r#"
+class C
+  def install
+    [1].each { def generated; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated method defined inside a block inside a method body");
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("C::generated"));
+    }
+
+    // Same gap, no block involved: a bare `def` directly inside a method body
+    // still attaches to the enclosing class, not to the enclosing method.
+    #[test]
+    fn test_ruby_method_body_bare_nested_def_attaches_to_enclosing_class() {
+        let source = r#"
+class D
+  def install
+    def bare; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("d.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bare = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bare")
+            .expect("expected bare method defined directly inside a method body");
+        assert_eq!(bare.kind, NodeKind::Method);
+        assert!(bare.qualified_name.ends_with("D::bare"));
+    }
+
+    // `def self.install` puts `self` inside the body on the class, but a `def`
+    // nested inside it still has no receiver of its own, so it follows the
+    // ordinary cref and lands on the *instance* side, not the singleton side -
+    // it must not be found by a `private_class_method` targeting it.
+    #[test]
+    fn test_ruby_singleton_method_body_nested_def_is_instance_side() {
+        let source = r#"
+class E
+  def self.install
+    [1].each { def from_singleton; end }
+  end
+
+  private_class_method :from_singleton
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("e.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let from_singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "from_singleton")
+            .expect("expected from_singleton method defined inside def self.install's body");
+        assert_eq!(from_singleton.kind, NodeKind::Method);
+        assert!(from_singleton.qualified_name.ends_with("E::from_singleton"));
+        assert_eq!(
+            from_singleton.visibility,
+            Visibility::Pub,
+            "from_singleton is on the instance side, so private_class_method must not match it"
+        );
+    }
+
+    // Inside `class << self`, `self` inside a method's body is the singleton
+    // class itself, so a nested `def` there lands on the *class* method side -
+    // the mirror image of the previous test.
+    #[test]
+    fn test_ruby_class_shovel_self_method_body_nested_def_is_singleton_side() {
+        let source = r#"
+class F
+  class << self
+    def install
+      [1].each { def m; end }
+    end
+  end
+
+  private_class_method :m
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("f.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let m = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "m")
+            .expect("expected m method defined inside class << self's install body");
+        assert_eq!(m.kind, NodeKind::Method);
+        assert!(m.qualified_name.ends_with("F::m"));
+        assert_eq!(
+            m.visibility,
+            Visibility::Private,
+            "m is on the singleton/class-method side, so private_class_method must match it"
+        );
+    }
+
+    // A method body gets a *fresh* default-visibility frame: it does not
+    // inherit the enclosing class body's `private`, unlike a class-body block
+    // (which does - see test_ruby_singleton_class_does_not_inherit_outer_private
+    // for the mirrored case that this one deliberately differs from).
+    #[test]
+    fn test_ruby_method_body_gets_fresh_public_visibility_frame() {
+        let source = r#"
+class G
+  private
+
+  def install
+    def gen; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("g.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let gen = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "gen")
+            .expect("expected gen method defined inside install's body");
+        assert_eq!(
+            gen.visibility,
+            Visibility::Pub,
+            "a method body starts a fresh public visibility frame, so it must not inherit \
+             the enclosing class body's `private`"
+        );
+    }
+
+    // The other direction of the same fresh-frame rule: a bare `private`
+    // inside a method body cannot leak back out past `end` to affect defs
+    // that follow in the class body.
+    #[test]
+    fn test_ruby_method_body_private_directive_does_not_leak_out() {
+        let source = r#"
+class H
+  def install
+    private
+  end
+
+  def after; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("h.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let after = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "after")
+            .expect("expected after method following install");
+        assert_eq!(
+            after.visibility,
+            Visibility::Pub,
+            "a bare `private` inside a method body must not leak out to affect defs \
+             in the enclosing class body"
+        );
+    }
+
+    // Same explicit-receiver guard as
+    // test_ruby_class_eval_with_explicit_receiver_not_extracted, one level
+    // deeper: it must still hold when the `class_eval` call is reached
+    // through a method body rather than directly through the class body.
+    #[test]
+    fn test_ruby_method_body_explicit_receiver_class_eval_not_extracted() {
+        let source = r#"
+class I
+  def install
+    Other.class_eval { def foreign; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("i.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foreign"),
+            "Other.class_eval has an explicit receiver we can't resolve, so its block body \
+             must not be attached to the enclosing class even when reached through a method body"
+        );
+    }
+
+    // A receiverless call *is* `self.<call>`, so `self.class_eval` inside a
+    // class body must be treated identically to bare `class_eval`
+    // (`test_ruby_receiverless_class_eval_do_block_defines_instance_method`)
+    // rather than falling into the unresolvable-receiver bail.
+    #[test]
+    fn test_ruby_self_class_eval_defines_instance_method() {
+        let source = r#"
+class C
+  self.class_eval { def x; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside self.class_eval block");
+        assert_eq!(x.kind, NodeKind::Method);
+        assert!(x.qualified_name.ends_with("C::x"));
+    }
+
+    // The receiver names the enclosing class itself, so `C.class_eval` must
+    // be treated the same as a receiverless `class_eval` — the receiver is
+    // resolvable, just spelled out.
+    #[test]
+    fn test_ruby_enclosing_constant_class_eval_defines_instance_method() {
+        let source = r#"
+class C
+  C.class_eval { def y; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let y = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "y")
+            .expect("expected y method inside C.class_eval block");
+        assert_eq!(y.kind, NodeKind::Method);
+        assert!(y.qualified_name.ends_with("C::y"));
+    }
+
+    #[test]
+    fn test_ruby_self_instance_eval_defines_singleton_method() {
+        let source = r#"
+class C
+  self.instance_eval { def z; end }
+
+  private_class_method :z
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let z = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "z")
+            .expect("expected z method inside self.instance_eval block");
+        assert_eq!(
+            z.visibility,
+            Visibility::Private,
+            "private_class_method only resolves against singleton_method_ids, so this \
+             only goes Private if self.instance_eval registered z as a singleton method"
+        );
+    }
+
+    #[test]
+    fn test_ruby_enclosing_constant_instance_eval_defines_singleton_method() {
+        let source = r#"
+class C
+  C.instance_eval { def z; end }
+
+  private_class_method :z
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let z = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "z")
+            .expect("expected z method inside C.instance_eval block");
+        assert_eq!(
+            z.visibility,
+            Visibility::Private,
+            "private_class_method only resolves against singleton_method_ids, so this \
+             only goes Private if C.instance_eval registered z as a singleton method"
+        );
+    }
+
+    // Inside `class << self`, the ambient ReceiverSingleton handling already
+    // makes a receiverless `class_eval` register its defs as class methods
+    // (see `test_ruby_class_methods_do_block_matches_def_self`); `self` must
+    // resolve identically, since `self.class_eval` and `class_eval` are the
+    // same call.
+    #[test]
+    fn test_ruby_self_class_eval_inside_class_shovel_self_defines_class_method() {
+        let source = r#"
+class C
+  class << self
+    self.class_eval { def m; end }
+  end
+
+  private_class_method :m
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let m = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "m")
+            .expect("expected m method inside class << self; self.class_eval block");
+        assert_eq!(
+            m.visibility,
+            Visibility::Private,
+            "self.class_eval inside class << self must still register m as a class method"
+        );
+    }
+
+    // The one row that would break a naive "treat enclosing receiver as
+    // receiverless" patch: inside `class << self`, `C.class_eval` names the
+    // class itself, so its body defines an *instance* method — even though
+    // the ambient `singleton_scope` there is `Enclosing` for a bare `def`.
+    #[test]
+    fn test_ruby_enclosing_constant_class_eval_inside_class_shovel_self_defines_instance_method() {
+        let source = r#"
+class C
+  class << self
+    C.class_eval { def m; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let m = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "m")
+            .expect("expected m method inside class << self; C.class_eval block");
+        assert_eq!(
+            m.kind,
+            NodeKind::Method,
+            "C.class_eval inside class << self must define an instance method, not a class \
+             method, even though the ambient singleton_scope there is Enclosing"
+        );
+        assert!(m.qualified_name.ends_with("C::m"));
+    }
+
+    // `qualified_prefix`/`parent_node_id` can only address the innermost
+    // enclosing scope, so a constant naming an outer-but-not-innermost scope
+    // has nothing to attach the block's defs to — must stay Unresolvable,
+    // same as `Other.class_eval`.
+    #[test]
+    fn test_ruby_outer_but_not_innermost_constant_class_eval_not_extracted() {
+        let source = r#"
+module Outer
+  class Inner
+    Outer.class_eval { def from_inner; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("outer.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "from_inner"),
+            "Outer.class_eval, reached from inside the innermost Inner scope, names an \
+             outer-but-not-innermost scope we cannot attach to, so it must not be extracted"
+        );
+    }
+
+    // `Class.new do … end` puts the block's defs on the newly created
+    // anonymous class, not on the enclosing scope or on the constant it gets
+    // assigned to — confirmed against Ruby 3.4.7. `visit_assignment_for_const`
+    // already emits a `Const` node for `K`, not a class/module node, so there
+    // is nowhere to attach `x` even if we wanted to.
+    #[test]
+    fn test_ruby_class_new_do_block_not_extracted() {
+        let source = r#"
+K = Class.new do
+  def x; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("k.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "Class.new's block defines methods on a brand-new anonymous class, which we \
+             cannot represent, so x must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_class_new_do_block_inside_class_not_extracted() {
+        let source = r#"
+class C
+  K = Class.new do
+    def x; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "Class.new's block must not leak x to the enclosing class C either"
+        );
+    }
+
+    // `Module.new`, `Struct.new`, and `Data.define` are the same class-factory
+    // family as `Class.new`: each puts the block's defs on a brand-new
+    // anonymous object, not the enclosing scope.
+    #[test]
+    fn test_ruby_class_factory_family_blocks_not_extracted() {
+        let source = r#"
+A = Module.new do
+  def a; end
+end
+
+B = Struct.new(:v) do
+  def b; end
+end
+
+D = Data.define(:v) do
+  def d; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("factories.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["a", "b", "d"] {
+            assert!(
+                !result.nodes.iter().any(|n| n.name == name),
+                "{name} is defined inside a class-factory block and must not be extracted"
+            );
+        }
+    }
+
+    // The receiver is load-bearing for `classify_block_scope`: an ordinary
+    // `.new` (not `Class`/`Module`/`Struct.new` or `Data.define`) stays
+    // `Inherit`, so its block's defs still attach to the enclosing scope.
+    #[test]
+    fn test_ruby_ordinary_new_do_block_still_defines_method() {
+        let source = r#"
+class C
+  Foo.new { def x; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside Foo.new block — an ordinary .new stays Inherit");
+        assert_eq!(x.kind, NodeKind::Method);
+        assert!(x.qualified_name.ends_with("C::x"));
+    }
+
+    // `self` inside a plain instance-method body is an *instance* the
+    // extractor cannot name, so a receiverless `instance_eval { def gen;
+    // end }` there defines `gen` on that one instance, not on the class
+    // (verified against Ruby 3.4.7: `i.respond_to?(:generated)` is true,
+    // `C.respond_to?(:generated)` is false). There is no node in the graph
+    // that can represent "the singleton class of an instance we can't name",
+    // so the block is skipped outright — the same treatment already given
+    // to `obj.instance_eval` for an unresolvable `obj`. The bug this fixes
+    // is that `gen` used to be wrongly attributed to `C` as a class method;
+    // the fix is that it is not attributed anywhere, so `private_class_method
+    // :gen` categorically cannot match it.
+    #[test]
+    fn test_ruby_instance_eval_in_instance_method_body_is_per_instance() {
+        let source = r#"
+class C
+  def install
+    instance_eval { def gen; end }
+  end
+
+  private_class_method :gen
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result.nodes.iter().all(|n| n.name != "gen"),
+            "gen is per-instance and cannot be attributed to any node in the graph, \
+             so it must not be extracted as a method of C — and private_class_method \
+             :gen must not have anything to match"
+        );
+    }
+
+    // `self.instance_eval` must behave identically to the receiverless form
+    // inside an instance-method body — `self.foo` and `foo` are the same
+    // call in Ruby.
+    #[test]
+    fn test_ruby_self_instance_eval_in_instance_method_body_is_per_instance() {
+        let source = r#"
+class C
+  def install
+    self.instance_eval { def gen; end }
+  end
+
+  private_class_method :gen
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result.nodes.iter().all(|n| n.name != "gen"),
+            "self.instance_eval must match the receiverless form: gen is per-instance \
+             and must not be extracted as a method of C"
+        );
+    }
+
+    // `def self.foo` written inside an instance-method body opens the
+    // singleton class of that one *instance*, not the enclosing class -
+    // Ruby's own `NameError` on `private_class_method :foo` there confirms
+    // it ("undefined method 'foo' for class '#<Class:B1>'").
+    #[test]
+    fn test_ruby_def_self_in_instance_method_body_is_per_instance() {
+        let source = r#"
+class C
+  def install
+    def self.foo; end
+  end
+
+  private_class_method :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo singleton method inside install's body");
+        assert_eq!(
+            foo.visibility,
+            Visibility::Pub,
+            "foo is a singleton method of the instance, not the class; \
+             private_class_method must not match it"
+        );
+    }
+
+    // `class << self` written inside an instance-method body reopens the
+    // singleton class of that one *instance* — the same conclusion as the
+    // previous test via a different syntax.
+    #[test]
+    fn test_ruby_shovel_self_in_instance_method_body_is_per_instance() {
+        let source = r#"
+class C
+  def install
+    class << self
+      def bar; end
+    end
+  end
+
+  private_class_method :bar
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar method inside install's class << self body");
+        assert_eq!(
+            bar.visibility,
+            Visibility::Pub,
+            "bar is a singleton method of the instance, not the class; \
+             private_class_method must not match it"
+        );
+    }
+
+    // Contrast: inside a *singleton*-method body, `self` is the class
+    // itself, so `instance_eval` there still opens the class's own
+    // singleton class, exactly as in a class body. This must not regress
+    // when instance-method bodies stop treating `self` as the class.
+    #[test]
+    fn test_ruby_instance_eval_in_singleton_method_body_still_targets_class() {
+        let source = r#"
+class D
+  def self.install
+    instance_eval { def gen; end }
+  end
+
+  private_class_method :gen
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("d.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let gen = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "gen")
+            .expect("expected gen method inside self.install's instance_eval block");
+        assert_eq!(
+            gen.visibility,
+            Visibility::Private,
+            "self in a singleton-method body is still the class, so instance_eval \
+             there must still target it"
+        );
+    }
+
+    // `concerning`'s topic argument must be a literal naming a valid
+    // constant, since activesupport routes it to `const_set` (which raises
+    // `NameError: wrong constant name` for a lowercase topic, verified
+    // against activesupport 8.1.3). A non-constant topic is not the Rails
+    // form, so the block must fall through to ordinary `Inherit` handling
+    // rather than being treated as Concern DSL.
+    #[test]
+    fn test_ruby_concerning_lowercase_topic_is_not_concern_dsl() {
+        let source = r#"
+class C
+  concerning :lowercase do
+    class_methods { def x; end }
+  end
+
+  private :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside the lowercase-topic concerning block");
+        assert_eq!(x.kind, NodeKind::Method);
+        assert!(x.qualified_name.ends_with("C::x"));
+        assert_eq!(
+            x.visibility,
+            Visibility::Private,
+            "a lowercase topic is not the Rails concerning form, so class_methods \
+             falls through to Inherit and x lands on the instance side"
+        );
+    }
+
+    // Regression guard: last round's headline feature — a plain `def`
+    // reached through an ordinary `Inherit` block (`each`, never consulting
+    // the receiver) inside an instance-method body — must still define an
+    // instance method of the enclosing class.
+    #[test]
+    fn test_ruby_ordinary_each_block_in_instance_method_body_still_defines_instance_method() {
+        let source = r#"
+class C
+  def install
+    [1].each { def m; end }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let m = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "m")
+            .expect("expected m method defined inside install's each block");
+        assert_eq!(m.kind, NodeKind::Method);
+        assert!(m.qualified_name.ends_with("C::m"));
     }
 } // mod ruby_tests

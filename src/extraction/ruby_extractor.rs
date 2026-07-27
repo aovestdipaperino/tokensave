@@ -31,6 +31,71 @@ enum VisibilityTarget {
     Foreign,
 }
 
+/// Which default definee a block body executes against, relative to the
+/// call it's attached to.
+///
+/// Ruby's actual rule is narrower than "every block is a new scope": a
+/// block inherits the enclosing default definee (cref) and visibility
+/// frame unless the call it's attached to explicitly changes the definee.
+/// Only `class_eval`/`module_eval`/`instance_eval` and their `*_exec` forms
+/// do that — `each`, `tap`, `describe`, `configure`, and friends don't, so
+/// `private` must flow through them in both directions and a `def` inside
+/// one still targets the enclosing class/module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockScope {
+    /// Definee unchanged: `[1].each do … end`, `RSpec.describe … do … end`.
+    /// Not a scope boundary at all — no receiver check, no
+    /// `singleton_scope` save/restore, no `visibility_mode` touch.
+    Inherit,
+    /// Definee becomes the receiver's instance side: `class_eval`,
+    /// `module_eval`, `class_exec`, `module_exec`; plus the
+    /// `ActiveSupport::Concern` `included`/`prepended` hooks (only in their
+    /// DSL form — receiver `Current` or `EnclosingConstant`, *and* only with
+    /// positive evidence the enclosing module is a Concern, since a
+    /// receiverless `included`/`prepended` call raises without one), which
+    /// are implemented as `base.class_eval(&block)`
+    /// (activesupport-7.2.2.2 `lib/active_support/concern.rb:138`).
+    ReceiverBody,
+    /// Definee becomes the receiver's singleton class: `instance_eval`,
+    /// `instance_exec`; plus `Concern`'s `class_methods` (only in its DSL
+    /// form — receiver `Current` or `EnclosingConstant`, *and* only with
+    /// positive evidence the enclosing module is a Concern, since a
+    /// receiverless `class_methods` call is otherwise undefined), which
+    /// really defines on a nested `ClassMethods` module that gets `extend`ed
+    /// into the includer (`concern.rb:214`) — `SingletonScope::Enclosing`
+    /// approximates the observable result (methods become callable as
+    /// `Includer.foo`).
+    ReceiverSingleton,
+    /// Definee becomes a brand-new anonymous class/module with no node to
+    /// attach it to: `Class.new`, `Module.new`, `Struct.new`, `Data.define`.
+    /// Confirmed against Ruby 3.4.7 that these leak nothing to the enclosing
+    /// scope, so the block is skipped rather than mis-attributed.
+    Opaque,
+}
+
+/// Which object a block-attached call's receiver denotes, for the purposes of
+/// `visit_block_body`'s `ReceiverBody`/`ReceiverSingleton` handling.
+///
+/// A receiverless call **is** `self.<call>` — `class_eval` and
+/// `self.class_eval` are indistinguishable in Ruby — so `Current` covers
+/// both. `EnclosingConstant` is subtly different: it's the constant naming
+/// the *innermost* enclosing class/module, and inside `class << self` it
+/// resolves to that class's instance side even though the ambient
+/// `singleton_scope` is `Enclosing` (`class << self; C.class_eval { def m;
+/// end } end` defines an instance method, confirmed against Ruby 3.4.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockReceiver {
+    /// No receiver, or a literal `self`.
+    Current,
+    /// The constant naming the innermost enclosing class/module.
+    EnclosingConstant,
+    /// Anything else: `Other.class_eval`, `obj.instance_eval`, or a
+    /// constant naming an outer-but-not-innermost scope (`qualified_prefix`/
+    /// `parent_node_id` can only address the innermost scope, so there is
+    /// nothing to attach the block's defs to).
+    Unresolvable,
+}
+
 impl RubyExtractor {
     /// Extract code graph nodes and edges from a Ruby source file.
     ///
@@ -126,7 +191,13 @@ impl RubyExtractor {
             "singleton_class" => Self::visit_singleton_class(state, node),
             "class" => Self::visit_class(state, node),
             "module" => Self::visit_module(state, node),
-            "assignment" => Self::visit_assignment_for_const(state, node),
+            "assignment" => {
+                Self::visit_assignment_for_const(state, node);
+                // The RHS may hold a block-bearing call outside statement
+                // position (`CONST = proc do … end`); visit_expression_blocks
+                // descends into it without re-entering the LHS constant.
+                Self::visit_expression_blocks(state, node);
+            }
             // Bare `private`/`protected`/`public` mode switches parse as a plain
             // identifier statement; defensively also handle a no-arg call.
             // A receiverless include/prepend/extend is a mixin directive; the two
@@ -134,20 +205,28 @@ impl RubyExtractor {
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
                 Self::visit_mixin_directive(state, node);
+                Self::visit_expression_blocks(state, node);
             }
             // Statement containers: they wrap statements without opening a new
             // definition scope, so the enclosing class/module stays the parent and
             // a mixin/definition nested in one is extracted as if written directly
             // in the body (`include Foo if enabled?`, `if RUBY_VERSION > "3" … end`,
-            // `begin … rescue LoadError … end`). Method bodies are NOT reached from
-            // here — visit_method routes them through extract_call_sites instead.
+            // `begin … rescue LoadError … end`). `body_statement`/`rescue_modifier`
+            // are also how visit_method/visit_singleton_method reach into a method
+            // body's own definitions, after extract_call_sites has run.
+            // `do_block`/`block`/`block_body` are otherwise reachable only via
+            // `visit_block_body` below (a `do…end`/`{…}` block is always the `block`
+            // field of a `call` node, never a bare sibling statement).
             "if" | "unless" | "if_modifier" | "unless_modifier" | "then" | "else" | "elsif"
             | "case" | "when" | "case_match" | "in_clause" | "while" | "until"
             | "while_modifier" | "until_modifier" | "do" | "begin" | "rescue" | "ensure"
-            | "rescue_modifier" | "body_statement" | "do_block" | "block" => {
+            | "rescue_modifier" | "body_statement" | "do_block" | "block" | "block_body" => {
                 Self::visit_children(state, node);
             }
-            _ => {}
+            // Every other expression kind — `array`, `hash`, `binary`, a bare
+            // `lambda` literal, … — may still contain a block-bearing call
+            // nested inside it, so descend the same way an expression RHS does.
+            _ => Self::visit_expression_blocks(state, node),
         }
     }
 
@@ -232,6 +311,47 @@ impl RubyExtractor {
 
         // Extract call sites from the method body.
         Self::extract_call_sites(state, node, &id);
+
+        // Traverse the body for definitions. A method opens no definition scope
+        // (no node_stack/class_depth/singleton_scope change above), so a `def`
+        // inside it — directly, or inside a block — attaches to the enclosing
+        // class, matching Ruby's cref: `def install; [1].each { def m; end }; end`
+        // really does define an instance method when `install` runs.
+        //
+        // Ruby gives a method body a *fresh* default-visibility frame, unlike a
+        // class-body block which inherits one: under a class-body `private`, a
+        // `def` inside a method body is still public, and a `private` inside the
+        // body cannot leak back out past `end`. Both directions confirmed against
+        // Ruby 3.4.7.
+        //
+        // `self` inside an instance-method body is the *instance*, not the
+        // enclosing module, so a receiverless `extend ActiveSupport::Concern`
+        // here extends that instance and is not evidence the enclosing module
+        // is a Concern; `in_concern_scope` is neither inherited in (a
+        // class-body `class_methods { … }` call raises `NoMethodError` from
+        // here) nor leaked back out.
+        //
+        // `self_is_instance` is set from the *ambient* singleton scope, not
+        // forced to `true` unconditionally: a plain `def x` (`Outside`) or a
+        // `def x` inside `class << some_object` (`Foreign`) both have an
+        // instance for `self`, but `def x` inside `class << self`
+        // (`Enclosing`) has the class itself — that case is dispatched
+        // through `visit_singleton_class`'s body via `visit_children`, not
+        // through this method, so in practice this only ever observes
+        // `Outside`/`Foreign`; the `!=` form is defensive parity with the
+        // condition's own reasoning rather than a reachable third case.
+        if let Some(body) = node.child_by_field_name("body") {
+            let saved_visibility_mode = state.visibility_mode.clone();
+            state.visibility_mode = Visibility::Pub;
+            let saved_in_concern_scope = state.in_concern_scope;
+            state.in_concern_scope = false;
+            let saved_self_is_instance = state.self_is_instance;
+            state.self_is_instance = state.singleton_scope != SingletonScope::Enclosing;
+            Self::visit_node(state, body);
+            state.self_is_instance = saved_self_is_instance;
+            state.in_concern_scope = saved_in_concern_scope;
+            state.visibility_mode = saved_visibility_mode;
+        }
     }
 
     /// True if a singleton receiver denotes the enclosing class/module: a literal
@@ -243,9 +363,15 @@ impl RubyExtractor {
     /// there defines a method one level further out (`Report.singleton_class`,
     /// not `Report`). Constant lookup is unaffected by singleton scope, so the
     /// `"constant"` arm doesn't need the same guard.
+    ///
+    /// It also isn't true inside a plain instance-method body, where `self`
+    /// is an instance the extractor cannot name: `def install; def self.foo;
+    /// end; end` opens that one instance's singleton, not the enclosing
+    /// class's — Ruby's `NameError` on `private_class_method :foo` there
+    /// confirms it. `self_is_instance` tracks exactly that.
     fn is_enclosing_receiver(state: &ExtractionState, receiver: TsNode<'_>) -> bool {
         match receiver.kind() {
-            "self" => state.singleton_scope == SingletonScope::Outside,
+            "self" => state.singleton_scope == SingletonScope::Outside && !state.self_is_instance,
             "constant" | "scope_resolution" => {
                 state.class_depth > 0
                     && Self::matches_enclosing_scope_path(state, &state.node_text(receiver))
@@ -351,6 +477,38 @@ impl RubyExtractor {
 
         // Extract call sites from the method body.
         Self::extract_call_sites(state, node, &id);
+
+        // Traverse the body for definitions — see visit_method's identical block
+        // for the full rationale (cref stays the enclosing class; fresh public
+        // visibility frame). `self` inside a singleton-method body is the class
+        // itself, so a receiverless `private`/`include` in here is valid Ruby
+        // (unlike inside an instance-method body) and is meant to be dispatched.
+        //
+        // `in_concern_scope` is deliberately *not* reset here, unlike
+        // `visit_method`/`visit_singleton_class`: `self` in `def self.foo` is
+        // the module itself, so `class_methods { … }` genuinely works inside
+        // one when the enclosing module is a Concern — the flag must be
+        // inherited in, not gated off. It's still restored on exit, though: an
+        // `extend ActiveSupport::Concern` seen in here only takes effect once
+        // this singleton method actually *runs*, which is after the class body
+        // has already finished executing, so it must not leak out as evidence
+        // for sibling statements.
+        //
+        // `self_is_instance` is forced to `false` here (and always restored):
+        // `self` in `def self.foo` is the module itself, so `def self.foo;
+        // instance_eval { def gen; end }; end` still defines a genuine class
+        // method, matching the `in_concern_scope` reasoning above.
+        if let Some(body) = node.child_by_field_name("body") {
+            let saved_visibility_mode = state.visibility_mode.clone();
+            state.visibility_mode = Visibility::Pub;
+            let saved_in_concern_scope = state.in_concern_scope;
+            let saved_self_is_instance = state.self_is_instance;
+            state.self_is_instance = false;
+            Self::visit_node(state, body);
+            state.self_is_instance = saved_self_is_instance;
+            state.in_concern_scope = saved_in_concern_scope;
+            state.visibility_mode = saved_visibility_mode;
+        }
     }
 
     /// Extract a `class << self` (or `class << expr`) body.
@@ -393,9 +551,25 @@ impl RubyExtractor {
         state.visibility_mode = Visibility::Pub;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = scope;
+        // `self` inside `class << self` is the singleton class, not the
+        // enclosing module, so a receiverless `extend ActiveSupport::Concern`
+        // here extends the singleton class and is not evidence the enclosing
+        // module is a Concern; `class_methods { … }` here raises
+        // `NoMethodError` just as it would in an instance-method body. So
+        // `in_concern_scope` is neither inherited in nor leaked back out,
+        // mirroring `visit_method`/`visit_class`/`visit_module`.
+        let saved_in_concern_scope = state.in_concern_scope;
+        state.in_concern_scope = false;
+        // `self` inside `class << …` — whether `self` or some other object —
+        // is always a module (the singleton class being reopened), never an
+        // instance, regardless of which `SingletonScope` it resolves to.
+        let saved_self_is_instance = state.self_is_instance;
+        state.self_is_instance = false;
 
         Self::visit_children(state, body);
 
+        state.self_is_instance = saved_self_is_instance;
+        state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
         state.visibility_mode = saved_visibility_mode;
     }
@@ -471,9 +645,20 @@ impl RubyExtractor {
         state.visibility_mode = Visibility::Pub;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = SingletonScope::Outside;
+        let saved_in_concern_scope = state.in_concern_scope;
+        state.in_concern_scope = false;
+        // `class`/`module` inside a method body is a `SyntaxError` in Ruby
+        // (verified, including inside a block), so this reset is defensive
+        // only — unreachable on valid input — kept for parity with the other
+        // scope-entry sites and to stay sane on malformed input tree-sitter
+        // still parses.
+        let saved_self_is_instance = state.self_is_instance;
+        state.self_is_instance = false;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.self_is_instance = saved_self_is_instance;
+        state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
@@ -554,9 +739,17 @@ impl RubyExtractor {
         state.visibility_mode = Visibility::Pub;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = SingletonScope::Outside;
+        let saved_in_concern_scope = state.in_concern_scope;
+        state.in_concern_scope = false;
+        // See visit_class: defensive only, `class`/`module` inside a method
+        // body is a `SyntaxError` in Ruby.
+        let saved_self_is_instance = state.self_is_instance;
+        state.self_is_instance = false;
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.self_is_instance = saved_self_is_instance;
+        state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
@@ -870,14 +1063,321 @@ impl RubyExtractor {
         let mut cursor = arguments.walk();
         for arg in arguments.named_children(&mut cursor) {
             if matches!(arg.kind(), "constant" | "scope_resolution") {
+                let arg_text = state.node_text(arg);
+                if method_name == "extend"
+                    && arg_text.strip_prefix("::").unwrap_or(&arg_text) == "ActiveSupport::Concern"
+                {
+                    state.in_concern_scope = true;
+                }
                 state.unresolved_refs.push(UnresolvedRef {
                     from_node_id: from_node_id.clone(),
-                    reference_name: state.node_text(arg),
+                    reference_name: arg_text,
                     reference_kind: EdgeKind::Implements,
                     line: arg.start_position().row as u32,
                     column: arg.start_position().column as u32,
                     file_path: state.file_path.clone(),
                 });
+            }
+        }
+    }
+
+    /// Classify a call's block by the default-definee rule documented on
+    /// `BlockScope`. Any call name not listed here — `each`, `tap`,
+    /// `describe`, `configure`, … — inherits the enclosing definee.
+    ///
+    /// Keyed on the receiver text *and* the method name for the class-factory
+    /// check: a bare `Foo.new { def x; end }` is an ordinary block whose def
+    /// lands on the enclosing scope (confirmed against Ruby 3.4.7), so `new`
+    /// alone must never classify as `Opaque` — only the specific
+    /// class-factory receivers below do.
+    ///
+    /// The Concern hooks (`included`/`prepended`/`class_methods`) additionally
+    /// take the resolved `BlockReceiver` *and* require positive evidence
+    /// (`in_concern_scope`) that the enclosing module is actually an
+    /// `ActiveSupport::Concern`: unlike `class_eval`/`module_eval`/
+    /// `instance_eval` and their `*_exec` forms — real `Module` methods that
+    /// retarget the definee for *any* receiver — these three names carry no
+    /// intrinsic scope-changing semantics in Ruby, and a receiverless call to
+    /// any of them raises (`Module#included`/`#prepended` take a mandatory
+    /// arg; `class_methods` is simply undefined) unless something made them
+    /// work. So a call by one of these names in code that actually loads is
+    /// either genuine Concern DSL or a hand-rolled same-named hook — and only
+    /// the former should retarget the definee (probed against Ruby 3.4.7 and
+    /// activesupport 8.1.3).
+    fn classify_block_scope(
+        receiver_text: Option<&str>,
+        receiver: BlockReceiver,
+        method_name: Option<&str>,
+        in_concern_scope: bool,
+    ) -> BlockScope {
+        if let Some(recv) = receiver_text {
+            let recv = recv.strip_prefix("::").unwrap_or(recv);
+            if matches!(
+                (recv, method_name),
+                ("Class" | "Module" | "Struct", Some("new")) | ("Data", Some("define"))
+            ) {
+                return BlockScope::Opaque;
+            }
+        }
+        match method_name {
+            Some("class_eval" | "module_eval" | "class_exec" | "module_exec") => {
+                BlockScope::ReceiverBody
+            }
+            Some("instance_eval" | "instance_exec") => BlockScope::ReceiverSingleton,
+            Some("included" | "prepended")
+                if in_concern_scope && receiver != BlockReceiver::Unresolvable =>
+            {
+                BlockScope::ReceiverBody
+            }
+            Some("class_methods")
+                if in_concern_scope && receiver != BlockReceiver::Unresolvable =>
+            {
+                BlockScope::ReceiverSingleton
+            }
+            _ => BlockScope::Inherit,
+        }
+    }
+
+    /// Classify a block-attached call's explicit receiver node, for
+    /// `visit_block_body`'s `ReceiverBody`/`ReceiverSingleton` handling. See
+    /// `BlockReceiver`'s doc comment for the semantics.
+    ///
+    /// Deliberately does not reuse `is_enclosing_receiver`: its `"self"` arm
+    /// is guarded on `singleton_scope == Outside`, which is correct for a
+    /// *definition* receiver (`def self.foo` inside `class << self` really
+    /// does denote one level further out) but wrong for a *call* receiver,
+    /// where `self.class_eval` is `class_eval` no matter what singleton
+    /// scope we're in. The constant arm's semantics are shared, via
+    /// `matches_enclosing_scope_path`.
+    ///
+    /// When `self_is_instance` is set, a receiverless call and a literal
+    /// `self` receiver both become `Unresolvable` instead of `Current`:
+    /// `self` in a plain instance-method body is an instance the extractor
+    /// cannot name, and `self.instance_eval { def gen; end }` behaves
+    /// identically to the receiverless form there (verified against Ruby
+    /// 3.4.7 — both define the method on that one instance, not the class).
+    /// This is deliberately a *different* predicate from
+    /// `is_enclosing_receiver`'s `"self"` arm: inside `class << self`,
+    /// `self` is a module and `self_is_instance` is `false`, so a
+    /// receiverless `class_eval { def m; end }` there still correctly
+    /// resolves to `Current` and defines `C.m`. Constant receivers are
+    /// unaffected either way — `C.class_eval` names the class no matter what
+    /// body it's written in.
+    fn classify_block_receiver(state: &ExtractionState, node: TsNode<'_>) -> BlockReceiver {
+        let Some(receiver) = node.child_by_field_name("receiver") else {
+            return if state.self_is_instance {
+                BlockReceiver::Unresolvable
+            } else {
+                BlockReceiver::Current
+            };
+        };
+        match receiver.kind() {
+            "self" if state.self_is_instance => BlockReceiver::Unresolvable,
+            "self" => BlockReceiver::Current,
+            "constant" | "scope_resolution"
+                if state.class_depth > 0
+                    && Self::matches_enclosing_scope_path(state, &state.node_text(receiver)) =>
+            {
+                BlockReceiver::EnclosingConstant
+            }
+            _ => BlockReceiver::Unresolvable,
+        }
+    }
+
+    /// True if `node` (a `concern`/`concerning` call) has a first argument
+    /// that is a static literal naming a valid Ruby constant.
+    ///
+    /// `Module#concern`/`#concerning` (activesupport 8.1.3) both route their
+    /// `topic` argument to `const_set topic, …`, so this mirrors the shape
+    /// Ruby itself requires: `const_set` raises `NameError: wrong constant
+    /// name` for anything not starting with an uppercase letter. Accepts a
+    /// `simple_symbol` (`:Trackable`) or a `delimited_symbol`/`string` whose
+    /// content is statically decodable — reusing
+    /// `static_delimited_symbol_name`'s interpolation check, since both node
+    /// shapes are structurally identical (a sequence of `string_content`
+    /// children, or an `interpolation`/`escape_sequence` that makes the
+    /// content unknowable at extraction time). A missing argument list, a
+    /// non-literal first argument, or a lowercase name returns `false`.
+    fn concern_topic_is_constant_name(state: &ExtractionState, node: TsNode<'_>) -> bool {
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return false;
+        };
+        let mut cursor = arguments.walk();
+        let Some(topic) = arguments.named_children(&mut cursor).next() else {
+            return false;
+        };
+        let name = match topic.kind() {
+            "simple_symbol" => Some(state.node_text(topic).trim_start_matches(':').to_string()),
+            "delimited_symbol" | "string" => Self::static_delimited_symbol_name(state, topic),
+            _ => None,
+        };
+        name.is_some_and(|n| n.starts_with(|c: char| c.is_ascii_uppercase()))
+    }
+
+    /// Traverse a `do…end`/`{…}` block attached to a call, so defs written
+    /// inside `included do`, `class_eval do`, `class_methods do`, an
+    /// arbitrary RSpec-style `describe … do` block, or an ordinary
+    /// `[1].each do … end` are extracted instead of falling through
+    /// undispatched.
+    ///
+    /// Dispatches on `BlockScope` (see its doc comment for the underlying
+    /// Ruby semantics):
+    ///
+    /// - `Inherit` — no state change of any kind. `private` before the block
+    ///   applies inside it, and `private` set inside the block is still in
+    ///   effect after it (both directions confirmed against Ruby 3.4.5).
+    /// - `Opaque` — skipped outright: the block's definee is a brand-new
+    ///   anonymous class/module with no node to attach it to.
+    /// - `ReceiverBody`/`ReceiverSingleton` — classify the receiver (see
+    ///   `BlockReceiver`): an unresolvable receiver (`Foo.class_eval do …
+    ///   end`, `obj.instance_eval`) is skipped, same reasoning as
+    ///   `visit_mixin_directive`. Otherwise the block gets a fresh public
+    ///   visibility frame (mirroring `visit_class`/`visit_module`/
+    ///   `visit_singleton_class`) and `singleton_scope` is set: `Enclosing`
+    ///   for `ReceiverSingleton`; for `ReceiverBody` with an
+    ///   `EnclosingConstant` receiver (`C.class_eval` naming the class
+    ///   itself), forced to `Outside` so the block's defs land as instance
+    ///   methods even inside `class << self`, where the ambient scope is
+    ///   `Enclosing` but `C.class_eval`'s body is not.
+    ///
+    /// Two things this doesn't model, called out because they're easy to
+    /// mistake for bugs: `included do` really targets the *includer*, not
+    /// the enclosing module (attributing it to the enclosing module is the
+    /// only option available at extraction time), and
+    /// `class << self; self.instance_eval { … }` resolves to `Enclosing`
+    /// rather than a second-order singleton.
+    ///
+    /// A receiverless `concern`/`concerning` block is handled before any of
+    /// the above: Rails' `Module#concern`/`#concerning` build a module that
+    /// is already `extend`ed by `ActiveSupport::Concern` (probed against
+    /// activesupport 8.1.3), so their bodies are genuine Concern DSL with no
+    /// visible `extend` to serve as evidence. This is the one deliberate
+    /// exception to `Inherit`'s "no state change of any kind": `in_concern_scope`
+    /// is forced on for the traversal since it's scope metadata, not
+    /// definee/visibility state, and the block is otherwise treated exactly
+    /// like `Inherit` (no `visibility_mode`/`singleton_scope` touch).
+    ///
+    /// Unlike `included`/`prepended`/`class_methods`, `concern`/`concerning`
+    /// have no `in_concern_scope` gate available — they're the evidence
+    /// source, not consumers of it. Instead they're gated on shape:
+    /// `Module#concerning`/`#concern` (activesupport 8.1.3) both route their
+    /// first argument to `const_set`, which raises `NameError: wrong
+    /// constant name` for anything not starting with an uppercase letter, so
+    /// `concern_topic_is_constant_name` requires a statically-decodable
+    /// literal naming a valid constant. This narrows the collision window
+    /// with a hand-rolled `concern`/`concerning` to one that *also* takes a
+    /// constant-name topic and nests one of the three DSL names — it doesn't
+    /// eliminate it, since per-file Rails evidence is unavailable under
+    /// autoloading. The consequence is asymmetric with the inner three's
+    /// gate, too: a false positive here only *enables* `in_concern_scope`
+    /// for the block, whereas one on `included`/`prepended`/`class_methods`
+    /// directly misclassifies a definition.
+    ///
+    /// No `node_stack`/`class_depth` push in any branch: a block opens no
+    /// definition scope, so the enclosing class/module stays the parent,
+    /// and a top-level `describe … do` still recurses (its defs become
+    /// `Function`s, matching a bare top-level `def`).
+    ///
+    /// Delegates to `visit_node` on the `block`/`do_block` node itself
+    /// rather than reaching directly into its `body` field, so the block's
+    /// contents flow through the same container-arm dispatch as every
+    /// other statement container above.
+    fn visit_block_body(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(block_node) = node.child_by_field_name("block") else {
+            return;
+        };
+        let method_name = node
+            .child_by_field_name("method")
+            .map(|m| state.node_text(m));
+        let receiver_text = node
+            .child_by_field_name("receiver")
+            .map(|r| state.node_text(r));
+        let receiver = Self::classify_block_receiver(state, node);
+
+        if matches!(method_name.as_deref(), Some("concern" | "concerning"))
+            && receiver == BlockReceiver::Current
+            && state.class_depth > 0
+            && Self::concern_topic_is_constant_name(state, node)
+        {
+            let saved_in_concern_scope = state.in_concern_scope;
+            state.in_concern_scope = true;
+            Self::visit_node(state, block_node);
+            state.in_concern_scope = saved_in_concern_scope;
+            return;
+        }
+
+        let scope = Self::classify_block_scope(
+            receiver_text.as_deref(),
+            receiver,
+            method_name.as_deref(),
+            state.in_concern_scope,
+        );
+
+        match scope {
+            BlockScope::Inherit => {
+                Self::visit_node(state, block_node);
+                return;
+            }
+            BlockScope::Opaque => return,
+            BlockScope::ReceiverBody | BlockScope::ReceiverSingleton => {}
+        }
+
+        if receiver == BlockReceiver::Unresolvable {
+            return;
+        }
+
+        let saved_singleton_scope = state.singleton_scope;
+        match (scope, receiver) {
+            (BlockScope::ReceiverSingleton, _) => {
+                state.singleton_scope = SingletonScope::Enclosing;
+            }
+            (BlockScope::ReceiverBody, BlockReceiver::EnclosingConstant) => {
+                state.singleton_scope = SingletonScope::Outside;
+            }
+            _ => {}
+        }
+        let saved_visibility_mode = state.visibility_mode.clone();
+        state.visibility_mode = Visibility::Pub;
+
+        Self::visit_node(state, block_node);
+
+        state.visibility_mode = saved_visibility_mode;
+        state.singleton_scope = saved_singleton_scope;
+    }
+
+    /// Walk an expression looking for block bodies to traverse, so a block
+    /// written outside statement position — `CALLBACK = proc do … end`,
+    /// `foo(list.map { … })`, `list.map { … }.first`, `-> { … }` — still
+    /// reaches `visit_block_body`. Mirrors `extract_call_sites`'s descent and
+    /// skip-list.
+    fn visit_expression_blocks(state: &mut ExtractionState, node: TsNode<'_>) {
+        match node.kind() {
+            // Definition scopes are dispatched by visit_node in statement
+            // position; never re-enter them from an expression. (`x = def f; end`
+            // is valid Ruby but stays unextracted — unchanged, out of scope.)
+            "method" | "singleton_method" | "class" | "module" | "singleton_class" => {}
+            "call" | "method_call" => {
+                // Receiver and arguments evaluate before the block in Ruby, so
+                // descend them first; then the call's own block, classified.
+                // Skipping the block field here is what prevents double-traversal.
+                let own_block = node.child_by_field_name("block");
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if own_block.map(|b| b.id()) != Some(child.id()) {
+                        Self::visit_expression_blocks(state, child);
+                    }
+                }
+                Self::visit_block_body(state, node);
+            }
+            // A block not attached to a call we classified — a lambda literal's
+            // body. No call name to classify, and Ruby leaves the definee
+            // unchanged, so this is plain `Inherit`: delegate to visit_node.
+            "do_block" | "block" => Self::visit_node(state, node),
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    Self::visit_expression_blocks(state, child);
+                }
             }
         }
     }
