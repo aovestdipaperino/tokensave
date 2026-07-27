@@ -46,6 +46,25 @@ pub(crate) struct ExtractionState {
     /// Which Ruby singleton scope the traversal is currently inside. Other
     /// extractors leave it at `Outside`.
     pub(crate) singleton_scope: SingletonScope,
+    /// Whether the traversal is currently inside a Ruby module body that has
+    /// evidence of being an `ActiveSupport::Concern` (an `extend
+    /// ActiveSupport::Concern` seen so far in this body, or a receiverless
+    /// `concern`/`concerning` block, which Rails builds pre-extended). Gates
+    /// the `included`/`prepended`/`class_methods` DSL classification in
+    /// `classify_block_scope` — those names raise `NoMethodError` without
+    /// Concern, so without this evidence they're ordinary calls. Scoped by
+    /// what `self` denotes in the current body: it survives into a `def
+    /// self.x` singleton-method body (where `self` is still the module), but
+    /// not into a plain `def x` or `class << self` body (where `self` is the
+    /// instance or the singleton class instead). Other extractors leave it
+    /// `false`.
+    pub(crate) in_concern_scope: bool,
+    /// Whether `self` in the body currently being traversed is an *instance* the
+    /// extractor cannot name, rather than the enclosing class/module. True inside a
+    /// plain `def foo` body (and a `def foo` inside `class << some_object`); false
+    /// in class/module bodies, `def self.foo` bodies, and `class << …` bodies,
+    /// where `self` is a module. Other extractors leave it `false`.
+    pub(crate) self_is_instance: bool,
 }
 
 /// Which Ruby singleton scope the traversal is currently inside. `class << expr`
@@ -84,6 +103,8 @@ impl ExtractionState {
             singleton_method_ids: Vec::new(),
             foreign_singleton_method_ids: Vec::new(),
             singleton_scope: SingletonScope::Outside,
+            in_concern_scope: false,
+            self_is_instance: false,
         }
     }
 
