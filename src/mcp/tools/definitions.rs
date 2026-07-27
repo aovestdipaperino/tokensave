@@ -63,44 +63,24 @@ fn def_always_load(
     }
 }
 
-/// Computes the call budget based on project size.
-pub fn explore_call_budget(total_nodes: u64) -> u8 {
-    match total_nodes {
-        0..=5_000 => 3,
-        5_001..=20_000 => 4,
-        20_001..=80_000 => 5,
-        80_001..=250_000 => 7,
-        _ => 10,
-    }
-}
-
-/// Generates the `tokensave_context` description with a dynamic call budget.
+/// The `tokensave_context` description.
 ///
 /// The description must stay stable across re-indexes so MCP clients that
 /// fingerprint the system prompt (tool schemas are spliced into it) keep their
-/// prompt cache. The live node count is therefore surfaced in tool *results*
-/// (see `tokensave_status`), never in this schema text. See issue #260.
-pub fn context_description(budget: u8) -> String {
-    format!(
-        "Build an AI-ready context for a task description. Returns relevant symbols, \
-         relationships, and optionally code snippets.\n\n\
-         CALL BUDGET: {budget} calls maximum for this project. \
-         Stop after {budget} calls. If the question is not fully answered, synthesise \
-         from what you have — do not exceed the budget."
-    )
-}
-
-/// Returns tool definitions with a dynamic call budget for `tokensave_context`.
-pub fn get_tool_definitions_with_budget(budget: u8) -> Vec<ToolDefinition> {
-    let mut defs = get_tool_definitions();
-    // Replace the context tool's description with the budgeted version
-    for def in &mut defs {
-        if def.name == "tokensave_context" {
-            def.description = context_description(budget);
-        }
-    }
-    defs
-}
+/// prompt cache. Anything volatile — the live node count, for instance — is
+/// surfaced in tool *results* (see `tokensave_status`), never in this schema
+/// text. See issue #260.
+///
+/// This is why the call budget is gone rather than merely relaxed: it was
+/// computed from the graph's node count, so its value moved as the project
+/// grew across a size tier, and every move rewrote these bytes. Because the
+/// description sits inside the system prompt, a changed byte invalidates the
+/// whole cached prefix — the client discards the cache and pays to rebuild it,
+/// so a budget meant to save tokens was quietly blowing up the prompt cache
+/// and costing far more than the calls it discouraged. Keep this a `const`;
+/// never derive any part of it from graph state.
+pub const CONTEXT_DESCRIPTION: &str = "Build an AI-ready context for a task description. \
+     Returns relevant symbols, relationships, and optionally code snippets.";
 
 /// Returns the list of all tool definitions exposed by this MCP server.
 ///
@@ -291,7 +271,7 @@ fn def_context() -> ToolDefinition {
     def_always_load(
         "tokensave_context",
         "Task Context",
-        &context_description(3),
+        CONTEXT_DESCRIPTION,
         json!({
             "type": "object",
             "properties": {
@@ -2543,38 +2523,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_explore_call_budget_tiers() {
-        assert_eq!(explore_call_budget(0), 3);
-        assert_eq!(explore_call_budget(5000), 3);
-        assert_eq!(explore_call_budget(5001), 4);
-        assert_eq!(explore_call_budget(20000), 4);
-        assert_eq!(explore_call_budget(20001), 5);
-        assert_eq!(explore_call_budget(80000), 5);
-        assert_eq!(explore_call_budget(80001), 7);
-        assert_eq!(explore_call_budget(250000), 7);
-        assert_eq!(explore_call_budget(250001), 10);
-    }
-
-    #[test]
-    fn test_context_description_contains_budget() {
-        let desc = context_description(4);
-        assert!(
-            desc.contains("4 calls maximum"),
-            "description should contain budget: {desc}"
-        );
-        // The node count must NOT leak into the schema text — it is volatile
-        // and would poison MCP client prompt caches (issue #260).
-        assert!(
-            !desc.contains("nodes"),
-            "description must not contain a node count: {desc}"
-        );
-    }
-
-    #[test]
-    fn test_get_tool_definitions_with_budget() {
-        let defs = get_tool_definitions_with_budget(4);
-        let context_tool = defs.iter().find(|d| d.name == "tokensave_context").unwrap();
-        assert!(context_tool.description.contains("4 calls maximum"));
+    fn context_description_carries_no_call_budget() {
+        let context_tool = get_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == "tokensave_context")
+            .unwrap();
+        // A call budget capped exploration mid-question; it is gone for good.
+        assert!(!context_tool.description.contains("CALL BUDGET"));
+        assert!(!context_tool.description.contains("calls maximum"));
+        // Volatile values must never leak into schema text — they poison MCP
+        // client prompt caches (issue #260).
         assert!(!context_tool.description.contains("nodes"));
     }
 
