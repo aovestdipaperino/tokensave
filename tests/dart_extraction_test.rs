@@ -602,3 +602,94 @@ fn test_dart_field_type_uses_ref() {
         result.unresolved_refs
     );
 }
+
+// --- Regression tests: calls inside closures and local functions (P0-1) ---
+//
+// `function_expression` (anonymous closures: `() { … }`, `(x) => …`) and
+// `lambda_expression` (named local functions) have no graph node of their
+// own, so their calls must be attributed to the enclosing named symbol
+// rather than discarded. Same fix as TypeScript #209 for nested arrows.
+
+fn calls_from(result: &ExtractionResult, from_name_contains: &str) -> Vec<String> {
+    let ids: Vec<&str> = result
+        .nodes
+        .iter()
+        .filter(|n| n.name.contains(from_name_contains))
+        .map(|n| n.id.as_str())
+        .collect();
+    result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls && ids.contains(&r.from_node_id.as_str()))
+        .map(|r| r.reference_name.clone())
+        .collect()
+}
+
+#[test]
+fn test_dart_closure_call_sites() {
+    let result = extract(
+        "class Widget {\n  void build() {\n    button(onPressed: () { _handleTap(); });\n  }\n  void _handleTap() {}\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_handleTap"),
+        "expected build() to call _handleTap, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_arrow_closure_call_sites() {
+    let result =
+        extract("class Widget {\n  void build() {\n    xs.map((u) => _encode(u));\n  }\n}");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_encode"),
+        "expected build() to call _encode, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_local_function_call_sites() {
+    let result = extract(
+        "class Widget {\n  void build() {\n    void helper() {\n      _work();\n    }\n  }\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_work"),
+        "expected build() to call _work, got {build_calls:?}"
+    );
+    // The local function's own name (`helper`, from `function_signature`'s
+    // `name` field) must not be misread as a call to itself.
+    assert!(
+        !build_calls.iter().any(|c| c == "helper"),
+        "helper's own signature name must not produce a bogus Calls ref, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_closure_positions_reachable() {
+    let result = extract(
+        "class Widget {\n  \
+           void fromLocalVar() {\n    final cb = () { _fromLocalVar(); };\n  }\n\n  \
+           Function fromReturn() {\n    return () => _fromReturn();\n  }\n\n  \
+           List<Widget> fromCollectionIf(bool flag) {\n    return [ if (flag) Btn(onPressed: () => _fromCollectionIf()) ];\n  }\n\n  \
+           void fromNestedClosure() {\n    List.builder(itemBuilder: (c, i) => Btn(onPressed: () => _fromNestedClosure(i)));\n  }\n\
+         }",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    for (enclosing, callee) in [
+        ("fromLocalVar", "_fromLocalVar"),
+        ("fromReturn", "_fromReturn"),
+        ("fromCollectionIf", "_fromCollectionIf"),
+        ("fromNestedClosure", "_fromNestedClosure"),
+    ] {
+        let calls = calls_from(&result, enclosing);
+        assert!(
+            calls.iter().any(|c| c == callee),
+            "expected {enclosing}() to call {callee} (closure position not reached), got {calls:?}"
+        );
+    }
+}
