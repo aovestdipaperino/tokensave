@@ -188,10 +188,11 @@ impl<'a> ContextBuilder<'a> {
         symbols: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<Node>> {
-        // Base score for an exact name match. Far above any realistic BM25
-        // score (~1e-6 in practice), so a perfect name match always wins the
-        // MAX merge over FTS noise and ranks ahead of it.
-        const EXACT_MATCH_SCORE: f64 = 20.0;
+        // Base score for an exact name match. Negated-BM25 scores from
+        // `search_nodes_bounded` run roughly 5–30 before structural boosts,
+        // so this must sit well above that band for a perfect name match to
+        // win the MAX merge over FTS hits and rank ahead of them.
+        const EXACT_MATCH_SCORE: f64 = 100.0;
         debug_assert!(
             !query.is_empty(),
             "find_entry_points called with empty query"
@@ -261,12 +262,17 @@ impl<'a> ContextBuilder<'a> {
         // "screen") previously consumed the whole pool cap before later, more
         // discriminating terms ("favicon", "oauth") were ever searched
         // (#264). Per-term work stays bounded: each fetch is a ranked
-        // top-`search_limit` query.
+        // top-`fetch_limit` query.
+        // Fetch wider than the BFS-root cap: `search_limit` (default 3) bounds
+        // how many roots seed traversal (#120), but 3 FTS rows per term is too
+        // few for the right symbol to survive merging — a term's top rows are
+        // often file nodes or tests. The root cap below still applies.
+        let fetch_limit = (options.search_limit * 3).max(10);
         let mut per_term: Vec<VecDeque<SearchResult>> = Vec::with_capacity(fts_terms.len());
         for term in &fts_terms {
             per_term.push(
                 self.db
-                    .search_nodes_bounded(term, options.search_limit)
+                    .search_nodes_bounded(term, fetch_limit)
                     .await?
                     .into(),
             );
@@ -302,9 +308,19 @@ impl<'a> ContextBuilder<'a> {
 
         // --- Exact name supplement ---
         // Ensures perfect name matches aren't buried by BM25 noise.
+        //
+        // Only symbols the user actually wrote qualify: a verbatim query
+        // token ("tokensave_context", "UserService") or a synthesized
+        // multi-word compound ("PromoBanner" from "promo banner", #202).
+        // Single-word segments derived by compound-splitting do NOT — the
+        // split of "tokensave_context" yields "tokensave", which
+        // case-insensitively exact-matches the repo's `TokenSave` god
+        // object, and the API-family supplement then floods the candidate
+        // pool with every one of its methods at exact-tier scores.
         let exact_names: Vec<String> = symbols
             .iter()
             .filter(|s| !s.contains("::") && s.len() >= 3)
+            .filter(|s| is_authored_symbol(s, query, &options.extra_keywords))
             .cloned()
             .collect();
         if !exact_names.is_empty() {
@@ -1074,6 +1090,19 @@ fn classify_token(
     }
 }
 
+/// Returns `true` when `symbol` plausibly came from the user's own words:
+/// a multi-word compound (`PromoBanner`, `process_request`), a verbatim
+/// whitespace-delimited query token (modulo surrounding punctuation), or an
+/// explicitly supplied extra keyword. Single-word segments produced by
+/// compound-splitting fail all three tests and are rejected.
+fn is_authored_symbol(symbol: &str, query: &str, extra_keywords: &[String]) -> bool {
+    split_compound(symbol).len() >= 2
+        || query
+            .split_whitespace()
+            .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_') == symbol)
+        || extra_keywords.iter().any(|k| k == symbol)
+}
+
 /// Split a compound name into individual words.
 ///
 /// Handles camelCase, `PascalCase`, and `snake_case`:
@@ -1404,6 +1433,47 @@ mod tests {
     fn test_extract_snake_case() {
         let symbols = extract_symbols_from_query("fix the process_request function");
         assert!(symbols.contains(&"process_request".to_string()));
+    }
+
+    // --- exact-name provenance ---
+
+    #[test]
+    fn test_authored_symbol_multiword_compound_passes() {
+        // Compounds can only come from the query or synthesis — always eligible.
+        assert!(is_authored_symbol("PromoBanner", "anything", &[]));
+        assert!(is_authored_symbol("process_request", "anything", &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_verbatim_token_passes() {
+        let q = "how does tokensave_context build its result?";
+        assert!(is_authored_symbol("tokensave_context", q, &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_trims_punctuation() {
+        assert!(is_authored_symbol(
+            "tokensave_context",
+            "call tokensave_context.",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_authored_symbol_derived_segment_rejected() {
+        // "tokensave" is a split segment of "tokensave_context", not a word
+        // the user wrote — it must not qualify for exact-name matching.
+        let q = "how does tokensave_context build its result?";
+        assert!(!is_authored_symbol("tokensave", q, &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_extra_keyword_passes() {
+        assert!(is_authored_symbol(
+            "ranker",
+            "unrelated query",
+            &["ranker".to_string()]
+        ));
     }
 
     #[test]

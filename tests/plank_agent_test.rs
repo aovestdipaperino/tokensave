@@ -61,6 +61,85 @@ fn test_install_creates_mcp_json() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(args, vec!["serve"], "args should be [\"serve\"]");
+
+    // Without primaryTools plank inlines every tokensave tool schema into its
+    // system prompt, which breaks the model's tool-call formatting.
+    let primary = ts["primaryTools"]
+        .as_array()
+        .expect("primaryTools should be an array");
+    assert!(
+        !primary.is_empty(),
+        "primaryTools must be non-empty to cap plank's prompt size"
+    );
+    assert!(
+        primary.len() <= 12,
+        "primaryTools should stay small, got {}",
+        primary.len()
+    );
+    assert!(
+        primary
+            .iter()
+            .all(|t| t.as_str().is_some_and(|s| s.starts_with("tokensave_"))),
+        "every primaryTools entry should be a tokensave tool name"
+    );
+    assert!(
+        primary.iter().any(|t| t == "tokensave_context"),
+        "tokensave_context is the entry-point tool and must be primary"
+    );
+}
+
+#[test]
+fn test_install_preserves_curated_primary_tools() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let mcp_path = plank_global_config_path(home);
+    std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers": {"tokensave": {"command": "tokensave", "args": ["serve"],
+           "primaryTools": ["tokensave_search"]}}}"#,
+    )
+    .unwrap();
+
+    PlankIntegration.install(&make_ctx(home)).unwrap();
+
+    let config = read_json(&mcp_path);
+    let primary = config["mcpServers"]["tokensave"]["primaryTools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        primary.len(),
+        1,
+        "a user's curated primaryTools must survive reinstall, got {primary:?}"
+    );
+    assert_eq!(primary[0].as_str().unwrap(), "tokensave_search");
+}
+
+#[test]
+fn test_install_replaces_unusable_primary_tools() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    let mcp_path = plank_global_config_path(home);
+    std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+    // Empty array and wrong type both fall back to the default list.
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers": {"tokensave": {"command": "tokensave", "args": ["serve"],
+           "primaryTools": []}}}"#,
+    )
+    .unwrap();
+
+    PlankIntegration.install(&make_ctx(home)).unwrap();
+
+    let config = read_json(&mcp_path);
+    assert!(
+        config["mcpServers"]["tokensave"]["primaryTools"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "an empty primaryTools array should be replaced with the default list"
+    );
 }
 
 #[test]

@@ -68,6 +68,23 @@ pub fn path_boost(file_path: &str) -> f64 {
     1.0
 }
 
+/// Down-weights test symbols that `path_boost` cannot see: an inline
+/// `#[cfg(test)] mod tests` in `src/*.rs` carries a production file path, so
+/// its `test_*` functions rank as first-party code and can outrank the very
+/// symbol they exercise. Detect them by symbol shape — a `tests`/`test`
+/// module segment in the qualified name, or a `test_` name prefix — and
+/// apply the same 0.4 factor as test files. Soft, like every path factor:
+/// an exact-name match still surfaces via the exact-name supplement.
+pub fn test_symbol_penalty(name: &str, qualified_name: &str) -> f64 {
+    if name.starts_with("test_")
+        || qualified_name.contains("::tests::")
+        || qualified_name.contains("::test::")
+    {
+        return 0.4;
+    }
+    1.0
+}
+
 /// Path segments of generated / vendored / dependency trees that almost
 /// never contain the application code a user is searching for. Matched as
 /// `/segment/` (or as a leading `segment/`) against the `/`-normalized path.
@@ -205,7 +222,8 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
         let boost = kind_boost(&candidate.node.kind)
             * visibility_boost(&candidate.node.visibility)
             * path_boost(&candidate.node.file_path)
-            * path_rank_multiplier(&candidate.node.file_path);
+            * path_rank_multiplier(&candidate.node.file_path)
+            * test_symbol_penalty(&candidate.node.name, &candidate.node.qualified_name);
         candidate.score *= boost;
     }
     candidates.sort_by(|a, b| {
@@ -411,6 +429,36 @@ mod tests {
         assert_eq!(path_boost("tests/sync_test.rs"), 0.4);
         assert_eq!(path_boost("test/fixtures/foo.js"), 0.1);
         assert_eq!(path_boost("src/components/Button.test.tsx"), 0.4);
+    }
+
+    #[test]
+    fn test_symbol_penalty_inline_tests() {
+        // Inline #[cfg(test)] fns carry a production path — penalty comes
+        // from symbol shape instead.
+        assert_eq!(
+            test_symbol_penalty(
+                "test_stem_variants_tion_suffix",
+                "src/context/builder.rs::tests::test_stem_variants_tion_suffix"
+            ),
+            0.4
+        );
+        assert_eq!(
+            test_symbol_penalty("helper", "src/context/builder.rs::tests::helper"),
+            0.4
+        );
+        // The symbol the tests exercise stays untouched.
+        assert_eq!(
+            test_symbol_penalty(
+                "generate_stem_variants",
+                "src/context/builder.rs::generate_stem_variants"
+            ),
+            1.0
+        );
+        // "test" as part of a normal word is not a test module segment.
+        assert_eq!(
+            test_symbol_penalty("attest", "src/attestation.rs::attest"),
+            1.0
+        );
     }
 
     #[test]
