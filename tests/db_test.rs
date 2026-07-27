@@ -533,3 +533,36 @@ async fn test_migrate_is_idempotent_at_latest() {
         .expect("migrate");
     assert!(!migrated, "second migrate should be a no-op");
 }
+
+#[tokio::test]
+async fn test_search_nodes_bounded_returns_real_descending_scores() {
+    let (db, _dir) = setup_db().await;
+    // One strong match (term in name) and one weak match (term only in docstring).
+    let strong = sample_node("s", "ranking_engine", "src/rank.rs");
+    let mut weak = sample_node("w", "helper", "src/helper.rs");
+    weak.docstring = Some("supports the ranking pipeline".to_string());
+    db.insert_node(&strong).await.expect("insert strong");
+    db.insert_node(&weak).await.expect("insert weak");
+
+    let results = db
+        .search_nodes_bounded("ranking", 10)
+        .await
+        .expect("bounded search");
+    assert!(results.len() >= 2, "expected both rows, got {results:?}");
+    assert!(
+        results.iter().all(|r| r.score > 0.0),
+        "scores must be positive negated-BM25, got {results:?}"
+    );
+    assert!(
+        (results[0].score - results[1].score).abs() > f64::EPSILON,
+        "scores must differentiate name vs docstring matches, got {results:?}"
+    );
+    assert!(
+        results[0].score >= results[1].score,
+        "results must be score-descending"
+    );
+    assert_eq!(
+        results[0].node.id, "s",
+        "name match should outrank docstring"
+    );
+}
