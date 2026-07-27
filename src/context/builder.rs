@@ -308,9 +308,19 @@ impl<'a> ContextBuilder<'a> {
 
         // --- Exact name supplement ---
         // Ensures perfect name matches aren't buried by BM25 noise.
+        //
+        // Only symbols the user actually wrote qualify: a verbatim query
+        // token ("tokensave_context", "UserService") or a synthesized
+        // multi-word compound ("PromoBanner" from "promo banner", #202).
+        // Single-word segments derived by compound-splitting do NOT — the
+        // split of "tokensave_context" yields "tokensave", which
+        // case-insensitively exact-matches the repo's `TokenSave` god
+        // object, and the API-family supplement then floods the candidate
+        // pool with every one of its methods at exact-tier scores.
         let exact_names: Vec<String> = symbols
             .iter()
             .filter(|s| !s.contains("::") && s.len() >= 3)
+            .filter(|s| is_authored_symbol(s, query, &options.extra_keywords))
             .cloned()
             .collect();
         if !exact_names.is_empty() {
@@ -1080,6 +1090,19 @@ fn classify_token(
     }
 }
 
+/// Returns `true` when `symbol` plausibly came from the user's own words:
+/// a multi-word compound (`PromoBanner`, `process_request`), a verbatim
+/// whitespace-delimited query token (modulo surrounding punctuation), or an
+/// explicitly supplied extra keyword. Single-word segments produced by
+/// compound-splitting fail all three tests and are rejected.
+fn is_authored_symbol(symbol: &str, query: &str, extra_keywords: &[String]) -> bool {
+    split_compound(symbol).len() >= 2
+        || query
+            .split_whitespace()
+            .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_') == symbol)
+        || extra_keywords.iter().any(|k| k == symbol)
+}
+
 /// Split a compound name into individual words.
 ///
 /// Handles camelCase, `PascalCase`, and `snake_case`:
@@ -1410,6 +1433,47 @@ mod tests {
     fn test_extract_snake_case() {
         let symbols = extract_symbols_from_query("fix the process_request function");
         assert!(symbols.contains(&"process_request".to_string()));
+    }
+
+    // --- exact-name provenance ---
+
+    #[test]
+    fn test_authored_symbol_multiword_compound_passes() {
+        // Compounds can only come from the query or synthesis — always eligible.
+        assert!(is_authored_symbol("PromoBanner", "anything", &[]));
+        assert!(is_authored_symbol("process_request", "anything", &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_verbatim_token_passes() {
+        let q = "how does tokensave_context build its result?";
+        assert!(is_authored_symbol("tokensave_context", q, &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_trims_punctuation() {
+        assert!(is_authored_symbol(
+            "tokensave_context",
+            "call tokensave_context.",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn test_authored_symbol_derived_segment_rejected() {
+        // "tokensave" is a split segment of "tokensave_context", not a word
+        // the user wrote — it must not qualify for exact-name matching.
+        let q = "how does tokensave_context build its result?";
+        assert!(!is_authored_symbol("tokensave", q, &[]));
+    }
+
+    #[test]
+    fn test_authored_symbol_extra_keyword_passes() {
+        assert!(is_authored_symbol(
+            "ranker",
+            "unrelated query",
+            &["ranker".to_string()]
+        ));
     }
 
     #[test]
