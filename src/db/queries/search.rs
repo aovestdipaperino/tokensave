@@ -246,8 +246,9 @@ impl Database {
     /// term before `LIMIT` applies. Without the ordering the returned rows are
     /// effectively arbitrary (ascending rowid), which made context building
     /// miss strongly matching symbols for generic terms like "icon" (#264).
-    /// Scores stay flat at `1.0` because context building layers its own
-    /// multi-signal ranking after merging several search channels.
+    /// Scores carry the negated BM25 rank (higher = better), matching
+    /// `search_nodes_fts` — flattening them to `1.0` erased FTS relevance
+    /// before context building's multi-signal reranking ever saw it.
     pub async fn search_nodes_bounded(
         &self,
         query: &str,
@@ -282,11 +283,12 @@ impl Database {
             .query(
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
-                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands
+                    n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
+                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0) AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0)
+                 ORDER BY rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -305,7 +307,11 @@ impl Database {
                 message: format!("failed to map bounded search result: {e}"),
                 operation: "search_nodes_bounded".to_string(),
             })?;
-            results.push(SearchResult { node, score: 1.0 });
+            let rank: f64 = row.get::<f64>(28).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read bounded rank: {e}"),
+                operation: "search_nodes_bounded".to_string(),
+            })?;
+            results.push(SearchResult { node, score: -rank });
         }
         Ok(results)
     }

@@ -562,10 +562,140 @@ fn run_brew_upgrade(current: &str) -> Result<String> {
     }
 }
 
+/// A running tokensave process other than this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningProcess {
+    pub pid: u32,
+    /// Command line (or process name when the command line is unavailable).
+    pub description: String,
+}
+
+/// Is `name` the tokensave binary (platform-dependent extension included)?
+fn is_tokensave_process_name(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    stem == "tokensave"
+}
+
+/// List running tokensave processes, excluding this one.
+///
+/// These are mostly MCP servers spawned by editors/agents. They hold the old
+/// binary's DB handles open, so upgrading under them can leave a server
+/// running code that no longer matches the on-disk index format.
+fn find_running_processes() -> Vec<RunningProcess> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let self_pid = std::process::id();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always),
+    );
+
+    let mut found: Vec<RunningProcess> = sys
+        .processes()
+        .values()
+        .filter(|p| {
+            let pid = p.pid().as_u32();
+            pid != self_pid && is_tokensave_process_name(&p.name().to_string_lossy())
+        })
+        .map(|p| {
+            let cmd: Vec<String> = p
+                .cmd()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let description = if cmd.is_empty() {
+                p.name().to_string_lossy().into_owned()
+            } else {
+                cmd.join(" ")
+            };
+            RunningProcess {
+                pid: p.pid().as_u32(),
+                description,
+            }
+        })
+        .collect();
+    found.sort_by_key(|p| p.pid);
+    found
+}
+
+/// Terminate `procs`; returns the number successfully signalled.
+fn kill_processes(procs: &[RunningProcess]) -> usize {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::new(),
+    );
+
+    let mut killed = 0;
+    for proc in procs {
+        let pid = Pid::from_u32(proc.pid);
+        match sys.process(pid) {
+            Some(p) if p.kill() => {
+                eprintln!("  \x1b[32m✔\x1b[0m killed pid {}", proc.pid);
+                killed += 1;
+            }
+            Some(_) => eprintln!("  \x1b[33m!\x1b[0m failed to kill pid {}", proc.pid),
+            // Already gone between listing and killing — treat as success.
+            None => killed += 1,
+        }
+    }
+    killed
+}
+
+/// Handle tokensave processes that are still running before an upgrade.
+///
+/// With `kill` set, terminate them without asking. Otherwise ask, but only
+/// when there is something to kill and stdin is a TTY; a non-interactive run
+/// just warns and continues.
+fn handle_running_processes(kill: bool) {
+    use std::io::{IsTerminal, Write};
+
+    let procs = find_running_processes();
+    if procs.is_empty() {
+        return;
+    }
+
+    eprintln!("{} other tokensave process(es) running:", procs.len());
+    for p in &procs {
+        eprintln!("  • pid {} — {}", p.pid, p.description);
+    }
+
+    if !kill {
+        if !std::io::stdin().is_terminal() {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m Continuing without killing them (non-interactive; use --kill)."
+            );
+            return;
+        }
+        eprint!("  Kill them before upgrading? [y/N] ");
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err() {
+            return;
+        }
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            eprintln!("  Leaving them running.");
+            return;
+        }
+    }
+
+    let killed = kill_processes(&procs);
+    eprintln!("Killed {killed}/{} process(es).", procs.len());
+}
+
 /// Check for a newer version and perform the upgrade if one is available.
 ///
+/// With `kill` set, any other running tokensave processes are terminated
+/// without prompting.
+///
 /// Returns the new version string on success.
-pub fn run_upgrade() -> Result<String> {
+pub fn run_upgrade(kill: bool) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let is_beta = cloud::is_beta();
     let channel = if is_beta { "beta" } else { "stable" };
@@ -580,6 +710,9 @@ pub fn run_upgrade() -> Result<String> {
     eprintln!("Current version: v{current} ({channel} channel{method_suffix})");
 
     if matches!(method, InstallMethod::Brew) {
+        // Homebrew decides for itself whether there is anything to do, so the
+        // running-process check has to happen before delegating.
+        handle_running_processes(kill);
         return run_brew_upgrade(current);
     }
 
@@ -598,6 +731,8 @@ pub fn run_upgrade() -> Result<String> {
     };
 
     eprintln!("Upgrading v{current} → v{latest}...");
+
+    handle_running_processes(kill);
 
     let asset_url = preflight_asset_check(latest, is_beta)?;
 
@@ -690,6 +825,56 @@ mod tests {
         } else {
             assert!(name.ends_with(".tar.gz"));
         }
+    }
+
+    #[test]
+    fn tokensave_process_names_are_recognized() {
+        assert!(is_tokensave_process_name("tokensave"));
+        assert!(is_tokensave_process_name("tokensave.exe"));
+        assert!(!is_tokensave_process_name("tokensave-helper"));
+        assert!(!is_tokensave_process_name("cargo"));
+        assert!(!is_tokensave_process_name(""));
+    }
+
+    #[test]
+    fn find_running_processes_excludes_self() {
+        let self_pid = std::process::id();
+        assert!(find_running_processes().iter().all(|p| p.pid != self_pid));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_processes_tolerates_dead_pids() {
+        // A process that has already exited counts as killed, not as a failure.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let killed = kill_processes(&[RunningProcess {
+            pid,
+            description: "sleep 30".to_string(),
+        }]);
+        assert_eq!(killed, 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_processes_kills_a_live_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let killed = kill_processes(&[RunningProcess {
+            pid: child.id(),
+            description: "sleep 30".to_string(),
+        }]);
+        assert_eq!(killed, 1);
+        // Reap so the test leaves no zombie behind.
+        child.wait().ok();
     }
 
     #[test]

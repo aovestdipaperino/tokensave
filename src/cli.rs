@@ -176,7 +176,11 @@ pub enum Commands {
         timings: bool,
     },
     /// Download and install the latest version from GitHub
-    Upgrade,
+    Upgrade {
+        /// Kill other running tokensave processes without asking
+        #[arg(long)]
+        kill: bool,
+    },
     /// Show or switch the update channel (stable or beta)
     Channel {
         /// Target channel: "stable" or "beta" (omit to show current)

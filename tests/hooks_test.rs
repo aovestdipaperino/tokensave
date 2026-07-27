@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use tokensave::hooks::{
     evaluate_claude_pre_tool_use_with_env, evaluate_droid_pre_tool_use_with_env,
     evaluate_hook_decision_with_env, evaluate_kiro_pre_tool_use_with_env, HookEnv,
@@ -7,6 +9,7 @@ fn env_indexed() -> HookEnv {
     HookEnv {
         cwd_has_tokensave_db: true,
         disable_grep_hook: false,
+        project_root: None,
     }
 }
 
@@ -14,6 +17,7 @@ fn env_not_indexed() -> HookEnv {
     HookEnv {
         cwd_has_tokensave_db: false,
         disable_grep_hook: false,
+        project_root: None,
     }
 }
 
@@ -21,6 +25,25 @@ fn env_disabled() -> HookEnv {
     HookEnv {
         cwd_has_tokensave_db: true,
         disable_grep_hook: true,
+        project_root: None,
+    }
+}
+
+/// An indexed project on disk, so absolute targets can be canonicalized.
+/// The returned `TempDir` must stay alive for the whole test.
+fn indexed_project() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("project");
+    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
+    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    (tmp, root)
+}
+
+fn env_rooted_at(root: &Path) -> HookEnv {
+    HookEnv {
+        cwd_has_tokensave_db: true,
+        disable_grep_hook: false,
+        project_root: Some(root.to_path_buf()),
     }
 }
 
@@ -1285,5 +1308,216 @@ fn test_droid_native_grep_respects_escape_hatch() {
     assert!(
         evaluate_droid_pre_tool_use_with_env(input, &env_disabled()).is_none(),
         "TOKENSAVE_DISABLE_GREP_HOOK=1 must let the native Grep call through"
+    );
+}
+
+// --- absolute / home-rooted project-root targets -------------------------
+
+#[test]
+fn test_bash_blocks_grep_on_absolute_project_root() {
+    let (_tmp, root) = indexed_project();
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", root.display())})
+            .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        is_blocked(&result),
+        "an absolute spelling of the indexed root is the same whole-project search as `.`"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_on_absolute_project_root_with_trailing_slash() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({"command": format!("rg -n handle_request {}/", root.display())})
+        .to_string();
+    assert!(
+        is_blocked(&evaluate_hook_decision_with_env(
+            &input,
+            &env_rooted_at(&root)
+        )),
+        "a trailing slash must not change the classification"
+    );
+}
+
+#[test]
+fn test_bash_allows_grep_on_sibling_sharing_root_prefix() {
+    let (tmp, root) = indexed_project();
+    let sibling = tmp.path().join("project-old");
+    std::fs::create_dir_all(&sibling).expect("create sibling");
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", sibling.display())})
+            .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
+        "a sibling sharing the root's string prefix is a different tree"
+    );
+}
+
+#[test]
+fn test_bash_allows_grep_on_absolute_non_code_subdirectory() {
+    let (_tmp, root) = indexed_project();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs).expect("create docs");
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", docs.display())})
+            .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
+        "only the root itself is the whole-project bucket, not every path inside it"
+    );
+}
+
+#[test]
+fn test_grep_blocks_absolute_project_root_path() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "pattern": "handle_request",
+        "path": root.to_string_lossy(),
+        "output_mode": "content",
+    })
+    .to_string();
+    assert!(
+        is_blocked(&evaluate_hook_decision_with_env(
+            &input,
+            &env_rooted_at(&root)
+        )),
+        "structured Grep with an absolute root path should redirect"
+    );
+}
+
+#[test]
+fn test_grep_non_code_glob_overrides_absolute_project_root_path() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "pattern": "handle_request",
+        "path": root.to_string_lossy(),
+        "glob": "**/*.md",
+        "output_mode": "content",
+    })
+    .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
+        "an explicit Markdown glob still narrows an absolute project-root path"
+    );
+}
+
+#[test]
+fn test_bash_allows_absolute_root_when_root_is_unknown() {
+    let (_tmp, root) = indexed_project();
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", root.display())})
+            .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_indexed()).is_empty(),
+        "without a known root the classifier must fail open"
+    );
+}
+
+#[test]
+fn test_bash_allows_absolute_root_when_root_does_not_exist() {
+    let (tmp, _root) = indexed_project();
+    let missing = tmp.path().join("gone");
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", missing.display())})
+            .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&missing)).is_empty(),
+        "a root that cannot be canonicalized must fail open"
+    );
+}
+
+#[test]
+fn test_bash_absolute_project_root_respects_opt_out() {
+    let (_tmp, root) = indexed_project();
+    let input =
+        serde_json::json!({"command": format!("grep -rn handle_request {}", root.display())})
+            .to_string();
+    let disabled = HookEnv {
+        cwd_has_tokensave_db: true,
+        disable_grep_hook: true,
+        project_root: Some(root.clone()),
+    };
+    assert!(
+        evaluate_hook_decision_with_env(&input, &disabled).is_empty(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 must bypass the root-target redirect too"
+    );
+}
+
+#[test]
+fn test_droid_execute_blocks_absolute_project_root() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "tool_name": "Execute",
+        "tool_input": {"command": format!("rg -n handle_request {}", root.display())},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_rooted_at(&root)).is_some(),
+        "the Droid adapter shares the classifier, so the root target redirects there too"
+    );
+}
+
+#[test]
+fn test_droid_native_grep_blocks_absolute_project_root_path() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "tool_name": "Grep",
+        "tool_input": {
+            "pattern": "handle_request",
+            "path": root.to_string_lossy(),
+            "output_mode": "content",
+        },
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_rooted_at(&root)).is_some(),
+        "Droid's native Grep takes the same absolute-root path as its Execute tool"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_on_root_reached_through_parent_segments() {
+    let (_tmp, root) = indexed_project();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs).expect("create docs");
+    let input = serde_json::json!({
+        "command": format!("grep -rn handle_request {}/..", docs.display()),
+    })
+    .to_string();
+    assert!(
+        is_blocked(&evaluate_hook_decision_with_env(
+            &input,
+            &env_rooted_at(&root)
+        )),
+        "canonicalization sees through `..`, so a detour still names the root"
+    );
+}
+
+#[test]
+fn test_bash_allows_grep_on_the_parent_of_the_project_root() {
+    let (tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "command": format!("grep -rn handle_request {}", tmp.path().display()),
+    })
+    .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
+        "a search wider than the index cannot be served by the graph"
+    );
+}
+
+#[test]
+fn test_bash_classifies_only_the_first_target() {
+    let (_tmp, root) = indexed_project();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs).expect("create docs");
+    let input = serde_json::json!({
+        "command": format!("grep -rn handle_request {} {}", docs.display(), root.display()),
+    })
+    .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
+        "multi-target commands keep the pre-existing first-target-only classification"
     );
 }

@@ -17,9 +17,8 @@ use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 
 use super::tools::{
-    baseline_policy, cap_baseline, explore_call_budget, get_always_load_tool_definitions,
-    get_tool_definitions_with_budget, handle_tool_call, request_overhead_tokens,
-    schema_overhead_tokens, settle_session_debt,
+    baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
+    handle_tool_call, request_overhead_tokens, schema_overhead_tokens, settle_session_debt,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
@@ -341,12 +340,7 @@ impl McpServer {
         // resident from the start; the other ~80 are deferred and never
         // enter context unless the client fetches one on demand, so charging
         // the whole `tools/list` payload here over-stated the up-front cost
-        // by more than an order of magnitude. Uses the unbudgeted
-        // definitions — `handle_tools_list` serves
-        // `get_tool_definitions_with_budget`, which only tweaks
-        // `tokensave_context`'s description by a handful of tokens — close
-        // enough for this one-time estimate, and avoids depending on graph
-        // stats (`node_count`) that may not be ready this early.
+        // by more than an order of magnitude.
         let schema_overhead = schema_overhead_tokens(&get_always_load_tool_definitions());
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
@@ -1036,7 +1030,7 @@ impl McpServer {
                 // Alternative notification path - no response required
                 None
             }
-            "tools/list" => Some(self.handle_tools_list(id).await),
+            "tools/list" => Some(self.handle_tools_list(id)),
             "tools/call" => Some(self.handle_tools_call(id, request.params.as_ref()).await),
             "resources/list" => Some(Self::handle_resources_list(id)),
             "resources/read" => Some(
@@ -1091,10 +1085,8 @@ impl McpServer {
     }
 
     /// Handles the `tools/list` method, returning all available tool definitions.
-    async fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let node_count = self.cg.get_stats().await.map_or(0, |s| s.node_count);
-        let budget = explore_call_budget(node_count);
-        let tools = get_tool_definitions_with_budget(budget);
+    fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
+        let tools = get_tool_definitions();
         // Marks the schema as actually delivered so `handle_tools_call` knows
         // it's fair to debit `schema_overhead_tokens` against this session —
         // see `schema_served`.
