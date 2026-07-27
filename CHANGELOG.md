@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **A project indexed by the CLI no longer force-reindexes on the first MCP tool call of every session, and a failed forced reindex no longer leaves the project with an empty index.** `last_indexed_version` was written only by the MCP server's `run_version_reindex`, so every project created by `tokensave init` kept the `String::new()` default. `bump_kind("", running)` classifies an unparseable `old` as `BumpKind::Major`, so the first `tools/call` of each session logged `major upgrade or schema change detected (indexed by "", running <version>) — forcing project reindex…` and ran a full reindex — on a project that was already current. `index_all` opened that reindex with `db.clear()` *before* `db.begin_bulk_load()`, so when `begin_bulk_load` lost the table lock to a second tokensave process (a common setup: VS Code, VS Code Insiders, and one or more CLI agents all registered against the same project) the rows were already gone, the reindex returned early, and the marker was never advanced. The server treats that failure as non-fatal and keeps serving, so every subsequent tool call answered out of a gutted graph — observed as `file_count: 1` on a 259-file project — and the same destructive cycle repeated on the next start, since the marker still said `""`. A full index now records the running version, so the redundant reindex never starts; and `begin_bulk_load` runs before `clear`, so a lock failure aborts with the previous index intact instead of destroying it. Clearing after the FTS triggers are dropped also avoids firing a per-row FTS delete trigger for every node.
+
 
 ## [7.8.1] - 2026-07-27
 
