@@ -19,6 +19,7 @@
 //! writes them out to `state.toml` and drops them from `config.toml`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use fs2::FileExt;
@@ -132,6 +133,23 @@ pub struct UserConfig {
     /// comment for why the baseline must advance at all).
     #[serde(skip)]
     pub(crate) loaded_config: Mutex<Option<ConfigFile>>,
+
+    /// State-owned fields as last seen by this instance. This is the
+    /// `state.toml` counterpart to `loaded_config`: it lets `save()` merge
+    /// this process's changes into newer state written by another process
+    /// instead of replacing that newer state with a stale whole-file
+    /// snapshot. It advances as soon as a state write succeeds, even if a
+    /// later config write fails, because the state change is already durable
+    /// and must not be applied again on retry.
+    #[serde(skip)]
+    pub(crate) loaded_state: Mutex<Option<StateFile>>,
+
+    /// Whether `load()` recovered legacy state fields from `config.toml`.
+    /// Such a file still needs one config rewrite even when none of its
+    /// stable preferences changed, so the legacy state keys are removed
+    /// after they have landed safely in `state.toml`.
+    #[serde(skip)]
+    pub(crate) loaded_legacy_state: AtomicBool,
 }
 
 const _: fn() = || {
@@ -173,6 +191,8 @@ impl Default for UserConfig {
             extraction_timeout_secs: default_extraction_timeout_secs(),
             wildcard_permissions: false,
             loaded_config: Mutex::new(None),
+            loaded_state: Mutex::new(None),
+            loaded_legacy_state: AtomicBool::new(false),
         }
     }
 }
@@ -204,8 +224,8 @@ impl ConfigFile {
 }
 
 /// Volatile, machine-local fields persisted to `state.toml`.
-#[derive(Serialize, Deserialize, Default)]
-struct StateFile {
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub(crate) struct StateFile {
     #[serde(default)]
     pending_upload: u64,
     #[serde(default)]
@@ -236,6 +256,50 @@ struct StateFile {
     installed_agents: Vec<String>,
 }
 
+impl StateFile {
+    fn from_config(c: &UserConfig) -> Self {
+        Self {
+            pending_upload: c.pending_upload,
+            last_upload_at: c.last_upload_at,
+            last_worldwide_total: c.last_worldwide_total,
+            last_worldwide_fetch_at: c.last_worldwide_fetch_at,
+            last_flush_attempt_at: c.last_flush_attempt_at,
+            cached_latest_version: c.cached_latest_version.clone(),
+            last_version_check_at: c.last_version_check_at,
+            last_version_warning_at: c.last_version_warning_at,
+            cached_country_flags: c.cached_country_flags.clone(),
+            last_flags_fetch_at: c.last_flags_fetch_at,
+            last_pricing_fetch_at: c.last_pricing_fetch_at,
+            last_installed_version: c.last_installed_version.clone(),
+            previous_version: c.previous_version.clone(),
+            installed_agents: c.installed_agents.clone(),
+        }
+    }
+}
+
+const LEGACY_STATE_KEYS: &[&str] = &[
+    "pending_upload",
+    "last_upload_at",
+    "last_worldwide_total",
+    "last_worldwide_fetch_at",
+    "last_flush_attempt_at",
+    "cached_latest_version",
+    "last_version_check_at",
+    "last_version_warning_at",
+    "cached_country_flags",
+    "last_flags_fetch_at",
+    "last_pricing_fetch_at",
+    "last_installed_version",
+    "previous_version",
+    "installed_agents",
+];
+
+fn contains_legacy_state(contents: &str) -> bool {
+    toml::from_str::<toml::Table>(contents)
+        .ok()
+        .is_some_and(|table| LEGACY_STATE_KEYS.iter().any(|key| table.contains_key(*key)))
+}
+
 /// Overlays the state fields of `StateFile` onto an in-memory `UserConfig`.
 /// State-file values win, since `config` may still be carrying legacy state
 /// values recovered from an old mixed `config.toml`.
@@ -256,6 +320,147 @@ fn apply_state(config: &mut UserConfig, state: StateFile) {
     config.installed_agents = state.installed_agents;
 }
 
+fn merge_counter_delta(base: u64, current: u64, on_disk: u64) -> u64 {
+    if current >= base {
+        on_disk.saturating_add(current - base)
+    } else {
+        on_disk.saturating_sub(base - current)
+    }
+}
+
+fn merge_monotonic(base: i64, current: i64, on_disk: i64) -> i64 {
+    if current == base {
+        on_disk
+    } else {
+        current.max(on_disk)
+    }
+}
+
+fn merge_version_marker(base: &str, current: &str, on_disk: &str) -> String {
+    if current == base {
+        on_disk.to_string()
+    } else if on_disk == base || !crate::cloud::is_newer_version(current, on_disk) {
+        current.to_string()
+    } else {
+        on_disk.to_string()
+    }
+}
+
+fn merge_installed_agents(base: &[String], current: &[String], on_disk: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = on_disk
+        .iter()
+        .filter(|agent| !base.contains(agent) || current.contains(agent))
+        .cloned()
+        .collect();
+    for agent in current {
+        if !base.contains(agent) && !merged.contains(agent) {
+            merged.push(agent.clone());
+        }
+    }
+    merged
+}
+
+fn merge_state(base: &StateFile, current: &StateFile, on_disk: &StateFile) -> StateFile {
+    let (last_worldwide_total, last_worldwide_fetch_at) =
+        if (
+            current.last_worldwide_total,
+            current.last_worldwide_fetch_at,
+        ) == (base.last_worldwide_total, base.last_worldwide_fetch_at)
+            || on_disk.last_worldwide_fetch_at > current.last_worldwide_fetch_at
+        {
+            (
+                on_disk.last_worldwide_total,
+                on_disk.last_worldwide_fetch_at,
+            )
+        } else {
+            (
+                current.last_worldwide_total,
+                current.last_worldwide_fetch_at,
+            )
+        };
+    let (cached_latest_version, last_version_check_at) =
+        if (
+            &current.cached_latest_version,
+            current.last_version_check_at,
+        ) == (&base.cached_latest_version, base.last_version_check_at)
+            || on_disk.last_version_check_at > current.last_version_check_at
+        {
+            (
+                on_disk.cached_latest_version.clone(),
+                on_disk.last_version_check_at,
+            )
+        } else {
+            (
+                current.cached_latest_version.clone(),
+                current.last_version_check_at,
+            )
+        };
+    let (cached_country_flags, last_flags_fetch_at) =
+        if (&current.cached_country_flags, current.last_flags_fetch_at)
+            == (&base.cached_country_flags, base.last_flags_fetch_at)
+            || on_disk.last_flags_fetch_at > current.last_flags_fetch_at
+        {
+            (
+                on_disk.cached_country_flags.clone(),
+                on_disk.last_flags_fetch_at,
+            )
+        } else {
+            (
+                current.cached_country_flags.clone(),
+                current.last_flags_fetch_at,
+            )
+        };
+
+    StateFile {
+        pending_upload: merge_counter_delta(
+            base.pending_upload,
+            current.pending_upload,
+            on_disk.pending_upload,
+        ),
+        last_upload_at: merge_monotonic(
+            base.last_upload_at,
+            current.last_upload_at,
+            on_disk.last_upload_at,
+        ),
+        last_worldwide_total,
+        last_worldwide_fetch_at,
+        last_flush_attempt_at: merge_monotonic(
+            base.last_flush_attempt_at,
+            current.last_flush_attempt_at,
+            on_disk.last_flush_attempt_at,
+        ),
+        cached_latest_version,
+        last_version_check_at,
+        last_version_warning_at: merge_monotonic(
+            base.last_version_warning_at,
+            current.last_version_warning_at,
+            on_disk.last_version_warning_at,
+        ),
+        cached_country_flags,
+        last_flags_fetch_at,
+        last_pricing_fetch_at: merge_monotonic(
+            base.last_pricing_fetch_at,
+            current.last_pricing_fetch_at,
+            on_disk.last_pricing_fetch_at,
+        ),
+        last_installed_version: merge_version_marker(
+            &base.last_installed_version,
+            &current.last_installed_version,
+            &on_disk.last_installed_version,
+        ),
+        previous_version: merge_version_marker(
+            &base.previous_version,
+            &current.previous_version,
+            &on_disk.previous_version,
+        ),
+        installed_agents: merge_installed_agents(
+            &base.installed_agents,
+            &current.installed_agents,
+            &on_disk.installed_agents,
+        ),
+    }
+}
+
 /// Per-process counter mixed into temp file names so two `write_atomic` calls
 /// racing on the same thread-pool (e.g. background MCP work and a shutdown
 /// path both saving `UserConfig` around the same time) never pick the same
@@ -267,8 +472,8 @@ static TMP_FILE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// interleaved with those of another: without this, two same-process savers
 /// (e.g. background MCP work racing a shutdown save) could each write one
 /// half of the pair, and a subsequent `load()` would combine one caller's
-/// state with the other's config into a value neither of them saved. Does
-/// not, and cannot, order writes from a second tokensave *process*.
+/// state with the other's config into a value neither of them saved. The
+/// sidecar file lock below extends the serialization across processes.
 static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Upper bound on symlink hops `resolve_write_target` will follow through a
@@ -386,6 +591,11 @@ fn set_tmp_file_mode(tmp_path: &std::path::Path, target: &std::path::Path) -> bo
 /// corrupt. The temp file name mixes the process ID with a per-process
 /// counter so it is unique per invocation, not just per process.
 fn write_atomic(path: &std::path::Path, contents: &str) -> bool {
+    #[cfg(test)]
+    if TEST_WRITE_FAILURE.with(|cell| cell.borrow().as_deref() == Some(path)) {
+        return false;
+    }
+
     // Resolve symlinks (including dangling ones) so we write through them
     // rather than replacing the link with a regular file. Dotfile setups
     // symlink config.toml into a repo; a plain rename-over would detach that
@@ -432,6 +642,7 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> bool {
 #[cfg(test)]
 thread_local! {
     static TEST_HOME_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_WRITE_FAILURE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Points `config_path()`/`state_path()` at a test-controlled directory for
@@ -440,6 +651,12 @@ thread_local! {
 #[cfg(test)]
 fn set_test_home_dir(dir: Option<PathBuf>) {
     TEST_HOME_OVERRIDE.with(|cell| *cell.borrow_mut() = dir);
+}
+
+/// Makes `write_atomic()` fail for one exact test-controlled path.
+#[cfg(test)]
+fn set_test_write_failure(path: Option<PathBuf>) {
+    TEST_WRITE_FAILURE.with(|cell| *cell.borrow_mut() = path);
 }
 
 /// Returns the `~/.tokensave` directory, or a test-injected override.
@@ -504,10 +721,10 @@ fn preserve_corrupt_file(path: &std::path::Path) {
 }
 
 /// Opens (creating if needed) and exclusively locks `config_lock_path()`,
-/// returning the held file handle. Best-effort: if the lock file can't be
-/// opened (e.g. read-only home dir) or the underlying `flock` fails, returns
-/// `None` and callers fall back to relying on same-process-only protection
-/// (`SAVE_LOCK`) rather than failing outright.
+/// returning the held file handle. `load()` remains best-effort when the lock
+/// is unavailable so read-only installations can still inspect their config;
+/// `save()` requires the lock and fails rather than performing an unsafe
+/// cross-process write.
 fn lock_config_file() -> Option<std::fs::File> {
     let f = config_lock_path().and_then(|p| {
         std::fs::OpenOptions::new()
@@ -561,15 +778,19 @@ impl UserConfig {
         // exactly the way an unparseable-but-valid-UTF-8 one used to before
         // that preservation existed.
         let raw = config_p.as_ref().and_then(|p| std::fs::read(p).ok());
-        let parsed = raw
+        let config_text = raw
             .as_ref()
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .and_then(|contents| toml::from_str::<Self>(contents).ok());
+            .and_then(|bytes| std::str::from_utf8(bytes).ok());
+        let parsed = config_text.and_then(|contents| toml::from_str::<Self>(contents).ok());
         let mut base: Self = if let Some(mut cfg) = parsed {
             // Record what this process saw for the config-owned fields, so a
             // later save() in this process can tell which of them it
             // actually changed (see `save()`).
             cfg.loaded_config = Mutex::new(Some(ConfigFile::from_config(&cfg)));
+            cfg.loaded_legacy_state.store(
+                config_text.is_some_and(contains_legacy_state),
+                Ordering::Relaxed,
+            );
             cfg
         } else {
             // config.toml exists but is unusable -- either invalid UTF-8 or
@@ -590,10 +811,6 @@ impl UserConfig {
             }
             Self::default()
         };
-        if let Some(f) = &config_lock {
-            let _ = f.unlock();
-        }
-
         if let Some(state_p) = state_path() {
             // Read raw bytes rather than `read_to_string`, for the same
             // reason as the config.toml read above: invalid UTF-8 must be
@@ -604,7 +821,10 @@ impl UserConfig {
                     .ok()
                     .and_then(|contents| toml::from_str::<StateFile>(contents).ok())
                 {
-                    Some(state) => apply_state(&mut base, state),
+                    Some(state) => {
+                        apply_state(&mut base, state.clone());
+                        base.loaded_state = Mutex::new(Some(state));
+                    }
                     // state.toml exists but is unusable -- either invalid
                     // UTF-8 or valid UTF-8 that doesn't parse (manual edit,
                     // filesystem corruption, a future incompatible format).
@@ -621,6 +841,14 @@ impl UserConfig {
             }
         }
 
+        // Keep the compatibility lock held across both reads. `save()` has
+        // always held this same lock while writing state.toml and config.toml,
+        // so extending load's critical section prevents a reader from
+        // combining files from opposite sides of another process's save.
+        if let Some(f) = &config_lock {
+            let _ = f.unlock();
+        }
+
         base
     }
 
@@ -629,23 +857,15 @@ impl UserConfig {
     ///
     /// The two files are written under `SAVE_LOCK`, so same-process callers
     /// (e.g. background MCP work racing a shutdown save) never interleave
-    /// their writes into a config.toml from one caller paired with a
-    /// state.toml from another. This does not protect against a *second
-    /// tokensave process* saving concurrently writing `state.toml` — there is
-    /// no cross-process file lock, so racing processes can still each write
-    /// one half of the pair, matching the existing best-effort persistence
-    /// model. `config.toml` is different: `merge_config_file()` re-reads it
-    /// and only overwrites the fields this process actually changed since its
-    /// own `load()` (or most recent `save()` — the baseline advances below),
-    /// so a stable preference like `wildcard_permissions` set by a concurrent
-    /// process (e.g. `install`, or a manual edit) survives even when *this*
-    /// process — loaded before that change and never touching that field
-    /// itself — saves afterward. Unlike `state.toml`, the read-merge-write for
-    /// `config.toml` is also guarded by a cross-process advisory lock
-    /// (`config_lock_path()`), since `SAVE_LOCK` alone only serializes callers
-    /// within this process: two different processes each merging their own
-    /// change against the same stale on-disk read would otherwise still be
-    /// able to lose one of the two updates.
+    /// their writes. The existing `config.toml.lock` sidecar guards the full
+    /// state/config read-merge-write transaction across processes as well.
+    /// Stable preferences are only rewritten when this instance changed one
+    /// (or a legacy migration is pending); state fields are merged against
+    /// their own load/save baseline so stale processes preserve newer state
+    /// and pending-token deltas accumulate rather than overwrite each other.
+    /// If state succeeds but a required config write fails, the method
+    /// returns false but records the durable state boundary internally so a
+    /// retry remains idempotent.
     pub fn save(&self) -> bool {
         let Some(config_path) = config_path() else {
             return false;
@@ -659,27 +879,6 @@ impl UserConfig {
             }
         }
 
-        let state_file = StateFile {
-            pending_upload: self.pending_upload,
-            last_upload_at: self.last_upload_at,
-            last_worldwide_total: self.last_worldwide_total,
-            last_worldwide_fetch_at: self.last_worldwide_fetch_at,
-            last_flush_attempt_at: self.last_flush_attempt_at,
-            cached_latest_version: self.cached_latest_version.clone(),
-            last_version_check_at: self.last_version_check_at,
-            last_version_warning_at: self.last_version_warning_at,
-            cached_country_flags: self.cached_country_flags.clone(),
-            last_flags_fetch_at: self.last_flags_fetch_at,
-            last_pricing_fetch_at: self.last_pricing_fetch_at,
-            last_installed_version: self.last_installed_version.clone(),
-            previous_version: self.previous_version.clone(),
-            installed_agents: self.installed_agents.clone(),
-        };
-
-        let Ok(state_contents) = toml::to_string_pretty(&state_file) else {
-            return false;
-        };
-
         // Serialize the pair of writes against other same-process saves (see
         // SAVE_LOCK doc comment) so no other thread's save can land between
         // the state.toml and config.toml writes below.
@@ -687,55 +886,90 @@ impl UserConfig {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // Cross-process guard around the config.toml read-modify-write span:
-        // held from the on-disk re-read in merge_config_file() through the
-        // write_atomic() below, so a concurrent process performing the same
-        // merge can't read the same pre-write snapshot we're about to
-        // replace (which would silently drop whichever of the two updates
-        // gets written first). Best-effort: if the lock can't be acquired
-        // (e.g. read-only home dir), fall back to unlocked same-process-only
-        // protection rather than failing the save outright.
-        let lock_file = lock_config_file();
-
-        let config_file = self.merge_config_file();
-        let Ok(config_contents) = toml::to_string_pretty(&config_file) else {
-            if let Some(f) = &lock_file {
-                let _ = f.unlock();
-            }
+        // This existing sidecar is the compatibility lock used by releases
+        // that introduced config merging. Require it for saves and hold it
+        // across both files, so stale processes cannot overwrite newer state
+        // while still participating in the same lock protocol.
+        let Some(lock_file) = lock_config_file() else {
             return false;
+        };
+
+        let Some(state_file) = self.merge_state_file() else {
+            let _ = lock_file.unlock();
+            return false;
+        };
+        let Ok(state_contents) = toml::to_string_pretty(&state_file) else {
+            let _ = lock_file.unlock();
+            return false;
+        };
+
+        // `None` means no stable preference changed and no legacy migration
+        // is pending. In that overwhelmingly common state-only save path,
+        // leave config.toml byte-for-byte untouched.
+        let Ok(config_file) = self.merge_config_file() else {
+            let _ = lock_file.unlock();
+            return false;
+        };
+        let config_contents = if let Some(config) = config_file.as_ref() {
+            let Ok(contents) = toml::to_string_pretty(config) else {
+                let _ = lock_file.unlock();
+                return false;
+            };
+            Some(contents)
+        } else {
+            None
         };
 
         // Write state.toml first: if it fails, config.toml is left untouched
         // (still holding any legacy state fields recovered from a pre-split
         // install), so a failed save never loses state that only lived in
         // config.toml a moment ago.
-        let ok = write_atomic(&state_path, &state_contents)
-            && write_atomic(&config_path, &config_contents);
-
-        if let Some(f) = &lock_file {
-            let _ = f.unlock();
+        if !write_atomic(&state_path, &state_contents) {
+            let _ = lock_file.unlock();
+            return false;
         }
 
-        if ok {
-            // Advance the baseline to this process's own in-memory values --
-            // NOT `config_file`, which for an untouched field holds whatever
-            // was just read off disk (possibly written by another process).
-            // `merge_config_file()` decides "did this process change this
-            // field?" by comparing `self` against this baseline, so the
-            // baseline must live in that same frame of reference. Advancing
-            // it to `config_file` instead would, on this process's *next*
-            // save, compare its still-unchanged `self` field against the
-            // disk value just absorbed into the baseline, see a mismatch,
-            // and wrongly treat that external change as if this process had
-            // just made it -- reverting it right back.
-            *self
-                .loaded_config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(ConfigFile::from_config(self));
+        // The state write is already durable even if the config write below
+        // fails. Advance this baseline at that durability boundary so a
+        // retry does not apply the same pending-token delta a second time.
+        // Keep it in this instance's own value frame, just like the config
+        // baseline below, so later mutations are measured from the values
+        // this process actually persisted.
+        *self
+            .loaded_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(StateFile::from_config(self));
+
+        if config_contents
+            .as_deref()
+            .is_some_and(|contents| !write_atomic(&config_path, contents))
+        {
+            let _ = lock_file.unlock();
+            return false;
         }
 
-        ok
+        let _ = lock_file.unlock();
+
+        // Advance the baseline to this process's own in-memory values --
+        // NOT `config_file`, which for an untouched field holds whatever
+        // was just read off disk (possibly written by another process).
+        // `merge_config_file()` decides "did this process change this
+        // field?" by comparing `self` against this baseline, so the
+        // baseline must live in that same frame of reference. Advancing
+        // it to `config_file` instead would, on this process's *next*
+        // save, compare its still-unchanged `self` field against the
+        // disk value just absorbed into the baseline, see a mismatch,
+        // and wrongly treat that external change as if this process had
+        // just made it -- reverting it right back.
+        *self
+            .loaded_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ConfigFile::from_config(self));
+        self.loaded_legacy_state.store(false, Ordering::Relaxed);
+
+        true
     }
 
     /// Builds the `ConfigFile` to write to disk: for each config-owned field
@@ -746,8 +980,9 @@ impl UserConfig {
     /// this process's now-stale snapshot; for a field this process did
     /// change, its value wins regardless of what's on disk. Falls back to
     /// writing this process's own values verbatim when there's no baseline
-    /// to merge against (fresh config, or a test-constructed value) or the
-    /// on-disk config.toml can't be read/parsed right now.
+    /// to merge against (fresh config, or a test-constructed value). Once a
+    /// baseline exists, a required reread failure aborts the save instead of
+    /// treating the stale in-memory snapshot as authoritative.
     ///
     /// Callers must hold `config_lock_path()`'s cross-process lock around
     /// this read and the subsequent `config.toml` write (see `save()`):
@@ -755,7 +990,7 @@ impl UserConfig {
     /// state here and each merge against it, and whichever writes last would
     /// silently discard the other's update even though neither touched the
     /// same field.
-    fn merge_config_file(&self) -> ConfigFile {
+    fn merge_config_file(&self) -> Result<Option<ConfigFile>, ()> {
         let self_file = ConfigFile::from_config(self);
 
         let baseline = self
@@ -763,16 +998,26 @@ impl UserConfig {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(base) = baseline.as_ref() else {
-            return self_file;
-        };
-        let Some(on_disk) = config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
-        else {
-            return self_file;
+            return Ok(Some(self_file));
         };
 
-        ConfigFile {
+        let changed = self.upload_enabled != base.upload_enabled
+            || self.watcher_debounce != base.watcher_debounce
+            || self.extraction_timeout_secs != base.extraction_timeout_secs
+            || self.wildcard_permissions != base.wildcard_permissions;
+        if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+
+        // Once a baseline exists, a missing, unreadable, or newly invalid
+        // config is not permission to restore the stale in-memory snapshot.
+        // Fail closed and leave the current path untouched.
+        let contents = config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .ok_or(())?;
+        let on_disk = toml::from_str::<ConfigFile>(&contents).map_err(|_| ())?;
+
+        Ok(Some(ConfigFile {
             upload_enabled: if self.upload_enabled == base.upload_enabled {
                 on_disk.upload_enabled
             } else {
@@ -794,7 +1039,31 @@ impl UserConfig {
             } else {
                 self.wildcard_permissions
             },
-        }
+        }))
+    }
+
+    /// Merges state changes made by this instance into the latest state on
+    /// disk. The caller holds the compatibility file lock, so the reread and
+    /// subsequent write form one cross-process transaction.
+    fn merge_state_file(&self) -> Option<StateFile> {
+        let self_file = StateFile::from_config(self);
+        let baseline = self
+            .loaded_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let Some(base) = baseline.as_ref() else {
+            return Some(self_file);
+        };
+
+        let state_path = state_path()?;
+        let on_disk = match std::fs::read_to_string(state_path) {
+            Ok(contents) => toml::from_str::<StateFile>(&contents).ok()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => StateFile::default(),
+            Err(_) => return None,
+        };
+
+        Some(merge_state(base, &self_file, &on_disk))
     }
 
     /// Returns true if this is a fresh config (file did not exist before).
@@ -862,6 +1131,7 @@ mod tests {
 
     impl Drop for TestHome {
         fn drop(&mut self) {
+            set_test_write_failure(None);
             set_test_home_dir(None);
         }
     }
@@ -893,6 +1163,8 @@ mod tests {
             extraction_timeout_secs: 30,
             wildcard_permissions: true,
             loaded_config: Mutex::new(None),
+            loaded_state: Mutex::new(None),
+            loaded_legacy_state: AtomicBool::new(false),
         }
     }
 
@@ -999,6 +1271,97 @@ mod tests {
     }
 
     #[test]
+    fn state_only_save_leaves_config_byte_for_byte_untouched() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.wildcard_permissions = false;
+        assert!(initial.save());
+
+        let mut stale = UserConfig::load();
+        assert!(!stale.wildcard_permissions);
+
+        let config_p = config_path().expect("config path");
+        let externally_edited = "upload_enabled = true\n\
+watcher_debounce = \"2s\"\n\
+extraction_timeout_secs = 60\n\
+wildcard_permissions = true # managed in dotfiles\n";
+        std::fs::write(&config_p, externally_edited).expect("edit preference externally");
+
+        stale.pending_upload += 10;
+        assert!(stale.save());
+        assert_eq!(
+            std::fs::read_to_string(config_p).expect("read config"),
+            externally_edited,
+            "a state-only save rewrote stable preferences"
+        );
+    }
+
+    #[test]
+    fn failed_required_config_reread_does_not_restore_stale_snapshot() {
+        let _home = test_home();
+        assert!(sample_config().save());
+
+        let mut loaded = UserConfig::load();
+        loaded.watcher_debounce = "45s".to_string();
+
+        let config_p = config_path().expect("config path");
+        let replacement = "wildcard_permissions = [temporarily invalid";
+        std::fs::write(&config_p, replacement).expect("replace config during save lifecycle");
+
+        assert!(
+            !loaded.save(),
+            "save must fail when an intentional preference change cannot be merged safely"
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_p).expect("read replacement"),
+            replacement,
+            "save replaced an unreadable current file with its stale snapshot"
+        );
+    }
+
+    #[test]
+    fn retry_after_state_success_and_config_failure_does_not_repeat_delta() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.pending_upload = 100;
+        initial.watcher_debounce = "2s".to_string();
+        assert!(initial.save());
+
+        let mut loaded = UserConfig::load();
+        loaded.pending_upload += 10;
+        loaded.watcher_debounce = "45s".to_string();
+
+        let config_p = config_path().expect("config path");
+        set_test_write_failure(Some(config_p));
+        assert!(
+            !loaded.save(),
+            "the injected config write failure must make save report failure"
+        );
+
+        let persisted_after_failure =
+            std::fs::read_to_string(state_path().expect("state path")).expect("read state");
+        let persisted_after_failure: StateFile =
+            toml::from_str(&persisted_after_failure).expect("parse state");
+        assert_eq!(
+            persisted_after_failure.pending_upload, 110,
+            "the state write before the config failure must remain durable"
+        );
+
+        // A mutation made after the partial save must be measured from the
+        // already-durable 110, not from the original load-time baseline 100.
+        loaded.pending_upload += 5;
+        set_test_write_failure(None);
+        assert!(loaded.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(
+            reloaded.pending_upload, 115,
+            "retry applied the first +10 delta more than once"
+        );
+        assert_eq!(reloaded.watcher_debounce, "45s");
+    }
+
+    #[test]
     fn save_writes_field_this_process_intentionally_changed() {
         let _home = test_home();
         let mut config = sample_config();
@@ -1014,6 +1377,159 @@ mod tests {
             reloaded.wildcard_permissions,
             "a field this process intentionally changed must still be written"
         );
+    }
+
+    #[test]
+    fn stale_state_save_preserves_newer_unrelated_state() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.pending_upload = 100;
+        initial.last_upload_at = 10;
+        initial.installed_agents = vec!["claude".to_string()];
+        assert!(initial.save());
+
+        let mut stale = UserConfig::load();
+        let mut newer = UserConfig::load();
+        newer.last_upload_at = 500;
+        newer.installed_agents.push("copilot".to_string());
+        assert!(newer.save());
+
+        stale.pending_upload += 10;
+        assert!(stale.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.pending_upload, 110);
+        assert_eq!(reloaded.last_upload_at, 500);
+        assert_eq!(
+            reloaded.installed_agents,
+            vec!["claude".to_string(), "copilot".to_string()]
+        );
+    }
+
+    #[test]
+    fn concurrent_pending_upload_deltas_accumulate() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.pending_upload = 100;
+        assert!(initial.save());
+
+        let mut a = UserConfig::load();
+        let mut b = UserConfig::load();
+        a.pending_upload += 10;
+        b.pending_upload += 20;
+        assert!(a.save());
+        assert!(b.save());
+
+        assert_eq!(UserConfig::load().pending_upload, 130);
+    }
+
+    #[test]
+    fn upload_reset_preserves_tokens_added_concurrently() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.pending_upload = 100;
+        assert!(initial.save());
+
+        let mut flusher = UserConfig::load();
+        let mut producer = UserConfig::load();
+        producer.pending_upload += 20;
+        assert!(producer.save());
+
+        flusher.pending_upload = 0;
+        flusher.last_upload_at = 500;
+        assert!(flusher.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.pending_upload, 20);
+        assert_eq!(reloaded.last_upload_at, 500);
+    }
+
+    #[test]
+    fn concurrent_installed_agent_addition_survives_removal() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.installed_agents = vec!["claude".to_string(), "cursor".to_string()];
+        assert!(initial.save());
+
+        let mut remover = UserConfig::load();
+        let mut adder = UserConfig::load();
+        adder.installed_agents.push("copilot".to_string());
+        assert!(adder.save());
+
+        remover.installed_agents.retain(|agent| agent != "cursor");
+        assert!(remover.save());
+
+        assert_eq!(
+            UserConfig::load().installed_agents,
+            vec!["claude".to_string(), "copilot".to_string()]
+        );
+    }
+
+    #[test]
+    fn newer_timestamped_cache_and_version_markers_do_not_regress() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.cached_latest_version = "7.6.0".to_string();
+        initial.last_version_check_at = 100;
+        initial.last_installed_version = "7.6.0".to_string();
+        assert!(initial.save());
+
+        let mut stale = UserConfig::load();
+        let mut newer = UserConfig::load();
+        newer.cached_latest_version = "7.8.0".to_string();
+        newer.last_version_check_at = 500;
+        newer.last_installed_version = "7.8.0".to_string();
+        assert!(newer.save());
+
+        stale.cached_latest_version = "7.7.0".to_string();
+        stale.last_version_check_at = 300;
+        stale.last_installed_version = "7.7.0".to_string();
+        assert!(stale.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.cached_latest_version, "7.8.0");
+        assert_eq!(reloaded.last_version_check_at, 500);
+        assert_eq!(reloaded.last_installed_version, "7.8.0");
+    }
+
+    #[test]
+    fn intentionally_changed_version_markers_can_move_backward() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.last_installed_version = "7.8.0".to_string();
+        initial.previous_version = "7.8.0".to_string();
+        assert!(initial.save());
+
+        let mut downgraded = UserConfig::load();
+        downgraded.last_installed_version = "7.7.0".to_string();
+        downgraded.previous_version = "7.7.0".to_string();
+        assert!(downgraded.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.last_installed_version, "7.7.0");
+        assert_eq!(reloaded.previous_version, "7.7.0");
+    }
+
+    #[test]
+    fn missing_state_file_is_recreated_from_changes_since_load() {
+        let _home = test_home();
+        let mut initial = sample_config();
+        initial.pending_upload = 100;
+        initial.last_upload_at = 500;
+        initial.installed_agents = vec!["claude".to_string()];
+        assert!(initial.save());
+
+        let mut loaded = UserConfig::load();
+        std::fs::remove_file(state_path().expect("state path")).expect("remove state file");
+
+        loaded.pending_upload += 10;
+        loaded.installed_agents.push("copilot".to_string());
+        assert!(loaded.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(reloaded.pending_upload, 10);
+        assert_eq!(reloaded.last_upload_at, 0);
+        assert_eq!(reloaded.installed_agents, vec!["copilot".to_string()]);
     }
 
     #[test]
@@ -1743,6 +2259,53 @@ mod tests {
             std::fs::read_to_string(config_path().expect("config path")).expect("read config");
         assert!(!config_contents.contains("pending_upload"));
         assert!(!config_contents.contains("previous_version"));
+
+        drop(home);
+    }
+
+    #[test]
+    fn legacy_migration_retry_after_config_failure_does_not_repeat_delta() {
+        let home = test_home();
+        let mut legacy = sample_config();
+        legacy.pending_upload = 100;
+        let legacy_toml = toml::to_string_pretty(&legacy).expect("serialize legacy config");
+        let config_p = config_path().expect("config path");
+        std::fs::write(&config_p, &legacy_toml).expect("write legacy");
+
+        let mut loaded = UserConfig::load();
+        loaded.pending_upload += 10;
+
+        set_test_write_failure(Some(config_p.clone()));
+        assert!(
+            !loaded.save(),
+            "the injected config rewrite failure must make migration fail"
+        );
+
+        let state_contents =
+            std::fs::read_to_string(state_path().expect("state path")).expect("read state");
+        let state: StateFile = toml::from_str(&state_contents).expect("parse state");
+        assert_eq!(state.pending_upload, 110);
+        assert!(
+            std::fs::read_to_string(&config_p)
+                .expect("read legacy config")
+                .contains("pending_upload"),
+            "legacy state must remain recoverable until the config rewrite succeeds"
+        );
+
+        set_test_write_failure(None);
+        assert!(loaded.save());
+
+        let reloaded = UserConfig::load();
+        assert_eq!(
+            reloaded.pending_upload, 110,
+            "retry applied the migration-time +10 delta more than once"
+        );
+        assert!(
+            !std::fs::read_to_string(config_p)
+                .expect("read migrated config")
+                .contains("pending_upload"),
+            "legacy state key survived the successful retry"
+        );
 
         drop(home);
     }
