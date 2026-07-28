@@ -576,6 +576,14 @@ pub struct BuildContextOptions {
     /// from the project root, never round-tripped through config snapshots.
     #[serde(skip)]
     pub query_ignore: crate::config::QueryIgnore,
+    /// Caps each code block at this many lines. `None` leaves the block bounded
+    /// only by `max_code_block_size`.
+    ///
+    /// Complements the existing byte limit with a predictable structural cap:
+    /// callers can request a deliberately short prefix such as the signature and
+    /// first 20 lines, while `max_code_block_size` remains the absolute size bound
+    /// (#324).
+    pub max_code_lines: Option<usize>,
 }
 
 impl Default for BuildContextOptions {
@@ -597,6 +605,7 @@ impl Default for BuildContextOptions {
             path_include: Vec::new(),
             path_exclude: Vec::new(),
             query_ignore: crate::config::QueryIgnore::default(),
+            max_code_lines: None,
         }
     }
 }
