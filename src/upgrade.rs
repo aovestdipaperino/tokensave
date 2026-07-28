@@ -571,14 +571,30 @@ pub struct RunningProcess {
     pub description: String,
 }
 
+/// Strip a case-insensitive `.exe` suffix from a Windows process name,
+/// without panicking when the last 4 bytes of `name` don't fall on a UTF-8
+/// character boundary.
+///
+/// Compiled for `test` too (not just `windows`) so the boundary-safety
+/// regression test can exercise this logic on any host platform.
+#[cfg(any(windows, test))]
+fn strip_windows_exe_suffix(name: &str) -> &str {
+    let len = name.len();
+    if len < 4 || !name.is_char_boundary(len - 4) {
+        return name;
+    }
+    let (stem, suffix) = name.split_at(len - 4);
+    if suffix.eq_ignore_ascii_case(".exe") {
+        stem
+    } else {
+        name
+    }
+}
+
 /// Is `name` the tokensave binary (platform-dependent extension included)?
 fn is_tokensave_process_name(name: &str) -> bool {
     #[cfg(windows)]
-    let stem = if name.len() >= 4 && name[name.len() - 4..].eq_ignore_ascii_case(".exe") {
-        &name[..name.len() - 4]
-    } else {
-        name
-    };
+    let stem = strip_windows_exe_suffix(name);
     #[cfg(not(windows))]
     let stem = name.strip_suffix(".exe").unwrap_or(name);
 
@@ -920,6 +936,22 @@ mod tests {
         assert!(!is_tokensave_process_name("tokensave-helper"));
         assert!(!is_tokensave_process_name("cargo"));
         assert!(!is_tokensave_process_name(""));
+    }
+
+    #[test]
+    fn strip_windows_exe_suffix_does_not_panic_on_unicode_boundary() {
+        // Each '€' is a 3-byte UTF-8 sequence, so this 6-byte, 2-char name
+        // has `len - 4 == 2`, a byte offset that falls *inside* the first
+        // '€' rather than on a char boundary. The naive `name[len - 4..]`
+        // slice used to panic here even though the name has nothing to do
+        // with tokensave or `.exe`.
+        let name = "€€";
+        assert_eq!(strip_windows_exe_suffix(name), name);
+    }
+
+    #[test]
+    fn is_tokensave_process_name_ignores_unrelated_unicode_names() {
+        assert!(!is_tokensave_process_name("€€"));
     }
 
     #[test]
