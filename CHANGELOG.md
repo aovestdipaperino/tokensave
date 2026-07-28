@@ -8,6 +8,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Fixed
+- **`annotates` edges no longer bind an annotation usage to another usage of the same annotation, including itself.** The resolver allowed an `Annotates` reference to target a sibling `AnnotationUsage` or `Decorator` node, and every extractor names that reference after the annotation itself, so any `@override`/`#[test]`/`@Override`-style usage could resolve straight to another usage instead of staying unresolved — a phantom edge affecting 11 language extractors. The resolver now never produces `annotates` edges at all; the attachment edge extractors already emit directly at the usage site is the only one, matching what every consumer reads. Schema migration v14 removes any phantom edges already stored in existing projects' databases automatically on next open, no resync required.
 - **Dart calls made inside closures and local functions are no longer dropped.** `extract_call_sites` skipped `function_expression`/`lambda_expression` outright instead of attributing their calls to the enclosing named symbol, so calls inside Flutter callbacks (`onPressed:`, `builder:`, `setState(…)`, `.map(…)`) and local functions were invisible to `tokensave_callers`, `tokensave_impact`, and `tokensave_dead_code` — a helper reached only from a callback looked dead. Same fix as TypeScript #209 for nested arrows.
 
 ## [7.8.1] - 2026-07-27

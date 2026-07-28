@@ -932,10 +932,23 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
                 | NodeKind::Procedure
                 | NodeKind::Macro
         ),
-        EdgeKind::Annotates => matches!(
-            target_kind,
-            NodeKind::Annotation | NodeKind::Decorator | NodeKind::AnnotationUsage
-        ),
+        // `annotates` names exactly one relation to every consumer:
+        // attachment of an annotation/decorator usage to the item it
+        // decorates (`get_annotation_sites`, `get_test_annotated_node_ids`,
+        // `get_files_with_test_annotations`,
+        // `populate_test_annotated_targets_temp_table`). Extractors already
+        // emit that edge directly at the usage site — this resolver has no
+        // second, distinct relation to express under the same edge kind.
+        //
+        // `AnnotationUsage` and `Decorator` are both usage-site kinds, not
+        // declarations: allowing either as a ref target let a lone-candidate
+        // usage resolve to *itself* or to a sibling usage of the same name
+        // (96% of `annotates` edges in this repo were this phantom pattern).
+        // `Annotation` is a real declaration (Java `@interface`), but no
+        // consumer reads a resolver-produced usage → declaration edge as
+        // attachment, so binding to it is equally wrong under this kind.
+        // A ref that matches nothing simply stays unresolved.
+        EdgeKind::Annotates => false,
         // Uses / TypeOf / Returns / Contains / Receives — permissive.
         _ => true,
     }
