@@ -116,19 +116,288 @@ pub async fn resolve_serve_from_mcp_roots(out: &mut Option<String>) -> Option<st
     // Try each root URI — first match wins.
     for root in roots {
         let uri = root.get("uri").and_then(|v| v.as_str()).unwrap_or_default();
-        let root_path = uri.strip_prefix("file://").unwrap_or(uri);
-        let root_path = std::path::Path::new(root_path);
+        let Some(root_path) = root_uri_to_path(uri) else {
+            continue;
+        };
         // Exact match: the root IS a registered project.
-        if let Some(hit) = registered
-            .iter()
-            .find(|p| std::path::Path::new(p) == root_path)
-        {
-            return Some(std::path::PathBuf::from(hit));
+        if let Some(hit) = find_registered_project(&registered, &root_path) {
+            return Some(hit);
         }
         // Walk up from the root to find the nearest enclosing project.
-        if let Some(discovered) = tokensave::config::discover_project_root(root_path) {
+        if let Some(discovered) = tokensave::config::discover_project_root(&root_path) {
             return Some(discovered);
         }
     }
     None
+}
+
+/// Finds the registered project that names the same directory as `root_path`.
+///
+/// Compares canonically as well as literally so that `D:\Dev\app` and
+/// `D:/Dev/app` — the same directory spelled two ways — are recognized as one.
+/// Canonicalization failure (e.g. the path does not exist) only disables the
+/// canonical comparison; the literal one still applies. Returns the registered
+/// spelling, not the root URI's, so downstream path comparisons keep working
+/// against what the global DB recorded.
+fn find_registered_project(
+    registered: &[String],
+    root_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let canonical_root = root_path.canonicalize().ok();
+    registered
+        .iter()
+        .find(|p| {
+            let registered_path = std::path::Path::new(p.as_str());
+            registered_path == root_path
+                || match (registered_path.canonicalize().ok(), canonical_root.as_ref()) {
+                    (Some(a), Some(b)) => a.as_path() == b.as_path(),
+                    _ => false,
+                }
+        })
+        .map(std::path::PathBuf::from)
+}
+
+/// Converts an MCP `roots` entry into a filesystem path.
+///
+/// Stripping a bare `file://` prefix is not enough. A client spells a Windows
+/// root `file:///D:/Dev/app`, which leaves `/D:/Dev/app` — a path that matches
+/// no registered project and that `discover_project_root` cannot walk, so the
+/// whole roots-based fallback was dead on Windows. Percent-encoding was ignored
+/// too, so any path containing a space (`file:///C:/My%20Project`) failed
+/// everywhere. This is the inverse of `agents::kiro::file_resource_uri`, which
+/// already produces exactly this form.
+///
+/// Values that are not URIs at all are returned as-is, since some clients send
+/// a plain path.
+fn root_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    root_uri_to_path_on(uri, cfg!(windows))
+}
+
+/// The platform-independent half, so both behaviours stay testable wherever the
+/// suite runs — CI is Linux, and gating the drive-letter rule on `cfg!(windows)`
+/// alone would leave the Windows case, the one this exists for, uncovered.
+///
+/// `strip_drive_letter` belongs to the host, not the URI: `/C:/x` is a perfectly
+/// legal POSIX path, so stripping it there would corrupt a real directory name.
+fn root_uri_to_path_on(uri: &str, strip_drive_letter: bool) -> Option<std::path::PathBuf> {
+    if uri.is_empty() {
+        return None;
+    }
+    let path = match uri.strip_prefix("file://") {
+        // `file://localhost/x` is the spelled-out form of `file:///x`. Host
+        // names are case-insensitive, so `LOCALHOST` counts too. The guard
+        // proved the authority is exactly "localhost" — nine ASCII bytes — so
+        // this byte-indexed slice cannot land inside a multi-byte character.
+        Some(rest) if authority_is_localhost(rest) => percent_decode(&rest["localhost".len()..]),
+        // `file://host/share` uses a non-local authority. UNC roots are outside
+        // this fallback's current scope, so do not reinterpret one as a relative path.
+        Some(rest) if !rest.starts_with('/') => return None,
+        Some(rest) => percent_decode(rest),
+        None if uri.contains("://") => return None,
+        None => uri.to_string(),
+    };
+
+    // `file:///D:/Dev/app` decodes to `/D:/Dev/app`; drop the leading slash that
+    // belongs to the URI, not to the path, when a drive letter follows it.
+    let path = match path.strip_prefix('/') {
+        Some(rest) if strip_drive_letter && has_drive_prefix(rest) => rest.to_string(),
+        _ => path,
+    };
+
+    Some(std::path::PathBuf::from(path))
+}
+
+/// True when the URI's authority component is `localhost` (host names are
+/// case-insensitive), i.e. `rest` is `localhost/...` in any casing.
+///
+/// Splits on `/` rather than slicing at a byte offset: this input comes
+/// straight from an MCP client's `initialize` request, and a byte-indexed slice
+/// panics when a multi-byte character straddles the cut (`localhosé/…` puts
+/// byte 9 inside the `é`) — a malformed root must never take the server down.
+fn authority_is_localhost(rest: &str) -> bool {
+    rest.split_once('/')
+        .is_some_and(|(authority, _)| authority.eq_ignore_ascii_case("localhost"))
+}
+
+/// True when `path` starts with a Windows drive designator such as `C:`.
+fn has_drive_prefix(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!((chars.next(), chars.next()), (Some(c), Some(':')) if c.is_ascii_alphabetic())
+}
+
+/// Decodes `%XX` escapes, leaving malformed sequences untouched.
+///
+/// Decoding is done on bytes rather than chars so that a percent-encoded
+/// multi-byte UTF-8 character reassembles correctly.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        find_registered_project, has_drive_prefix, percent_decode, root_uri_to_path,
+        root_uri_to_path_on,
+    };
+    use std::path::PathBuf;
+
+    /// Resolves as a Windows host would.
+    fn win(uri: &str) -> String {
+        render(root_uri_to_path_on(uri, true))
+    }
+
+    /// Resolves as a Unix host would.
+    fn unix(uri: &str) -> String {
+        render(root_uri_to_path_on(uri, false))
+    }
+
+    fn render(path: Option<PathBuf>) -> String {
+        path.unwrap_or_else(|| PathBuf::from("<none>"))
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    #[test]
+    fn windows_root_drops_the_uri_leading_slash() {
+        assert_eq!(win("file:///D:/Dev/app"), "D:/Dev/app");
+        assert_eq!(win("file:///c:/dev/app"), "c:/dev/app");
+    }
+
+    #[test]
+    fn a_drive_letter_is_only_a_drive_letter_on_windows() {
+        // `/C:/x` is a legal POSIX path; mangling it into a relative `C:/x`
+        // would point at a different directory entirely.
+        assert_eq!(unix("file:///C:/x"), "/C:/x");
+    }
+
+    #[test]
+    fn windows_keeps_the_leading_slash_without_a_drive_prefix() {
+        assert_eq!(win("file:///home/user/app"), "/home/user/app");
+        // A single-letter first component is not a drive letter.
+        assert_eq!(win("file:///d/dev/app"), "/d/dev/app");
+    }
+
+    #[test]
+    fn localhost_authority_is_the_local_machine() {
+        // `file://localhost/x` is the spelled-out form of `file:///x`, unlike a
+        // real host, which would be a UNC share. Host names are
+        // case-insensitive, so any casing counts.
+        assert_eq!(unix("file://localhost/home/user/app"), "/home/user/app");
+        assert_eq!(win("file://localhost/D:/Dev/app"), "D:/Dev/app");
+        assert_eq!(unix("file://LOCALHOST/home/user/app"), "/home/user/app");
+        assert_eq!(unix("file://LocalHost/home/user/app"), "/home/user/app");
+        // A host that merely *starts* with the word is a real (UNC) host.
+        assert!(root_uri_to_path("file://localhostname/share").is_none());
+    }
+
+    #[test]
+    fn a_multibyte_authority_is_rejected_without_panicking() {
+        // This input arrives from an MCP client's `initialize` request. A
+        // byte-indexed authority check panicked here: `localhosé` puts byte 9
+        // inside the two-byte `é`, and slicing off a char boundary aborts —
+        // letting a malformed root take the whole server down.
+        assert!(root_uri_to_path("file://localhosé/share").is_none());
+        assert!(root_uri_to_path("file://locälhost/x").is_none());
+        assert!(root_uri_to_path("file://é/x").is_none());
+    }
+
+    #[test]
+    fn percent_escapes_are_decoded() {
+        assert_eq!(win("file:///C:/My%20Project"), "C:/My Project");
+        assert_eq!(win("file:///home/user/my%20app"), "/home/user/my app");
+        assert_eq!(win("file:///home/user/caf%C3%A9"), "/home/user/café");
+    }
+
+    #[test]
+    fn malformed_escapes_are_left_alone() {
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%zz"), "a%zz");
+        assert_eq!(percent_decode("a%4"), "a%4");
+        assert_eq!(percent_decode("%41"), "A");
+    }
+
+    #[test]
+    fn bare_paths_pass_through() {
+        assert_eq!(win("/home/user/app"), "/home/user/app");
+        assert_eq!(win("D:/Dev/app"), "D:/Dev/app");
+        // The host-dependent entry point resolves for the platform it targets.
+        assert!(root_uri_to_path("/home/user/app").is_some());
+    }
+
+    #[test]
+    fn unsupported_uris_are_skipped() {
+        assert!(root_uri_to_path("").is_none());
+        assert!(root_uri_to_path("https://example.com/app").is_none());
+        // UNC authorities are intentionally outside this fallback's current scope.
+        assert!(root_uri_to_path("file://server/share").is_none());
+    }
+
+    #[test]
+    fn drive_prefix_detection() {
+        assert!(has_drive_prefix("C:/x"));
+        assert!(has_drive_prefix("z:"));
+        assert!(!has_drive_prefix("/C:/x"));
+        assert!(!has_drive_prefix("home/user"));
+        assert!(!has_drive_prefix("1:/x"));
+        assert!(!has_drive_prefix(""));
+    }
+
+    #[test]
+    fn registered_match_literal_even_when_the_path_does_not_exist() {
+        // Canonicalization fails on a nonexistent path; the literal comparison
+        // must still hold on its own.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let missing = tmp.path().join("missing");
+        assert!(!missing.exists());
+
+        let registered = vec![missing.to_string_lossy().into_owned()];
+        assert_eq!(
+            find_registered_project(&registered, &missing),
+            Some(missing)
+        );
+    }
+
+    #[test]
+    fn registered_match_via_canonicalization_returns_the_registered_spelling() {
+        // `project/../project` names the same existing directory as `project`
+        // without stepping outside the temp dir; only canonicalization can
+        // equate the two spellings.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let registered = vec![project.to_string_lossy().into_owned()];
+        let alias = project.join("..").join("project");
+        assert_ne!(alias.as_path(), project.as_path());
+        assert_eq!(
+            find_registered_project(&registered, &alias),
+            Some(project.clone())
+        );
+    }
+
+    #[test]
+    fn registered_mismatch_between_two_existing_directories() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let registered = vec![a.to_string_lossy().into_owned()];
+        assert_eq!(find_registered_project(&registered, &b), None);
+    }
 }
