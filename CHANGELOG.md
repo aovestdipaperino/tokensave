@@ -13,6 +13,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Removed
 - **Both query-side stemming workarounds are deleted, subsumed by the porter tokenizer.** The trailing-`s` strip from #264 and `generate_stem_variants`' hand-rolled suffix table existed only because the index didn't stem. Porter covers every conflation the suffix table targeted — verified directly against FTS5 (authentication ↔ authenticator ↔ authenticate, configuration ↔ configure, serializer ↔ serialization, truncation ↔ truncate, validator ↔ validated); the one jump neither makes is resolution → resolve, so nothing is lost. On a 12-query retrieval eval the entry points are identical with the workarounds removed.
 
+### Fixed
+- **Dart calls made inside closures and local functions are no longer dropped.** `extract_call_sites` skipped `function_expression`/`lambda_expression` outright instead of attributing their calls to the enclosing named symbol, so calls inside Flutter callbacks (`onPressed:`, `builder:`, `setState(…)`, `.map(…)`) and local functions were invisible to `tokensave_callers`, `tokensave_impact`, and `tokensave_dead_code` — a helper reached only from a callback looked dead. Same fix as TypeScript #209 for nested arrows.
 
 ## [7.8.1] - 2026-07-27
 
