@@ -591,14 +591,31 @@ fn strip_windows_exe_suffix(name: &str) -> &str {
     }
 }
 
+/// Is `stem` (a basename with any `.exe` suffix already stripped) the
+/// tokensave binary, using Windows matching semantics?
+///
+/// Windows treats file and process names as case-insensitive, so basenames
+/// like `TokenSave` or `TOKENSAVE` refer to the same binary as `tokensave`.
+///
+/// Compiled for `test` too (not just `windows`) so the regression test can
+/// exercise Windows matching semantics on any host platform.
+#[cfg(any(windows, test))]
+fn is_tokensave_stem_windows(stem: &str) -> bool {
+    stem.eq_ignore_ascii_case("tokensave")
+}
+
 /// Is `name` the tokensave binary (platform-dependent extension included)?
 fn is_tokensave_process_name(name: &str) -> bool {
     #[cfg(windows)]
-    let stem = strip_windows_exe_suffix(name);
+    {
+        let stem = strip_windows_exe_suffix(name);
+        is_tokensave_stem_windows(stem)
+    }
     #[cfg(not(windows))]
-    let stem = name.strip_suffix(".exe").unwrap_or(name);
-
-    stem == "tokensave"
+    {
+        let stem = name.strip_suffix(".exe").unwrap_or(name);
+        stem == "tokensave"
+    }
 }
 
 /// A reduced, pure row used for kill-candidate selection: just enough of a
@@ -952,6 +969,23 @@ mod tests {
     #[test]
     fn is_tokensave_process_name_ignores_unrelated_unicode_names() {
         assert!(!is_tokensave_process_name("€€"));
+    }
+
+    #[test]
+    fn is_tokensave_stem_windows_is_ascii_case_insensitive() {
+        // Windows file/process names are case-insensitive: mixed-case
+        // basenames like `TokenSave.EXE` or `TOKENSAVE.exe` (after the
+        // `.exe` suffix has already been stripped) must still be recognized
+        // as the tokensave binary under Windows matching semantics, even
+        // though the Unix comparison stays exact/case-sensitive.
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TokenSave.EXE"
+        )));
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TOKENSAVE.exe"
+        )));
+        assert!(is_tokensave_stem_windows("tokensave"));
+        assert!(!is_tokensave_stem_windows("tokensave-helper"));
     }
 
     #[test]
