@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Dart calls made inside closures and local functions are no longer dropped.** `extract_call_sites` skipped `function_expression`/`lambda_expression` outright instead of attributing their calls to the enclosing named symbol, so calls inside Flutter callbacks (`onPressed:`, `builder:`, `setState(…)`, `.map(…)`) and local functions were invisible to `tokensave_callers`, `tokensave_impact`, and `tokensave_dead_code` — a helper reached only from a callback looked dead. Same fix as TypeScript #209 for nested arrows.
 
 ## [7.8.1] - 2026-07-27
 
