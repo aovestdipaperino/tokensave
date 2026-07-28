@@ -135,6 +135,32 @@ fn report_skipped_extensions<V: Fn(&str)>(skipped: &[(String, usize)], on_verbos
     }
 }
 
+/// Is `target` the project root itself, or one of the root's ancestors?
+///
+/// Both arguments must already be canonical. Comparison is component-wise, so
+/// a sibling that merely shares the root's string prefix (`/home/user2` next to
+/// `/home/user`) is not an ancestor.
+fn path_contains_root(target: &Path, canonical_root: &Path) -> bool {
+    canonical_root.starts_with(target)
+}
+
+/// Would descending the directory symlink at `path` re-enter the project root?
+///
+/// True when the link resolves to the root itself or to one of the root's
+/// ancestors, which every Wine prefix produces with `dosdevices/z: -> /`. Such
+/// a link only re-exposes paths the walk already covers, plus the whole rest of
+/// the filesystem, so the walkers prune it instead of following it (#327). A
+/// link into a disjoint tree is not affected and is still followed and indexed
+/// (#34). Fails open: if either side cannot be canonicalized, the entry keeps
+/// its previous treatment.
+fn reenters_project_root(path: &Path, canonical_root: Option<&Path>) -> bool {
+    let Some(root) = canonical_root else {
+        return false;
+    };
+    path.canonicalize()
+        .is_ok_and(|target| path_contains_root(&target, root))
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -1051,10 +1077,17 @@ impl TokenSave {
                 // The project directory may be gitignored by a parent repo,
                 // causing the ignore-aware walker to skip everything. Fall
                 // back to plain walkdir if source files clearly exist.
+                let canonical_root = self.project_root.canonicalize().ok();
                 let has_source = WalkDir::new(&self.project_root)
                     .follow_links(true)
                     .max_depth(2)
                     .into_iter()
+                    .filter_entry(|e| {
+                        if e.depth() > 0 && e.path_is_symlink() && e.file_type().is_dir() {
+                            return !reenters_project_root(e.path(), canonical_root.as_deref());
+                        }
+                        true
+                    })
                     .filter_map(std::result::Result::ok)
                     .any(|e| {
                         e.file_type().is_file()
@@ -1089,12 +1122,22 @@ impl TokenSave {
         let root = &self.project_root;
         let config = &self.config;
         let manifest = self.manifest();
+        let canonical_root = root.canonicalize().ok();
         for entry in WalkDir::new(root)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
                 if e.depth() == 0 {
                     return true;
+                }
+                // Checked before every other rule so no `include` glob or
+                // manifest entry can re-enable a link that swallows the
+                // filesystem (#327).
+                if e.path_is_symlink()
+                    && e.file_type().is_dir()
+                    && reenters_project_root(e.path(), canonical_root.as_deref())
+                {
+                    return false;
                 }
                 let name = e.file_name().to_string_lossy();
                 if name.starts_with('.') || name == "target" {
@@ -1165,6 +1208,7 @@ impl TokenSave {
         // feeds the same exclude list.
         let root = self.project_root.clone();
         let config = self.config.clone();
+        let canonical_root = self.project_root.canonicalize().ok();
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
             .hidden(!has_includes) // disable when we need to check includes
@@ -1180,6 +1224,16 @@ impl TokenSave {
                         if is_excluded_dir(&rel_str, &config) {
                             return false;
                         }
+                    }
+                    // A link back onto the root or one of its ancestors would
+                    // re-walk the project plus the rest of the filesystem
+                    // (#327). The walk root itself is exempt so a project
+                    // opened through a symlinked path still scans.
+                    if e.depth() > 0
+                        && e.path_is_symlink()
+                        && reenters_project_root(e.path(), canonical_root.as_deref())
+                    {
+                        return false;
                     }
                 }
                 true
@@ -1921,4 +1975,85 @@ pub(crate) fn can_use_literal_rewrite_fallback(pattern: &str) -> bool {
         && !pattern.contains('$')
         && !pattern.contains('\n')
         && !pattern.contains('\r')
+}
+
+/// Unit coverage for the #327 walk-scope predicate. Pure path relations run on
+/// every platform (including the Windows verbatim spellings `canonicalize`
+/// returns there); the filesystem-resolving wrapper is exercised through real
+/// symlinks in `tests/symlink_walk_scope_test.rs`.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod walk_scope_tests {
+    use super::{path_contains_root, reenters_project_root};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn root_itself_contains_root() {
+        let root = Path::new("/home/user/proj");
+        assert!(path_contains_root(root, root));
+    }
+
+    #[test]
+    fn ancestor_contains_root() {
+        let root = Path::new("/home/user/proj");
+        assert!(path_contains_root(Path::new("/"), root));
+        assert!(path_contains_root(Path::new("/home"), root));
+        assert!(path_contains_root(Path::new("/home/user"), root));
+    }
+
+    #[test]
+    fn descendant_does_not_contain_root() {
+        let root = Path::new("/home/user/proj");
+        assert!(!path_contains_root(Path::new("/home/user/proj/src"), root));
+    }
+
+    #[test]
+    fn disjoint_tree_does_not_contain_root() {
+        let root = Path::new("/home/user/proj");
+        assert!(!path_contains_root(Path::new("/home/user/other"), root));
+        assert!(!path_contains_root(Path::new("/opt/src"), root));
+    }
+
+    #[test]
+    fn prefix_sharing_sibling_does_not_contain_root() {
+        let root = Path::new("/home/user/proj");
+        assert!(!path_contains_root(Path::new("/home/user2"), root));
+        assert!(!path_contains_root(Path::new("/home/user/proj-old"), root));
+    }
+
+    // Only Windows parses the verbatim prefixes into components; on Unix the
+    // whole spelling is a single opaque file name.
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_relations_compare_by_component() {
+        // `canonicalize` yields `\\?\C:\…` / `\\?\UNC\…` spellings on Windows;
+        // both sides go through it, so the comparison stays component-wise.
+        let root = Path::new(r"\\?\C:\repo");
+        assert!(path_contains_root(Path::new(r"\\?\C:\"), root));
+        assert!(path_contains_root(root, root));
+        assert!(!path_contains_root(Path::new(r"\\?\C:\repo-old"), root));
+        assert!(!path_contains_root(Path::new(r"\\?\C:\repo\src"), root));
+
+        let unc = Path::new(r"\\?\UNC\server\share\repo");
+        assert!(path_contains_root(Path::new(r"\\?\UNC\server\share"), unc));
+        assert!(!path_contains_root(
+            Path::new(r"\\?\UNC\server\share\repo-old"),
+            unc
+        ));
+    }
+
+    #[test]
+    fn unknown_root_never_prunes() {
+        assert!(!reenters_project_root(Path::new("/"), None));
+    }
+
+    #[test]
+    fn unresolvable_path_never_prunes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let missing = root.join("tokensave-327-does-not-exist");
+        assert!(!missing.exists(), "the fixture path must not exist");
+        assert!(!reenters_project_root(&missing, Some(&root)));
+    }
 }
