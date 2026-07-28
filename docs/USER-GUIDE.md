@@ -693,7 +693,7 @@ If other tokensave processes (usually MCP servers) are running, `upgrade` lists 
 tokensave upgrade --kill
 ```
 
-When nothing else is running, no prompt appears. In non-interactive runs the upgrade continues without killing anything unless `--kill` is given. The launcher that started the current `tokensave` process (a Scoop shim, a shell, or any other ancestor) is never listed as a killable process, even if it's itself named `tokensave`/`tokensave.exe` — only unrelated tokensave processes are candidates. If a requested kill (via `--kill` or answering `y`) doesn't stop every listed process, the upgrade aborts instead of proceeding; stop the remaining process(es) manually and retry.
+When nothing else is running, no prompt appears. In non-interactive runs the upgrade continues without killing anything unless `--kill` is given. The launcher that started the current `tokensave` process (a Scoop shim, a shell, or any other ancestor) is never listed as a killable process, even if it's itself named `tokensave`/`tokensave.exe` — only unrelated tokensave processes are candidates. If a requested kill (via `--kill` or answering `y`) cannot signal every listed process, the upgrade aborts instead of proceeding; stop the remaining process(es) manually and retry.
 
 You can also update through your package manager:
 
