@@ -5,6 +5,7 @@
 //! Beta and stable are separate channels — a beta build only sees beta
 //! releases and vice versa.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::cloud::{self, InstallMethod};
@@ -570,13 +571,108 @@ pub struct RunningProcess {
     pub description: String,
 }
 
-/// Is `name` the tokensave binary (platform-dependent extension included)?
-fn is_tokensave_process_name(name: &str) -> bool {
-    let stem = name.strip_suffix(".exe").unwrap_or(name);
-    stem == "tokensave"
+/// Strip a case-insensitive `.exe` suffix from a Windows process name,
+/// without panicking when the last 4 bytes of `name` don't fall on a UTF-8
+/// character boundary.
+///
+/// Compiled for `test` too (not just `windows`) so the boundary-safety
+/// regression test can exercise this logic on any host platform.
+#[cfg(any(windows, test))]
+fn strip_windows_exe_suffix(name: &str) -> &str {
+    let len = name.len();
+    if len < 4 || !name.is_char_boundary(len - 4) {
+        return name;
+    }
+    let (stem, suffix) = name.split_at(len - 4);
+    if suffix.eq_ignore_ascii_case(".exe") {
+        stem
+    } else {
+        name
+    }
 }
 
-/// List running tokensave processes, excluding this one.
+/// Is `stem` (a basename with any `.exe` suffix already stripped) the
+/// tokensave binary, using Windows matching semantics?
+///
+/// Windows treats file and process names as case-insensitive, so basenames
+/// like `TokenSave` or `TOKENSAVE` refer to the same binary as `tokensave`.
+///
+/// Compiled for `test` too (not just `windows`) so the regression test can
+/// exercise Windows matching semantics on any host platform.
+#[cfg(any(windows, test))]
+fn is_tokensave_stem_windows(stem: &str) -> bool {
+    stem.eq_ignore_ascii_case("tokensave")
+}
+
+/// Is `name` the tokensave binary (platform-dependent extension included)?
+fn is_tokensave_process_name(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let stem = strip_windows_exe_suffix(name);
+        is_tokensave_stem_windows(stem)
+    }
+    #[cfg(not(windows))]
+    {
+        let stem = name.strip_suffix(".exe").unwrap_or(name);
+        stem == "tokensave"
+    }
+}
+
+/// A reduced, pure row used for kill-candidate selection: just enough of a
+/// process snapshot (pid, parent pid, name, description) to reason about
+/// ancestry without touching sysinfo directly. Keeping this separate from
+/// `RunningProcess` lets the selection logic be unit-tested with a
+/// hand-built table instead of the real process tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessEntry {
+    pid: u32,
+    parent: Option<u32>,
+    name: String,
+    description: String,
+}
+
+/// PIDs to exclude from kill candidates: this process plus every reachable
+/// ancestor found by walking `parent` links in `table`.
+///
+/// The walk stops as soon as it can no longer make progress safely: the
+/// current pid has no entry in `table`, its parent is absent or `0`, or the
+/// parent has already been visited (a cycle or self-parent). This guards a
+/// Scoop shim (or any other launcher) named `tokensave`/`tokensave.exe` from
+/// being offered as a killable "unrelated" process, even when it launched us
+/// through an intermediate non-tokensave process (e.g. a shell).
+fn self_and_ancestor_pids(table: &[ProcessEntry], self_pid: u32) -> HashSet<u32> {
+    let mut excluded = HashSet::new();
+    let mut current = Some(self_pid);
+
+    while let Some(pid) = current {
+        if pid == 0 || !excluded.insert(pid) {
+            break;
+        }
+        current = table.iter().find(|e| e.pid == pid).and_then(|e| e.parent);
+    }
+
+    excluded
+}
+
+/// Reduce a process table to the tokensave processes safe to offer as kill
+/// candidates: exclude this process and every reachable ancestor, keep the
+/// rest that look like tokensave, and preserve pid ordering.
+fn kill_candidates(table: &[ProcessEntry], self_pid: u32) -> Vec<RunningProcess> {
+    let excluded = self_and_ancestor_pids(table, self_pid);
+
+    let mut found: Vec<RunningProcess> = table
+        .iter()
+        .filter(|e| !excluded.contains(&e.pid) && is_tokensave_process_name(&e.name))
+        .map(|e| RunningProcess {
+            pid: e.pid,
+            description: e.description.clone(),
+        })
+        .collect();
+    found.sort_by_key(|p| p.pid);
+    found
+}
+
+/// List running tokensave processes, excluding this one and its ancestors.
 ///
 /// These are mostly MCP servers spawned by editors/agents. They hold the old
 /// binary's DB handles open, so upgrading under them can leave a server
@@ -592,32 +688,31 @@ fn find_running_processes() -> Vec<RunningProcess> {
         ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always),
     );
 
-    let mut found: Vec<RunningProcess> = sys
+    let table: Vec<ProcessEntry> = sys
         .processes()
         .values()
-        .filter(|p| {
-            let pid = p.pid().as_u32();
-            pid != self_pid && is_tokensave_process_name(&p.name().to_string_lossy())
-        })
         .map(|p| {
             let cmd: Vec<String> = p
                 .cmd()
                 .iter()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect();
+            let name = p.name().to_string_lossy().into_owned();
             let description = if cmd.is_empty() {
-                p.name().to_string_lossy().into_owned()
+                name.clone()
             } else {
                 cmd.join(" ")
             };
-            RunningProcess {
+            ProcessEntry {
                 pid: p.pid().as_u32(),
+                parent: p.parent().map(sysinfo::Pid::as_u32),
+                name,
                 description,
             }
         })
         .collect();
-    found.sort_by_key(|p| p.pid);
-    found
+
+    kill_candidates(&table, self_pid)
 }
 
 /// Terminate `procs`; returns the number successfully signalled.
@@ -648,17 +743,39 @@ fn kill_processes(procs: &[RunningProcess]) -> usize {
     killed
 }
 
+/// Decide whether the upgrade may proceed after attempting to stop blocking
+/// tokensave processes.
+///
+/// v7.8.0 defines "stopped" as *successfully signalled*: this does not wait
+/// for the OS to finish tearing a process down, and it does not rescan for
+/// respawned processes. If fewer processes were signalled than requested,
+/// the upgrade is aborted rather than proceeding while an old binary may
+/// still be running.
+fn post_kill_outcome(requested: usize, killed: usize) -> Result<()> {
+    if killed >= requested {
+        return Ok(());
+    }
+    Err(TokenSaveError::Config {
+        message: format!(
+            "upgrade stopped: only {killed}/{requested} running tokensave process(es) could be stopped.\n  \
+             Stop the remaining process(es) manually, then retry the upgrade.",
+        ),
+    })
+}
+
 /// Handle tokensave processes that are still running before an upgrade.
 ///
 /// With `kill` set, terminate them without asking. Otherwise ask, but only
 /// when there is something to kill and stdin is a TTY; a non-interactive run
-/// just warns and continues.
-fn handle_running_processes(kill: bool) {
+/// just warns and continues. If a kill was requested (via `--kill` or an
+/// interactive `y`) and not every process could be stopped, the upgrade is
+/// aborted rather than proceeding under a still-running old binary.
+fn handle_running_processes(kill: bool) -> Result<()> {
     use std::io::{IsTerminal, Write};
 
     let procs = find_running_processes();
     if procs.is_empty() {
-        return;
+        return Ok(());
     }
 
     eprintln!("{} other tokensave process(es) running:", procs.len());
@@ -671,22 +788,24 @@ fn handle_running_processes(kill: bool) {
             eprintln!(
                 "  \x1b[33m!\x1b[0m Continuing without killing them (non-interactive; use --kill)."
             );
-            return;
+            return Ok(());
         }
         eprint!("  Kill them before upgrading? [y/N] ");
         std::io::stderr().flush().ok();
         let mut answer = String::new();
         if std::io::stdin().read_line(&mut answer).is_err() {
-            return;
+            return Ok(());
         }
         if !answer.trim().eq_ignore_ascii_case("y") {
             eprintln!("  Leaving them running.");
-            return;
+            return Ok(());
         }
     }
 
+    let requested = procs.len();
     let killed = kill_processes(&procs);
-    eprintln!("Killed {killed}/{} process(es).", procs.len());
+    eprintln!("Killed {killed}/{requested} process(es).");
+    post_kill_outcome(requested, killed)
 }
 
 /// Check for a newer version and perform the upgrade if one is available.
@@ -712,7 +831,7 @@ pub fn run_upgrade(kill: bool) -> Result<String> {
     if matches!(method, InstallMethod::Brew) {
         // Homebrew decides for itself whether there is anything to do, so the
         // running-process check has to happen before delegating.
-        handle_running_processes(kill);
+        handle_running_processes(kill)?;
         return run_brew_upgrade(current);
     }
 
@@ -732,7 +851,7 @@ pub fn run_upgrade(kill: bool) -> Result<String> {
 
     eprintln!("Upgrading v{current} → v{latest}...");
 
-    handle_running_processes(kill);
+    handle_running_processes(kill)?;
 
     let asset_url = preflight_asset_check(latest, is_beta)?;
 
@@ -837,9 +956,235 @@ mod tests {
     }
 
     #[test]
+    fn strip_windows_exe_suffix_does_not_panic_on_unicode_boundary() {
+        // Each '€' is a 3-byte UTF-8 sequence, so this 6-byte, 2-char name
+        // has `len - 4 == 2`, a byte offset that falls *inside* the first
+        // '€' rather than on a char boundary. The naive `name[len - 4..]`
+        // slice used to panic here even though the name has nothing to do
+        // with tokensave or `.exe`.
+        let name = "€€";
+        assert_eq!(strip_windows_exe_suffix(name), name);
+    }
+
+    #[test]
+    fn is_tokensave_process_name_ignores_unrelated_unicode_names() {
+        assert!(!is_tokensave_process_name("€€"));
+    }
+
+    #[test]
+    fn is_tokensave_stem_windows_is_ascii_case_insensitive() {
+        // Windows file/process names are case-insensitive: mixed-case
+        // basenames like `TokenSave.EXE` or `TOKENSAVE.exe` (after the
+        // `.exe` suffix has already been stripped) must still be recognized
+        // as the tokensave binary under Windows matching semantics, even
+        // though the Unix comparison stays exact/case-sensitive.
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TokenSave.EXE"
+        )));
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TOKENSAVE.exe"
+        )));
+        assert!(is_tokensave_stem_windows("tokensave"));
+        assert!(!is_tokensave_stem_windows("tokensave-helper"));
+    }
+
+    #[test]
     fn find_running_processes_excludes_self() {
         let self_pid = std::process::id();
         assert!(find_running_processes().iter().all(|p| p.pid != self_pid));
+    }
+
+    fn entry(pid: u32, parent: Option<u32>, name: &str, description: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent,
+            name: name.to_string(),
+            description: description.to_string(),
+        }
+    }
+
+    #[test]
+    fn kill_candidates_excludes_scoop_shim_parent_launching_self() {
+        // A Scoop shim named tokensave.exe launched us directly.
+        let table = [
+            entry(50, None, "tokensave.exe", r"C:\shims\tokensave.exe upgrade"),
+            entry(100, Some(50), "tokensave.exe", "tokensave.exe upgrade"),
+        ];
+        assert!(kill_candidates(&table, 100).is_empty());
+    }
+
+    #[test]
+    fn kill_candidates_excludes_tokensave_grandparent_behind_shell() {
+        // self -> bash -> tokensave (e.g. a launcher script invoked via a shell).
+        let table = [
+            entry(40, None, "tokensave", "tokensave"),
+            entry(60, Some(40), "bash", "bash"),
+            entry(100, Some(60), "tokensave", "tokensave upgrade"),
+        ];
+        assert!(kill_candidates(&table, 100).is_empty());
+    }
+
+    #[test]
+    fn kill_candidates_keeps_unrelated_server_excludes_launcher_ancestor() {
+        let table = [
+            entry(50, None, "tokensave.exe", r"C:\shims\tokensave.exe upgrade"),
+            entry(100, Some(50), "tokensave", "tokensave upgrade --kill"),
+            entry(200, None, "tokensave", "tokensave serve"),
+        ];
+        let candidates = kill_candidates(&table, 100);
+        assert_eq!(
+            candidates,
+            vec![RunningProcess {
+                pid: 200,
+                description: "tokensave serve".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_terminates_on_self_parent_cycle() {
+        let table = [entry(100, Some(100), "tokensave", "tokensave")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_terminates_on_two_cycle() {
+        let table = [
+            entry(100, Some(200), "tokensave", "tokensave"),
+            entry(200, Some(100), "tokensave", "tokensave"),
+        ];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 200]));
+    }
+
+    #[test]
+    fn kill_candidates_excludes_lookalikes_and_preserves_pid_order() {
+        let table = [
+            entry(400, None, "tokensave", "tokensave serve two"),
+            entry(300, None, "tokensave-helper", "tokensave-helper"),
+            entry(250, None, "tokensave", "tokensave serve"),
+        ];
+        let candidates = kill_candidates(&table, 100);
+        assert_eq!(
+            candidates,
+            vec![
+                RunningProcess {
+                    pid: 250,
+                    description: "tokensave serve".to_string(),
+                },
+                RunningProcess {
+                    pid: 400,
+                    description: "tokensave serve two".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_on_missing_parent_entry() {
+        // self's parent pid (999) has no entry in the table. The walk records
+        // it (harmless — it can never match a real table row) and then halts
+        // because there is nothing further to look up.
+        let table = [entry(100, Some(999), "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 999]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_on_zero_parent() {
+        let table = [entry(100, Some(0), "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_when_self_has_no_entry() {
+        // self_pid has no corresponding row in the table at all.
+        let table = [entry(1, None, "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_walks_a_deep_chain() {
+        let table = [
+            entry(1, None, "init", "init"),
+            entry(10, Some(1), "bash", "bash"),
+            entry(20, Some(10), "bash", "bash"),
+            entry(30, Some(20), "tokensave", "tokensave"),
+            entry(100, Some(30), "tokensave", "tokensave upgrade"),
+        ];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 30, 20, 10, 1]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn live_snapshot_includes_self_and_real_parent_pid() {
+        extern "C" {
+            fn getppid() -> i32;
+        }
+
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let self_pid = std::process::id();
+        let real_ppid = unsafe { getppid() } as u32;
+
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always),
+        );
+
+        let self_proc = sys
+            .process(sysinfo::Pid::from_u32(self_pid))
+            .expect("current process must be present in its own snapshot");
+        assert_eq!(
+            self_proc.parent().map(|p| p.as_u32()),
+            Some(real_ppid),
+            "sysinfo's reported parent must match the real OS parent pid"
+        );
+    }
+
+    #[test]
+    fn post_kill_outcome_succeeds_when_all_requested_were_killed() {
+        assert!(post_kill_outcome(3, 3).is_ok());
+    }
+
+    #[test]
+    fn post_kill_outcome_succeeds_when_nothing_was_requested() {
+        assert!(post_kill_outcome(0, 0).is_ok());
+    }
+
+    #[test]
+    fn post_kill_outcome_fails_on_partial_kill() {
+        let err = post_kill_outcome(3, 2).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains('2'),
+            "message should include killed count: {message}"
+        );
+        assert!(
+            message.contains('3'),
+            "message should include requested count: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("upgrade") && message.to_lowercase().contains("stop"),
+            "message should explain the upgrade stopped: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("manually") && message.to_lowercase().contains("retry"),
+            "message should tell the user to stop them manually and retry: {message}"
+        );
+    }
+
+    #[test]
+    fn post_kill_outcome_fails_on_total_kill_failure() {
+        let err = post_kill_outcome(3, 0).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains('0'));
+        assert!(message.contains('3'));
     }
 
     #[test]
