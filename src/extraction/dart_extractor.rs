@@ -1697,8 +1697,16 @@ impl DartExtractor {
                     // Recurse into argument_part for nested calls.
                     Self::extract_call_sites(state, child, fn_node_id);
                 }
-                // Skip nested function expressions to avoid polluting call sites.
-                "function_expression" | "lambda_expression" => {}
+                // Closures and local functions have no graph node of their own, so their
+                // calls belong to the enclosing named symbol. `function_expression` is the
+                // anonymous form (`() { … }`, `(x) => …`) that carries nearly every Flutter
+                // callback — `onPressed:`, `builder:`, `setState(…)`, `.map(…)` — and
+                // `lambda_expression` is the named local-function form. Both were skipped
+                // outright, so those calls were discarded rather than reattributed. Same fix
+                // as #209 for TypeScript arrows.
+                "function_expression" | "lambda_expression" => {
+                    Self::extract_call_sites(state, child, fn_node_id);
+                }
                 _ => {
                     // Recurse into other nodes.
                     Self::extract_call_sites(state, child, fn_node_id);
