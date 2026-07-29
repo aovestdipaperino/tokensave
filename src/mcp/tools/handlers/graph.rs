@@ -280,6 +280,13 @@ pub(super) async fn handle_context(
         .and_then(serde_json::Value::as_u64)
         .map_or(5, |v| v.min(20) as usize);
 
+    // Absent means "no line cap"; a requested 0 is clamped to 1, since an empty
+    // snippet is strictly worse than no snippet at all.
+    let max_code_lines = args
+        .get("max_code_lines")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v.clamp(1, 1000) as usize);
+
     let mode = args
         .get("mode")
         .and_then(|v| v.as_str())
@@ -337,6 +344,7 @@ pub(super) async fn handle_context(
         path_include,
         path_exclude,
         query_ignore,
+        max_code_lines,
         ..Default::default()
     };
 
