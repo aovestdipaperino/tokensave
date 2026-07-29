@@ -724,7 +724,12 @@ impl<'a> ContextBuilder<'a> {
             }
 
             if let Some(code) = self.get_code_cached(node, file_cache) {
-                let truncated = truncate_code_block(&code, options.max_code_block_size, &node.id);
+                let truncated = truncate_code_block(
+                    &code,
+                    options.max_code_block_size,
+                    options.max_code_lines,
+                    &node.id,
+                );
 
                 blocks.push(CodeBlock {
                     content: truncated,
@@ -1398,22 +1403,59 @@ fn apply_per_file_cap(
     accepted
 }
 
-/// Truncates a code snippet to `max_size`, preferring a line boundary.
+/// Truncates a code snippet to `max_lines` lines and `max_size` bytes,
+/// whichever bites first, preferring a line boundary.
 ///
 /// A truncated snippet closes with a `tokensave_body` handle rather than a bare
 /// ellipsis, so the caller can fetch the remainder in one follow-up call instead
-/// of re-deriving which symbol the fragment came from. Snippets at or under
-/// `max_size` are returned unchanged.
-fn truncate_code_block(code: &str, max_size: usize, node_id: &str) -> String {
-    if code.len() <= max_size {
-        return code.to_string();
+/// of re-deriving which symbol the fragment came from. Snippets under both
+/// limits are returned unchanged.
+fn truncate_code_block(
+    code: &str,
+    max_size: usize,
+    max_lines: Option<usize>,
+    node_id: &str,
+) -> String {
+    // The line cap goes first: it is the caller's explicit budget, and applying
+    // it up front means the byte cap only ever trims what the line cap kept.
+    let capped = match max_lines {
+        Some(limit) => line_prefix(code, limit),
+        None => code,
+    };
+    if capped.len() <= max_size {
+        return if capped.len() == code.len() {
+            code.to_string()
+        } else {
+            with_body_handle(capped, node_id)
+        };
     }
-    let prefix = crate::text::utf8_prefix_at_or_before(code, max_size);
+    let prefix = crate::text::utf8_prefix_at_or_before(capped, max_size);
     let end = prefix.rfind('\n').unwrap_or(prefix.len());
-    format!(
-        "{}\n... [truncated — full body: tokensave_body node_id={node_id}]",
-        &prefix[..end]
-    )
+    with_body_handle(&prefix[..end], node_id)
+}
+
+/// Returns the prefix of `code` spanning at most `max_lines` lines.
+///
+/// A cap of zero is meaningless — an empty snippet is strictly worse than none
+/// at all — so it is treated as "no cap", matching the handler, which clamps
+/// the parameter to at least one line.
+fn line_prefix(code: &str, max_lines: usize) -> &str {
+    if max_lines == 0 {
+        return code;
+    }
+    match code.match_indices('\n').nth(max_lines - 1) {
+        // Only the snippet's own trailing newline follows the cut, so the
+        // snippet already fits — returning a shortened slice here would make
+        // the caller mark an untruncated block as truncated.
+        Some((idx, _)) if idx + 1 == code.len() => code,
+        Some((idx, _)) => &code[..idx],
+        None => code,
+    }
+}
+
+/// Appends the follow-up handle that points at the full body.
+fn with_body_handle(body: &str, node_id: &str) -> String {
+    format!("{body}\n... [truncated — full body: tokensave_body node_id={node_id}]")
 }
 
 #[cfg(test)]
@@ -1683,7 +1725,7 @@ mod tests {
     #[test]
     fn test_truncated_code_block_points_at_tokensave_body() {
         let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
-        let out = truncate_code_block(&code, 60, "abc123");
+        let out = truncate_code_block(&code, 60, None, "abc123");
         assert!(
             out.contains("tokensave_body node_id=abc123"),
             "truncated block must carry a follow-up handle: {out}"
@@ -1697,16 +1739,61 @@ mod tests {
     #[test]
     fn test_short_code_block_is_returned_verbatim() {
         let code = "fn small() {}\n";
-        assert_eq!(truncate_code_block(code, 1500, "abc123"), code);
+        assert_eq!(truncate_code_block(code, 1500, None, "abc123"), code);
         // Exactly at the limit is not truncation.
-        assert_eq!(truncate_code_block(code, code.len(), "abc123"), code);
+        assert_eq!(truncate_code_block(code, code.len(), None, "abc123"), code);
     }
 
     #[test]
     fn test_truncate_code_block_does_not_split_multibyte_char() {
         // A multi-byte char straddling the cutoff must not panic or corrupt.
         let code = "fn f() {\n    // ✅✅✅✅✅✅✅✅✅✅\n    body();\n}\n";
-        let out = truncate_code_block(code, 20, "n1");
+        let out = truncate_code_block(code, 20, None, "n1");
         assert!(out.contains("tokensave_body node_id=n1"), "{out}");
+    }
+
+    #[test]
+    fn test_max_code_lines_caps_the_snippet() {
+        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let out = truncate_code_block(&code, usize::MAX, Some(3), "abc123");
+        let body = out.split("\n... [truncated").next().unwrap();
+        assert_eq!(body.lines().count(), 3, "{out}");
+        assert!(out.contains("tokensave_body node_id=abc123"), "{out}");
+    }
+
+    #[test]
+    fn test_max_code_lines_leaves_shorter_snippets_verbatim() {
+        let code = "fn small() {\n    body();\n}\n";
+        // A cap above the snippet's length must not add a truncation marker.
+        assert_eq!(
+            truncate_code_block(code, usize::MAX, Some(20), "n1"),
+            code,
+            "a snippet under the cap must come back untouched"
+        );
+    }
+
+    #[test]
+    fn test_byte_limit_still_applies_under_a_line_cap() {
+        // The line cap keeps 10 lines, but the byte budget only fits ~2 — the
+        // tighter of the two has to win.
+        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let out = truncate_code_block(&code, 30, Some(10), "n1");
+        let body = out.split("\n... [truncated").next().unwrap();
+        assert!(body.len() <= 30, "byte cap ignored: {body:?}");
+        assert!(!body.ends_with("    line"), "cut mid-line: {body:?}");
+    }
+
+    #[test]
+    fn line_prefix_boundaries() {
+        let code = "a\nb\nc\n";
+        assert_eq!(line_prefix(code, 1), "a");
+        assert_eq!(line_prefix(code, 2), "a\nb");
+        // A cap at or above the line count returns everything, trailing \n included.
+        assert_eq!(line_prefix(code, 3), code);
+        assert_eq!(line_prefix(code, 99), code);
+        // Zero means "no cap" — see the doc comment.
+        assert_eq!(line_prefix(code, 0), code);
+        // A snippet with no trailing newline is not truncated by an exact cap.
+        assert_eq!(line_prefix("a\nb", 2), "a\nb");
     }
 }

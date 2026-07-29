@@ -291,6 +291,10 @@ fn def_context() -> ToolDefinition {
                     "type": "number",
                     "description": "Maximum number of code snippets when include_code is true (default: 5)"
                 },
+                "max_code_lines": {
+                    "type": "number",
+                    "description": "Maximum lines per code snippet (default: unlimited, max 1000). Use it to see the signature plus the first lines of several symbols instead of one whole large body. A separate size limit of ~1500 bytes per snippet always applies, so a high line cap has little effect — asking for 100 lines does not guarantee 100 lines. Truncated snippets name the tokensave_body call that returns the rest."
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["explore", "plan"],
