@@ -106,29 +106,52 @@ pub async fn resolve_serve_from_mcp_roots(out: &mut Option<String>) -> Option<st
     let roots = parsed.pointer("/params/roots").and_then(|v| v.as_array())?;
 
     let gdb = tokensave::global_db::GlobalDb::open().await?;
-    let mut registered: Vec<String> = gdb.list_project_paths().await;
-    registered.retain(|p| {
-        std::path::Path::new(p)
-            .join(".tokensave/tokensave.db")
-            .exists()
-    });
+    let registered: Vec<RegisteredProject> = gdb
+        .list_project_paths()
+        .await
+        .into_iter()
+        .filter_map(|p| {
+            let pb = std::path::PathBuf::from(p);
+            if pb.join(".tokensave/tokensave.db").exists() {
+                let canonical = pb.canonicalize().ok();
+                Some(RegisteredProject {
+                    path: pb,
+                    canonical,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Try each root URI — first match wins.
     for root in roots {
         let uri = root.get("uri").and_then(|v| v.as_str()).unwrap_or_default();
         let Some(root_path) = root_uri_to_path(uri) else {
+            tracing::debug!("skipping unsupported root URI: {}", uri);
             continue;
         };
         // Exact match: the root IS a registered project.
         if let Some(hit) = find_registered_project(&registered, &root_path) {
+            tracing::info!("serving from MCP root: {}", hit.display());
             return Some(hit);
         }
         // Walk up from the root to find the nearest enclosing project.
         if let Some(discovered) = tokensave::config::discover_project_root(&root_path) {
+            tracing::info!(
+                "serving from discovered project under MCP root: {}",
+                discovered.display()
+            );
             return Some(discovered);
         }
     }
     None
+}
+
+/// A project registered in the global database.
+struct RegisteredProject {
+    path: std::path::PathBuf,
+    canonical: Option<std::path::PathBuf>,
 }
 
 /// Finds the registered project that names the same directory as `root_path`.
@@ -140,21 +163,20 @@ pub async fn resolve_serve_from_mcp_roots(out: &mut Option<String>) -> Option<st
 /// spelling, not the root URI's, so downstream path comparisons keep working
 /// against what the global DB recorded.
 fn find_registered_project(
-    registered: &[String],
+    registered: &[RegisteredProject],
     root_path: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
     let canonical_root = root_path.canonicalize().ok();
     registered
         .iter()
-        .find(|p| {
-            let registered_path = std::path::Path::new(p.as_str());
-            registered_path == root_path
-                || match (registered_path.canonicalize().ok(), canonical_root.as_ref()) {
-                    (Some(a), Some(b)) => a.as_path() == b.as_path(),
+        .find(|rp| {
+            rp.path == root_path
+                || match (rp.canonical.as_ref(), canonical_root.as_ref()) {
+                    (Some(a), Some(b)) => a == b,
                     _ => false,
                 }
         })
-        .map(std::path::PathBuf::from)
+        .map(|rp| rp.path.clone())
 }
 
 /// Converts an MCP `roots` entry into a filesystem path.
@@ -207,16 +229,21 @@ fn root_uri_to_path_on(uri: &str, strip_drive_letter: bool) -> Option<std::path:
     Some(std::path::PathBuf::from(path))
 }
 
-/// True when the URI's authority component is `localhost` (host names are
-/// case-insensitive), i.e. `rest` is `localhost/...` in any casing.
+/// True when the URI's authority component refers to the local machine.
+///
+/// Accepts `localhost`, `127.0.0.1`, and `[::1]` (host names are
+/// case-insensitive).
 ///
 /// Splits on `/` rather than slicing at a byte offset: this input comes
 /// straight from an MCP client's `initialize` request, and a byte-indexed slice
 /// panics when a multi-byte character straddles the cut (`localhosé/…` puts
 /// byte 9 inside the `é`) — a malformed root must never take the server down.
 fn authority_is_localhost(rest: &str) -> bool {
-    rest.split_once('/')
-        .is_some_and(|(authority, _)| authority.eq_ignore_ascii_case("localhost"))
+    rest.split('/').next().is_some_and(|authority| {
+        authority.eq_ignore_ascii_case("localhost")
+            || authority == "127.0.0.1"
+            || authority == "[::1]"
+    })
 }
 
 /// True when `path` starts with a Windows drive designator such as `C:`.
@@ -231,13 +258,17 @@ fn has_drive_prefix(path: &str) -> bool {
 /// multi-byte UTF-8 character reassembles correctly.
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
+    if !bytes.contains(&b'%') {
+        return input.to_string();
+    }
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
                 out.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
@@ -246,7 +277,7 @@ fn percent_decode(input: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 #[cfg(test)]
@@ -368,7 +399,7 @@ mod tests {
 
         let registered = vec![missing.to_string_lossy().into_owned()];
         assert_eq!(
-            find_registered_project(&registered, &missing),
+            find_registered_project(&prep(registered), &missing),
             Some(missing)
         );
     }
@@ -385,9 +416,23 @@ mod tests {
         let alias = project.join("..").join("project");
         assert_ne!(alias.as_path(), project.as_path());
         assert_eq!(
-            find_registered_project(&registered, &alias),
+            find_registered_project(&prep(registered), &alias),
             Some(project.clone())
         );
+    }
+
+    fn prep(registered: Vec<String>) -> Vec<super::RegisteredProject> {
+        registered
+            .into_iter()
+            .map(|p| {
+                let pb = PathBuf::from(p);
+                let canonical = pb.canonicalize().ok();
+                super::RegisteredProject {
+                    path: pb,
+                    canonical,
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -398,6 +443,6 @@ mod tests {
         std::fs::create_dir(&a).unwrap();
         std::fs::create_dir(&b).unwrap();
         let registered = vec![a.to_string_lossy().into_owned()];
-        assert_eq!(find_registered_project(&registered, &b), None);
+        assert_eq!(find_registered_project(&prep(registered), &b), None);
     }
 }
