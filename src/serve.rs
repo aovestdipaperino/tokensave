@@ -206,11 +206,16 @@ fn root_uri_to_path_on(uri: &str, strip_drive_letter: bool) -> Option<std::path:
         return None;
     }
     let path = match uri.strip_prefix("file://") {
-        // `file://localhost/x` is the spelled-out form of `file:///x`. Host
-        // names are case-insensitive, so `LOCALHOST` counts too. The guard
-        // proved the authority is exactly "localhost" — nine ASCII bytes — so
-        // this byte-indexed slice cannot land inside a multi-byte character.
-        Some(rest) if authority_is_localhost(rest) => percent_decode(&rest["localhost".len()..]),
+        // `file://localhost/x` is the spelled-out form of `file:///x`, and
+        // `file://127.0.0.1/x` / `file://[::1]/x` name the same local host.
+        // The guard proved `rest`'s first `/`-delimited segment is one of
+        // those three authorities, all pure ASCII, so slicing off exactly
+        // that segment's byte length — not a hardcoded constant — cannot
+        // land inside a multi-byte character and cannot go out of bounds.
+        Some(rest) if authority_is_localhost(rest) => {
+            let authority_len = rest.split('/').next().unwrap_or_default().len();
+            percent_decode(&rest[authority_len..])
+        }
         // `file://host/share` uses a non-local authority. UNC roots are outside
         // this fallback's current scope, so do not reinterpret one as a relative path.
         Some(rest) if !rest.starts_with('/') => return None,
@@ -335,6 +340,23 @@ mod tests {
         assert_eq!(unix("file://LocalHost/home/user/app"), "/home/user/app");
         // A host that merely *starts* with the word is a real (UNC) host.
         assert!(root_uri_to_path("file://localhostname/share").is_none());
+    }
+
+    #[test]
+    fn ip_literal_authorities_are_the_local_machine() {
+        // `127.0.0.1` and `[::1]` are as long, respectively longer/shorter
+        // than `localhost` — the authority-slicing must key off the actual
+        // matched authority, not a hardcoded length, or these either
+        // misparse or panic on a short path.
+        assert_eq!(unix("file://127.0.0.1/home/user/app"), "/home/user/app");
+        assert_eq!(win("file://127.0.0.1/D:/Dev/app"), "D:/Dev/app");
+        assert_eq!(unix("file://[::1]/home/user/app"), "/home/user/app");
+        assert_eq!(win("file://[::1]/D:/Dev/app"), "D:/Dev/app");
+        // Regression: `[::1]` is shorter than `localhost`, so a URI whose
+        // path is short enough previously indexed out of bounds and panicked.
+        assert_eq!(unix("file://[::1]/x"), "/x");
+        // A host that merely resembles a local authority is still a real host.
+        assert!(root_uri_to_path("file://127.0.0.1.evil.com/x").is_none());
     }
 
     #[test]
