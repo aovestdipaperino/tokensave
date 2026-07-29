@@ -214,15 +214,19 @@ fn root_uri_to_path_on(uri: &str, strip_drive_letter: bool) -> Option<std::path:
         // land inside a multi-byte character and cannot go out of bounds.
         Some(rest) if authority_is_localhost(rest) => {
             let authority_len = rest.split('/').next().unwrap_or_default().len();
-            percent_decode(&rest[authority_len..])
+            percent_decode(&rest[authority_len..])?
         }
         // `file://host/share` uses a non-local authority. UNC roots are outside
         // this fallback's current scope, so do not reinterpret one as a relative path.
         Some(rest) if !rest.starts_with('/') => return None,
-        Some(rest) => percent_decode(rest),
+        Some(rest) => percent_decode(rest)?,
         None if uri.contains("://") => return None,
         None => uri.to_string(),
     };
+    // `file://localhost` with no path decodes to "" — nothing to serve.
+    if path.is_empty() {
+        return None;
+    }
 
     // `file:///D:/Dev/app` decodes to `/D:/Dev/app`; drop the leading slash that
     // belongs to the URI, not to the path, when a drive letter follows it.
@@ -257,14 +261,19 @@ fn has_drive_prefix(path: &str) -> bool {
     matches!((chars.next(), chars.next()), (Some(c), Some(':')) if c.is_ascii_alphabetic())
 }
 
-/// Decodes `%XX` escapes, leaving malformed sequences untouched.
+/// Decodes `%XX` escapes, leaving malformed sequences untouched. Returns
+/// `None` when the decoded bytes are not valid UTF-8.
 ///
 /// Decoding is done on bytes rather than chars so that a percent-encoded
-/// multi-byte UTF-8 character reassembles correctly.
-fn percent_decode(input: &str) -> String {
+/// multi-byte UTF-8 character reassembles correctly. An invalid decode must
+/// reject the root rather than fall back to lossy replacement: `%C3`, `%FF`,
+/// and every truncated multi-byte sequence would all collapse into the same
+/// U+FFFD path — a directory the client never named, which a registered
+/// project could then wrongly match.
+fn percent_decode(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     if !bytes.contains(&b'%') {
-        return input.to_string();
+        return Some(input.to_string());
     }
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -282,7 +291,7 @@ fn percent_decode(input: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -379,10 +388,32 @@ mod tests {
 
     #[test]
     fn malformed_escapes_are_left_alone() {
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("a%zz"), "a%zz");
-        assert_eq!(percent_decode("a%4"), "a%4");
-        assert_eq!(percent_decode("%41"), "A");
+        assert_eq!(percent_decode("100%"), Some("100%".to_string()));
+        assert_eq!(percent_decode("a%zz"), Some("a%zz".to_string()));
+        assert_eq!(percent_decode("a%4"), Some("a%4".to_string()));
+        assert_eq!(percent_decode("%41"), Some("A".to_string()));
+    }
+
+    #[test]
+    fn escapes_decoding_to_invalid_utf8_reject_the_root() {
+        // `%C3` is a lone UTF-8 lead byte, `%FF` a byte no UTF-8 sequence
+        // allows, `%E2%82` a truncated three-byte sequence. Lossy replacement
+        // would collapse all three into the same `…/�` path — a directory the
+        // client never named — so the root is rejected instead.
+        assert!(root_uri_to_path("file:///tmp/%C3").is_none());
+        assert!(root_uri_to_path("file:///tmp/%FF").is_none());
+        assert!(root_uri_to_path("file:///tmp/%E2%82").is_none());
+        assert!(root_uri_to_path("file://localhost/%FF").is_none());
+        // A complete multi-byte sequence still decodes.
+        assert_eq!(percent_decode("caf%C3%A9"), Some("café".to_string()));
+    }
+
+    #[test]
+    fn a_localhost_authority_without_a_path_is_rejected() {
+        // `file://localhost` leaves an empty path once the authority is
+        // sliced off — nothing to serve.
+        assert!(root_uri_to_path("file://localhost").is_none());
+        assert!(root_uri_to_path("file://[::1]").is_none());
     }
 
     #[test]
