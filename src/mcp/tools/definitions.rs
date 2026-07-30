@@ -201,7 +201,8 @@ fn is_always_load(def: &ToolDefinition) -> bool {
 
 /// Returns only the tool definitions that are loaded into the model's context
 /// up front (`anthropic/alwaysLoad`: currently `tokensave_search`,
-/// `tokensave_context`, and `tokensave_status`).
+/// `tokensave_context`, `tokensave_status`, and the structural call-graph
+/// tools `tokensave_impact` and `tokensave_callees`, see #333).
 ///
 /// The remaining ~80 tools are deferred — their full schemas never enter the
 /// context unless the client fetches one on demand — so only this primary
@@ -452,43 +453,13 @@ fn def_signature() -> ToolDefinition {
     )
 }
 
-// ── Deferred tools (discovered via ToolSearch on demand) ────────────────
-
-fn def_callers() -> ToolDefinition {
-    def(
-        "tokensave_callers",
-        "Callers",
-        "Find callers of a given node (function, method, etc.). Returns direct \
-         callers by default; pass max_depth > 1 to also follow the chain \
-         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
-         transitive), `line` (the call-site line where the caller invokes the \
-         target), and `def_line` (the caller's own declaration line). Generic \
-         callers through a trait are included for concrete impl methods and \
-         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution.",
-        json!({
-            "type": "object",
-            "properties": {
-                "node_id": {
-                    "type": "string",
-                    "description": "The unique node ID to find callers for"
-                },
-                "max_depth": {
-                    "type": "number",
-                    "description": "Maximum traversal depth, 1-10 (default: 1 = direct callers only). Higher values also return transitive callers, each tagged with its `depth`."
-                },
-                "resolve_dispatch": {
-                    "type": "boolean",
-                    "description": "If true (default), include generic callers that invoke the corresponding trait method."
-                }
-            },
-            "required": ["node_id"]
-        }),
-    )
-}
-
+// `impact` and `callees` are eagerly loaded (#333): the call-graph tools are
+// where a pre-built index has its clearest advantage over grep-and-read, but
+// measured usage showed them at ~0 calls because they sat behind a ToolSearch
+// round-trip the model had to already suspect existed. Their schemas are small
+// and the prompt prefix is cached, so surfacing them up front is cheap.
 fn def_callees() -> ToolDefinition {
-    def(
+    def_always_load(
         "tokensave_callees",
         "Callees",
         "Find all callees of a given node (function, method, etc.) up to a \
@@ -519,7 +490,7 @@ fn def_callees() -> ToolDefinition {
 }
 
 fn def_impact() -> ToolDefinition {
-    def(
+    def_always_load(
         "tokensave_impact",
         "Impact Radius",
         "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.",
@@ -533,6 +504,41 @@ fn def_impact() -> ToolDefinition {
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum traversal depth (default: 3)"
+                }
+            },
+            "required": ["node_id"]
+        }),
+    )
+}
+
+// ── Deferred tools (discovered via ToolSearch on demand) ────────────────
+
+fn def_callers() -> ToolDefinition {
+    def(
+        "tokensave_callers",
+        "Callers",
+        "Find callers of a given node (function, method, etc.). Returns direct \
+         callers by default; pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
+         transitive), `line` (the call-site line where the caller invokes the \
+         target), and `def_line` (the caller's own declaration line). Generic \
+         callers through a trait are included for concrete impl methods and \
+         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
+         to disable reverse dispatch resolution.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "The unique node ID to find callers for"
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum traversal depth, 1-10 (default: 1 = direct callers only). Higher values also return transitive callers, each tagged with its `depth`."
+                },
+                "resolve_dispatch": {
+                    "type": "boolean",
+                    "description": "If true (default), include generic callers that invoke the corresponding trait method."
                 }
             },
             "required": ["node_id"]
@@ -2544,10 +2550,17 @@ mod tests {
     fn always_load_defs_are_the_primary_subset() {
         let primary = get_always_load_tool_definitions();
         let names: Vec<&str> = primary.iter().map(|d| d.name.as_str()).collect();
-        // Exactly the three tools built via `def_always_load`.
+        // Exactly the tools built via `def_always_load`, in `get_tool_definitions`
+        // push order. `callees` and `impact` joined the set in #333.
         assert_eq!(
             names,
-            ["tokensave_search", "tokensave_context", "tokensave_status"]
+            [
+                "tokensave_search",
+                "tokensave_context",
+                "tokensave_callees",
+                "tokensave_impact",
+                "tokensave_status"
+            ]
         );
         // Every returned def actually carries the alwaysLoad marker...
         assert!(primary.iter().all(is_always_load));
