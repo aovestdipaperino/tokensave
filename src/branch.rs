@@ -182,6 +182,36 @@ pub fn find_nearest_tracked_ancestor(
     best.map(|(name, _)| name)
 }
 
+/// Returns the `branches/<name>.db` relative `db_file` to use for `branch`,
+/// guaranteed not to collide with a *different* branch already recorded in
+/// `meta`.
+///
+/// `sanitize_branch_name` is many-to-one: `feature/foo`, `feature_foo` and
+/// `feature.foo` all map to `feature_foo`, so two distinct branches could
+/// otherwise be pointed at the same DB file and silently overwrite each
+/// other's index. When the readable stem is already claimed by a different
+/// branch, a short stable hash of the *full* branch name is appended, so the
+/// mapping stays deterministic (idempotent re-track) and collision-free.
+pub fn unique_branch_db_file(meta: &crate::branch_meta::BranchMeta, branch: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let stem = sanitize_branch_name(branch);
+    let candidate = format!("branches/{stem}.db");
+    let collides = meta
+        .branches
+        .iter()
+        .any(|(name, entry)| name != branch && entry.db_file == candidate);
+    if !collides {
+        return candidate;
+    }
+    let digest = Sha256::digest(branch.as_bytes());
+    let short = digest.iter().take(4).fold(String::new(), |mut acc, b| {
+        let _ = write!(acc, "{b:02x}");
+        acc
+    });
+    format!("branches/{stem}-{short}.db")
+}
+
 /// Tracks `branch` by copying the nearest-ancestor DB into a per-branch DB and
 /// recording it in `BranchMeta`. This is the copy+record core shared by the
 /// `tokensave branch add` CLI command and the transparent auto-track paths.
@@ -221,15 +251,14 @@ pub fn track_branch_copy(
         return Ok(false);
     }
 
-    let sanitized = sanitize_branch_name(branch);
-    let branches_dir = branch_meta::ensure_branches_dir(tokensave_dir)?;
-    let new_db_path = branches_dir.join(format!("{sanitized}.db"));
+    let db_file = unique_branch_db_file(&meta, branch);
+    branch_meta::ensure_branches_dir(tokensave_dir)?;
+    let new_db_path = tokensave_dir.join(&db_file);
     // ponytail: copies only the .db, matching `tokensave branch add`. If the
     // ancestor has an uncheckpointed WAL (concurrent sync), that data is missed;
     // upgrade path = checkpoint-before-copy applied to BOTH paths together.
     std::fs::copy(&parent_db, &new_db_path)?;
 
-    let db_file = format!("branches/{sanitized}.db");
     meta.add_branch(branch, &db_file, &parent);
     branch_meta::save_branch_meta(tokensave_dir, &meta)?;
     Ok(true)
@@ -239,6 +268,23 @@ pub fn track_branch_copy(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_branch_db_file_avoids_collision() {
+        use crate::branch_meta::BranchMeta;
+        let mut meta = BranchMeta::new("main");
+        // First branch takes the plain sanitized stem.
+        let f1 = unique_branch_db_file(&meta, "feature/foo");
+        assert_eq!(f1, "branches/feature_foo.db");
+        meta.add_branch("feature/foo", &f1, "main");
+        // A different branch that sanitizes to the same stem must not reuse it.
+        let f2 = unique_branch_db_file(&meta, "feature_foo");
+        assert_ne!(f2, f1);
+        assert!(f2.starts_with("branches/feature_foo-") && f2.contains(".db"));
+        // Re-querying an already-tracked branch is idempotent: its own entry is
+        // excluded from the collision check so it keeps its plain stem.
+        assert_eq!(unique_branch_db_file(&meta, "feature/foo"), f1);
+    }
 
     #[test]
     fn sanitize_simple() {
