@@ -534,6 +534,141 @@ async fn test_migrate_is_idempotent_at_latest() {
     assert!(!migrated, "second migrate should be a no-op");
 }
 
+// --- v14: search_terms column + porter FTS ---
+
+#[tokio::test]
+async fn test_migrate_v14_backfills_search_terms_and_rebuilds_fts() {
+    let dir = TempDir::new().expect("tempdir");
+    let db_path = dir.path().join("v13.db");
+
+    let lib_db = libsql::Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("build db");
+    let conn = lib_db.connect().expect("connect");
+
+    // v13-shaped schema: nodes without search_terms, 4-column unicode61 FTS.
+    conn.execute_batch(
+        "CREATE TABLE nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            docstring TEXT,
+            signature TEXT,
+            updated_at INTEGER NOT NULL,
+            attrs_start_line INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+            name, qualified_name, docstring, signature,
+            content='nodes', content_rowid='rowid'
+        );
+        CREATE TRIGGER nodes_fts_insert AFTER INSERT ON nodes BEGIN
+            INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
+            VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+        END;
+        INSERT INTO nodes (id, kind, name, qualified_name, file_path,
+                           start_line, end_line, start_column, end_column, updated_at)
+        VALUES ('camel', 'function', 'updateCloudClient',
+                'src/api/CloudSync.ts::updateCloudClient', 'src/api/CloudSync.ts',
+                1, 5, 0, 1, 1000),
+               ('snake', 'function', 'rerank_candidates',
+                'src/context/ranking.rs::rerank_candidates', 'src/context/ranking.rs',
+                10, 20, 0, 1, 1000);
+        PRAGMA user_version = 13;",
+    )
+    .await
+    .expect("v13 schema setup");
+
+    let migrated = tokensave::db::migrations::migrate(&conn)
+        .await
+        .expect("migrate failed");
+    assert!(migrated, "expected v14 migration to run");
+
+    let mut rows = conn
+        .query("PRAGMA user_version", ())
+        .await
+        .expect("read version");
+    let v: u32 = rows
+        .next()
+        .await
+        .expect("version row")
+        .expect("version missing")
+        .get(0)
+        .expect("version value");
+    assert_eq!(v, latest_version());
+
+    // Backfill: camelCase row gets inner-word segments, snake_case stays empty.
+    let mut rows = conn
+        .query("SELECT search_terms FROM nodes WHERE id = 'camel'", ())
+        .await
+        .expect("select camel");
+    let terms: String = rows
+        .next()
+        .await
+        .expect("camel row")
+        .expect("camel missing")
+        .get(0)
+        .expect("terms");
+    assert!(
+        terms.contains("Cloud") && terms.contains("Client"),
+        "{terms}"
+    );
+    let mut rows = conn
+        .query("SELECT search_terms FROM nodes WHERE id = 'snake'", ())
+        .await
+        .expect("select snake");
+    let terms: String = rows
+        .next()
+        .await
+        .expect("snake row")
+        .expect("snake missing")
+        .get(0)
+        .expect("terms");
+    assert!(terms.is_empty(), "snake_case needs no extra terms: {terms}");
+
+    // Rebuilt FTS matches a camelCase inner word via search_terms…
+    let mut rows = conn
+        .query(
+            "SELECT n.id FROM nodes_fts JOIN nodes n ON nodes_fts.rowid = n.rowid
+             WHERE nodes_fts MATCH 'cloud'",
+            (),
+        )
+        .await
+        .expect("fts cloud");
+    let id: String = rows
+        .next()
+        .await
+        .expect("cloud row")
+        .expect("no match for 'cloud'")
+        .get(0)
+        .expect("id");
+    assert_eq!(id, "camel");
+
+    // …and porter stemming lets an inflected query term match the identifier.
+    let mut rows = conn
+        .query(
+            "SELECT n.id FROM nodes_fts JOIN nodes n ON nodes_fts.rowid = n.rowid
+             WHERE nodes_fts MATCH 'candidate'",
+            (),
+        )
+        .await
+        .expect("fts candidate");
+    let id: String = rows
+        .next()
+        .await
+        .expect("candidate row")
+        .expect("no match for 'candidate' (porter stemming inactive?)")
+        .get(0)
+        .expect("id");
+    assert_eq!(id, "snake");
+}
+
 #[tokio::test]
 async fn test_search_nodes_bounded_returns_real_descending_scores() {
     let (db, _dir) = setup_db().await;

@@ -15,8 +15,8 @@ impl Database {
                  start_line, end_line, start_column, end_column,
                  docstring, signature, visibility, is_async,
                  branches, loops, returns, max_nesting,
-                 unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                 unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands, search_terms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
                 params![
                     node.id.as_str(),
                     node.kind.as_str(),
@@ -46,6 +46,7 @@ impl Database {
                     i64::from(node.distinct_operands),
                     i64::from(node.total_operators),
                     i64::from(node.total_operands),
+                    crate::text::search_terms(&node.name, &node.qualified_name),
                 ],
             )
             .await
@@ -119,7 +120,7 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands) VALUES ",
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands,search_terms) VALUES ",
             );
             for (i, node) in chunk.iter().enumerate() {
                 if i > 0 {
@@ -181,6 +182,11 @@ impl Database {
                 push_int(&mut sql, i64::from(node.total_operators));
                 sql.push(',');
                 push_int(&mut sql, i64::from(node.total_operands));
+                sql.push(',');
+                push_quoted(
+                    &mut sql,
+                    &crate::text::search_terms(&node.name, &node.qualified_name),
+                );
                 sql.push(')');
             }
             sql.push_str(";\n");
@@ -270,8 +276,8 @@ impl Database {
                  start_line,end_line,start_column,end_column,\
                  docstring,signature,visibility,is_async,\
                  branches,loops,returns,max_nesting,\
-                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)"
+                 unsafe_blocks,unchecked_calls,assertions,updated_at,attrs_start_line,parent_id,cognitive_complexity,distinct_operators,distinct_operands,total_operators,total_operands,search_terms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)"
             )
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -309,6 +315,7 @@ impl Database {
                 i64::from(node.distinct_operands),
                 i64::from(node.total_operators),
                 i64::from(node.total_operands),
+                crate::text::search_terms(&node.name, &node.qualified_name),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
