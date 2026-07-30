@@ -482,7 +482,7 @@ impl TokenSave {
             }
             Ok(_) => {}
             Err(e) => {
-                eprintln!("[tokensave] failed to load config to record indexed version: {e}")
+                eprintln!("[tokensave] failed to load config to record indexed version: {e}");
             }
         }
     }
