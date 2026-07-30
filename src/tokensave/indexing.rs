@@ -281,9 +281,12 @@ impl TokenSave {
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
-        // 1. Clear existing data and enter bulk-load mode
-        self.db.clear().await?;
+        // 1. Enter bulk-load mode, then clear existing data. Order matters:
+        // `begin_bulk_load` can fail while another process holds the table
+        // lock, and clearing first would leave the project with an empty index
+        // that the MCP server then keeps serving (#320).
         self.db.begin_bulk_load().await?;
+        self.db.clear().await?;
 
         // 2. Scan for source files
         let phase_start = Instant::now();
@@ -455,8 +458,33 @@ impl TokenSave {
             "non-empty index completed in zero milliseconds"
         );
         clear_dirty_sentinel(&self.project_root);
+        self.record_indexed_version();
         crate::memstats::record("index:done");
         Ok(result)
+    }
+
+    /// Records the running version as the one that produced the current index.
+    ///
+    /// Without this, a project indexed by the CLI keeps `last_indexed_version`
+    /// empty, which `bump_kind` classifies as a major bump — so the MCP server
+    /// forces a full reindex on the first tool call of every session (#320).
+    ///
+    /// Best-effort: failing to persist the marker must not fail an index that
+    /// otherwise succeeded.
+    fn record_indexed_version(&self) {
+        let running = env!("CARGO_PKG_VERSION");
+        match crate::config::load_config(&self.project_root) {
+            Ok(mut config) if config.last_indexed_version != running => {
+                config.last_indexed_version = running.to_string();
+                if let Err(e) = crate::config::save_config(&self.project_root, &config) {
+                    eprintln!("[tokensave] failed to record indexed version: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[tokensave] failed to load config to record indexed version: {e}")
+            }
+        }
     }
 
     /// Performs an incremental sync: detects changed, new, and removed files
