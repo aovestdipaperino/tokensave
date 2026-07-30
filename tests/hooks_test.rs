@@ -7,7 +7,7 @@ use tokensave::hooks::{
 
 fn env_indexed() -> HookEnv {
     HookEnv {
-        cwd_has_tokensave_db: true,
+        in_tokensave_project: true,
         disable_grep_hook: false,
         project_root: None,
     }
@@ -15,7 +15,7 @@ fn env_indexed() -> HookEnv {
 
 fn env_not_indexed() -> HookEnv {
     HookEnv {
-        cwd_has_tokensave_db: false,
+        in_tokensave_project: false,
         disable_grep_hook: false,
         project_root: None,
     }
@@ -23,7 +23,7 @@ fn env_not_indexed() -> HookEnv {
 
 fn env_disabled() -> HookEnv {
     HookEnv {
-        cwd_has_tokensave_db: true,
+        in_tokensave_project: true,
         disable_grep_hook: true,
         project_root: None,
     }
@@ -41,7 +41,7 @@ fn indexed_project() -> (tempfile::TempDir, PathBuf) {
 
 fn env_rooted_at(root: &Path) -> HookEnv {
     HookEnv {
-        cwd_has_tokensave_db: true,
+        in_tokensave_project: true,
         disable_grep_hook: false,
         project_root: Some(root.to_path_buf()),
     }
@@ -1434,7 +1434,7 @@ fn test_bash_absolute_project_root_respects_opt_out() {
         serde_json::json!({"command": format!("grep -rn handle_request {}", root.display())})
             .to_string();
     let disabled = HookEnv {
-        cwd_has_tokensave_db: true,
+        in_tokensave_project: true,
         disable_grep_hook: true,
         project_root: Some(root.clone()),
     };
@@ -1519,5 +1519,265 @@ fn test_bash_classifies_only_the_first_target() {
     assert!(
         evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).is_empty(),
         "multi-target commands keep the pre-existing first-target-only classification"
+    );
+}
+
+// --- activation scope: ancestor discovery and event cwd ------------------
+
+#[test]
+fn test_from_runtime_at_discovers_the_root_from_a_subdirectory() {
+    let (_tmp, root) = indexed_project();
+    let nested = root.join("crates").join("api").join("src");
+    std::fs::create_dir_all(&nested).expect("create nested dirs");
+    let env = HookEnv::from_runtime_at(Some(&nested));
+    assert!(
+        env.in_tokensave_project,
+        "a subdirectory of an indexed project is still the indexed project"
+    );
+    assert_eq!(env.project_root.as_deref(), Some(root.as_path()));
+}
+
+#[test]
+fn test_from_runtime_at_outside_any_project_is_inactive() {
+    let (tmp, _root) = indexed_project();
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let env = HookEnv::from_runtime_at(Some(&outside));
+    assert!(!env.in_tokensave_project);
+    assert!(env.project_root.is_none());
+}
+
+#[test]
+fn test_droid_event_cwd_activates_the_guardrail() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "Execute",
+        "tool_input": {"command": "rg -n handle_request src/"},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_not_indexed()).is_some(),
+        "the event's own cwd must decide the project, not the hook process cwd"
+    );
+}
+
+#[test]
+fn test_droid_event_cwd_below_the_root_activates_the_guardrail() {
+    let (_tmp, root) = indexed_project();
+    let nested = root.join("crates").join("api");
+    std::fs::create_dir_all(&nested).expect("create nested dirs");
+    let input = serde_json::json!({
+        "cwd": nested.to_string_lossy(),
+        "tool_name": "Execute",
+        "tool_input": {"command": "rg -n handle_request src/"},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_not_indexed()).is_some(),
+        "a session started in a subdirectory is still inside the indexed project"
+    );
+}
+
+#[test]
+fn test_droid_event_cwd_outside_a_project_deactivates_the_guardrail() {
+    let (tmp, _root) = indexed_project();
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let input = serde_json::json!({
+        "cwd": outside.to_string_lossy(),
+        "tool_name": "Execute",
+        "tool_input": {"command": "rg -n handle_request src/"},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_indexed()).is_none(),
+        "an event cwd outside any index has nothing to redirect to"
+    );
+}
+
+#[test]
+fn test_droid_event_cwd_still_honors_the_opt_out() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "Execute",
+        "tool_input": {"command": "rg -n handle_request src/"},
+    })
+    .to_string();
+    // Opted out where the hook runs, but the event points at an indexed
+    // project: the override must not resurrect the guardrail.
+    let disabled_outside = HookEnv {
+        in_tokensave_project: false,
+        disable_grep_hook: true,
+        project_root: None,
+    };
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &disabled_outside).is_none(),
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 outranks any discovered project"
+    );
+}
+
+#[test]
+fn test_droid_explorer_task_with_event_cwd_still_blocks() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "explorer", "prompt": "map the codebase"},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_not_indexed()).is_some(),
+        "the built-in explorer guard must survive event-cwd resolution"
+    );
+}
+
+#[test]
+fn test_droid_worker_task_with_event_cwd_still_passes() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "worker", "prompt": "explore the codebase structure"},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_indexed()).is_none(),
+        "a typed non-explorer task stays a deliberate delegation"
+    );
+}
+
+#[test]
+fn test_kiro_event_cwd_activates_the_delegation_block() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "delegate",
+        "tool_input": {"task": "explore the codebase and map the call graph"},
+    })
+    .to_string();
+    assert!(
+        evaluate_kiro_pre_tool_use_with_env(&input, &env_not_indexed()).is_some(),
+        "Kiro's preToolUse hook should resolve the project like its postToolUse hook"
+    );
+}
+
+#[test]
+fn test_kiro_event_cwd_outside_a_project_deactivates_the_delegation_block() {
+    let (tmp, _root) = indexed_project();
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let input = serde_json::json!({
+        "cwd": outside.to_string_lossy(),
+        "tool_name": "delegate",
+        "tool_input": {"task": "explore the codebase and map the call graph"},
+    })
+    .to_string();
+    assert!(
+        evaluate_kiro_pre_tool_use_with_env(&input, &env_indexed()).is_none(),
+        "the event cwd decides in both directions, for Kiro too"
+    );
+}
+
+#[test]
+fn test_claude_event_cwd_activates_the_guardrail() {
+    let (_tmp, root) = indexed_project();
+    let input = serde_json::json!({
+        "cwd": root.to_string_lossy(),
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"},
+    })
+    .to_string();
+    assert!(
+        is_blocked(&evaluate_claude_pre_tool_use_with_env(
+            &input,
+            &env_not_indexed()
+        )),
+        "Claude's event cwd should decide the project too"
+    );
+}
+
+#[test]
+fn test_claude_event_cwd_outside_a_project_deactivates_the_guardrail() {
+    let (tmp, _root) = indexed_project();
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let input = serde_json::json!({
+        "cwd": outside.to_string_lossy(),
+        "tool_name": "Grep",
+        "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"},
+    })
+    .to_string();
+    assert!(
+        evaluate_claude_pre_tool_use_with_env(&input, &env_indexed()).is_empty(),
+        "the event cwd decides in both directions, for Claude too"
+    );
+}
+
+#[test]
+fn test_unusable_event_cwd_keeps_the_process_environment() {
+    let (tmp, root) = indexed_project();
+    let missing = root.join("gone");
+    let file = root.join("Cargo.toml");
+    std::fs::write(&file, "[package]\n").expect("write file");
+    let cases = vec![
+        ("no key".to_string(), None),
+        ("blank".to_string(), Some(serde_json::json!(""))),
+        ("whitespace".to_string(), Some(serde_json::json!("   "))),
+        (
+            "relative".to_string(),
+            Some(serde_json::json!("crates/api")),
+        ),
+        (
+            "non-existent".to_string(),
+            Some(serde_json::json!(missing.to_string_lossy())),
+        ),
+        (
+            "a file, not a directory".to_string(),
+            Some(serde_json::json!(file.to_string_lossy())),
+        ),
+        ("null".to_string(), Some(serde_json::Value::Null)),
+        ("a number".to_string(), Some(serde_json::json!(7))),
+        (
+            "an object".to_string(),
+            Some(serde_json::json!({"path": tmp.path().to_string_lossy()})),
+        ),
+    ];
+
+    for (label, cwd) in cases {
+        let mut event = serde_json::json!({
+            "tool_name": "Execute",
+            "tool_input": {"command": "rg -n handle_request src/"},
+        });
+        if let Some(cwd) = cwd {
+            event["cwd"] = cwd;
+        }
+        let input = event.to_string();
+        assert!(
+            evaluate_droid_pre_tool_use_with_env(&input, &env_indexed()).is_some(),
+            "{label}: an unusable cwd must fall back to the hook process environment"
+        );
+        assert!(
+            evaluate_droid_pre_tool_use_with_env(&input, &env_not_indexed()).is_none(),
+            "{label}: the fallback must not invent a project either"
+        );
+    }
+}
+
+#[test]
+fn test_absolute_ancestor_root_target_redirects_from_a_subdirectory() {
+    let (_tmp, root) = indexed_project();
+    let nested = root.join("crates").join("api");
+    std::fs::create_dir_all(&nested).expect("create nested dirs");
+    let input = serde_json::json!({
+        "cwd": nested.to_string_lossy(),
+        "tool_name": "Execute",
+        "tool_input": {"command": format!("rg -n handle_request {}", root.display())},
+    })
+    .to_string();
+    assert!(
+        evaluate_droid_pre_tool_use_with_env(&input, &env_not_indexed()).is_some(),
+        "the discovered ancestor root is the whole-project target"
     );
 }

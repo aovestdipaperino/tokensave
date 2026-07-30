@@ -92,34 +92,56 @@ const CODE_TYPE_FILTERS: &[&str] = &[
 /// directly.
 #[derive(Debug, Clone, Default)]
 pub struct HookEnv {
-    /// `true` when the current working directory contains a usable tokensave
-    /// index (`.tokensave/tokensave.db`). Without an index there is nothing
-    /// to redirect to, so the hook always passes through.
-    pub cwd_has_tokensave_db: bool,
+    /// `true` when the working directory is inside a usable tokensave index
+    /// (`.tokensave/tokensave.db` in it or in an ancestor). Without an index
+    /// there is nothing to redirect to, so the hook always passes through.
+    pub in_tokensave_project: bool,
 
     /// `true` when the user has opted out for this invocation via
     /// `TOKENSAVE_DISABLE_GREP_HOOK=1`.
     pub disable_grep_hook: bool,
 
-    /// The indexed project root, i.e. the working directory itself whenever
-    /// `cwd_has_tokensave_db` is `true`. Kept so a target spelled as an
-    /// absolute (or `~`-rooted) path can be recognized as the whole project
-    /// instead of an unknown directory. `None` and `cwd_has_tokensave_db`
-    /// always agree; `from_runtime()` derives both from one probe.
+    /// The indexed project root the working directory belongs to. Kept so a
+    /// target spelled as an absolute (or `~`-rooted) path can be recognized as
+    /// the whole project instead of an unknown directory. `None` and
+    /// `in_tokensave_project` always agree; both come from one discovery walk.
     pub project_root: Option<PathBuf>,
 }
 
 impl HookEnv {
     /// Snapshot the real environment.
     pub fn from_runtime() -> Self {
-        let project_root = std::env::current_dir()
-            .ok()
-            .filter(|c| c.join(".tokensave").join("tokensave.db").exists());
+        Self::from_runtime_at(std::env::current_dir().ok().as_deref())
+    }
+
+    /// [`HookEnv::from_runtime`] with an explicit working directory, so a
+    /// harness that reports its own `cwd` can be honored and tests can stay
+    /// hermetic. Discovers the project the same way `serve`, `sync`, and
+    /// `status` do, by walking ancestors.
+    pub fn from_runtime_at(cwd: Option<&Path>) -> Self {
+        let project_root = cwd.and_then(crate::config::discover_project_root);
         let disable_grep_hook = std::env::var("TOKENSAVE_DISABLE_GREP_HOOK")
             .is_ok_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"));
         Self {
-            cwd_has_tokensave_db: project_root.is_some(),
+            in_tokensave_project: project_root.is_some(),
             disable_grep_hook,
+            project_root,
+        }
+    }
+
+    /// Re-resolve the project from a hook event's top-level `cwd`, the working
+    /// directory of the session that issued the tool call. The hook process
+    /// itself can be spawned anywhere. The opt-out belongs to that process, so
+    /// it survives the override, and an event without a usable `cwd` leaves the
+    /// environment untouched.
+    fn for_event(&self, event: &Value) -> Self {
+        let Some(cwd) = event_cwd(event) else {
+            return self.clone();
+        };
+        let project_root = crate::config::discover_project_root(&cwd);
+        Self {
+            in_tokensave_project: project_root.is_some(),
+            disable_grep_hook: self.disable_grep_hook,
             project_root,
         }
     }
@@ -174,12 +196,18 @@ pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
 }
 
 /// [`evaluate_claude_pre_tool_use`] with an explicit environment snapshot.
+///
+/// The snapshot is a base: when the event reports its own `cwd`, the project is
+/// re-discovered from there.
 pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
-    let tool_input = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
+    let event = serde_json::from_str::<serde_json::Value>(raw).ok();
+    let env = event
+        .as_ref()
+        .map_or_else(|| env.clone(), |event| env.for_event(event));
+    let tool_input = event
         .and_then(|v| v.get("tool_input").cloned())
         .map_or_else(|| raw.to_string(), |ti| ti.to_string());
-    evaluate_hook_decision_with_env(&tool_input, env)
+    evaluate_hook_decision_with_env(&tool_input, &env)
 }
 
 /// Pure decision logic for the `PreToolUse` hook, using the real process
@@ -215,7 +243,7 @@ fn evaluate_hook_decision_core(tool_input: &str, env: &HookEnv) -> Option<String
     // without a `.tokensave` index there are no MCP tools to redirect to, and
     // the opt-out gives a user who deliberately wants to delegate an explicit
     // override instead of a hard wall.
-    if env.cwd_has_tokensave_db && !env.disable_grep_hook {
+    if env.in_tokensave_project && !env.disable_grep_hook {
         // A blank `subagent_type` is treated as absent: a caller that
         // initializes the field to "" is no more a deliberate typed delegation
         // than one that omits it, so it must not slip past both the Explore
@@ -293,7 +321,7 @@ fn build_block_message(reason: &str) -> String {
 
 /// Inspect a `Grep` tool input. Returns `Some(reason)` to redirect.
 fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
-    if !env.cwd_has_tokensave_db || env.disable_grep_hook {
+    if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
     let pattern = parsed.get("pattern").and_then(|v| v.as_str())?;
@@ -323,7 +351,7 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
 
 /// Inspect a `Bash` tool command. Returns `Some(reason)` to redirect.
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
-    if !env.cwd_has_tokensave_db || env.disable_grep_hook {
+    if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
     // An explicit inline `TOKENSAVE_DISABLE_GREP_HOOK=<truthy>` opts out too, so
@@ -860,15 +888,20 @@ pub fn evaluate_kiro_pre_tool_use(event_json: &str) -> Option<&'static str> {
 /// [`evaluate_kiro_pre_tool_use`] with an explicit environment snapshot.
 ///
 /// Gated like the Claude agent path: no `.tokensave` index means there is
-/// nothing to redirect to, and the opt-out env var suppresses the block.
+/// nothing to redirect to, and the opt-out env var suppresses the block. The
+/// index is resolved from the event's `cwd` when it reports one, matching the
+/// `postToolUse` sync hook.
 pub fn evaluate_kiro_pre_tool_use_with_env(
     event_json: &str,
     env: &HookEnv,
 ) -> Option<&'static str> {
-    if !env.cwd_has_tokensave_db || env.disable_grep_hook {
+    if env.disable_grep_hook {
         return None;
     }
     let parsed: Value = serde_json::from_str(event_json).ok()?;
+    if !env.for_event(&parsed).in_tokensave_project {
+        return None;
+    }
     let tool_name = parsed.get("tool_name").and_then(Value::as_str)?;
     if !is_kiro_delegation_tool(tool_name) {
         return None;
@@ -928,6 +961,7 @@ pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<
         return evaluate_hook_decision_core(raw, env);
     };
     let is_task = event.get("tool_name").and_then(Value::as_str) == Some("Task");
+    let env = env.for_event(&event);
     let mut tool_input = event.get("tool_input").cloned().unwrap_or(event);
     let subagent_type = tool_input.get("subagent_type").and_then(Value::as_str);
 
@@ -938,7 +972,7 @@ pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<
         tool_input["subagent_type"] = Value::String("Explore".to_string());
     }
 
-    evaluate_hook_decision_core(&tool_input.to_string(), env)
+    evaluate_hook_decision_core(&tool_input.to_string(), &env)
 }
 
 fn kiro_event_has_research_text(value: &Value) -> bool {
@@ -1057,14 +1091,19 @@ fn kiro_project_root(event_json: &str) -> Option<PathBuf> {
 }
 
 fn kiro_event_cwd(event_json: &str) -> Option<PathBuf> {
-    let parsed: Value = serde_json::from_str(event_json).ok()?;
-    let cwd = parsed.get("cwd").and_then(Value::as_str)?;
-    let path = Path::new(cwd);
-    if path.as_os_str().is_empty() {
-        None
-    } else {
-        Some(path.to_path_buf())
-    }
+    event_cwd(&serde_json::from_str::<Value>(event_json).ok()?)
+}
+
+/// The session working directory a harness reports at the top level of its
+/// hook event. Kiro, Claude Code, and Factory Droid all use the `cwd` key.
+///
+/// The value is agent-supplied, so only an absolute path to an existing
+/// directory is accepted; anything else yields `None` and leaves the caller on
+/// the hook process's own directory. A relative or stale `cwd` would otherwise
+/// start the ancestor walk somewhere neither the agent nor the user meant.
+fn event_cwd(event: &Value) -> Option<PathBuf> {
+    let path = Path::new(event.get("cwd").and_then(Value::as_str)?.trim());
+    (path.is_absolute() && path.is_dir()).then(|| path.to_path_buf())
 }
 
 fn read_stdin_to_string() -> String {
