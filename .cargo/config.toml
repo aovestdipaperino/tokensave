@@ -5,3 +5,14 @@
 # setting; it has no effect on Rust code.
 CFLAGS = { value = "-DNDEBUG", force = false }
 CXXFLAGS = { value = "-DNDEBUG", force = false }
+
+# Raise the main-thread stack reserve to 8 MB on Windows MSVC.  RUST_MIN_STACK
+# (set in CI) only resizes threads Rust spawns; the main thread's stack is fixed
+# at link time and defaults to ~1 MB on MSVC, versus ~8 MB on Linux/macOS.  A
+# deep recursive AST walk (extract_call_sites_recursive) or resolver work run on
+# the calling thread via rayon's work-stealing therefore overflows on Windows
+# only, surfacing as an intermittent STATUS_ACCESS_VIOLATION (0xc0000005) with
+# no panic (#308).  8 MB matches RUST_MIN_STACK and the other platforms' main
+# thread.  Reserve is address space, committed lazily, so this is free at runtime.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/STACK:8388608"]
