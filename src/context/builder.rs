@@ -9,6 +9,7 @@ use crate::context::ranking::{
 use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
+use crate::text::{is_camel_case, split_compound};
 use crate::types::*;
 
 /// Builds AI-ready context by combining search, graph traversal, and source code extraction.
@@ -170,8 +171,9 @@ impl<'a> ContextBuilder<'a> {
     /// Searches for entry-point nodes matching the query and extracted symbols.
     ///
     /// Pipeline:
-    /// 1. FTS search on the full query, each extracted symbol, stem variants,
-    ///    and agent-provided extra keywords.
+    /// 1. FTS search on the full query, each extracted symbol, and
+    ///    agent-provided extra keywords (the porter tokenizer handles
+    ///    inflected variants at match time).
     /// 2. Exact name supplement — ensures perfect name matches are never buried
     ///    by BM25 noise.
     /// 3. Exact source supplement — qualified expressions such as
@@ -234,22 +236,12 @@ impl<'a> ContextBuilder<'a> {
         };
         let body_terms = conceptual_query_terms(query, &options.extra_keywords);
         for term in &body_terms {
+            // The symbol FTS index uses `porter unicode61`, so inflected prose
+            // ("generates", "ranking") stems to match indexed identifiers —
+            // the old query-side plural-strip hack (#264) is no longer needed.
             push_term(term.clone(), &mut fts_terms, &mut fts_seen);
-            // The symbol FTS tokenizer (unicode61) does not stem, so a prose
-            // verb like "generates" never prefix-matches an indexed name such
-            // as `generateLauncherIcon`. Fold a trailing plural/third-person
-            // `s` into a second search term (#264).
-            if let Some(stem) = term.strip_suffix('s') {
-                if stem.len() >= 4 && !stem.ends_with('s') {
-                    push_term(stem.to_string(), &mut fts_terms, &mut fts_seen);
-                }
-            }
         }
         for s in symbols {
-            push_term(s.clone(), &mut fts_terms, &mut fts_seen);
-        }
-        let stems = generate_stem_variants(symbols);
-        for s in &stems {
             push_term(s.clone(), &mut fts_terms, &mut fts_seen);
         }
         for k in &options.extra_keywords {
@@ -1108,119 +1100,6 @@ fn is_authored_symbol(symbol: &str, query: &str, extra_keywords: &[String]) -> b
         || extra_keywords.iter().any(|k| k == symbol)
 }
 
-/// Split a compound name into individual words.
-///
-/// Handles camelCase, `PascalCase`, and `snake_case`:
-/// - `getUserName` → `["get", "User", "Name"]`
-/// - `process_request` → `["process", "request"]`
-/// - `MAX_RETRIES` → `["MAX", "RETRIES"]`
-fn split_compound(name: &str) -> Vec<&str> {
-    if name.contains('_') {
-        return name.split('_').filter(|s| !s.is_empty()).collect();
-    }
-
-    // camelCase / PascalCase splitting
-    let bytes = name.as_bytes();
-    let mut parts = Vec::new();
-    let mut start = 0;
-
-    for i in 1..bytes.len() {
-        let cur = bytes[i] as char;
-        let prev = bytes[i - 1] as char;
-
-        // Split at lowercase→uppercase boundary (e.g. getUser → get|User)
-        let boundary = prev.is_ascii_lowercase() && cur.is_ascii_uppercase();
-        // Split at uppercase→uppercase+lowercase (e.g. XMLParser → XML|Parser)
-        let acronym_end = i + 1 < bytes.len()
-            && prev.is_ascii_uppercase()
-            && cur.is_ascii_uppercase()
-            && (bytes[i + 1] as char).is_ascii_lowercase();
-
-        if boundary || acronym_end {
-            if i > start {
-                parts.push(&name[start..i]);
-            }
-            start = i;
-        }
-    }
-    if start < name.len() {
-        parts.push(&name[start..]);
-    }
-    parts
-}
-
-/// Returns `true` if `word` looks like CamelCase.
-///
-/// The word must contain at least one uppercase letter after the first character
-/// and consist only of ASCII alphanumeric characters.
-fn is_camel_case(word: &str) -> bool {
-    if word.len() < 2 {
-        return false;
-    }
-    // Must be all alphanumeric
-    if !word.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return false;
-    }
-    // Must have at least one uppercase letter after the first char
-    word[1..].chars().any(|c| c.is_ascii_uppercase())
-}
-
-/// Generates suffix-based stem variants for a set of symbols.
-///
-/// For each symbol, tries common suffixes (e.g. "authenticate" generates
-/// "authentication", "authenticator", "authenticated"). Only produces
-/// variants that differ from the original and from other symbols.
-fn generate_stem_variants(symbols: &[String]) -> Vec<String> {
-    /// Common English derivational suffixes, ordered longest-first so that
-    /// stripping "ation" is preferred over "ion" when both match.
-    const SUFFIX_PAIRS: &[(&str, &[&str])] = &[
-        ("tion", &["te", "tor", "t", "ting"]),
-        ("sion", &["de", "d", "ding"]),
-        ("ment", &["", "ing", "ed"]),
-        ("ness", &["", "ly"]),
-        ("ing", &["", "e", "ion", "ment"]),
-        ("ed", &["", "e", "ing", "ion"]),
-        ("er", &["", "e", "ing", "ed"]),
-        ("or", &["", "e", "ion"]),
-        ("ly", &["", "ness"]),
-        ("ize", &["ization", "ized"]),
-        ("ise", &["isation", "ised"]),
-        ("ate", &["ation", "ator", "ated", "ating"]),
-        ("ify", &["ification", "ified"]),
-    ];
-
-    let existing: HashSet<String> = symbols.iter().map(|s| s.to_lowercase()).collect();
-    let mut variants: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    for symbol in symbols {
-        let lower = symbol.to_lowercase();
-        if lower.len() < 4 {
-            continue;
-        }
-
-        for &(suffix, replacements) in SUFFIX_PAIRS {
-            if let Some(stem) = lower.strip_suffix(suffix) {
-                if stem.len() < 2 {
-                    continue;
-                }
-                for &replacement in replacements {
-                    let variant = format!("{stem}{replacement}");
-                    if variant.len() >= 3
-                        && !existing.contains(&variant)
-                        && seen.insert(variant.clone())
-                    {
-                        variants.push(variant);
-                    }
-                }
-                break; // only strip the first matching suffix
-            }
-        }
-    }
-
-    variants
-}
-
 /// Extracts exact, namespace-qualified source tokens from the task and extra
 /// keywords. Surrounding prose punctuation and Markdown backticks are removed,
 /// but the original case is retained for case-sensitive literal matching.
@@ -1558,57 +1437,6 @@ mod tests {
     fn test_filters_stop_words() {
         let symbols = extract_symbols_from_query("the is in for to a an");
         assert!(symbols.is_empty());
-    }
-
-    #[test]
-    fn test_is_camel_case() {
-        assert!(is_camel_case("UserService"));
-        assert!(is_camel_case("processRequest"));
-        assert!(!is_camel_case("user"));
-        assert!(!is_camel_case("U"));
-        assert!(!is_camel_case("process_request"));
-    }
-
-    // --- stem variant tests ---
-
-    #[test]
-    fn test_stem_variants_ate_suffix() {
-        let symbols = vec!["authenticate".to_string()];
-        let variants = generate_stem_variants(&symbols);
-        assert!(variants.contains(&"authentication".to_string()));
-        assert!(variants.contains(&"authenticator".to_string()));
-    }
-
-    #[test]
-    fn test_stem_variants_tion_suffix() {
-        let symbols = vec!["authentication".to_string()];
-        let variants = generate_stem_variants(&symbols);
-        assert!(variants.contains(&"authenticate".to_string()));
-    }
-
-    #[test]
-    fn test_stem_variants_ing_suffix() {
-        let symbols = vec!["parsing".to_string()];
-        let variants = generate_stem_variants(&symbols);
-        // "parsing" → strip "ing" → stem "pars" → ["pars", "parse", "parsion", "parsment"]
-        assert!(variants.contains(&"parse".to_string()));
-    }
-
-    #[test]
-    fn test_stem_variants_short_words_skipped() {
-        let symbols = vec!["ab".to_string()];
-        let variants = generate_stem_variants(&symbols);
-        assert!(variants.is_empty());
-    }
-
-    #[test]
-    fn test_stem_variants_no_duplicates_with_existing() {
-        let symbols = vec!["authenticate".to_string(), "authentication".to_string()];
-        let variants = generate_stem_variants(&symbols);
-        // "authentication" is already in symbols, so it shouldn't appear in variants
-        assert!(!variants.contains(&"authentication".to_string()));
-        // "authenticate" is already in symbols, so it shouldn't appear in variants
-        assert!(!variants.contains(&"authenticate".to_string()));
     }
 
     // --- co-occurrence boost tests ---
