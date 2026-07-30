@@ -266,6 +266,11 @@ pub struct McpServer {
     /// callers can invoke it explicitly after `run` returns without re-running
     /// persistence logic.
     shutdown_done: AtomicBool,
+    /// Set when [`Self::run`] starts. This guards against accidentally running
+    /// the same server loop twice without confusing a replayed `initialize`
+    /// request with a previous run: `serve` legitimately calls
+    /// [`Self::handle_and_write`] once before entering the loop.
+    run_started: AtomicBool,
     /// When true, every `tools/call` response gains a `_meta.duration_us`
     /// field measuring the handler's pure execution time. Toggled by
     /// `tokensave serve --timings`. Off by default to keep responses clean.
@@ -386,6 +391,7 @@ impl McpServer {
             pending_notifications: std::sync::Mutex::new(Vec::new()),
             scope_prefix,
             shutdown_done: AtomicBool::new(false),
+            run_started: AtomicBool::new(false),
             timings_enabled: AtomicBool::new(false),
             last_staleness_check_at: AtomicI64::new(0),
             worktree_mismatch,
@@ -840,7 +846,10 @@ impl McpServer {
         };
         if let Some(resp) = response {
             let json_str = serde_json::to_string(&resp).unwrap_or_default();
-            let _ = transport.write_line(&json_str).await;
+            // `write_line` expects the caller to terminate the line. Without
+            // the `\n` a line-framed MCP client never sees the handshake
+            // response complete and hangs waiting for the rest of the line.
+            let _ = transport.write_line(&format!("{json_str}\n")).await;
             let _ = transport.flush().await;
         }
     }
@@ -852,8 +861,9 @@ impl McpServer {
         self: &Arc<Self>,
         transport: &mut impl super::transport::McpTransport,
     ) -> Result<()> {
+        let already_started = self.run_started.swap(true, Ordering::Relaxed);
         debug_assert!(
-            self.stats.total_requests.load(Ordering::Relaxed) == 0,
+            !already_started,
             "server run() called on an already-used server"
         );
 

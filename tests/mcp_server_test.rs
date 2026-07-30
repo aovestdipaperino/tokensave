@@ -120,6 +120,44 @@ async fn test_initialize() {
     assert!(resp["result"]["serverInfo"]["version"].is_string());
 }
 
+/// The response to a replayed `initialize` must be newline-terminated.
+/// `serve` consumes the first stdin line when it peeks at `initialize.roots`
+/// (#331) and replays it through `handle_and_write`, which wrote the response
+/// without the trailing `\n` that `run()` appends. A line-framed MCP client
+/// never saw the handshake complete, so the whole roots fallback hung with a
+/// live client even once the URI parsing was fixed.
+#[tokio::test]
+async fn test_replayed_initialize_response_is_newline_terminated() {
+    let (server, _dir) = setup_server().await;
+    let (mut transport, sender, mut receiver) = ChannelTransport::new();
+    let request = jsonrpc_request(json!(1), "initialize", json!({}));
+    server.handle_and_write(&request, &mut transport).await;
+
+    let line = receiver.recv().await.expect("expected a response line");
+    assert!(
+        line.ends_with('\n'),
+        "replayed response must be newline-terminated, got: {line:?}"
+    );
+    let resp = parse_response(line.trim());
+    assert_eq!(resp["id"], 1);
+    assert_eq!(resp["result"]["serverInfo"]["name"], "tokensave");
+
+    // The replay is a real handled request and increments `total_requests`.
+    // `run()` must distinguish that from the server loop having already run;
+    // otherwise debug builds panic here before accepting the client's next
+    // message, even though release builds appear to work.
+    sender
+        .send(jsonrpc_request(json!(2), "ping", json!({})))
+        .unwrap();
+    drop(sender);
+    server.run(&mut transport).await.unwrap();
+
+    let line = receiver.recv().await.expect("expected a ping response");
+    let resp = parse_response(line.trim());
+    assert_eq!(resp["id"], 2);
+    assert!(resp["result"].is_object());
+}
+
 // ---------------------------------------------------------------------------
 // 2. test_initialized_notification
 // ---------------------------------------------------------------------------
