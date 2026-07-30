@@ -84,16 +84,16 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 });
             }
 
-            // Copy DB
-            let sanitized = branch::sanitize_branch_name(&branch_name);
-            let branches_dir = branch_meta::ensure_branches_dir(&tokensave_dir)?;
-            let new_db_path = branches_dir.join(format!("{sanitized}.db"));
+            // Copy DB (collision-safe db_file: distinct branches that sanitize
+            // to the same stem get a hash-suffixed name instead of sharing one).
+            let db_file = branch::unique_branch_db_file(&meta, &branch_name);
+            branch_meta::ensure_branches_dir(&tokensave_dir)?;
+            let new_db_path = tokensave_dir.join(&db_file);
             let spinner = Spinner::new();
             spinner.set_message(&format!("copying DB from '{parent}'"));
             std::fs::copy(&parent_db, &new_db_path)?;
 
             // Save metadata BEFORE open() so it resolves the new branch to its DB
-            let db_file = format!("branches/{sanitized}.db");
             meta.add_branch(&branch_name, &db_file, &parent);
             branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
 
