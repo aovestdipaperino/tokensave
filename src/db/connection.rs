@@ -268,6 +268,42 @@ impl Database {
         }
     }
 
+    /// Returns `true` when a bulk load dropped its indexes but never finalized.
+    ///
+    /// The signature is an `edges` table that exists yet has no
+    /// `idx_edges_unique` index: `begin_bulk_load` drops that index up front,
+    /// and only `end_bulk_load` recreates it, so its absence means the load
+    /// was interrupted in between. `PRAGMA quick_check` cannot see this — the
+    /// rows are structurally valid, just un-indexed and possibly duplicated —
+    /// so recovery-on-open relies on this check instead (#318). Returns
+    /// `false` when the `edges` table is absent (nothing to finalize).
+    pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
+        let mut names = self
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to inspect schema for bulk-load state: {e}"),
+                operation: "needs_bulk_load_finalization".to_string(),
+            })?;
+        let mut has_edges = false;
+        let mut has_unique_index = false;
+        while let Some(row) = names.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read schema row: {e}"),
+            operation: "needs_bulk_load_finalization".to_string(),
+        })? {
+            match row.get::<String>(0).unwrap_or_default().as_str() {
+                "edges" => has_edges = true,
+                "idx_edges_unique" => has_unique_index = true,
+                _ => {}
+            }
+        }
+        Ok(has_edges && !has_unique_index)
+    }
+
     /// Rebuilds the FTS5 index from the content table.
     ///
     /// This fixes FTS-only corruption (e.g. from an interrupted bulk load)
@@ -348,9 +384,21 @@ impl Database {
 
     /// Recreates secondary indexes (benefiting from sorted row order),
     /// restores FTS triggers and content, and re-enables normal durability.
+    ///
+    /// `begin_bulk_load` drops `idx_edges_unique`, so the `INSERT OR IGNORE`
+    /// edge writers cannot dedupe while a load is in flight. This method first
+    /// collapses any duplicate edge tuples — keeping the lowest `rowid` per
+    /// `(source, target, kind, COALESCE(line, -1))` — so the subsequent
+    /// `CREATE UNIQUE INDEX idx_edges_unique` cannot fail on residual
+    /// duplicates and leave the graph permanently un-indexed (#318).
     pub async fn end_bulk_load(&self) -> Result<()> {
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+            "DELETE FROM edges
+             WHERE rowid NOT IN (
+                 SELECT MIN(rowid) FROM edges
+                 GROUP BY source, target, kind, COALESCE(line, -1)
+             );
+             CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
              CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
              CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
              CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
