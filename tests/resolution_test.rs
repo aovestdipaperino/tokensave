@@ -722,6 +722,154 @@ async fn test_ruby_extends_resolves_to_class() {
 }
 
 // ---------------------------------------------------------------------------
+// The resolver never produces `annotates` edges: `kind_compatible` returns
+// `false` for every target kind under `EdgeKind::Annotates`. Extractors emit
+// the attachment edge (usage -> decorated item) directly; that is the only
+// relation `annotates` names to any consumer, so the resolver has nothing to
+// add. These tests pin that an `Annotates` ref stays unresolved against
+// every kind of candidate that could otherwise look like a match: a sibling
+// usage (self- or cross-node), a real `Annotation` declaration, and a
+// `Decorator` node (which is itself a usage-site node, not a declaration —
+// emitted at the `@foo(...)` application site, not the `def`/`class` it
+// decorates).
+// ---------------------------------------------------------------------------
+
+/// Two `@override` usages in one file, each with an `Annotates` ref named
+/// "override": neither may resolve to the other (self-edge) or to its
+/// sibling (cross-node phantom).
+#[tokio::test]
+async fn test_annotation_ref_does_not_bind_to_sibling_usage() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let usage_a = variant_node(
+        "au:override:a",
+        NodeKind::AnnotationUsage,
+        "override",
+        "lib/a.dart::override",
+        "lib/a.dart",
+    );
+    let usage_b = variant_node(
+        "au:override:b",
+        NodeKind::AnnotationUsage,
+        "override",
+        "lib/a.dart::override",
+        "lib/a.dart",
+    );
+
+    let nodes = vec![usage_a.clone(), usage_b.clone()];
+    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+
+    let uref_a = UnresolvedRef {
+        from_node_id: usage_a.id.clone(),
+        reference_name: "override".to_string(),
+        reference_kind: EdgeKind::Annotates,
+        line: 1,
+        column: 1,
+        file_path: "lib/a.dart".to_string(),
+    };
+    let uref_b = UnresolvedRef {
+        from_node_id: usage_b.id.clone(),
+        reference_name: "override".to_string(),
+        reference_kind: EdgeKind::Annotates,
+        line: 5,
+        column: 1,
+        file_path: "lib/a.dart".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref_a).is_none(),
+        "an Annotates ref must not resolve to a sibling AnnotationUsage (self or cross-node)"
+    );
+    assert!(
+        resolver.resolve_one(&uref_b).is_none(),
+        "an Annotates ref must not resolve to a sibling AnnotationUsage (self or cross-node)"
+    );
+}
+
+/// An `Annotates` ref must not resolve to a real `Annotation` declaration
+/// (e.g. Java `@interface`) either: the resolver produces no `annotates`
+/// edges at all, since the extractor already emits the attachment edge
+/// directly and no consumer reads a resolver-produced usage -> declaration
+/// edge under this kind as attachment.
+#[tokio::test]
+async fn test_annotation_ref_does_not_bind_to_declaration() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let decl_node = variant_node(
+        "an:JsonSerializable",
+        NodeKind::Annotation,
+        "JsonSerializable",
+        "lib/model.dart::JsonSerializable",
+        "lib/model.dart",
+    );
+    let usage_node = variant_node(
+        "au:JsonSerializable",
+        NodeKind::AnnotationUsage,
+        "JsonSerializable",
+        "lib/a.dart::JsonSerializable",
+        "lib/a.dart",
+    );
+
+    let nodes = vec![decl_node, usage_node];
+    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+
+    let uref = UnresolvedRef {
+        from_node_id: "au:JsonSerializable".to_string(),
+        reference_name: "JsonSerializable".to_string(),
+        reference_kind: EdgeKind::Annotates,
+        line: 1,
+        column: 1,
+        file_path: "lib/a.dart".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref).is_none(),
+        "an Annotates ref must not resolve to an Annotation declaration"
+    );
+}
+
+/// `NodeKind::Decorator` is a usage-site node (emitted at the `@foo(...)`
+/// application site, not the declaration it decorates), so it must not be a
+/// valid `Annotates` target either.
+#[tokio::test]
+async fn test_annotation_ref_does_not_bind_to_decorator() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+
+    let decorator_node = variant_node(
+        "dec:retry",
+        NodeKind::Decorator,
+        "retry",
+        "lib/decorators.py::retry",
+        "lib/decorators.py",
+    );
+
+    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&decorator_node));
+
+    let uref = UnresolvedRef {
+        from_node_id: "fn:call_api".to_string(),
+        reference_name: "retry".to_string(),
+        reference_kind: EdgeKind::Annotates,
+        line: 1,
+        column: 1,
+        file_path: "lib/api.py".to_string(),
+    };
+
+    assert!(
+        resolver.resolve_one(&uref).is_none(),
+        "an Annotates ref must not resolve to a Decorator usage node"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #141 Option 2: build-variant call-edge propagation
 // ---------------------------------------------------------------------------
 

@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 13;
+const LATEST_VERSION: u32 = 14;
 
 pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
 CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
@@ -431,6 +431,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         11 => migrate_v11(conn).await,
         12 => migrate_v12(conn).await,
         13 => migrate_v13(conn).await,
+        14 => migrate_v14(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1130,6 +1131,79 @@ async fn migrate_v13(conn: &Connection) -> Result<()> {
                 operation: "migrate_v13".to_string(),
             })?;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V14: remove phantom annotation-usage-to-annotation-usage edges
+// ---------------------------------------------------------------------------
+
+/// One-shot data repair for the resolver bug fixed alongside this migration:
+/// `kind_compatible` used to accept `NodeKind::AnnotationUsage` and
+/// `NodeKind::Decorator` as valid targets for `EdgeKind::Annotates`, which let
+/// an annotation reference bind to a sibling usage in the same file instead of
+/// staying unresolved. The resolver now never produces `annotates` edges at
+/// all (`kind_compatible` returns `false` for the whole edge kind); the only
+/// `annotates` edges left are the ones extractors emit directly.
+///
+/// The delete targets both `annotation_usage` and `decorator` nodes:
+/// - `annotation_usage` is always a usage site, never a legitimate target of
+///   an `annotates` edge.
+/// - `decorator` is emitted at the `@foo(...)` application site (Python,
+///   TypeScript), never at the declaration it decorates, so it can never be a
+///   legitimate target either — only ever a source, including for stacked
+///   decorators (`@a @b def f`).
+///
+/// This does *not* widen to `annotation` nodes: `@Retention @interface Foo {}`
+/// is a legitimate direct edge to a `NodeKind::Annotation` node, so deleting
+/// by that target kind would remove real data. Any stale resolver-produced
+/// edges that happened to target an `annotation` node are cleared by the full
+/// reindex `TokenSave::open` already forces on any migration.
+///
+/// New databases (and any file re-synced with the fixed resolver) never
+/// produce these edges in the first place; this migration only repairs rows
+/// already stored in databases indexed before the fix.
+///
+/// Gated on the `edges` table actually existing — some pre-v9 migration
+/// tests seed a nodes-only schema and drive `migrate` all the way to
+/// `LATEST_VERSION`, and a real install always has the table by v1.
+async fn migrate_v14(conn: &Connection) -> Result<()> {
+    let mut edge_table = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'",
+            (),
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v14: failed to inspect edges table: {e}"),
+            operation: "migrate_v14".to_string(),
+        })?;
+    let has_edges = edge_table
+        .next()
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v14: failed to read edges table status: {e}"),
+            operation: "migrate_v14".to_string(),
+        })?
+        .is_some();
+    drop(edge_table);
+
+    if has_edges {
+        conn.execute(
+            "DELETE FROM edges
+             WHERE kind = 'annotates'
+               AND target IN (
+                   SELECT id FROM nodes WHERE kind IN ('annotation_usage', 'decorator')
+               )",
+            (),
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v14: failed to delete phantom annotates edges: {e}"),
+            operation: "migrate_v14".to_string(),
+        })?;
+    }
+
     Ok(())
 }
 

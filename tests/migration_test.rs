@@ -674,6 +674,131 @@ async fn test_migrate_v13_repairs_missing_trait_dispatch_cache() {
     assert!(index_exists(&conn, "idx_trait_dispatch_callers_concrete").await);
 }
 
+/// V14 removes phantom `annotates` edges that target an `annotation_usage`
+/// node (the bug fixed alongside this migration), but leaves every
+/// legitimate `annotates` edge — direct extractor-emitted and resolver-
+/// resolved alike — untouched.
+#[tokio::test]
+async fn test_v14_removes_phantom_annotates_edges() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+    set_user_version(&conn, 13).await;
+
+    let insert_node = |id: &str, kind: &str| {
+        format!(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, start_line, end_line, start_column, end_column, updated_at) \
+             VALUES ('{id}', '{kind}', '{id}', '{id}', 'src/lib.rs', 1, 1, 0, 1, 1000)"
+        )
+    };
+
+    // Two annotation_usage nodes in the same file, with a phantom
+    // usage-to-usage `annotates` edge between them plus a phantom self-edge.
+    conn.execute(&insert_node("usage1", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage1");
+    conn.execute(&insert_node("usage2", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage2");
+
+    // A legitimate direct edge: usage -> the item it annotates.
+    conn.execute(&insert_node("fn1", "function"), ())
+        .await
+        .expect("failed to insert fn1");
+
+    // The `@Retention @interface Foo {}` direct-edge case: a usage naming a
+    // real Annotation declaration is a legitimate extractor-emitted edge, not
+    // a resolver-produced usage-to-usage phantom.
+    conn.execute(&insert_node("usage3", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage3");
+    conn.execute(&insert_node("decl1", "annotation"), ())
+        .await
+        .expect("failed to insert decl1");
+
+    // A phantom edge targeting a `decorator` node: decorator nodes are only
+    // ever emitted at the application site, never the declaration, so a
+    // usage -> decorator edge is the same phantom class as usage -> usage.
+    conn.execute(&insert_node("usage4", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage4");
+    conn.execute(&insert_node("dec1", "decorator"), ())
+        .await
+        .expect("failed to insert dec1");
+
+    // A legitimate direct edge with a decorator as *source*: proves the
+    // delete keys on target kind, not on `decorator` appearing anywhere in
+    // the edge.
+    conn.execute(&insert_node("fn2", "function"), ())
+        .await
+        .expect("failed to insert fn2");
+
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage1', 'usage2', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom cross-node edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage1', 'usage1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom self-edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage2', 'fn1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert legitimate direct edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage3', 'decl1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert direct annotation-usage-to-declaration edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage4', 'dec1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom usage-to-decorator edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('dec1', 'fn2', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert legitimate decorator-as-source edge");
+
+    assert!(migrate(&conn).await.expect("v14 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    let mut rows = conn
+        .query(
+            "SELECT source, target FROM edges WHERE kind = 'annotates' ORDER BY source",
+            (),
+        )
+        .await
+        .expect("failed to query surviving annotates edges");
+    let mut surviving = Vec::new();
+    while let Some(row) = rows.next().await.expect("failed to read row") {
+        let source: String = row.get(0).expect("failed to read source");
+        let target: String = row.get(1).expect("failed to read target");
+        surviving.push((source, target));
+    }
+
+    assert_eq!(
+        surviving,
+        vec![
+            ("dec1".to_string(), "fn2".to_string()),
+            ("usage2".to_string(), "fn1".to_string()),
+            ("usage3".to_string(), "decl1".to_string()),
+        ],
+        "only edges not targeting an annotation_usage or decorator node should survive the v14 repair"
+    );
+}
+
 /// After create_schema, all v5 columns on nodes exist.
 #[tokio::test]
 async fn test_create_schema_has_all_node_columns() {
