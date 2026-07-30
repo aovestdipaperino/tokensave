@@ -565,10 +565,19 @@ mod tests {
             always_load.contains(&"tokensave_status"),
             "tokensave_status must be alwaysLoad"
         );
+        // Structural call-graph tools promoted to alwaysLoad in #333.
+        assert!(
+            always_load.contains(&"tokensave_impact"),
+            "tokensave_impact must be alwaysLoad"
+        );
+        assert!(
+            always_load.contains(&"tokensave_callees"),
+            "tokensave_callees must be alwaysLoad"
+        );
         assert_eq!(
             always_load.len(),
-            3,
-            "exactly 3 tools should be alwaysLoad, got {:?}",
+            5,
+            "exactly 5 tools should be alwaysLoad, got {:?}",
             always_load
         );
     }
