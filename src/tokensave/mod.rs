@@ -299,6 +299,19 @@ impl TokenSave {
                 eprintln!("[tokensave] re-index complete.");
                 return Ok(ts);
             }
+            // `quick_check` validates the B-tree but cannot see a bulk load
+            // that dropped its indexes and never recreated them: the rows are
+            // structurally valid, just un-indexed and possibly duplicated
+            // (#318). Detect that state and re-run finalization, which dedupes
+            // the edges and rebuilds every dropped index — far cheaper than a
+            // full re-index and enough to restore a correct, fast graph.
+            if db.needs_bulk_load_finalization().await.unwrap_or(false) {
+                eprintln!(
+                    "[tokensave] previous bulk load did not finalize — deduping edges and rebuilding indexes…"
+                );
+                db.end_bulk_load().await?;
+            }
+
             // DB is fine — clean up the stale sentinel.
             clear_dirty_sentinel(project_root);
         }

@@ -400,3 +400,144 @@ async fn fts_corruption_healed_by_search_nodes() {
         "search should recover via self-healing or LIKE fallback"
     );
 }
+
+// ─── Bulk-load edge dedup + interrupted-finalization recovery (#318) ──────
+
+/// Returns `true` if an index named `name` exists on the database.
+async fn index_exists(db: &Database, name: &str) -> bool {
+    let mut rows = db
+        .conn()
+        .query("SELECT name FROM sqlite_master WHERE type = 'index'", ())
+        .await
+        .unwrap();
+    while let Some(row) = rows.next().await.unwrap() {
+        let n: String = row.get(0).unwrap();
+        if n == name {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns the total number of rows in the `edges` table.
+async fn edge_count(db: &Database) -> i64 {
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM edges", ())
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get(0).unwrap()
+}
+
+/// `begin_bulk_load` drops `idx_edges_unique`, so `INSERT OR IGNORE` can no
+/// longer dedupe during the load. `end_bulk_load` must therefore collapse any
+/// duplicate rows *before* it recreates the unique index — otherwise that
+/// `CREATE UNIQUE INDEX` fails on the duplicates and the graph is left
+/// permanently un-indexed (#318).
+#[tokio::test]
+async fn end_bulk_load_dedupes_edges_before_unique_index() {
+    let (db, _dir, _path) = setup_db().await;
+
+    db.insert_nodes(&[sample_node("s", "src_fn"), sample_node("t", "dst_fn")])
+        .await
+        .unwrap();
+
+    db.begin_bulk_load().await.unwrap();
+    db.conn()
+        .execute_batch(
+            "INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);
+             INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);
+             INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        edge_count(&db).await,
+        3,
+        "duplicates must be present before finalization"
+    );
+
+    db.end_bulk_load().await.unwrap();
+
+    assert_eq!(
+        edge_count(&db).await,
+        1,
+        "end_bulk_load must collapse duplicate edge tuples"
+    );
+    assert!(
+        index_exists(&db, "idx_edges_unique").await,
+        "the unique dedup index must exist after finalization"
+    );
+}
+
+/// A bulk load interrupted between `begin_bulk_load` and `end_bulk_load`
+/// leaves the graph un-indexed and possibly duplicated. `quick_check` passes
+/// (the B-tree is intact), so `TokenSave::open` must detect the missing
+/// `idx_edges_unique` on a dirty reopen and finalize the load — dedup and
+/// rebuild the indexes — rather than serve the broken graph as-is (#318).
+#[tokio::test]
+async fn open_finalizes_interrupted_bulk_load() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(
+        project.join("src/lib.rs"),
+        "fn caller() { callee(); }\nfn callee() {}\n",
+    )
+    .unwrap();
+
+    {
+        let cg = tokensave::tokensave::TokenSave::init(project)
+            .await
+            .unwrap();
+        cg.index_all().await.unwrap();
+
+        // Simulate a crash mid-bulk-load: the dedup index is dropped and
+        // duplicate edges are injected, exactly as a repeated or interrupted
+        // load would leave the table.
+        cg.db().begin_bulk_load().await.unwrap();
+        cg.db()
+            .conn()
+            .execute_batch(
+                "INSERT INTO edges (source, target, kind, line)
+                 SELECT source, target, kind, line FROM edges;",
+            )
+            .await
+            .unwrap();
+        assert!(
+            !index_exists(cg.db(), "idx_edges_unique").await,
+            "precondition: bulk load dropped the unique index"
+        );
+    }
+
+    // The dirty sentinel a killed process would have left behind.
+    std::fs::write(
+        project.join(".tokensave").join("dirty"),
+        "pid=0\nversion=test",
+    )
+    .unwrap();
+
+    let cg = tokensave::tokensave::TokenSave::open(project)
+        .await
+        .unwrap();
+
+    assert!(
+        index_exists(cg.db(), "idx_edges_unique").await,
+        "recovery must recreate idx_edges_unique"
+    );
+    let mut rows = cg
+        .db()
+        .conn()
+        .query(
+            "SELECT COUNT(*) FROM (
+                 SELECT 1 FROM edges
+                 GROUP BY source, target, kind, COALESCE(line, -1)
+                 HAVING COUNT(*) > 1
+             )",
+            (),
+        )
+        .await
+        .unwrap();
+    let dup_groups: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(dup_groups, 0, "recovery must remove duplicate edges");
+}
