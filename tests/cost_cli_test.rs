@@ -46,10 +46,12 @@ fn cost_without_droid_preserves_existing_output() {
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(stdout.contains("1.0k"), "{stdout}");
-    assert!(!stdout.contains("Coverage:"), "{stdout}");
-    assert!(!stdout.contains("Droid"), "{stdout}");
-    assert!(!stdout.contains("Augment"), "{stdout}");
-    assert!(!stdout.contains("Copilot"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+        ),
+        "{stdout}"
+    );
 
     let json = tokensave_command(&home)
         .args(["cost", "all", "--export", "json"])
@@ -110,5 +112,10 @@ fn removed_droid_source_does_not_surface_stale_rows() {
     assert!(second.status.success());
     let stdout = String::from_utf8_lossy(&second.stdout);
     assert!(!stdout.contains("droid"), "{stdout}");
-    assert!(!stdout.contains("Coverage:"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+        ),
+        "{stdout}"
+    );
 }

@@ -472,8 +472,7 @@ async fn ingest_claude_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
     }
 }
 
-/// Ingest Claude sessions from `home` and Droid sessions from
-/// `home/.factory/sessions`.  Returns combined [`IngestStats`].
+/// Ingest Claude, Droid, Copilot and Pi sessions from `home`.
 pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
     let mut stats = ingest_claude_from_home(gdb, home).await;
 
@@ -489,6 +488,12 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
     stats.cost_usd += pi.cost_usd;
     stats.tokens_consumed += pi.tokens_consumed;
     stats.coverage.extend(pi.coverage);
+    // Copilot CLI ingestion from ~/.copilot/session-state
+    let copilot_root = home.join(".copilot").join("session-state");
+    let copilot = crate::accounting::copilot::ingest_dir(gdb, &copilot_root).await;
+
+    stats.turns_updated = stats.turns_updated.saturating_add(copilot.rows_changed);
+    stats.coverage.push(copilot.coverage);
 
     stats
 }

@@ -388,6 +388,12 @@ pub struct CostCache {
     pub week_droid_tokens: u64,
     /// Coverage quality of the Droid accounting source.
     pub droid_state: crate::accounting::parser::CoverageState,
+    /// Copilot cumulative nano-AIU spent today (`None` when the window query returned no data).
+    pub today_aiu: Option<u64>,
+    /// Copilot cumulative nano-AIU spent in the past 7 days (`None` when the window query returned no data).
+    pub week_aiu: Option<u64>,
+    /// Coverage quality of the Copilot accounting source.
+    pub copilot_state: crate::accounting::parser::CoverageState,
     pub last_refresh: std::time::Instant,
 }
 
@@ -404,6 +410,9 @@ impl CostCache {
             week_credits: None,
             week_droid_tokens: 0,
             droid_state: crate::accounting::parser::CoverageState::Absent,
+            today_aiu: None,
+            week_aiu: None,
+            copilot_state: crate::accounting::parser::CoverageState::Absent,
             last_refresh: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(999))
                 .unwrap_or_else(std::time::Instant::now),
@@ -421,6 +430,7 @@ impl CostCache {
             || self.week_cost >= 0.001
             || self.week_credits.is_some_and(|c| c > 0)
             || self.week_droid_tokens > 0
+            || self.week_aiu.is_some_and(|a| a > 0)
     }
 }
 
@@ -431,72 +441,73 @@ pub fn truncate_to_chars(s: &str, width: usize) -> String {
     collected
 }
 
-/// Build the cost-panel display lines from cached data.
+/// Build the three cost-panel display lines from cached data.
 ///
-/// Without a Droid source, returns the original two-line monitor panel.
-/// With Droid coverage, inserts the native-usage line between USD and efficiency.
+/// Returns `[usd_line, droid_line, efficiency_line]`.
 /// Each line starts with two spaces of indent. Does **not** pad or truncate —
 /// callers truncate to terminal width before padding.
-pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
+pub fn cost_panel_lines(cache: &CostCache) -> [String; 3] {
     use crate::accounting::parser::CoverageState;
+    use std::fmt::Write as _;
 
     let saved_str = crate::display::format_token_count(cache.tokens_saved);
+    let line1 = format!(
+        "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+        cache.today_cost, cache.week_cost, saved_str
+    );
+
+    let mut line2 = if cache.droid_state == CoverageState::Absent {
+        "  Coverage: Claude local; Droid absent".to_string()
+    } else {
+        let week_t = crate::display::format_token_count(cache.week_droid_tokens);
+        match cache.week_credits {
+            Some(wc) => {
+                let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
+                let week_c = crate::display::format_token_count(wc);
+                let note = if cache.droid_state == CoverageState::Partial {
+                    "observed locally, partial source, session-start"
+                } else {
+                    "session-start"
+                };
+                format!(
+                    "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
+                )
+            }
+            None => {
+                format!(
+                    "  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)"
+                )
+            }
+        }
+    };
+
+    // Append a compact Copilot segment only when there is AIU activity, so
+    // Droid-only panels keep their exact existing layout.
+    if cache.week_aiu.is_some_and(|a| a > 0) {
+        let today_a = crate::accounting::copilot_format_aiu(cache.today_aiu.unwrap_or(0));
+        let week_a = crate::accounting::copilot_format_aiu(cache.week_aiu.unwrap_or(0));
+        let note = if cache.copilot_state == CoverageState::Partial {
+            "partial source, session-start"
+        } else {
+            "session-start"
+        };
+        let _ = write!(
+            line2,
+            " | Copilot: {today_a} AIU today | {week_a} 7d ({note})"
+        );
+    }
+
     let top_model_part = if cache.top_model.is_empty() {
         "n/a".to_string()
     } else {
         format!("{} (${:.2})", cache.top_model, cache.top_model_cost)
     };
+    let line3 = format!(
+        "  Efficiency: {:.0}%    Top priced model: {}",
+        cache.efficiency_pct, top_model_part
+    );
 
-    if cache.droid_state == CoverageState::Absent {
-        return vec![
-            format!(
-                "  Spent: ${:.2} today | ${:.2} 7d    Saved: {}",
-                cache.today_cost, cache.week_cost, saved_str
-            ),
-            format!(
-                "  Efficiency: {:.0}%    Top model: {}",
-                cache.efficiency_pct, top_model_part
-            ),
-        ];
-    }
-
-    let week_t = crate::display::format_token_count(cache.week_droid_tokens);
-    let droid_line = match (cache.droid_state, cache.week_credits) {
-        (_, Some(wc)) => {
-            let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
-            let week_c = crate::display::format_token_count(wc);
-            let note = if cache.droid_state == CoverageState::Partial {
-                "observed locally, partial source, session-start"
-            } else {
-                "session-start"
-            };
-            format!(
-                "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
-            )
-        }
-        (CoverageState::Complete, None) if cache.week_droid_tokens == 0 => {
-            "  Droid: no usage in 7d (session-start)".to_string()
-        }
-        (CoverageState::Complete, None) => {
-            format!("  Droid: credits n/a    {week_t} raw tokens (session-start)")
-        }
-        (CoverageState::Partial, None) => {
-            format!("  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)")
-        }
-        (CoverageState::Absent, None) => unreachable!("handled above"),
-    };
-
-    vec![
-        format!(
-            "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
-            cache.today_cost, cache.week_cost, saved_str
-        ),
-        droid_line,
-        format!(
-            "  Efficiency: {:.0}%    Top priced model: {}",
-            cache.efficiency_pct, top_model_part
-        ),
-    ]
+    [line1, line2, line3]
 }
 
 /// Refresh cost data from the global DB. Best-effort, non-blocking.
@@ -519,6 +530,14 @@ fn refresh_cost_cache(cache: &mut CostCache) {
                 c.state
             });
 
+        cache.copilot_state = stats
+            .coverage
+            .iter()
+            .find(|c| c.agent == "copilot")
+            .map_or(crate::accounting::parser::CoverageState::Absent, |c| {
+                c.state
+            });
+
         let now_epoch = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -530,11 +549,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
         cache.today_cost = gdb.total_cost_since(today_start).await.unwrap_or(0.0);
         cache.week_cost = gdb.total_cost_since(week_start).await.unwrap_or(0.0);
 
-        let week_agents = gdb.cost_by_agent_since(week_start).await;
-        let week_consumed = crate::accounting::metrics::consumed_tokens(
-            &week_agents,
-            cache.droid_state != crate::accounting::parser::CoverageState::Absent,
-        );
+        let week_consumed = gdb.total_tokens_since(week_start).await.unwrap_or(0);
         cache.tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
 
         cache.efficiency_pct = if cache.tokens_saved + week_consumed > 0 {
@@ -559,6 +574,7 @@ fn refresh_cost_cache(cache: &mut CostCache) {
             cache.today_credits = d.credits;
         }
 
+        let week_agents = gdb.cost_by_agent_since(week_start).await;
         if let Some(d) = week_agents.iter().find(|s| s.agent == "droid") {
             cache.week_credits = d.credits;
             cache.week_droid_tokens = d
@@ -566,6 +582,16 @@ fn refresh_cost_cache(cache: &mut CostCache) {
                 .saturating_add(d.output_tokens)
                 .saturating_add(d.cache_write_tokens)
                 .saturating_add(d.cache_read_tokens);
+        }
+
+        // Copilot cumulative nano-AIU (stored in the credits column).
+        cache.today_aiu = None;
+        cache.week_aiu = None;
+        if let Some(c) = today_agents.iter().find(|s| s.agent == "copilot") {
+            cache.today_aiu = c.credits;
+        }
+        if let Some(c) = week_agents.iter().find(|s| s.agent == "copilot") {
+            cache.week_aiu = c.credits;
         }
     };
     // monitor::run() is always invoked from inside #[tokio::main]'s
@@ -649,18 +675,9 @@ fn monitor_loop(
 
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
-        // Layout: dynamic cost panel + log + separator + footer (2 lines).
+        // Layout: cost panel (4 lines: 3 content + separator) + log + separator + footer (2 lines)
         let has_activity = cost_cache.has_activity();
-        let panel_lines = if has_activity {
-            cost_panel_lines(&cost_cache)
-        } else {
-            Vec::new()
-        };
-        let cost_lines = if has_activity {
-            panel_lines.len() + 1
-        } else {
-            0
-        };
+        let cost_lines = if has_activity { 4 } else { 0 }; // 3 lines + separator
         let footer_lines = 4; // separator + 2 footer lines + bottom separator
         let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
         last_log_lines = log_lines;
@@ -668,8 +685,9 @@ fn monitor_loop(
         // ── Cost panel ──
         if has_activity {
             let sep = "\u{2500}".repeat(w);
+            let [line1, line2, line3] = cost_panel_lines(&cost_cache);
 
-            for line in &panel_lines {
+            for line in [&line1, &line2, &line3] {
                 let truncated = truncate_to_chars(line, w);
                 let padding = w.saturating_sub(truncated.chars().count());
                 write!(
