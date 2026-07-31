@@ -5,8 +5,9 @@
 //! - cost_by_agent_since groups correctly with AgentCostSummary fields.
 //! - NULL credits aggregate when any row in a group has NULL credits.
 //! - total_tokens_since counts all agents (no filter).
-//! - token_breakdown_since, cost_by_model_since, cost_by_category_since,
-//!   nav_turns_since remain Claude-only.
+//! - token_breakdown_since, cost_by_category_since, nav_turns_since remain
+//!   Claude-only; cost_by_model_since covers USD-metered agents (Claude, Codex)
+//!   but still excludes credits-only Droid.
 
 use tempfile::TempDir;
 use tokensave::global_db::GlobalDb;
@@ -71,6 +72,25 @@ fn copilot_turn(id: &str, timestamp: u64, nano_aiu: u64) -> CostTurn {
         tool_names: String::new(),
         agent: "copilot".to_string(),
         credits: Some(nano_aiu),
+    }
+}
+
+fn codex_turn(id: &str, model: &str, input: u64, output: u64, cost_usd: f64) -> CostTurn {
+    CostTurn {
+        message_id: id.to_string(),
+        project_hash: "proj".to_string(),
+        session_id: "sess".to_string(),
+        model: model.to_string(),
+        timestamp: 1_000_002,
+        input_tokens: input,
+        output_tokens: output,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_usd,
+        category: "unclassified".to_string(),
+        tool_names: String::new(),
+        agent: "codex".to_string(),
+        credits: None,
     }
 }
 
@@ -236,6 +256,42 @@ async fn legacy_views_exclude_droid() {
     // nav_turns_since: only claude turns
     let nav = db.nav_turns_since(0).await;
     assert_eq!(nav.len(), 1, "nav_turns_since must exclude droid");
+}
+
+/// cost_by_model_since is the "how models cost" view and must include Codex,
+/// which is USD-metered like Claude, while still excluding credits-only Droid.
+#[tokio::test]
+async fn cost_by_model_includes_codex_but_not_droid() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+
+    assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
+    assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
+    assert!(
+        db.insert_turn(&codex_turn("codex:s1", "gpt-5.4", 1000, 200, 3.5))
+            .await
+    );
+
+    let by_model = db.cost_by_model_since(0).await;
+    let models: Vec<&str> = by_model.iter().map(|(m, _, _)| m.as_str()).collect();
+    assert!(
+        models.contains(&"gpt-5.4"),
+        "codex model must appear: {models:?}"
+    );
+    assert!(
+        models.contains(&"claude-opus-4-6"),
+        "claude model must appear: {models:?}"
+    );
+    assert!(
+        !models.contains(&"gemini-pro"),
+        "droid model must not appear: {models:?}"
+    );
+    let (_, codex_cost, codex_tokens) = by_model
+        .iter()
+        .find(|(m, _, _)| m == "gpt-5.4")
+        .expect("gpt-5.4 row");
+    assert!((codex_cost - 3.5).abs() < 1e-9);
+    assert_eq!(*codex_tokens, 1200);
 }
 
 /// cost_summary efficiency denominator uses ALL agent tokens (not just Claude).

@@ -816,7 +816,7 @@ impl GlobalDb {
         ))
     }
 
-    /// Cost grouped by model since a given timestamp. Claude-only.
+    /// Cost grouped by model since a given timestamp for USD-metered agents.
     /// Returns `(model, cost, total_tokens)`.
     ///
     /// `total_tokens` counts every category the cost was computed from, cache
@@ -828,9 +828,14 @@ impl GlobalDb {
         let Ok(mut rows) = self
             .conn
             .query(
+                // USD-metered agents only (Claude and Codex). Credits-only
+                // agents (Droid, Copilot) carry cost_usd = 0 and a routing-label
+                // model, so they would add meaningless $0 rows here; their spend
+                // shows in --by-agent instead. Keep this list in sync with
+                // accounting::is_credits_only (the inverse set).
                 "SELECT model, SUM(cost_usd),
                         SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)
-                 FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
+                 FROM turns WHERE timestamp >= ?1 AND agent IN ('claude', 'codex')
                  GROUP BY model ORDER BY SUM(cost_usd) DESC",
                 params![since as i64],
             )

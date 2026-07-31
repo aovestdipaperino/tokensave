@@ -270,6 +270,40 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
     };
     parts.push(copilot_text);
 
+    let codex_state = coverage
+        .iter()
+        .find(|c| c.agent == "codex")
+        .map_or(CoverageState::Absent, |c| c.state);
+    let codex_usage = by_agent.iter().find(|a| a.agent == "codex");
+    let codex_raw = codex_usage.map(|u| {
+        u.input_tokens
+            .saturating_add(u.output_tokens)
+            .saturating_add(u.cache_write_tokens)
+            .saturating_add(u.cache_read_tokens)
+    });
+    let codex_text = match codex_state {
+        CoverageState::Absent => "Codex absent".to_string(),
+        state => match (codex_usage, codex_raw) {
+            (Some(u), Some(r)) if r > 0 => {
+                // Partial here means at least one session used a model with no
+                // known price, so the USD estimate is a floor, not a total.
+                let note = if state == CoverageState::Partial {
+                    "partial, unpriced models present, session-start"
+                } else {
+                    "estimated USD, session-start"
+                };
+                format!(
+                    "Codex ${:.2}, {} tokens ({note})",
+                    u.cost_usd,
+                    format_token_count(r)
+                )
+            }
+            _ if state == CoverageState::Partial => "Codex partial; no usage in range".to_string(),
+            _ => "Codex complete; no usage in range".to_string(),
+        },
+    };
+    parts.push(codex_text);
+
     parts.push("Augment not imported".to_string());
     format!("Coverage: {}", parts.join("; "))
 }
@@ -406,7 +440,7 @@ mod tests {
             make_agent("droid", 20000, 3000, 1000, 600, Some(2900)),
         ];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Augment not imported";
+        let expected = "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Codex absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -427,7 +461,62 @@ mod tests {
         // Copilot credits hold nano-AIU: 900_000_000_000 → 900 AIU.
         let by_agent = vec![make_agent("copilot", 0, 0, 0, 0, Some(900_000_000_000))];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid absent; Copilot 900 AIU (checkpoint timestamp); Augment not imported";
+        let expected = "Coverage: Claude complete; Droid absent; Copilot 900 AIU (checkpoint timestamp); Codex absent; Augment not imported";
+        assert_eq!(got, expected);
+    }
+
+    /// Build an `AgentCostSummary` with a nonzero USD cost (Codex/Claude path).
+    fn make_usd_agent(agent: &str, input: u64, output: u64, cost_usd: f64) -> AgentCostSummary {
+        AgentCostSummary {
+            agent: agent.to_string(),
+            cost_usd,
+            input_tokens: input,
+            output_tokens: output,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            credits: None,
+            turns: 1,
+        }
+    }
+
+    #[test]
+    fn format_coverage_renders_codex_usd_when_complete_with_usage() {
+        let coverage = vec![
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "codex",
+                state: CoverageState::Complete,
+                sessions: 2,
+            },
+        ];
+        // input 1200 + output 300 = 1500 tokens → "1.5k"; cost 4.20 USD.
+        let by_agent = vec![make_usd_agent("codex", 1200, 300, 4.20)];
+        let got = format_coverage(&coverage, &by_agent);
+        let expected = "Coverage: Claude complete; Droid absent; Copilot absent; Codex $4.20, 1.5k tokens (estimated USD, session-start); Augment not imported";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn format_coverage_codex_partial_flags_unpriced() {
+        let coverage = vec![
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "codex",
+                state: CoverageState::Partial,
+                sessions: 2,
+            },
+        ];
+        let by_agent = vec![make_usd_agent("codex", 1000, 500, 2.00)];
+        let got = format_coverage(&coverage, &by_agent);
+        let expected = "Coverage: Claude complete; Droid absent; Copilot absent; Codex $2.00, 1.5k tokens (partial, unpriced models present, session-start); Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -449,7 +538,7 @@ mod tests {
         // raw = 20000 + 3000 + 1000 + 600 = 24600 → "24.6k"; credits = None
         let by_agent = vec![make_agent("droid", 20000, 3000, 1000, 600, None)];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid credits n/a, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Augment not imported";
+        let expected = "Coverage: Claude complete; Droid credits n/a, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Codex absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -470,7 +559,7 @@ mod tests {
         // raw = 400 + 50 + 10 + 20 = 480
         let by_agent = vec![make_agent("droid", 400, 50, 10, 20, None)];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude partial; Droid credits n/a, 480 raw tokens (partial, session-start buckets); Copilot absent; Augment not imported";
+        let expected = "Coverage: Claude partial; Droid credits n/a, 480 raw tokens (partial, session-start buckets); Copilot absent; Codex absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -494,7 +583,7 @@ mod tests {
 
         assert_eq!(
             got,
-            "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (partial, session-start buckets); Copilot absent; Augment not imported"
+            "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (partial, session-start buckets); Copilot absent; Codex absent; Augment not imported"
         );
     }
 
@@ -514,7 +603,7 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        let expected = "Coverage: Claude partial; Droid partial; no usage in range; Copilot absent; Augment not imported";
+        let expected = "Coverage: Claude partial; Droid partial; no usage in range; Copilot absent; Codex absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -535,7 +624,7 @@ mod tests {
         let got = format_coverage(&coverage, &[]);
         assert_eq!(
             got,
-            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment not imported"
         );
     }
 
@@ -556,7 +645,7 @@ mod tests {
         let got = format_coverage(&coverage, &[]);
         assert_eq!(
             got,
-            "Coverage: Claude complete; Droid complete; no usage in range; Copilot absent; Augment not imported"
+            "Coverage: Claude complete; Droid complete; no usage in range; Copilot absent; Codex absent; Augment not imported"
         );
     }
 
