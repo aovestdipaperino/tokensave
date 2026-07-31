@@ -212,7 +212,7 @@ impl TokenSave {
         };
         if auto_track {
             if let Some(b) = active_branch.as_deref() {
-                match branch::track_branch_copy(project_root, &tokensave_dir, b) {
+                match branch::track_branch_copy(project_root, &tokensave_dir, b).await {
                     Ok(true) => eprintln!(
                         "[tokensave] auto-tracked branch '{b}' (index copied from \
                          ancestor; run `tokensave sync` to refresh)"
