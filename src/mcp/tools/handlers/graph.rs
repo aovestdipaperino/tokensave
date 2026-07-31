@@ -1513,7 +1513,12 @@ pub(super) async fn handle_implementations(
             .await?;
         let method_nodes: Vec<&crate::types::Node> = nodes
             .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+            .filter(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                )
+            })
             .filter(|n| scope_prefix.is_none_or(|p| n.file_path.starts_with(p)))
             .take(limit)
             .collect();
@@ -1569,7 +1574,10 @@ async fn collect_method_bodies(
     let children = cg.db().get_children_of(&impl_node.id).await?;
     let mut out: Vec<Value> = Vec::new();
     for child in children {
-        if !matches!(child.kind, NodeKind::Method | NodeKind::Function) {
+        if !matches!(
+            child.kind,
+            NodeKind::Method | NodeKind::SingletonMethod | NodeKind::Function
+        ) {
             continue;
         }
         let abs_path = project_root.join(&child.file_path);

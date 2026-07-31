@@ -32,6 +32,7 @@ fn is_callable(kind: &NodeKind) -> bool {
         kind,
         NodeKind::Function
             | NodeKind::Method
+            | NodeKind::SingletonMethod
             | NodeKind::StructMethod
             | NodeKind::Constructor
             | NodeKind::AbstractMethod

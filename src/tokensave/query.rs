@@ -812,6 +812,7 @@ pub(crate) async fn resolve_symbol_for_edit(cg: &TokenSave, symbol: &str) -> Res
                 n.kind,
                 NodeKind::Function
                     | NodeKind::Method
+                    | NodeKind::SingletonMethod
                     | NodeKind::StructMethod
                     | NodeKind::Constructor
                     | NodeKind::AbstractMethod

@@ -2,6 +2,19 @@
 use super::query::resolve_symbol_for_edit;
 use super::*;
 
+const RUBY_SINGLETON_KIND_METADATA: &str = "ruby_singleton_method_kind_v1";
+
+fn legacy_ruby_repair_complete(
+    repair_required: bool,
+    scheduled: &[String],
+    extracted: &HashSet<&str>,
+) -> bool {
+    !repair_required
+        || scheduled
+            .iter()
+            .all(|path| extracted.contains(path.as_str()))
+}
+
 /// Extensions that are never source code — binary assets, media, archives,
 /// lockfiles, and plain-data formats. These are excluded from the
 /// skipped-extension diagnostic (#262, #270) so a verbose sync highlights
@@ -359,6 +372,22 @@ impl TokenSave {
             on_verbose(&format!("discovered {doc_count} companion doc(s)"));
         }
 
+        // Make containment available to resolution before `Contains` edges are
+        // denormalized into `nodes.parent_id` during the later DB insert.
+        let mut parent_ids: HashMap<&str, &str> = HashMap::new();
+        for edge in &all_edges {
+            if edge.kind == EdgeKind::Contains {
+                parent_ids
+                    .entry(edge.target.as_str())
+                    .or_insert(edge.source.as_str());
+            }
+        }
+        for node in &mut all_nodes {
+            if node.parent_id.is_none() {
+                node.parent_id = parent_ids.get(node.id.as_str()).map(|id| (*id).to_string());
+            }
+        }
+
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
         crate::memstats::set_graph_nodes(all_nodes.len() as u64);
@@ -442,6 +471,11 @@ impl TokenSave {
         self.db
             .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
             .await?;
+        if self.registry.extractor_for_language("ruby").is_some() {
+            self.db
+                .set_metadata(RUBY_SINGLETON_KIND_METADATA, "1")
+                .await?;
+        }
 
         let result = IndexResult {
             file_count: files.len(),
@@ -790,6 +824,12 @@ impl TokenSave {
         let db_files = self.db.get_all_files().await?;
         let db_map: HashMap<String, FileRecord> =
             db_files.into_iter().map(|f| (f.path.clone(), f)).collect();
+        let repair_legacy_ruby_singletons = !db_map.is_empty()
+            && self
+                .db
+                .get_metadata(RUBY_SINGLETON_KIND_METADATA)
+                .await?
+                .is_none();
 
         // Partition files by comparing (mtime, size) against stored values
         let mut new_files: Vec<String> = Vec::new();
@@ -877,6 +917,28 @@ impl TokenSave {
                 }
             }
         }
+        let legacy_ruby_files: Vec<String> = if repair_legacy_ruby_singletons {
+            db_map
+                .keys()
+                .filter(|path| {
+                    current_set.contains(path.as_str())
+                        && self
+                            .registry
+                            .extractor_for_file(path)
+                            .is_some_and(|extractor| {
+                                extractor.language_name().eq_ignore_ascii_case("ruby")
+                            })
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for path in &legacy_ruby_files {
+            if !stale.contains(path) {
+                stale.push(path.clone());
+            }
+        }
         on_verbose(&format!(
             "content check: {} modified, {} mtime-only",
             stale.len(),
@@ -910,6 +972,15 @@ impl TokenSave {
         crate::memstats::record("sync:extract");
         let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) =
             extract_files_isolated(project_root, registry, to_index.clone());
+        let extracted_paths: HashSet<&str> = sync_extractions
+            .iter()
+            .map(|(path, _, _, _, _)| path.as_str())
+            .collect();
+        let ruby_repair_complete = legacy_ruby_repair_complete(
+            repair_legacy_ruby_singletons,
+            &legacy_ruby_files,
+            &extracted_paths,
+        );
         // Surface extractor timeouts/crashes in `SyncResult.skipped_paths`
         // so the user can see them in `tokensave sync --doctor`.
         skipped.extend(sync_skipped);
@@ -1018,6 +1089,11 @@ impl TokenSave {
         self.db
             .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
             .await?;
+        if self.registry.extractor_for_language("ruby").is_some() && ruby_repair_complete {
+            self.db
+                .set_metadata(RUBY_SINGLETON_KIND_METADATA, "1")
+                .await?;
+        }
 
         clear_dirty_sentinel(&self.project_root);
         crate::memstats::record("sync:done");
@@ -1977,6 +2053,7 @@ fn build_executable_body_documents(
                 node.kind,
                 NodeKind::Function
                     | NodeKind::Method
+                    | NodeKind::SingletonMethod
                     | NodeKind::StructMethod
                     | NodeKind::Constructor
                     | NodeKind::AbstractMethod
@@ -2003,6 +2080,23 @@ pub(crate) fn can_use_literal_rewrite_fallback(pattern: &str) -> bool {
         && !pattern.contains('$')
         && !pattern.contains('\n')
         && !pattern.contains('\r')
+}
+
+#[cfg(test)]
+mod ruby_singleton_repair_tests {
+    use super::legacy_ruby_repair_complete;
+    use std::collections::HashSet;
+
+    #[test]
+    fn marker_requires_every_scheduled_legacy_ruby_file() {
+        let scheduled = vec!["publisher.rb".to_string(), "report.rb".to_string()];
+        let incomplete = HashSet::from(["publisher.rb"]);
+        assert!(!legacy_ruby_repair_complete(true, &scheduled, &incomplete));
+
+        let complete = HashSet::from(["publisher.rb", "report.rb"]);
+        assert!(legacy_ruby_repair_complete(true, &scheduled, &complete));
+        assert!(legacy_ruby_repair_complete(false, &scheduled, &incomplete));
+    }
 }
 
 /// Unit coverage for the #327 walk-scope predicate. Pure path relations run on

@@ -26,6 +26,7 @@ pub(crate) fn kind_tier(kind: &NodeKind) -> u8 {
         // symbol name.
         NodeKind::Function
         | NodeKind::Method
+        | NodeKind::SingletonMethod
         | NodeKind::StructMethod
         | NodeKind::Constructor
         | NodeKind::AbstractMethod
@@ -105,6 +106,7 @@ pub(crate) fn kind_rank_bonus(kind: &NodeKind) -> f64 {
         // Callable definitions
         NodeKind::Function
         | NodeKind::Method
+        | NodeKind::SingletonMethod
         | NodeKind::StructMethod
         | NodeKind::Constructor
         | NodeKind::AbstractMethod

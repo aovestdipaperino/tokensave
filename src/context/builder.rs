@@ -989,6 +989,7 @@ const SYMBOL_STOP_WORDS: &[&str] = &[
     "call",
     "function",
     "method",
+    "singleton_method",
     "class",
     "struct",
     "type",
@@ -1160,6 +1161,7 @@ fn is_executable_kind(kind: &NodeKind) -> bool {
         kind,
         NodeKind::Function
             | NodeKind::Method
+            | NodeKind::SingletonMethod
             | NodeKind::StructMethod
             | NodeKind::Constructor
             | NodeKind::AbstractMethod

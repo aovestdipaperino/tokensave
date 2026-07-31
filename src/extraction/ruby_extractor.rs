@@ -14,11 +14,7 @@ use crate::types::{
 /// Extracts code graph nodes and edges from Ruby source files using tree-sitter.
 pub struct RubyExtractor;
 
-/// Which same-named node a Ruby visibility directive should retroactively
-/// mark. Instance methods, the enclosing class's singleton methods, and
-/// methods on an unresolvable receiver all share `NodeKind::Method` and
-/// `qualified_name`, so the id lists in `ExtractionState` are what tell them
-/// apart.
+/// Which same-named node a Ruby visibility directive should retroactively mark.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum VisibilityTarget {
     /// The instance method, or a file-scope `Function`.
@@ -246,7 +242,9 @@ impl RubyExtractor {
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0 || state.singleton_scope != SingletonScope::Outside;
-        let kind = if in_class {
+        let kind = if state.singleton_scope == SingletonScope::Enclosing {
+            NodeKind::SingletonMethod
+        } else if in_class {
             NodeKind::Method
         } else {
             NodeKind::Function
@@ -347,7 +345,9 @@ impl RubyExtractor {
             state.in_concern_scope = false;
             let saved_self_is_instance = state.self_is_instance;
             state.self_is_instance = state.singleton_scope != SingletonScope::Enclosing;
+            let saved_body_call_owner_id = state.ruby_body_call_owner_id.take();
             Self::visit_node(state, body);
+            state.ruby_body_call_owner_id = saved_body_call_owner_id;
             state.self_is_instance = saved_self_is_instance;
             state.in_concern_scope = saved_in_concern_scope;
             state.visibility_mode = saved_visibility_mode;
@@ -413,7 +413,14 @@ impl RubyExtractor {
         let name = Self::find_last_identifier_before_params(state, node)
             .unwrap_or_else(|| "<anonymous>".to_string());
 
-        let kind = NodeKind::Method;
+        let is_enclosing_singleton = node
+            .child_by_field_name("object")
+            .is_some_and(|object| Self::is_enclosing_receiver(state, object));
+        let kind = if is_enclosing_singleton {
+            NodeKind::SingletonMethod
+        } else {
+            NodeKind::Method
+        };
         let visibility = Visibility::Pub;
         let signature = Self::extract_singleton_method_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
@@ -456,10 +463,7 @@ impl RubyExtractor {
             parent_id: None,
         };
         state.nodes.push(graph_node);
-        if node
-            .child_by_field_name("object")
-            .is_some_and(|obj| Self::is_enclosing_receiver(state, obj))
-        {
+        if is_enclosing_singleton {
             state.singleton_method_ids.push(id.clone());
         } else {
             state.foreign_singleton_method_ids.push(id.clone());
@@ -504,7 +508,9 @@ impl RubyExtractor {
             let saved_in_concern_scope = state.in_concern_scope;
             let saved_self_is_instance = state.self_is_instance;
             state.self_is_instance = false;
+            let saved_body_call_owner_id = state.ruby_body_call_owner_id.take();
             Self::visit_node(state, body);
+            state.ruby_body_call_owner_id = saved_body_call_owner_id;
             state.self_is_instance = saved_self_is_instance;
             state.in_concern_scope = saved_in_concern_scope;
             state.visibility_mode = saved_visibility_mode;
@@ -565,9 +571,11 @@ impl RubyExtractor {
         // instance, regardless of which `SingletonScope` it resolves to.
         let saved_self_is_instance = state.self_is_instance;
         state.self_is_instance = false;
+        let saved_body_call_owner_id = state.ruby_body_call_owner_id.take();
 
         Self::visit_children(state, body);
 
+        state.ruby_body_call_owner_id = saved_body_call_owner_id;
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
@@ -639,7 +647,7 @@ impl RubyExtractor {
         Self::extract_superclass(state, node, &id);
 
         // Visit class body.
-        state.node_stack.push((name.clone(), id));
+        state.node_stack.push((name.clone(), id.clone()));
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
@@ -654,9 +662,11 @@ impl RubyExtractor {
         // still parses.
         let saved_self_is_instance = state.self_is_instance;
         state.self_is_instance = false;
+        let saved_body_call_owner_id = state.ruby_body_call_owner_id.replace(id.clone());
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.ruby_body_call_owner_id = saved_body_call_owner_id;
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
@@ -733,7 +743,7 @@ impl RubyExtractor {
         }
 
         // Visit module body.
-        state.node_stack.push((name.clone(), id));
+        state.node_stack.push((name.clone(), id.clone()));
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
@@ -745,9 +755,11 @@ impl RubyExtractor {
         // body is a `SyntaxError` in Ruby.
         let saved_self_is_instance = state.self_is_instance;
         state.self_is_instance = false;
+        let saved_body_call_owner_id = state.ruby_body_call_owner_id.replace(id.clone());
         if let Some(body) = find_child_by_kind(node, "body_statement") {
             Self::visit_children(state, body);
         }
+        state.ruby_body_call_owner_id = saved_body_call_owner_id;
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
@@ -990,9 +1002,8 @@ impl RubyExtractor {
     ///
     /// `target` selects which same-named node to mark: instance methods, the
     /// enclosing class's singleton methods, and methods on an unresolvable
-    /// receiver all share `NodeKind::Method` and `qualified_name`, so
-    /// `state.singleton_method_ids`/`foreign_singleton_method_ids` are what
-    /// disambiguate them. One approximation remains: inside a `Foreign` body,
+    /// receiver can share a `qualified_name`, so the id lists disambiguate
+    /// them. One approximation remains: inside a `Foreign` body,
     /// `def foo` and `def self.foo` both land in `foreign_singleton_method_ids`,
     /// so a directive there can't tell them apart.
     fn mark_method_visibility(
@@ -1016,7 +1027,9 @@ impl RubyExtractor {
                         && !is_foreign
                         && (n.kind == NodeKind::Method || n.kind == NodeKind::Function)
                 }
-                VisibilityTarget::EnclosingSingleton => is_singleton && n.kind == NodeKind::Method,
+                VisibilityTarget::EnclosingSingleton => {
+                    is_singleton && n.kind == NodeKind::SingletonMethod
+                }
                 VisibilityTarget::Foreign => is_foreign && n.kind == NodeKind::Method,
             }
         }) {
@@ -1301,7 +1314,9 @@ impl RubyExtractor {
         {
             let saved_in_concern_scope = state.in_concern_scope;
             state.in_concern_scope = true;
+            let saved_body_call_owner_id = state.ruby_body_call_owner_id.take();
             Self::visit_node(state, block_node);
+            state.ruby_body_call_owner_id = saved_body_call_owner_id;
             state.in_concern_scope = saved_in_concern_scope;
             return;
         }
@@ -1338,9 +1353,19 @@ impl RubyExtractor {
         }
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let concern_dsl_changes_self = matches!(
+            method_name.as_deref(),
+            Some("included" | "prepended" | "class_methods")
+        );
+        let saved_body_call_owner_id = concern_dsl_changes_self
+            .then(|| state.ruby_body_call_owner_id.take())
+            .flatten();
 
         Self::visit_node(state, block_node);
 
+        if concern_dsl_changes_self {
+            state.ruby_body_call_owner_id = saved_body_call_owner_id;
+        }
         state.visibility_mode = saved_visibility_mode;
         state.singleton_scope = saved_singleton_scope;
     }
@@ -1357,6 +1382,7 @@ impl RubyExtractor {
             // is valid Ruby but stays unextracted — unchanged, out of scope.)
             "method" | "singleton_method" | "class" | "module" | "singleton_class" => {}
             "call" | "method_call" => {
+                Self::extract_body_self_call_site(state, node);
                 // Receiver and arguments evaluate before the block in Ruby, so
                 // descend them first; then the call's own block, classified.
                 // Skipping the block field here is what prevents double-traversal.
@@ -1560,6 +1586,55 @@ impl RubyExtractor {
         last_ident
     }
 
+    fn call_reference_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let receiver = node.child_by_field_name("receiver");
+        let operator = node.child_by_field_name("operator");
+        let callee_name = node
+            .child_by_field_name("method")
+            .map(|method_node| state.node_text(method_node))
+            .or_else(|| {
+                receiver
+                    .zip(operator)
+                    .map(|_| "call".to_string())
+                    .or_else(|| node.named_child(0).map(|child| state.node_text(child)))
+            })?;
+
+        Some(
+            receiver
+                .zip(operator)
+                .map_or(callee_name.clone(), |(receiver, operator)| {
+                    format!(
+                        "{}{}{}",
+                        state.node_text(receiver),
+                        state.node_text(operator),
+                        callee_name
+                    )
+                }),
+        )
+    }
+
+    fn extract_body_self_call_site(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(owner_node_id) = state.ruby_body_call_owner_id.as_ref() else {
+            return;
+        };
+        if node
+            .child_by_field_name("receiver")
+            .is_none_or(|receiver| state.node_text(receiver) != "self")
+        {
+            return;
+        }
+        if let Some(reference_name) = Self::call_reference_name(state, node) {
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: owner_node_id.clone(),
+                reference_name,
+                reference_kind: EdgeKind::Calls,
+                line: node.start_position().row as u32,
+                column: node.start_position().column as u32,
+                file_path: state.file_path.clone(),
+            });
+        }
+    }
+
     /// Recursively find call nodes inside a given node and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -1568,35 +1643,7 @@ impl RubyExtractor {
                 let child = cursor.node();
                 match child.kind() {
                     "call" | "method_call" => {
-                        // Callable shorthand such as `handler.(value)` has a receiver and
-                        // operator but no method field; Ruby dispatches it as `handler.call`.
-                        let receiver = child.child_by_field_name("receiver");
-                        let operator = child.child_by_field_name("operator");
-                        let callee_name = child
-                            .child_by_field_name("method")
-                            .map(|method_node| state.node_text(method_node))
-                            .or_else(|| {
-                                receiver
-                                    .zip(operator)
-                                    .map(|_| "call".to_string())
-                                    .or_else(|| {
-                                        // Fall back to first named child
-                                        child.named_child(0).map(|n| state.node_text(n))
-                                    })
-                            });
-
-                        if let Some(name) = callee_name {
-                            let reference_name = receiver.zip(operator).map_or_else(
-                                || name.clone(),
-                                |(receiver, operator)| {
-                                    format!(
-                                        "{}{}{}",
-                                        state.node_text(receiver),
-                                        state.node_text(operator),
-                                        name
-                                    )
-                                },
-                            );
+                        if let Some(reference_name) = Self::call_reference_name(state, child) {
                             state.unresolved_refs.push(UnresolvedRef {
                                 from_node_id: fn_node_id.to_string(),
                                 reference_name,

@@ -135,7 +135,7 @@ Compare `files.modified_at` against the live filesystem mtime — `tokensave_aff
 ```sql
 SELECT qualified_name, file_path, end_line - start_line + 1 AS lines
 FROM nodes
-WHERE kind IN ('function', 'method')
+WHERE kind IN ('function', 'method', 'singleton_method')
 ORDER BY lines DESC
 LIMIT 20;
 ```
