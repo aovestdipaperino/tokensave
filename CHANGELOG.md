@@ -8,6 +8,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Added
+- **Ruby projects now have graph-parity coverage that compares complete node and edge records after incremental sync with a clean full index.** This catches count-preserving drift where one relationship disappears and another incorrect relationship takes its place.
 - **`tokensave_context` takes an optional `max_code_lines` parameter to cap each code snippet by line count (#324).** Code snippets already have an approximately 1500-byte size limit and include a `tokensave_body` handle when truncated; the new parameter complements that protection by letting callers request a deliberately short, predictable prefix such as the first 10 or 20 lines of each relevant symbol. Both limits apply, with the tighter one winning, and truncation still occurs on a line boundary. Snippets below both limits are returned unchanged. The line cap defaults to unlimited and explicit values are clamped to 1–1000.
 
 ### Changed
