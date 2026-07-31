@@ -4,7 +4,27 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
-use tokensave::types::EdgeKind;
+use tokensave::types::{Edge, EdgeKind, Node};
+
+async fn canonical_graph(cg: &TokenSave) -> (Vec<Node>, Vec<Edge>) {
+    let mut nodes = cg.db().get_all_nodes().await.unwrap();
+    for node in &mut nodes {
+        node.updated_at = 0;
+    }
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut edges = cg.db().get_all_edges().await.unwrap();
+    edges.sort_by(|a, b| {
+        (&a.source, &a.target, a.kind.as_str(), a.line).cmp(&(
+            &b.source,
+            &b.target,
+            b.kind.as_str(),
+            b.line,
+        ))
+    });
+
+    (nodes, edges)
+}
 
 /// Directly test that the ignore crate with add_custom_ignore_filename reads
 /// nested .gitignore files, regardless of git repo presence.
@@ -1075,11 +1095,11 @@ async fn test_sync_reresolves_inbound_edges_after_callee_change() {
 
 /// Broader parity check: an incrementally-synced graph (several `sync()`
 /// calls, each touching a different single file — ordinary dev churn)
-/// must end up with the same edge count as a fresh full `index_all()` of
-/// the identical final source tree. A gap here means `sync` is
-/// systematically losing cross-file edges relative to a full reindex.
+/// must end up with the same canonical graph as a fresh full `index_all()`
+/// of the identical final source tree. A count-only comparison can conceal
+/// one missing record and one fabricated record.
 #[tokio::test]
-async fn test_incremental_sync_edge_count_matches_full_reindex() {
+async fn test_incremental_sync_graph_matches_full_reindex() {
     let synced_dir = TempDir::new().unwrap();
     let synced_project = synced_dir.path();
     let full_dir = TempDir::new().unwrap();
@@ -1125,27 +1145,20 @@ async fn test_incremental_sync_edge_count_matches_full_reindex() {
     let cg_full = TokenSave::init(full_project).await.unwrap();
     cg_full.index_all().await.unwrap();
 
-    let synced_stats = cg.get_stats().await.unwrap();
-    let full_stats = cg_full.get_stats().await.unwrap();
+    let (synced_nodes, synced_edges) = canonical_graph(&cg).await;
+    let (full_nodes, full_edges) = canonical_graph(&cg_full).await;
 
-    assert_eq!(
-        synced_stats.edge_count, full_stats.edge_count,
-        "incrementally-synced graph ({} edges) must match a full reindex \
-         of identical final source ({} edges) — a gap means sync is \
-         silently dropping cross-file edges that a full reindex would keep",
-        synced_stats.edge_count, full_stats.edge_count
-    );
+    assert_eq!(synced_nodes, full_nodes);
+    assert_eq!(synced_edges, full_edges);
 
     // All three callers — including caller_c, never touched after the
     // initial full index — must still resolve into target_fn.
-    let nodes = cg.db().get_all_nodes().await.unwrap();
-    let edges = cg.db().get_all_edges().await.unwrap();
-    let target_id = nodes
+    let target_id = synced_nodes
         .iter()
         .find(|n| n.name == "target_fn")
         .map(|n| n.id.clone())
         .expect("target_fn node must exist");
-    let calls_into_target = edges
+    let calls_into_target = synced_edges
         .iter()
         .filter(|e| e.kind == EdgeKind::Calls && e.target == target_id)
         .count();
@@ -1154,6 +1167,177 @@ async fn test_incremental_sync_edge_count_matches_full_reindex() {
         "all three callers (including untouched caller_c) must resolve \
          into target_fn after incremental sync"
     );
+}
+
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_ruby_incremental_sync_graph_matches_full_reindex() {
+    let synced_dir = TempDir::new().unwrap();
+    let synced_project = synced_dir.path();
+    let full_dir = TempDir::new().unwrap();
+    let full_project = full_dir.path();
+
+    for project in [synced_project, full_project] {
+        fs::create_dir_all(project.join("app/models/concerns")).unwrap();
+        fs::create_dir_all(project.join("app/services")).unwrap();
+    }
+
+    let application_record = r#"class ApplicationRecord
+  def persist
+  end
+end
+"#;
+    let auditable_v1 = r#"module Auditable
+  def audit
+    normalize_audit()
+  end
+
+  def normalize_audit
+  end
+end
+"#;
+    let auditable_v2 = r#"module Auditable
+  def audit
+    sanitize_audit()
+  end
+
+  def sanitize_audit
+  end
+end
+"#;
+    let report_v1 = r#"class Report < ApplicationRecord
+  include Auditable
+
+  def publish
+    audit()
+    persist()
+  end
+end
+"#;
+    let report_v2 = r#"class Report < ApplicationRecord
+  include Auditable
+
+  def publish
+    audit()
+    persist()
+  end
+
+  def archive
+    audit()
+  end
+end
+"#;
+    let publisher_v1 = r#"class ReportPublisher
+  def call
+    publish()
+  end
+end
+"#;
+    let publisher_v2 = r#"class ReportPublisher
+  def call
+    archive()
+  end
+end
+"#;
+
+    fs::write(
+        synced_project.join("app/models/application_record.rb"),
+        application_record,
+    )
+    .unwrap();
+    fs::write(
+        synced_project.join("app/models/concerns/auditable.rb"),
+        auditable_v1,
+    )
+    .unwrap();
+    fs::write(synced_project.join("app/models/report.rb"), report_v1).unwrap();
+    fs::write(
+        synced_project.join("app/services/report_publisher.rb"),
+        publisher_v1,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(synced_project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    fs::write(
+        synced_project.join("app/models/concerns/auditable.rb"),
+        auditable_v2,
+    )
+    .unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(synced_project.join("app/models/report.rb"), report_v2).unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(
+        synced_project.join("app/services/report_publisher.rb"),
+        publisher_v2,
+    )
+    .unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(
+        full_project.join("app/models/application_record.rb"),
+        application_record,
+    )
+    .unwrap();
+    fs::write(
+        full_project.join("app/models/concerns/auditable.rb"),
+        auditable_v2,
+    )
+    .unwrap();
+    fs::write(full_project.join("app/models/report.rb"), report_v2).unwrap();
+    fs::write(
+        full_project.join("app/services/report_publisher.rb"),
+        publisher_v2,
+    )
+    .unwrap();
+
+    let cg_full = TokenSave::init(full_project).await.unwrap();
+    cg_full.index_all().await.unwrap();
+
+    let (synced_nodes, synced_edges) = canonical_graph(&cg).await;
+    let (full_nodes, full_edges) = canonical_graph(&cg_full).await;
+
+    let node_id = |name: &str| {
+        let matches: Vec<_> = synced_nodes
+            .iter()
+            .filter(|node| node.name == name)
+            .collect();
+        assert_eq!(matches.len(), 1, "expected one node named {name}");
+        matches[0].id.as_str()
+    };
+    let has_edge = |source: &str, target: &str, kind: EdgeKind| {
+        synced_edges
+            .iter()
+            .any(|edge| edge.source == source && edge.target == target && edge.kind == kind)
+    };
+
+    let application_record_id = node_id("ApplicationRecord");
+    let auditable_id = node_id("Auditable");
+    let report_id = node_id("Report");
+    let audit_id = node_id("audit");
+    let sanitize_audit_id = node_id("sanitize_audit");
+    let archive_id = node_id("archive");
+    let call_id = node_id("call");
+
+    let archive = synced_nodes
+        .iter()
+        .find(|node| node.id == archive_id)
+        .expect("archive node must exist");
+    assert_eq!(archive.parent_id.as_deref(), Some(report_id));
+    assert!(has_edge(
+        report_id,
+        application_record_id,
+        EdgeKind::Extends
+    ));
+    assert!(has_edge(report_id, auditable_id, EdgeKind::Implements));
+    assert!(has_edge(audit_id, sanitize_audit_id, EdgeKind::Calls));
+    assert!(has_edge(call_id, archive_id, EdgeKind::Calls));
+
+    assert_eq!(synced_nodes, full_nodes);
+    assert_eq!(synced_edges, full_edges);
 }
 
 /// #262 / #270: verbose sync must explain files skipped because no
