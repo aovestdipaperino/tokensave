@@ -361,6 +361,35 @@ fn partial_global_with_missing_window_credits_renders_na() {
     );
 }
 
+#[test]
+fn complete_droid_source_without_week_usage_is_not_partial() {
+    let cache = CostCache {
+        today_cost: 1.0,
+        week_cost: 2.0,
+        droid_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let lines = cost_panel_lines(&cache);
+    let droid_line = &lines[1];
+    assert!(droid_line.contains("no usage in 7d"), "{droid_line}");
+    assert!(!droid_line.contains("partial"), "{droid_line}");
+    assert!(!droid_line.contains("credits n/a"), "{droid_line}");
+}
+
+#[test]
+fn complete_droid_source_with_tokens_and_no_credits_is_not_partial() {
+    let cache = CostCache {
+        week_droid_tokens: 2_000,
+        droid_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let lines = cost_panel_lines(&cache);
+    let droid_line = &lines[1];
+    assert!(droid_line.contains("credits n/a"), "{droid_line}");
+    assert!(droid_line.contains("2.0k raw tokens"), "{droid_line}");
+    assert!(!droid_line.contains("partial"), "{droid_line}");
+}
+
 /// Without a Droid source, preserve the pre-Droid monitor exactly.
 #[test]
 fn droid_absent_preserves_legacy_monitor_lines() {

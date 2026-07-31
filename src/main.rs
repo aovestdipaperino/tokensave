@@ -573,16 +573,23 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 });
                 // Ingest new session data so cost info is up-to-date.
-                if let Some(ref db) = gdb {
-                    tokensave::accounting::parser::ingest(db).await;
-                }
+                let droid_present = if let Some(ref db) = gdb {
+                    let stats = tokensave::accounting::parser::ingest(db).await;
+                    stats.coverage.iter().any(|coverage| {
+                        coverage.agent == "droid"
+                            && coverage.state != tokensave::accounting::CoverageState::Absent
+                    })
+                } else {
+                    false
+                };
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
                     Some(db) => {
-                        tokensave::accounting::quick_cost_summary(
+                        tokensave::accounting::metrics::quick_cost_summary_with_droid_presence(
                             db,
                             tokens_saved,
                             global_tokens_saved.unwrap_or(0),
+                            droid_present,
                         )
                         .await
                     }
@@ -1117,8 +1124,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             let since = tokensave::accounting::metrics::parse_range(&range);
             let tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
-            let summary =
-                tokensave::accounting::metrics::cost_summary(&gdb, since, tokens_saved).await;
+            let droid_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "droid"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
+                &gdb,
+                since,
+                tokens_saved,
+                droid_present,
+            )
+            .await;
 
             let Some(s) = summary else {
                 println!("No supported local session data found.");
@@ -1130,7 +1146,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Some(ref fmt) = export {
                 match fmt.as_str() {
                     "json" => {
-                        let obj = serde_json::json!({
+                        let mut obj = serde_json::json!({
                             "range": range,
                             "total_cost_usd": s.total_cost,
                             "total_input_tokens": s.total_input_tokens,
@@ -1139,9 +1155,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "efficiency_ratio": s.efficiency_ratio,
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
                             "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
-                            "by_agent": s.by_agent.iter().map(agent_row_json).collect::<Vec<_>>(),
-                            "coverage": &ingest_stats.coverage,
                         });
+                        if droid_present {
+                            obj["by_agent"] = serde_json::json!(s
+                                .by_agent
+                                .iter()
+                                .map(agent_row_json)
+                                .collect::<Vec<_>>());
+                            obj["coverage"] = serde_json::json!(&ingest_stats.coverage);
+                        }
                         println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
                     }
                     "csv" => {

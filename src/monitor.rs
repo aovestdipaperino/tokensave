@@ -440,8 +440,8 @@ pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
     }
 
     let week_t = crate::display::format_token_count(cache.week_droid_tokens);
-    let droid_line = match cache.week_credits {
-        Some(wc) => {
+    let droid_line = match (cache.droid_state, cache.week_credits) {
+        (_, Some(wc)) => {
             let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
             let week_c = crate::display::format_token_count(wc);
             let note = if cache.droid_state == CoverageState::Partial {
@@ -453,9 +453,16 @@ pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
                 "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
             )
         }
-        None => {
+        (CoverageState::Complete, None) if cache.week_droid_tokens == 0 => {
+            "  Droid: no usage in 7d (session-start)".to_string()
+        }
+        (CoverageState::Complete, None) => {
+            format!("  Droid: credits n/a    {week_t} raw tokens (session-start)")
+        }
+        (CoverageState::Partial, None) => {
             format!("  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)")
         }
+        (CoverageState::Absent, None) => unreachable!("handled above"),
     };
 
     vec![
@@ -502,7 +509,11 @@ fn refresh_cost_cache(cache: &mut CostCache) {
         cache.today_cost = gdb.total_cost_since(today_start).await.unwrap_or(0.0);
         cache.week_cost = gdb.total_cost_since(week_start).await.unwrap_or(0.0);
 
-        let week_consumed = gdb.total_tokens_since(week_start).await.unwrap_or(0);
+        let week_agents = gdb.cost_by_agent_since(week_start).await;
+        let week_consumed = crate::accounting::metrics::consumed_tokens(
+            &week_agents,
+            cache.droid_state != crate::accounting::parser::CoverageState::Absent,
+        );
         cache.tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
 
         cache.efficiency_pct = if cache.tokens_saved + week_consumed > 0 {
@@ -527,7 +538,6 @@ fn refresh_cost_cache(cache: &mut CostCache) {
             cache.today_credits = d.credits;
         }
 
-        let week_agents = gdb.cost_by_agent_since(week_start).await;
         if let Some(d) = week_agents.iter().find(|s| s.agent == "droid") {
             cache.week_credits = d.credits;
             cache.week_droid_tokens = d

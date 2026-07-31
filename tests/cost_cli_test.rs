@@ -43,4 +43,66 @@ fn cost_without_droid_preserves_existing_output() {
     assert!(!stdout.contains("Droid"), "{stdout}");
     assert!(!stdout.contains("Augment"), "{stdout}");
     assert!(!stdout.contains("Copilot"), "{stdout}");
+
+    let json = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .args(["cost", "all", "--export", "json"])
+        .env("HOME", home.path())
+        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
+        .output()
+        .expect("run tokensave cost json");
+    assert!(
+        json.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid json output");
+    let object = value.as_object().expect("json object");
+    assert!(!object.contains_key("by_agent"), "{value}");
+    assert!(!object.contains_key("coverage"), "{value}");
+}
+
+#[test]
+fn removed_droid_source_does_not_surface_stale_rows() {
+    let home = isolated_home_with_claude_session();
+    let droid_dir = home.path().join(".factory/sessions/project");
+    fs::create_dir_all(&droid_dir).expect("droid session dir");
+    fs::write(
+        droid_dir.join("session.settings.json"),
+        r#"{
+            "providerLockTimestamp": "2026-07-31T12:00:00.000Z",
+            "model": "claude-opus-4",
+            "tokenUsage": {
+                "inputTokens": 2000,
+                "outputTokens": 400,
+                "factoryCredits": 1500
+            }
+        }"#,
+    )
+    .expect("droid session");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .args(["cost", "all", "--by-agent"])
+        .env("HOME", home.path())
+        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
+        .output()
+        .expect("ingest Droid source");
+    assert!(first.status.success());
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("droid"),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    fs::remove_dir_all(home.path().join(".factory")).expect("remove Droid source");
+
+    let second = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .args(["cost", "all", "--by-agent"])
+        .env("HOME", home.path())
+        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
+        .output()
+        .expect("query after Droid removal");
+    assert!(second.status.success());
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(!stdout.contains("droid"), "{stdout}");
+    assert!(!stdout.contains("Coverage:"), "{stdout}");
 }

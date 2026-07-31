@@ -24,13 +24,24 @@ pub async fn quick_cost_summary(
     tokens_saved: u64,
     global_tokens_saved: u64,
 ) -> Option<CostRow> {
+    quick_cost_summary_with_droid_presence(gdb, tokens_saved, global_tokens_saved, true).await
+}
+
+/// Build a quick summary while excluding stale Droid rows when no Droid source exists.
+pub async fn quick_cost_summary_with_droid_presence(
+    gdb: &GlobalDb,
+    tokens_saved: u64,
+    global_tokens_saved: u64,
+    droid_present: bool,
+) -> Option<CostRow> {
     let now = now_epoch();
     let today_start = today_start_epoch(now);
     let week_start = now.saturating_sub(7 * 86400);
 
     let today_cost = gdb.total_cost_since(today_start).await?;
     let week_cost = gdb.total_cost_since(week_start).await?;
-    let week_consumed = gdb.total_tokens_since(week_start).await.unwrap_or(0);
+    let by_agent = gdb.cost_by_agent_since(week_start).await;
+    let week_consumed = consumed_tokens(&by_agent, droid_present);
 
     // Don't show the row if there's no meaningful data
     if today_cost < 0.001 && week_cost < 0.001 {
@@ -53,14 +64,27 @@ pub async fn quick_cost_summary(
 
 /// Build a full cost summary for a given time range.
 pub async fn cost_summary(gdb: &GlobalDb, since: u64, tokens_saved: u64) -> Option<CostSummary> {
+    cost_summary_with_droid_presence(gdb, since, tokens_saved, true).await
+}
+
+/// Build a full summary while excluding stale Droid rows when no Droid source exists.
+pub async fn cost_summary_with_droid_presence(
+    gdb: &GlobalDb,
+    since: u64,
+    tokens_saved: u64,
+    droid_present: bool,
+) -> Option<CostSummary> {
     let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read) =
         gdb.token_breakdown_since(since).await.unwrap_or((0, 0, 0));
     let by_model = gdb.cost_by_model_since(since).await;
     let by_category = gdb.cost_by_category_since(since).await;
-    let by_agent = gdb.cost_by_agent_since(since).await;
+    let mut by_agent = gdb.cost_by_agent_since(since).await;
+    if !droid_present {
+        by_agent.retain(|summary| summary.agent != "droid");
+    }
 
-    let all_consumed = gdb.total_tokens_since(since).await.unwrap_or(0);
+    let all_consumed = consumed_tokens(&by_agent, droid_present);
     let efficiency_ratio = if tokens_saved + all_consumed > 0 {
         tokens_saved as f64 / (tokens_saved + all_consumed) as f64
     } else {
@@ -78,6 +102,17 @@ pub async fn cost_summary(gdb: &GlobalDb, since: u64, tokens_saved: u64) -> Opti
         efficiency_ratio,
         by_agent,
     })
+}
+
+pub(crate) fn consumed_tokens(by_agent: &[AgentCostSummary], droid_present: bool) -> u64 {
+    by_agent
+        .iter()
+        .filter(|summary| droid_present || summary.agent != "droid")
+        .fold(0, |total, summary| {
+            total
+                .saturating_add(summary.input_tokens)
+                .saturating_add(summary.output_tokens)
+        })
 }
 
 /// Format a human-readable coverage string when a Droid source exists.

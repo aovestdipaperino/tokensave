@@ -248,6 +248,28 @@ async fn cost_summary_efficiency_uses_all_agents() {
     assert_eq!(summary.by_agent.len(), 2, "by_agent must have two entries");
 }
 
+/// Stale Droid rows must not change legacy output after the local Droid source disappears.
+#[tokio::test]
+async fn cost_summary_excludes_stale_droid_when_source_is_absent() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+
+    assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
+    assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
+
+    let summary =
+        tokensave::accounting::metrics::cost_summary_with_droid_presence(&db, 0, 120, false)
+            .await
+            .expect("summary must exist");
+
+    assert!(
+        (summary.efficiency_ratio - 0.5).abs() < 1e-9,
+        "stale Droid tokens must not affect efficiency"
+    );
+    assert_eq!(summary.by_agent.len(), 1);
+    assert_eq!(summary.by_agent[0].agent, "claude");
+}
+
 /// Initial upsert inserts the row and returns true.
 #[tokio::test]
 async fn upsert_droid_turn_inserts_initial_row() {
