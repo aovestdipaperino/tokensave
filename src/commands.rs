@@ -91,7 +91,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             let new_db_path = tokensave_dir.join(&db_file);
             let spinner = Spinner::new();
             spinner.set_message(&format!("copying DB from '{parent}'"));
-            std::fs::copy(&parent_db, &new_db_path)?;
+            branch::copy_branch_db(&parent_db, &new_db_path).await?;
 
             // Save metadata BEFORE open() so it resolves the new branch to its DB
             meta.add_branch(&branch_name, &db_file, &parent);
