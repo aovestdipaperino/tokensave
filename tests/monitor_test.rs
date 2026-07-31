@@ -361,16 +361,26 @@ fn partial_global_with_missing_window_credits_renders_na() {
     );
 }
 
-/// Absent coverage renders the Claude-local fallback message.
+/// Without a Droid source, preserve the pre-Droid monitor exactly.
 #[test]
-fn droid_absent_renders_claude_local_message() {
-    let cache = base_cache();
+fn droid_absent_preserves_legacy_monitor_lines() {
+    let cache = CostCache {
+        today_cost: 1.23,
+        week_cost: 5.67,
+        tokens_saved: 100_000,
+        efficiency_pct: 25.0,
+        top_model: "claude-opus-4".to_string(),
+        top_model_cost: 1.11,
+        ..base_cache()
+    };
     let lines = cost_panel_lines(&cache);
-    let droid_line = &lines[1];
-    assert!(
-        droid_line.contains("Droid absent"),
-        "absent line should contain 'Droid absent': {droid_line}"
+    assert_eq!(lines.len(), 2, "got: {lines:?}");
+    assert_eq!(lines[0], "  Spent: $1.23 today | $5.67 7d    Saved: 100.0k");
+    assert_eq!(
+        lines[1],
+        "  Efficiency: 25%    Top model: claude-opus-4 ($1.11)"
     );
+    assert!(lines.iter().all(|line| !line.contains("Droid")));
 }
 
 /// Top-priced model shows 'n/a' when no model is set.
@@ -378,7 +388,7 @@ fn droid_absent_renders_claude_local_message() {
 fn efficiency_line_shows_na_when_no_model() {
     let cache = base_cache();
     let lines = cost_panel_lines(&cache);
-    let eff_line = &lines[2];
+    let eff_line = lines.last().expect("efficiency line");
     assert!(
         eff_line.contains("n/a"),
         "efficiency line should show n/a when no top model: {eff_line}"

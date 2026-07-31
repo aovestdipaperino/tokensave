@@ -410,56 +410,65 @@ pub fn truncate_to_chars(s: &str, width: usize) -> String {
     collected
 }
 
-/// Build the three cost-panel display lines from cached data.
+/// Build the cost-panel display lines from cached data.
 ///
-/// Returns `[usd_line, droid_line, efficiency_line]`.
+/// Without a Droid source, returns the original two-line monitor panel.
+/// With Droid coverage, inserts the native-usage line between USD and efficiency.
 /// Each line starts with two spaces of indent. Does **not** pad or truncate —
 /// callers truncate to terminal width before padding.
-pub fn cost_panel_lines(cache: &CostCache) -> [String; 3] {
+pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
     use crate::accounting::parser::CoverageState;
 
     let saved_str = crate::display::format_token_count(cache.tokens_saved);
-    let line1 = format!(
-        "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
-        cache.today_cost, cache.week_cost, saved_str
-    );
-
-    let line2 = if cache.droid_state == CoverageState::Absent {
-        "  Coverage: Claude local; Droid absent".to_string()
-    } else {
-        let week_t = crate::display::format_token_count(cache.week_droid_tokens);
-        match cache.week_credits {
-            Some(wc) => {
-                let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
-                let week_c = crate::display::format_token_count(wc);
-                let note = if cache.droid_state == CoverageState::Partial {
-                    "observed locally, partial source, session-start"
-                } else {
-                    "session-start"
-                };
-                format!(
-                    "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
-                )
-            }
-            None => {
-                format!(
-                    "  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)"
-                )
-            }
-        }
-    };
-
     let top_model_part = if cache.top_model.is_empty() {
         "n/a".to_string()
     } else {
         format!("{} (${:.2})", cache.top_model, cache.top_model_cost)
     };
-    let line3 = format!(
-        "  Efficiency: {:.0}%    Top priced model: {}",
-        cache.efficiency_pct, top_model_part
-    );
 
-    [line1, line2, line3]
+    if cache.droid_state == CoverageState::Absent {
+        return vec![
+            format!(
+                "  Spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+                cache.today_cost, cache.week_cost, saved_str
+            ),
+            format!(
+                "  Efficiency: {:.0}%    Top model: {}",
+                cache.efficiency_pct, top_model_part
+            ),
+        ];
+    }
+
+    let week_t = crate::display::format_token_count(cache.week_droid_tokens);
+    let droid_line = match cache.week_credits {
+        Some(wc) => {
+            let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
+            let week_c = crate::display::format_token_count(wc);
+            let note = if cache.droid_state == CoverageState::Partial {
+                "observed locally, partial source, session-start"
+            } else {
+                "session-start"
+            };
+            format!(
+                "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
+            )
+        }
+        None => {
+            format!("  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)")
+        }
+    };
+
+    vec![
+        format!(
+            "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+            cache.today_cost, cache.week_cost, saved_str
+        ),
+        droid_line,
+        format!(
+            "  Efficiency: {:.0}%    Top priced model: {}",
+            cache.efficiency_pct, top_model_part
+        ),
+    ]
 }
 
 /// Refresh cost data from the global DB. Best-effort, non-blocking.
@@ -609,9 +618,18 @@ fn monitor_loop(
 
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
-        // Layout: cost panel (4 lines: 3 content + separator) + log + separator + footer (2 lines)
+        // Layout: dynamic cost panel + log + separator + footer (2 lines).
         let has_activity = cost_cache.has_activity();
-        let cost_lines = if has_activity { 4 } else { 0 }; // 3 lines + separator
+        let panel_lines = if has_activity {
+            cost_panel_lines(&cost_cache)
+        } else {
+            Vec::new()
+        };
+        let cost_lines = if has_activity {
+            panel_lines.len() + 1
+        } else {
+            0
+        };
         let footer_lines = 4; // separator + 2 footer lines + bottom separator
         let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
         last_log_lines = log_lines;
@@ -619,9 +637,8 @@ fn monitor_loop(
         // ── Cost panel ──
         if has_activity {
             let sep = "\u{2500}".repeat(w);
-            let [line1, line2, line3] = cost_panel_lines(&cost_cache);
 
-            for line in [&line1, &line2, &line3] {
+            for line in &panel_lines {
                 let truncated = truncate_to_chars(line, w);
                 let padding = w.saturating_sub(truncated.chars().count());
                 write!(

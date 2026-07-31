@@ -1122,12 +1122,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             let Some(s) = summary else {
                 println!("No supported local session data found.");
-                println!(
-                    "{}",
-                    tokensave::accounting::format_coverage(&ingest_stats.coverage, &[])
-                );
                 return Ok(());
             };
+            let coverage =
+                tokensave::accounting::format_coverage(&ingest_stats.coverage, &s.by_agent);
 
             if let Some(ref fmt) = export {
                 match fmt.as_str() {
@@ -1205,10 +1203,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 for a in &s.by_agent {
                     println!("{}", format_agent_row(a));
                 }
-                println!(
-                    "{}",
-                    tokensave::accounting::format_coverage(&ingest_stats.coverage, &s.by_agent)
-                );
+                if !coverage.is_empty() {
+                    println!("{coverage}");
+                }
             } else if by_model {
                 let total = s.total_cost.max(0.001);
                 println!(
@@ -1286,11 +1283,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         s.efficiency_ratio * 100.0
                     );
                 }
-                println!();
-                println!(
-                    "{}",
-                    tokensave::accounting::format_coverage(&ingest_stats.coverage, &s.by_agent)
-                );
+                if !coverage.is_empty() {
+                    println!();
+                    println!("{coverage}");
+                }
             }
         }
         Commands::Discover { since, json } => {
