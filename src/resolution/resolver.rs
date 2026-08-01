@@ -426,6 +426,17 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
+        // Ruby receiver-qualified calls retain their receiver as evidence for
+        // later language-aware resolution. Falling back to the trailing method
+        // name would fabricate an edge when an unrelated class happens to
+        // define the same method.
+        if uref.reference_kind == EdgeKind::Calls
+            && lang_from_path(&uref.file_path) == "ruby"
+            && (uref.reference_name.contains('.') || uref.reference_name.contains("::"))
+        {
+            return None;
+        }
+
         // Strategy 1: qualified name match (`::`-separated paths, e.g. Rust's
         // `Type::method`, `Self::method`, C++ `Class::method`, PHP `A::b`).
         if uref.reference_name.contains("::") {
