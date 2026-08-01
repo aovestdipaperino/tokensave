@@ -448,6 +448,7 @@ impl TokenSave {
             node_count: total_nodes,
             edge_count: total_edges,
             duration_ms,
+            skipped_extensions,
         };
         debug_assert!(
             result.node_count >= result.file_count || result.file_count == 0,
