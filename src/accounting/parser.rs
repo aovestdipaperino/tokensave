@@ -403,7 +403,7 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
 /// filesystem and JSON I/O.  The general [`ingest`] function performs the full
 /// Claude + Droid scan and is reserved for cost/monitor/status callers.
 pub async fn ingest_claude_only(gdb: &GlobalDb) -> IngestStats {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = crate::agents::home_dir() else {
         return IngestStats::empty();
     };
     ingest_claude_from_home(gdb, &home).await
@@ -412,7 +412,7 @@ pub async fn ingest_claude_only(gdb: &GlobalDb) -> IngestStats {
 /// Ingest all Claude Code session files into the global DB.
 /// Uses offset tracking to only parse new lines since the last run.
 pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = crate::agents::home_dir() else {
         return IngestStats::empty();
     };
     ingest_from_home(gdb, &home).await
