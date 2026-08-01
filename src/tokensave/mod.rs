@@ -94,6 +94,10 @@ pub struct IndexResult {
     pub edge_count: usize,
     /// Time taken in milliseconds.
     pub duration_ms: u64,
+    /// Source-like extensions skipped because no registered extractor
+    /// handles them, as `(extension, file_count)` sorted by count
+    /// descending (#345). Known binary/asset extensions are omitted.
+    pub skipped_extensions: Vec<(String, usize)>,
 }
 
 /// Result of an incremental sync operation.
