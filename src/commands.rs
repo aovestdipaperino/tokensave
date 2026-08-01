@@ -559,6 +559,7 @@ pub(crate) async fn init_and_index(
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
     ));
+    print_skipped_extension_summary(&result.skipped_extensions);
     global::update_global_db(&cg).await;
     Ok(cg)
 }
@@ -747,6 +748,51 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
     Ok(())
 }
 
+/// Cap on how many per-extension entries the compact skipped summary lists
+/// before rolling the rest into a single "and N more" tail.
+const MAX_SUMMARY_EXTS: usize = 5;
+
+/// Build the compact skipped-file headline shown after `init` and `sync`
+/// (#345), or `None` when nothing was skipped.
+///
+/// Aggregated by extension so a large repository never prints thousands of
+/// paths; `--doctor` and `--verbose` remain the detailed modes.
+pub(crate) fn skipped_extension_headline(skipped: &[(String, usize)]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let total: usize = skipped.iter().map(|(_, count)| count).sum();
+    let listed = skipped
+        .iter()
+        .take(MAX_SUMMARY_EXTS)
+        .map(|(ext, count)| format!(".{ext} ({count})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = skipped.len().saturating_sub(MAX_SUMMARY_EXTS);
+    let more = if rest > 0 {
+        format!(", and {rest} more extension(s)")
+    } else {
+        String::new()
+    };
+    let plural = if total == 1 { "" } else { "s" };
+    Some(format!(
+        "Skipped {total} tracked file{plural} (unsupported extension): {listed}{more}"
+    ))
+}
+
+/// Print the compact skipped-file summary after `init` or `sync` so an index
+/// that omitted unsupported languages cannot be mistaken for a complete one.
+pub(crate) fn print_skipped_extension_summary(skipped: &[(String, usize)]) {
+    if let Some(headline) = skipped_extension_headline(skipped) {
+        eprintln!();
+        eprintln!("\x1b[33m{headline}\x1b[0m");
+        eprintln!(
+            "\x1b[2m  No extractor is registered for these extensions. \
+             Rerun with --doctor (or --verbose) for the full list.\x1b[0m"
+        );
+    }
+}
+
 /// Print the `--doctor` report after an incremental sync.
 pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     // Unsupported-extension summary (#262, #270): makes "not indexed because
@@ -808,5 +854,61 @@ mod gain_tests {
     #[test]
     fn dollars_zero_for_zero_tokens() {
         assert_eq!(estimate_dollars_saved(0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod skipped_summary_tests {
+    use super::skipped_extension_headline;
+
+    fn skipped(entries: &[(&str, usize)]) -> Vec<(String, usize)> {
+        entries
+            .iter()
+            .map(|(ext, count)| ((*ext).to_string(), *count))
+            .collect()
+    }
+
+    #[test]
+    fn no_headline_when_nothing_skipped() {
+        assert_eq!(skipped_extension_headline(&[]), None);
+    }
+
+    #[test]
+    fn single_file_uses_singular_wording() {
+        assert_eq!(
+            skipped_extension_headline(&skipped(&[("v", 1)])).unwrap(),
+            "Skipped 1 tracked file (unsupported extension): .v (1)"
+        );
+    }
+
+    #[test]
+    fn totals_are_summed_across_extensions() {
+        let headline = skipped_extension_headline(&skipped(&[("v", 2), ("sv", 1)])).unwrap();
+        assert_eq!(
+            headline,
+            "Skipped 3 tracked files (unsupported extension): .v (2), .sv (1)"
+        );
+    }
+
+    #[test]
+    fn long_lists_are_rolled_up() {
+        let headline = skipped_extension_headline(&skipped(&[
+            ("a", 1),
+            ("b", 1),
+            ("c", 1),
+            ("d", 1),
+            ("e", 1),
+            ("f", 1),
+            ("g", 1),
+        ]))
+        .unwrap();
+        assert!(
+            headline.ends_with(".e (1), and 2 more extension(s)"),
+            "got: {headline}"
+        );
+        assert!(
+            headline.starts_with("Skipped 7 tracked files"),
+            "got: {headline}"
+        );
     }
 }

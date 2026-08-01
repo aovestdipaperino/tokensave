@@ -1390,3 +1390,29 @@ async fn test_verbose_sync_reports_skipped_extensions() {
         result.skipped_extensions
     );
 }
+
+/// #345: a full index must carry the same skipped-extension summary as sync,
+/// so `init` can tell the user that tracked source files were omitted instead
+/// of reporting an apparently complete index.
+#[tokio::test]
+async fn test_index_all_reports_skipped_extensions() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::write(project.join("README.md"), "# readme\n").unwrap();
+    fs::write(
+        project.join("example.v"),
+        "module example (\n    input wire clk\n);\nendmodule\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(
+        result.skipped_extensions,
+        vec![("v".to_string(), 1)],
+        "skipped_extensions: {:?}",
+        result.skipped_extensions
+    );
+}
