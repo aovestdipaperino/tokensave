@@ -3,6 +3,17 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+fn tokensave_command(home: &TempDir) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tokensave"));
+    command
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("APPDATA", home.path())
+        .env("LOCALAPPDATA", home.path())
+        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1");
+    command
+}
+
 fn isolated_home_with_claude_session() -> TempDir {
     let home = TempDir::new().expect("temp home");
     let tokensave_dir = home.path().join(".tokensave");
@@ -26,10 +37,8 @@ fn isolated_home_with_claude_session() -> TempDir {
 #[test]
 fn cost_without_droid_preserves_existing_output() {
     let home = isolated_home_with_claude_session();
-    let output = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+    let output = tokensave_command(&home)
         .args(["cost", "all"])
-        .env("HOME", home.path())
-        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
         .output()
         .expect("run tokensave cost");
 
@@ -39,15 +48,14 @@ fn cost_without_droid_preserves_existing_output() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("1.0k"), "{stdout}");
     assert!(!stdout.contains("Coverage:"), "{stdout}");
     assert!(!stdout.contains("Droid"), "{stdout}");
     assert!(!stdout.contains("Augment"), "{stdout}");
     assert!(!stdout.contains("Copilot"), "{stdout}");
 
-    let json = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+    let json = tokensave_command(&home)
         .args(["cost", "all", "--export", "json"])
-        .env("HOME", home.path())
-        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
         .output()
         .expect("run tokensave cost json");
     assert!(
@@ -57,6 +65,7 @@ fn cost_without_droid_preserves_existing_output() {
     );
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid json output");
     let object = value.as_object().expect("json object");
+    assert_eq!(value["total_input_tokens"], 1000);
     assert!(!object.contains_key("by_agent"), "{value}");
     assert!(!object.contains_key("coverage"), "{value}");
 }
@@ -80,10 +89,8 @@ fn removed_droid_source_does_not_surface_stale_rows() {
     )
     .expect("droid session");
 
-    let first = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+    let first = tokensave_command(&home)
         .args(["cost", "all", "--by-agent"])
-        .env("HOME", home.path())
-        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
         .output()
         .expect("ingest Droid source");
     assert!(first.status.success());
@@ -95,10 +102,8 @@ fn removed_droid_source_does_not_surface_stale_rows() {
 
     fs::remove_dir_all(home.path().join(".factory")).expect("remove Droid source");
 
-    let second = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+    let second = tokensave_command(&home)
         .args(["cost", "all", "--by-agent"])
-        .env("HOME", home.path())
-        .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1")
         .output()
         .expect("query after Droid removal");
     assert!(second.status.success());
