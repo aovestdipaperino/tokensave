@@ -1568,20 +1568,38 @@ impl RubyExtractor {
                 let child = cursor.node();
                 match child.kind() {
                     "call" | "method_call" => {
-                        // In tree-sitter-ruby, a call node has a "method" field for the method name.
-                        // For simple calls like `foo(args)`, the first named child is the method name.
-                        let callee_name =
-                            if let Some(method_node) = child.child_by_field_name("method") {
-                                Some(state.node_text(method_node))
-                            } else {
-                                // Fall back to first named child
-                                child.named_child(0).map(|n| state.node_text(n))
-                            };
+                        // Callable shorthand such as `handler.(value)` has a receiver and
+                        // operator but no method field; Ruby dispatches it as `handler.call`.
+                        let receiver = child.child_by_field_name("receiver");
+                        let operator = child.child_by_field_name("operator");
+                        let callee_name = child
+                            .child_by_field_name("method")
+                            .map(|method_node| state.node_text(method_node))
+                            .or_else(|| {
+                                receiver
+                                    .zip(operator)
+                                    .map(|_| "call".to_string())
+                                    .or_else(|| {
+                                        // Fall back to first named child
+                                        child.named_child(0).map(|n| state.node_text(n))
+                                    })
+                            });
 
                         if let Some(name) = callee_name {
+                            let reference_name = receiver.zip(operator).map_or_else(
+                                || name.clone(),
+                                |(receiver, operator)| {
+                                    format!(
+                                        "{}{}{}",
+                                        state.node_text(receiver),
+                                        state.node_text(operator),
+                                        name
+                                    )
+                                },
+                            );
                             state.unresolved_refs.push(UnresolvedRef {
                                 from_node_id: fn_node_id.to_string(),
-                                reference_name: name,
+                                reference_name,
                                 reference_kind: EdgeKind::Calls,
                                 line: child.start_position().row as u32,
                                 column: child.start_position().column as u32,

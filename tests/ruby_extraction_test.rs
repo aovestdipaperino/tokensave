@@ -216,6 +216,43 @@ end
     }
 
     #[test]
+    fn test_ruby_call_sites_preserve_receiver_shape() {
+        let source = include_str!("fixtures/ruby_receiver_calls.rb");
+        let extractor = RubyExtractor;
+        let result = extractor.extract("ruby_receiver_calls.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let call_names: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|reference| reference.reference_kind == EdgeKind::Calls)
+            .map(|reference| reference.reference_name.as_str())
+            .collect();
+
+        for expected in [
+            "save",
+            "self.save",
+            "Account.find",
+            "Services::Capture.call",
+            "worker.perform",
+            "worker::perform",
+            "worker.call",
+            "@client.call",
+            "@@registry.fetch",
+            "account.owner.notify",
+            "account.owner",
+            "user&.profile",
+            "\"text\".strip",
+            "Array.new",
+        ] {
+            assert!(
+                call_names.contains(&expected),
+                "expected receiver-preserving call reference {expected:?}, got {call_names:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_ruby_visibility_default_public() {
         let source = r#"
 class Widget

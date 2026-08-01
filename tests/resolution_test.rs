@@ -466,6 +466,68 @@ async fn test_resolve_all_dotted_method_call() {
     );
 }
 
+#[tokio::test]
+async fn test_ruby_receiver_calls_do_not_fall_back_to_bare_names() {
+    let (_dir, db) = setup_db_with_nodes().await;
+    let mut ruby_helper = db
+        .get_all_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|node| node.name == "helper")
+        .unwrap();
+    ruby_helper.id = generate_node_id("app/helper.rb", &NodeKind::Method, "helper", 1);
+    ruby_helper.kind = NodeKind::Method;
+    ruby_helper.qualified_name = "app/helper.rb::Helper::helper".to_string();
+    ruby_helper.file_path = "app/helper.rb".to_string();
+    ruby_helper.signature = Some("def helper".to_string());
+    db.insert_node(&ruby_helper).await.unwrap();
+
+    let all_nodes = db.get_all_nodes().await.unwrap();
+    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let from_node_id = generate_node_id("app/service.rb", &NodeKind::Method, "run", 1);
+
+    let names = [
+        "worker.helper",
+        "self.helper",
+        "Worker.helper",
+        "Namespace::Worker.helper",
+        "worker&.helper",
+        "worker::helper",
+        "helper",
+    ];
+    let refs: Vec<_> = names
+        .iter()
+        .map(|name| UnresolvedRef {
+            from_node_id: from_node_id.clone(),
+            reference_name: (*name).to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 3,
+            column: 4,
+            file_path: "app/service.rb".to_string(),
+        })
+        .collect();
+
+    let result = resolver.resolve_all(&refs);
+    assert_eq!(
+        result.resolved_count, 1,
+        "only the bare Ruby call should resolve"
+    );
+    assert_eq!(result.resolved[0].original.reference_name, "helper");
+
+    let unresolved_names: Vec<_> = result
+        .unresolved
+        .iter()
+        .map(|reference| reference.reference_name.as_str())
+        .collect();
+    for receiver_call in &names[..names.len() - 1] {
+        assert!(
+            unresolved_names.contains(receiver_call),
+            "receiver-qualified Ruby call {receiver_call:?} must remain unresolved"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ruby mixins: `kind_compatible` resolves a Ruby `Implements` ref
 // exclusively to a `NodeKind::Module` target, and only when the ref comes
