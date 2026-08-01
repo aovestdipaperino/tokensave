@@ -380,7 +380,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 if doctor {
                     commands::print_sync_doctor(&result);
-                } else {
+                } else if !verbose {
+                    // Verbose already emitted the full per-extension list mid-run.
                     commands::print_skipped_extension_summary(&result.skipped_extensions);
                 }
                 global::update_global_db(&cg).await;

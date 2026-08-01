@@ -559,7 +559,11 @@ pub(crate) async fn init_and_index(
         "indexing done — {} files, {} nodes, {} edges in {}ms",
         result.file_count, result.node_count, result.edge_count, result.duration_ms
     ));
-    print_skipped_extension_summary(&result.skipped_extensions);
+    if !verbose {
+        // Verbose already emitted the full per-extension list mid-run, so the
+        // compact headline (and its "rerun with --verbose" hint) would repeat it.
+        print_skipped_extension_summary(&result.skipped_extensions);
+    }
     global::update_global_db(&cg).await;
     Ok(cg)
 }
