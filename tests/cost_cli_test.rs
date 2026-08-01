@@ -8,8 +8,6 @@ fn tokensave_command(home: &TempDir) -> Command {
     command
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
-        .env("APPDATA", home.path())
-        .env("LOCALAPPDATA", home.path())
         .env("TOKENSAVE_SKIP_UPDATE_CHECK", "1");
     command
 }
