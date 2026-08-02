@@ -1166,3 +1166,50 @@ async fn test_migrate_v15_idempotent_on_healthy_db() {
     assert!(index_exists(&conn, "idx_nodes_file_path").await);
     assert!(index_exists(&conn, "idx_unresolved_refs_from_node_id").await);
 }
+
+/// #359: `migrate_v15` must be a safe no-op on a partial schema. A DB whose
+/// `nodes` table predates `parent_id` and that has no `edges` /
+/// `unresolved_refs` / `nodes_fts` (an old or hand-rolled schema) must migrate
+/// without erroring on `no such table: edges` or `no such column: parent_id`.
+/// It still restores the node indexes it can, and never touches `parent_id`
+/// (which bulk load does not drop) or the absent tables.
+#[tokio::test]
+async fn test_migrate_v15_partial_schema_does_not_error() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    // A minimal, pre-`parent_id` nodes table and nothing else.
+    conn.execute_batch(
+        "CREATE TABLE nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+    .await
+    .expect("create minimal nodes table");
+    // Only v15 runs.
+    set_user_version(&conn, 14).await;
+
+    assert!(
+        migrate(&conn)
+            .await
+            .expect("v15 must not error on a partial schema"),
+        "a pending v15 migration should report as run"
+    );
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // Restores the node indexes it can…
+    assert!(index_exists(&conn, "idx_nodes_kind").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path_start_line").await);
+    // …without touching parent_id (never dropped by bulk load) or the absent
+    // edges table.
+    assert!(!column_exists(&conn, "nodes", "parent_id").await);
+    assert!(!index_exists(&conn, "idx_nodes_parent_id").await);
+    assert!(!index_exists(&conn, "idx_edges_source_kind").await);
+}
