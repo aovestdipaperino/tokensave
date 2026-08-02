@@ -29,6 +29,8 @@ fn turn(id: &str, ts: u64, input: u64, tool_names: &str) -> CostTurn {
         cost_usd: 0.01,
         category: "exploration".to_string(),
         tool_names: tool_names.to_string(),
+        agent: "claude".to_string(),
+        credits: None,
     }
 }
 
