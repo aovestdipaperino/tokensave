@@ -5,6 +5,7 @@ pub fn kind_boost(kind: &NodeKind) -> f64 {
     match kind {
         NodeKind::Function
         | NodeKind::Method
+        | NodeKind::SingletonMethod
         | NodeKind::StructMethod
         | NodeKind::Constructor
         | NodeKind::AbstractMethod
@@ -260,6 +261,7 @@ pub fn apply_executable_intent_boost(candidates: &mut [SearchResult], query: &st
             candidate.node.kind,
             NodeKind::Function
                 | NodeKind::Method
+                | NodeKind::SingletonMethod
                 | NodeKind::StructMethod
                 | NodeKind::Constructor
                 | NodeKind::Procedure
@@ -410,6 +412,7 @@ mod tests {
     fn test_kind_boost_values() {
         assert_eq!(kind_boost(&NodeKind::Function), 2.0);
         assert_eq!(kind_boost(&NodeKind::Method), 2.0);
+        assert_eq!(kind_boost(&NodeKind::SingletonMethod), 2.0);
         assert_eq!(kind_boost(&NodeKind::Struct), 1.5);
         assert_eq!(kind_boost(&NodeKind::EnumVariant), 0.3);
         assert_eq!(kind_boost(&NodeKind::Use), 0.2);

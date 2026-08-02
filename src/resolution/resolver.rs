@@ -127,6 +127,36 @@ fn simple_ref_name(name: &str) -> &str {
     after_path.rsplit('.').next().unwrap_or(after_path)
 }
 
+fn ruby_constant_name(node: &Node) -> &str {
+    let mut name = node.qualified_name.as_str();
+    while let Some(unqualified) = name
+        .strip_prefix(&node.file_path)
+        .and_then(|name| name.strip_prefix("::"))
+    {
+        name = unqualified;
+    }
+    name
+}
+
+fn split_ruby_receiver_call(reference_name: &str) -> Option<(&str, &str)> {
+    let separators = ["&.", ".", "::"];
+    let (index, separator) = separators
+        .iter()
+        .filter_map(|separator| {
+            reference_name.rfind(separator).and_then(|index| {
+                if *separator == "." && reference_name[..index].ends_with('&') {
+                    None
+                } else {
+                    Some((index, *separator))
+                }
+            })
+        })
+        .max_by_key(|(index, _)| *index)?;
+    let receiver = &reference_name[..index];
+    let method_name = &reference_name[index + separator.len()..];
+    (!receiver.is_empty() && !method_name.is_empty()).then_some((receiver, method_name))
+}
+
 /// Removes redundant bare-name Go call edges left beside an import-path
 /// selector resolution (#153 Bug 1).
 ///
@@ -269,6 +299,10 @@ pub struct ReferenceResolver<'a> {
     name_cache: HashMap<&'a str, Vec<&'a Node>>,
     /// Nodes grouped by their qualified name.
     qualified_name_cache: HashMap<&'a str, Vec<&'a Node>>,
+    /// Nodes keyed by their stable graph ID.
+    node_id_cache: HashMap<&'a str, &'a Node>,
+    /// Ruby constant bindings keyed by their exact lexical path.
+    ruby_constant_bindings: HashMap<&'a str, Vec<&'a Node>>,
     /// Suffix index: maps every `::suffix` of a qualified name to the full
     /// qualified name(s). Enables O(1) suffix lookups instead of scanning
     /// the entire `qualified_name_cache`. Both sides borrow from the nodes'
@@ -293,9 +327,12 @@ impl<'a> ReferenceResolver<'a> {
     pub fn from_nodes(db: &'a Database, all_nodes: &'a [Node]) -> Self {
         let mut name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
+        let mut node_id_cache: HashMap<&'a str, &'a Node> = HashMap::new();
+        let mut ruby_constant_bindings: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut suffix_cache: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
 
         for node in all_nodes {
+            node_id_cache.insert(node.id.as_str(), node);
             // Skip Use nodes — they represent import statements, not definitions.
             // Including them causes false cross-file edges when two files share
             // the same `use std::path::Path` import.
@@ -314,6 +351,19 @@ impl<'a> ReferenceResolver<'a> {
                     suffix_cache.entry(suffix).or_default().push(qn);
                 }
                 pos += idx + 2;
+            }
+
+            if lang_from_path(&node.file_path) == "ruby"
+                && matches!(
+                    node.kind,
+                    NodeKind::Class | NodeKind::Module | NodeKind::Const
+                )
+            {
+                let constant_name = ruby_constant_name(node);
+                ruby_constant_bindings
+                    .entry(constant_name)
+                    .or_default()
+                    .push(node);
             }
         }
 
@@ -379,6 +429,8 @@ impl<'a> ReferenceResolver<'a> {
             db,
             name_cache,
             qualified_name_cache,
+            node_id_cache,
+            ruby_constant_bindings,
             suffix_cache,
             known_names,
             import_index,
@@ -426,15 +478,14 @@ impl<'a> ReferenceResolver<'a> {
             }
         }
 
-        // Ruby receiver-qualified calls retain their receiver as evidence for
-        // later language-aware resolution. Falling back to the trailing method
-        // name would fabricate an edge when an unrelated class happens to
-        // define the same method.
+        // Ruby receiver-qualified calls use only positive receiver and
+        // singleton-definition evidence. Unsupported or ambiguous shapes stay
+        // unresolved instead of falling back to the trailing method name.
         if uref.reference_kind == EdgeKind::Calls
             && lang_from_path(&uref.file_path) == "ruby"
             && (uref.reference_name.contains('.') || uref.reference_name.contains("::"))
         {
-            return None;
+            return self.try_ruby_receiver_match(uref);
         }
 
         // Strategy 1: qualified name match (`::`-separated paths, e.g. Rust's
@@ -653,6 +704,106 @@ impl<'a> ReferenceResolver<'a> {
         None
     }
 
+    /// Resolve a Ruby call only when its receiver identifies one constant
+    /// owner and its target is one explicit singleton-method definition.
+    fn try_ruby_receiver_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let (receiver, method_name) = split_ruby_receiver_call(&uref.reference_name)?;
+
+        let (owners, resolved_by): (Vec<&Node>, &str) = if receiver == "self" {
+            let caller = self.node_id_cache.get(uref.from_node_id.as_str())?;
+            let owner = match caller.kind {
+                NodeKind::Class | NodeKind::Module => *caller,
+                NodeKind::SingletonMethod => caller
+                    .parent_id
+                    .as_deref()
+                    .and_then(|id| self.node_id_cache.get(id))?,
+                _ => return None,
+            };
+            (vec![owner], "ruby-self-receiver")
+        } else {
+            let constant_path = receiver.strip_prefix("::").unwrap_or(receiver);
+            let owners = if receiver.starts_with("::") {
+                self.ruby_constant_owners_at(constant_path)?
+            } else {
+                let caller = self.node_id_cache.get(uref.from_node_id.as_str())?;
+                self.ruby_lexical_constant_owners(caller, constant_path)?
+            };
+            (owners, "ruby-constant-receiver")
+        };
+
+        let owner_ids: HashSet<&str> = owners.iter().map(|owner| owner.id.as_str()).collect();
+        let mut targets = self
+            .name_cache
+            .get(method_name)?
+            .iter()
+            .copied()
+            .filter(|node| node.kind == NodeKind::SingletonMethod)
+            .filter(|node| lang_from_path(&node.file_path) == "ruby")
+            .filter(|node| {
+                node.parent_id
+                    .as_deref()
+                    .is_some_and(|parent| owner_ids.contains(parent))
+            });
+        let target = targets.next()?;
+        if targets.next().is_some() {
+            return None;
+        }
+
+        Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id: target.id.clone(),
+            confidence: 0.95,
+            resolved_by: resolved_by.to_string(),
+        })
+    }
+
+    fn ruby_constant_owners_at(&self, constant_path: &str) -> Option<Vec<&Node>> {
+        let bindings = self.ruby_constant_bindings.get(constant_path)?;
+        bindings
+            .iter()
+            .all(|node| matches!(node.kind, NodeKind::Class | NodeKind::Module))
+            .then(|| bindings.clone())
+    }
+
+    fn ruby_lexical_constant_owners(
+        &self,
+        caller: &Node,
+        constant_path: &str,
+    ) -> Option<Vec<&Node>> {
+        let first_segment = constant_path.split("::").next()?;
+        let mut scope = if matches!(caller.kind, NodeKind::Class | NodeKind::Module) {
+            Some(caller)
+        } else {
+            caller
+                .parent_id
+                .as_deref()
+                .and_then(|id| self.node_id_cache.get(id).copied())
+        };
+
+        while let Some(node) = scope {
+            if matches!(node.kind, NodeKind::Class | NodeKind::Module) {
+                let scope_name = ruby_constant_name(node);
+                let desired = format!("{scope_name}::{constant_path}");
+                if self.ruby_constant_bindings.contains_key(desired.as_str()) {
+                    return self.ruby_constant_owners_at(&desired);
+                }
+                let lexical_head = format!("{scope_name}::{first_segment}");
+                if self
+                    .ruby_constant_bindings
+                    .contains_key(lexical_head.as_str())
+                {
+                    return None;
+                }
+            }
+            scope = node
+                .parent_id
+                .as_deref()
+                .and_then(|id| self.node_id_cache.get(id).copied());
+        }
+
+        self.ruby_constant_owners_at(constant_path)
+    }
+
     /// Strategy 2: exact name match using the name cache.
     fn try_exact_name_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Skip cross-file resolution for blocklisted names (too ambiguous).
@@ -863,6 +1014,7 @@ impl<'a> ReferenceResolver<'a> {
                     node.kind,
                     NodeKind::Function
                         | NodeKind::Method
+                        | NodeKind::SingletonMethod
                         | NodeKind::StructMethod
                         | NodeKind::Constructor
                         | NodeKind::AbstractMethod
@@ -936,6 +1088,7 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
             target_kind,
             NodeKind::Function
                 | NodeKind::Method
+                | NodeKind::SingletonMethod
                 | NodeKind::StructMethod
                 | NodeKind::Constructor
                 | NodeKind::AbstractMethod
