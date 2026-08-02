@@ -6,11 +6,12 @@
 
 pub mod classifier;
 pub mod discover;
+mod droid;
 pub mod metrics;
 pub mod parser;
 pub mod pricing;
 
 pub use classifier::TaskCategory;
 pub use discover::{analyze, DiscoverReport};
-pub use metrics::{quick_cost_summary, CostSummary};
-pub use parser::ingest;
+pub use metrics::{format_coverage, quick_cost_summary, CostSummary};
+pub use parser::{ingest, ingest_claude_only, CoverageState, IngestStats, SourceCoverage};

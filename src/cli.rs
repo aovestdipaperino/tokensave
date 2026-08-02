@@ -221,11 +221,14 @@ pub enum Commands {
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
     },
-    /// Token cost summary from Claude Code sessions
+    /// Token cost summary from supported local agent sessions
     Cost {
         /// Time range: "today", "7d", "30d", "month", or "all"
         #[arg(default_value = "7d")]
         range: String,
+        /// Group by agent (Droid, Claude, etc.)
+        #[arg(long)]
+        by_agent: bool,
         /// Group by model
         #[arg(long)]
         by_model: bool,
@@ -300,6 +303,27 @@ pub enum Commands {
         #[arg(short, long)]
         all: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_cost_by_agent() {
+        let cli =
+            Cli::try_parse_from(["tokensave", "cost", "30d", "--by-agent"]).expect("parse failed");
+        match cli.command {
+            Some(Commands::Cost {
+                range, by_agent, ..
+            }) => {
+                assert_eq!(range, "30d");
+                assert!(by_agent);
+            }
+            _ => panic!("expected Cost command"),
+        }
+    }
 }
 
 #[derive(Subcommand)]

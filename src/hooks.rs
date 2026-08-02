@@ -1122,7 +1122,7 @@ pub async fn hook_stop() {
         return;
     };
 
-    let stats = crate::accounting::parser::ingest(&gdb).await;
+    let stats = crate::accounting::parser::ingest_claude_only(&gdb).await;
     if stats.turns_inserted == 0 {
         return;
     }
