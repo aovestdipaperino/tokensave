@@ -606,7 +606,7 @@ impl Database {
                    WHERE n.kind = 'annotation_usage' \
                      AND n.name = 'test' \
                      AND e.kind = 'annotates' \
-                     AND t.kind IN ('function', 'method')";
+                     AND t.kind IN ('function', 'method', 'singleton_method')";
         let mut rows = self
             .conn()
             .query(sql, ())
@@ -1244,7 +1244,7 @@ impl Database {
                 param_idx += 1;
             }
             None => {
-                conditions.push("n.kind IN ('function', 'method')".to_string());
+                conditions.push("n.kind IN ('function', 'method', 'singleton_method')".to_string());
             }
         }
         if let Some(prefix) = path_prefix {
@@ -1324,7 +1324,8 @@ impl Database {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Node>> {
-        const DOC_COVERAGE_KINDS: &str = "'function', 'method', 'class', 'interface', 'trait', \
+        const DOC_COVERAGE_KINDS: &str =
+            "'function', 'method', 'singleton_method', 'class', 'interface', 'trait', \
             'struct', 'enum', 'module', 'field', 'enum_variant', 'const', 'static', 'type_alias', \
             'property', 'csharp_property', 'record', 'data_class', 'sealed_class', 'object', \
             'case_class', 'kotlin_object', 'inner_class', 'abstract_method', 'constructor', \
@@ -1397,7 +1398,7 @@ impl Database {
             "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
                     SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
              FROM nodes n

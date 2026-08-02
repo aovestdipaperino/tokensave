@@ -97,6 +97,56 @@ impl Drop for Spinner {
     }
 }
 
+/// Build the JSON object for one `by_agent` row.
+///
+/// `cost_usd` is `null` for Droid (a credits-only agent with no USD pricing);
+/// it is a numeric value for all other agents.
+/// All token fields and `credits` are always present.
+fn agent_row_json(a: &tokensave::global_db::AgentCostSummary) -> serde_json::Value {
+    let cost_usd: serde_json::Value = if a.agent == "droid" {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(a.cost_usd)
+    };
+    serde_json::json!({
+        "agent": a.agent,
+        "cost_usd": cost_usd,
+        "credits": a.credits,
+        "input_tokens": a.input_tokens,
+        "output_tokens": a.output_tokens,
+        "cache_write_tokens": a.cache_write_tokens,
+        "cache_read_tokens": a.cache_read_tokens,
+        "turns": a.turns,
+    })
+}
+
+/// Format one row of the `--by-agent` table.
+///
+/// Columns: agent (left), USD (right), credits (right), raw tokens (right), rows (right).
+/// Droid USD is always "n/a"; other agents are formatted as `$X.XX`.
+/// Credits are formatted via `format_token_count` when present, or "n/a".
+fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
+    let raw = a
+        .input_tokens
+        .saturating_add(a.output_tokens)
+        .saturating_add(a.cache_write_tokens)
+        .saturating_add(a.cache_read_tokens);
+    let raw_str = tokensave::display::format_token_count(raw);
+    let credits_str = match a.credits {
+        Some(c) => tokensave::display::format_token_count(c),
+        None => "n/a".to_string(),
+    };
+    let usd_str = if a.agent == "droid" {
+        "n/a".to_string()
+    } else {
+        format!("${:.2}", a.cost_usd)
+    };
+    format!(
+        "  {:<16} {:>9} {:>9} {:>12} {:>6}",
+        a.agent, usd_str, credits_str, raw_str, a.turns
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -523,16 +573,23 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 });
                 // Ingest new session data so cost info is up-to-date.
-                if let Some(ref db) = gdb {
-                    tokensave::accounting::parser::ingest(db).await;
-                }
+                let droid_present = if let Some(ref db) = gdb {
+                    let stats = tokensave::accounting::parser::ingest(db).await;
+                    stats.coverage.iter().any(|coverage| {
+                        coverage.agent == "droid"
+                            && coverage.state != tokensave::accounting::CoverageState::Absent
+                    })
+                } else {
+                    false
+                };
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
                     Some(db) => {
-                        tokensave::accounting::quick_cost_summary(
+                        tokensave::accounting::metrics::quick_cost_summary_with_droid_presence(
                             db,
                             tokens_saved,
                             global_tokens_saved.unwrap_or(0),
+                            droid_present,
                         )
                         .await
                     }
@@ -1042,6 +1099,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Cost {
             range,
+            by_agent,
             by_model,
             by_task,
             export,
@@ -1059,27 +1117,36 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Ingest new session data before querying
             let ingest_stats = tokensave::accounting::parser::ingest(&gdb).await;
-            if ingest_stats.turns_inserted > 0 {
-                eprintln!(
-                    "Ingested {} new turns from Claude Code sessions.",
-                    ingest_stats.turns_inserted
-                );
+            let changed = ingest_stats.turns_inserted + ingest_stats.turns_updated;
+            if changed > 0 {
+                eprintln!("Ingested or refreshed {} local accounting rows.", changed);
             }
 
             let since = tokensave::accounting::metrics::parse_range(&range);
             let tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
-            let summary =
-                tokensave::accounting::metrics::cost_summary(&gdb, since, tokens_saved).await;
+            let droid_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "droid"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
+                &gdb,
+                since,
+                tokens_saved,
+                droid_present,
+            )
+            .await;
 
             let Some(s) = summary else {
-                println!("No session data found. Use Claude Code and then run `tokensave cost` to see spending.");
+                println!("No supported local session data found.");
                 return Ok(());
             };
+            let coverage =
+                tokensave::accounting::format_coverage(&ingest_stats.coverage, &s.by_agent);
 
             if let Some(ref fmt) = export {
                 match fmt.as_str() {
                     "json" => {
-                        let obj = serde_json::json!({
+                        let mut obj = serde_json::json!({
                             "range": range,
                             "total_cost_usd": s.total_cost,
                             "total_input_tokens": s.total_input_tokens,
@@ -1089,10 +1156,42 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
                             "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
                         });
+                        if droid_present {
+                            obj["by_agent"] = serde_json::json!(s
+                                .by_agent
+                                .iter()
+                                .map(agent_row_json)
+                                .collect::<Vec<_>>());
+                            obj["coverage"] = serde_json::json!(&ingest_stats.coverage);
+                        }
                         println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
                     }
                     "csv" => {
-                        if by_model {
+                        if by_agent {
+                            println!("agent,cost_usd,credits,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,turns");
+                            for a in &s.by_agent {
+                                let cost_cell = if a.agent == "droid" {
+                                    String::new()
+                                } else {
+                                    format!("{:.4}", a.cost_usd)
+                                };
+                                let credits_cell = match a.credits {
+                                    Some(c) => c.to_string(),
+                                    None => String::new(),
+                                };
+                                println!(
+                                    "{},{},{},{},{},{},{},{}",
+                                    a.agent,
+                                    cost_cell,
+                                    credits_cell,
+                                    a.input_tokens,
+                                    a.output_tokens,
+                                    a.cache_write_tokens,
+                                    a.cache_read_tokens,
+                                    a.turns,
+                                );
+                            }
+                        } else if by_model {
                             println!("model,cost_usd,tokens");
                             for (model, cost, tokens) in &s.by_model {
                                 println!("{model},{cost:.4},{tokens}");
@@ -1117,6 +1216,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         }
                     }
                     _ => eprintln!("Unknown export format '{fmt}'. Use 'json' or 'csv'."),
+                }
+            } else if by_agent {
+                println!(
+                    "  {:<16} {:>9} {:>9} {:>12} {:>6}",
+                    "Agent", "USD", "Credits", "Raw tokens", "Rows"
+                );
+                for a in &s.by_agent {
+                    println!("{}", format_agent_row(a));
+                }
+                if !coverage.is_empty() {
+                    println!("{coverage}");
                 }
             } else if by_model {
                 let total = s.total_cost.max(0.001);
@@ -1194,6 +1304,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         saved_str,
                         s.efficiency_ratio * 100.0
                     );
+                }
+                if !coverage.is_empty() {
+                    println!();
+                    println!("{coverage}");
                 }
             }
         }
@@ -1436,3 +1550,107 @@ mod startup_tests {
 // gather_local_projects, gather_local_projects_from, find_descendant_tokensave,
 // print_flash_warning, and tokensave_dir_size have been moved to src/global.rs.
 // direct test 1774739850
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod cost_tests {
+    use super::format_agent_row;
+    use tokensave::global_db::AgentCostSummary;
+
+    fn droid_summary(credits: Option<u64>) -> AgentCostSummary {
+        AgentCostSummary {
+            agent: "droid".to_string(),
+            cost_usd: 0.0,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_write_tokens: 200,
+            cache_read_tokens: 300,
+            credits,
+            turns: 5,
+        }
+    }
+
+    #[test]
+    fn droid_row_has_na_usd_and_not_zero_dollar() {
+        // credits = 2900 → "2.9k"; raw = 1000+500+200+300 = 2000 → "2.0k"
+        let a = AgentCostSummary {
+            agent: "droid".to_string(),
+            cost_usd: 0.0,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_write_tokens: 200,
+            cache_read_tokens: 300,
+            credits: Some(2900),
+            turns: 5,
+        };
+        let row = format_agent_row(&a);
+        assert!(row.contains("2.9k"), "credits 2.9k expected in: {row}");
+        assert!(row.contains("n/a"), "n/a for USD expected in: {row}");
+        assert!(!row.contains("$0.00"), "$0.00 must not appear in: {row}");
+    }
+
+    #[test]
+    fn droid_row_none_credits_shows_na() {
+        let a = droid_summary(None);
+        let row = format_agent_row(&a);
+        // Both USD and credits should be "n/a"
+        assert_eq!(row.matches("n/a").count(), 2, "two n/a expected in: {row}");
+        assert!(!row.contains("$0.00"), "$0.00 must not appear in: {row}");
+    }
+
+    #[test]
+    fn claude_row_formats_usd() {
+        let a = AgentCostSummary {
+            agent: "claude".to_string(),
+            cost_usd: 1.23,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            credits: None,
+            turns: 3,
+        };
+        let row = format_agent_row(&a);
+        assert!(row.contains("$1.23"), "$1.23 expected in: {row}");
+        assert!(row.contains("n/a"), "n/a for credits expected in: {row}");
+    }
+
+    #[test]
+    fn droid_json_row_cost_usd_is_null() {
+        let a = droid_summary(Some(1000));
+        let json = super::agent_row_json(&a);
+        assert!(
+            json["cost_usd"].is_null(),
+            "cost_usd must be null for droid: {json}"
+        );
+        assert_eq!(json["credits"].as_u64(), Some(1000));
+        assert_eq!(json["input_tokens"].as_u64(), Some(1000));
+    }
+
+    #[test]
+    fn claude_json_row_cost_usd_is_numeric() {
+        let a = AgentCostSummary {
+            agent: "claude".to_string(),
+            cost_usd: 2.50,
+            input_tokens: 500,
+            output_tokens: 100,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            credits: None,
+            turns: 7,
+        };
+        let json = super::agent_row_json(&a);
+        assert!(
+            json["cost_usd"].is_number(),
+            "cost_usd must be numeric for claude: {json}"
+        );
+        assert!(
+            (json["cost_usd"].as_f64().unwrap() - 2.50).abs() < 1e-9,
+            "cost_usd value mismatch: {json}"
+        );
+        assert!(
+            json["credits"].is_null(),
+            "claude credits must be null: {json}"
+        );
+    }
+}

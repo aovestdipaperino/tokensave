@@ -442,8 +442,13 @@ async fn is_fresh_install() -> bool {
 pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
     let project_path = tokensave::config::resolve_path(None);
     if TokenSave::is_initialized(&project_path) {
-        // Already initialized — show help via clap
-        let _ = <crate::cli::Cli as clap::CommandFactory>::command().print_help();
+        // Already initialized — render help to stderr, never stdout. Agent
+        // permission hooks invoke a bare `tokensave` and parse stdout as JSON;
+        // help text there is a fatal parse error that fail-closes the wrapped
+        // command. An empty stdout with exit 0 reads as "no opinion" instead.
+        // See #347, #348, #351.
+        let mut cmd = <crate::cli::Cli as clap::CommandFactory>::command();
+        eprint!("{}", cmd.render_help());
         eprintln!();
         return Ok(());
     }
@@ -454,6 +459,16 @@ pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
              in your project root."
         );
         eprintln!();
+    }
+    // Never prompt when stdin isn't a terminal. A hook pipes its JSON payload
+    // into a bare `tokensave`; reading it here would consume that payload and
+    // could be mistaken for a "yes", spuriously initializing the project (#351).
+    if !io::stdin().is_terminal() {
+        eprintln!(
+            "No TokenSave index found at '{}'. Run `tokensave init` to create one.",
+            project_path.display()
+        );
+        return Ok(());
     }
     eprint!(
         "No TokenSave index found at '{}'. Create one now? [Y/n] ",

@@ -99,7 +99,15 @@ pub(super) async fn compute_health_snapshot(
     // edge but are reached via implicit compiler dispatch, so counting them
     // as dead falsely depresses the redundancy dimension.
     let dead = cg
-        .find_dead_code(&[NodeKind::Function, NodeKind::Method], false, false)
+        .find_dead_code(
+            &[
+                NodeKind::Function,
+                NodeKind::Method,
+                NodeKind::SingletonMethod,
+            ],
+            false,
+            false,
+        )
         .await?;
     let dead_in_scope = dead.iter().filter(|n| {
         path_prefix.is_none_or(|pfx| {
@@ -114,7 +122,12 @@ pub(super) async fn compute_health_snapshot(
     let dead_count = dead_in_scope.count();
     let total_fns = nodes
         .iter()
-        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            )
+        })
         .count();
     let redundancy = if total_fns == 0 {
         1.0
@@ -132,7 +145,10 @@ pub(super) async fn compute_health_snapshot(
     let skipped_in_scope = nodes
         .iter()
         .filter(|n| {
-            matches!(n.kind, NodeKind::Function | NodeKind::Method) && skip_coverage.contains(&n.id)
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) && skip_coverage.contains(&n.id)
         })
         .count();
     let coverage_discipline = if total_fns == 0 {
@@ -296,7 +312,12 @@ pub(super) async fn handle_gini(
             // Per-function/method complexity
             nodes
                 .iter()
-                .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+                .filter(|n| {
+                    matches!(
+                        n.kind,
+                        NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                    )
+                })
                 .map(|n| {
                     let c = f64::from(n.branches + n.loops + n.returns + n.max_nesting);
                     (format!("{}:{}", n.file_path, n.name), c)
@@ -671,7 +692,12 @@ pub(super) async fn handle_test_risk(
     // Collect all function/method IDs to check for #[test] annotations.
     let fn_ids: Vec<String> = all_nodes
         .iter()
-        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            )
+        })
         .map(|n| n.id.clone())
         .collect();
     let test_annotated_fns = cg
@@ -689,8 +715,10 @@ pub(super) async fn handle_test_risk(
     let source_fns: Vec<_> = all_nodes
         .iter()
         .filter(|n| {
-            matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                && !cg.is_test_file(&n.file_path)
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) && !cg.is_test_file(&n.file_path)
                 && !n.name.starts_with("test_")
                 && !n.name.starts_with("test")
                 && !test_annotated_fns.contains(&n.id)
@@ -746,8 +774,10 @@ pub(super) async fn handle_test_risk(
     let skipped_count = all_nodes
         .iter()
         .filter(|n| {
-            matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                && skip_coverage.contains(&n.id)
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) && skip_coverage.contains(&n.id)
                 && !cg.is_test_file(&n.file_path)
                 && !n.qualified_name.contains("::tests::")
         })
@@ -871,7 +901,10 @@ pub(super) async fn handle_test_map(
     let mut all_test_files: HashSet<String> = HashSet::new();
 
     for node in &source_nodes {
-        if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+        if !matches!(
+            node.kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+        ) {
             continue;
         }
 
@@ -1006,7 +1039,10 @@ async fn coverage_for_file(
     for node in &nodes {
         if !matches!(
             node.kind,
-            NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+            NodeKind::Function
+                | NodeKind::Method
+                | NodeKind::SingletonMethod
+                | NodeKind::Constructor
         ) {
             continue;
         }

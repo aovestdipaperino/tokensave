@@ -15,6 +15,8 @@ pub enum NodeKind {
     Trait,
     Function,
     Method,
+    /// A Ruby method defined on the enclosing class/module singleton.
+    SingletonMethod,
     Impl,
     Const,
     Static,
@@ -103,6 +105,7 @@ impl NodeKind {
             NodeKind::Trait => "trait",
             NodeKind::Function => "function",
             NodeKind::Method => "method",
+            NodeKind::SingletonMethod => "singleton_method",
             NodeKind::Impl => "impl",
             NodeKind::Const => "const",
             NodeKind::Static => "static",
@@ -178,6 +181,7 @@ impl NodeKind {
             "trait" => Some(NodeKind::Trait),
             "function" => Some(NodeKind::Function),
             "method" => Some(NodeKind::Method),
+            "singleton_method" => Some(NodeKind::SingletonMethod),
             "impl" => Some(NodeKind::Impl),
             "const" => Some(NodeKind::Const),
             "static" => Some(NodeKind::Static),
@@ -728,6 +732,7 @@ pub struct AstGrepResult {
 
 /// A single parsed turn from a Claude Code session transcript,
 /// ready for DB insertion into the `turns` table.
+#[derive(Debug, Clone)]
 pub struct CostTurn {
     pub message_id: String,
     pub project_hash: String,
@@ -741,4 +746,8 @@ pub struct CostTurn {
     pub cost_usd: f64,
     pub category: String,
     pub tool_names: String,
+    /// Source agent identity. Values include "claude" or "droid".
+    pub agent: String,
+    /// Agent-native credit units (Droid only). None for Claude turns.
+    pub credits: Option<u64>,
 }

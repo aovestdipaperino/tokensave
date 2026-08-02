@@ -192,7 +192,12 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
         if path_is_test_file || !nodes.is_empty() {
             let candidate_ids: Vec<String> = nodes
                 .iter()
-                .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+                .filter(|n| {
+                    matches!(
+                        n.kind,
+                        NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                    )
+                })
                 .map(|n| n.id.clone())
                 .collect();
             let test_annotated_in_file = cg
@@ -200,7 +205,10 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
                 .await
                 .unwrap_or_default();
             for node in &nodes {
-                if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+                if !matches!(
+                    node.kind,
+                    NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                ) {
                     continue;
                 }
                 let looks_like_test =
@@ -221,7 +229,10 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
 
         // (a) Indirect coverage — walk callers of every callable in the file.
         for node in &nodes {
-            if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            if !matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) {
                 continue;
             }
             let callers = cg.get_callers(&node.id, 3).await.unwrap_or_default();
@@ -234,7 +245,10 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
                 if !cg.is_test_file(&caller.file_path) && !test_annotated.contains(&caller.id) {
                     continue;
                 }
-                if !matches!(caller.kind, NodeKind::Function | NodeKind::Method) {
+                if !matches!(
+                    caller.kind,
+                    NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                ) {
                     continue;
                 }
                 test_targets

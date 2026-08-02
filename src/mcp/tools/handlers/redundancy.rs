@@ -101,7 +101,12 @@ async fn collect_candidates(
     let all = cg.get_all_nodes().await?;
     Ok(all
         .into_iter()
-        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+        .filter(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            )
+        })
         .filter(|n| n.end_line.saturating_sub(n.start_line) + 1 >= min_lines)
         .filter(|n| {
             path_prefix.is_none_or(|pfx| {

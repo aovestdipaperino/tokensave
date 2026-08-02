@@ -65,6 +65,10 @@ pub(crate) struct ExtractionState {
     /// in class/module bodies, `def self.foo` bodies, and `class << …` bodies,
     /// where `self` is a module. Other extractors leave it `false`.
     pub(crate) self_is_instance: bool,
+    /// The class/module node that owns direct Ruby body calls while the
+    /// traversal is outside a method or self-retargeting block. Other
+    /// extractors leave it `None`.
+    pub(crate) ruby_body_call_owner_id: Option<String>,
 }
 
 /// Which Ruby singleton scope the traversal is currently inside. `class << expr`
@@ -105,6 +109,7 @@ impl ExtractionState {
             singleton_scope: SingletonScope::Outside,
             in_concern_scope: false,
             self_is_instance: false,
+            ruby_body_call_owner_id: None,
         }
     }
 
