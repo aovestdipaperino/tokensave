@@ -411,21 +411,21 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
              CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
-                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
              END;
              CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
-                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
-                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
              END;
              CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
-                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
-                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
-                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
              END;
-             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 SELECT rowid, name, qualified_name, docstring, signature FROM nodes;
+             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 SELECT rowid, name, qualified_name, docstring, signature, search_terms FROM nodes;
              PRAGMA foreign_keys = ON;",
         ).await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to end bulk load: {e}"),
