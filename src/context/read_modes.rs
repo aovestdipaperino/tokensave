@@ -186,6 +186,7 @@ fn is_signature_kind(kind: &NodeKind) -> bool {
         kind,
         NodeKind::Function
             | NodeKind::Method
+            | NodeKind::SingletonMethod
             | NodeKind::Struct
             | NodeKind::Trait
             | NodeKind::Interface

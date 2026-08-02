@@ -1139,6 +1139,34 @@ async fn test_get_undocumented_public_symbols_with_prefix() {
     assert_eq!(undoc[0].file_path, "src/a/foo.rs");
 }
 
+#[tokio::test]
+async fn test_get_undocumented_public_symbols_includes_singleton_methods() {
+    let (db, _dir) = setup_db().await;
+
+    let mut undocumented = sample_node("udps-1", "publish", "app/publisher.rb");
+    undocumented.kind = NodeKind::SingletonMethod;
+    undocumented.visibility = Visibility::Pub;
+    undocumented.docstring = None;
+
+    let mut documented = sample_node("udps-2", "run", "app/publisher.rb");
+    documented.kind = NodeKind::SingletonMethod;
+    documented.visibility = Visibility::Pub;
+    documented.docstring = Some("Runs the publisher".to_string());
+
+    db.insert_nodes(&[undocumented, documented])
+        .await
+        .expect("insert_nodes failed");
+
+    let undoc = db
+        .get_undocumented_public_symbols(None, 100)
+        .await
+        .expect("get_undocumented_public_symbols failed");
+
+    assert_eq!(undoc.len(), 1);
+    assert_eq!(undoc[0].id, "udps-1");
+    assert_eq!(undoc[0].kind, NodeKind::SingletonMethod);
+}
+
 /// Regression: doc_coverage previously excluded `field`, `enum_variant`,
 /// `const`, `static`, and `type_alias`, so a Rust file full of `pub`
 /// undocumented struct fields reported total_undocumented: 0. Those kinds

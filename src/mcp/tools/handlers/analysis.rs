@@ -350,7 +350,13 @@ pub(super) async fn handle_dead_code(
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
     let kinds: Vec<NodeKind> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
-        || vec![NodeKind::Function, NodeKind::Method],
+        || {
+            vec![
+                NodeKind::Function,
+                NodeKind::Method,
+                NodeKind::SingletonMethod,
+            ]
+        },
         |arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().and_then(NodeKind::from_str))

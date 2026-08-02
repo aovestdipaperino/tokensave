@@ -244,12 +244,63 @@ end
             "user&.profile",
             "\"text\".strip",
             "Array.new",
+            "self.publish",
+            "Publisher.publish",
+            "self.direct",
+            "self.inherited",
+            "self.current_class_eval",
+            "self.current_instance_eval",
+            "self.expression_inherited",
+            "self.direct_concern",
         ] {
             assert!(
                 call_names.contains(&expected),
                 "expected receiver-preserving call reference {expected:?}, got {call_names:?}"
             );
         }
+
+        for unexpected in [
+            "self.foreign_instance_eval",
+            "self.foreign_class_eval",
+            "self.foreign_expression_eval",
+            "self.anonymous_class",
+            "self.nested_concern",
+            "self.included_hook",
+            "self.class_methods_hook",
+        ] {
+            assert!(
+                !call_names.contains(&unexpected),
+                "did not expect class/module-body call attribution for {unexpected:?}, got \
+                 {call_names:?}"
+            );
+        }
+
+        let block_owner = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Class && node.name == "BlockOwner")
+            .expect("expected BlockOwner class");
+        let concern_owner = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Module && node.name == "ConcernOwner")
+            .expect("expected ConcernOwner module");
+        for reference_name in [
+            "self.direct",
+            "self.inherited",
+            "self.current_class_eval",
+            "self.current_instance_eval",
+            "self.expression_inherited",
+        ] {
+            assert!(result.unresolved_refs.iter().any(|reference| {
+                reference.from_node_id == block_owner.id
+                    && reference.reference_name == reference_name
+            }));
+        }
+        assert!(result.unresolved_refs.iter().any(|reference| {
+            reference.from_node_id == concern_owner.id
+                && reference.reference_name == "self.direct_concern"
+        }));
     }
 
     #[test]
@@ -836,7 +887,7 @@ end
             .iter()
             .find(|n| n.name == "generate")
             .expect("expected generate method to be extracted from class << self, not dropped");
-        assert_eq!(generate.kind, NodeKind::Method);
+        assert_eq!(generate.kind, NodeKind::SingletonMethod);
     }
 
     #[test]
@@ -1126,6 +1177,63 @@ end
     }
 
     #[test]
+    fn test_ruby_class_and_module_body_self_calls_use_the_body_owner() {
+        let source = r#"
+class Publisher
+  def self.publish; end
+  self.publish
+
+  def instance_run
+    self.publish
+  end
+end
+
+module Announcer
+  def self.publish; end
+  self.publish
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("body_self_calls.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let publisher = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Class && node.name == "Publisher")
+            .expect("expected Publisher class");
+        let announcer = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Module && node.name == "Announcer")
+            .expect("expected Announcer module");
+        let instance_run = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Method && node.name == "instance_run")
+            .expect("expected instance_run method");
+        let self_calls: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|reference| {
+                reference.reference_kind == EdgeKind::Calls
+                    && reference.reference_name == "self.publish"
+            })
+            .collect();
+
+        assert_eq!(self_calls.len(), 3);
+        assert!(self_calls
+            .iter()
+            .any(|reference| reference.from_node_id == publisher.id));
+        assert!(self_calls
+            .iter()
+            .any(|reference| reference.from_node_id == announcer.id));
+        assert!(self_calls
+            .iter()
+            .any(|reference| reference.from_node_id == instance_run.id));
+    }
+
+    #[test]
     fn test_ruby_singleton_class_nested_in_module() {
         let source = r#"
 module Utils
@@ -1144,7 +1252,7 @@ end
             .iter()
             .find(|n| n.name == "format")
             .expect("expected format method inside module's class << self");
-        assert_eq!(format_method.kind, NodeKind::Method);
+        assert_eq!(format_method.kind, NodeKind::SingletonMethod);
         assert!(format_method.qualified_name.ends_with("Utils::format"));
     }
 
@@ -3189,7 +3297,7 @@ end
             .iter()
             .find(|n| n.name == "m")
             .expect("expected m method defined inside class << self's install body");
-        assert_eq!(m.kind, NodeKind::Method);
+        assert_eq!(m.kind, NodeKind::SingletonMethod);
         assert!(m.qualified_name.ends_with("F::m"));
         assert_eq!(
             m.visibility,

@@ -4,7 +4,7 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
-use tokensave::types::{Edge, EdgeKind, Node};
+use tokensave::types::{Edge, EdgeKind, Node, NodeKind};
 
 async fn canonical_graph(cg: &TokenSave) -> (Vec<Node>, Vec<Edge>) {
     let mut nodes = cg.db().get_all_nodes().await.unwrap();
@@ -795,6 +795,152 @@ async fn test_index_all_produces_call_edges() {
             .any(|(node, edge)| node.name == "caller_fn" && edge.kind == EdgeKind::Calls),
         "index_all should produce a Calls edge from caller_fn -> target_fn"
     );
+}
+
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_index_all_resolves_static_ruby_receiver_calls() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::write(
+        project.join("receiver_calls.rb"),
+        r#"
+class Publisher
+  def publish
+  end
+
+  class << self
+    def publish
+    end
+
+    def run(worker)
+      Publisher.publish
+      ::Publisher.publish
+      self.publish
+      worker.publish
+      InstanceOnly.publish
+    end
+  end
+
+  self.publish
+  target.instance_eval { self.publish }
+  Other.class_eval { self.publish }
+end
+
+class InstanceOnly
+  def publish
+  end
+end
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let edges = cg.db().get_all_edges().await.unwrap();
+    let caller = nodes
+        .iter()
+        .find(|node| {
+            node.kind == NodeKind::SingletonMethod
+                && node.signature.as_deref() == Some("def run(worker)")
+        })
+        .unwrap();
+    let singleton_publish = nodes
+        .iter()
+        .find(|node| {
+            node.kind == NodeKind::SingletonMethod
+                && node.signature.as_deref() == Some("def publish")
+        })
+        .unwrap();
+    let publisher = nodes
+        .iter()
+        .find(|node| node.kind == NodeKind::Class && node.name == "Publisher")
+        .unwrap();
+    let instance_targets: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::Method && node.signature.as_deref() == Some("def publish")
+        })
+        .map(|node| node.id.as_str())
+        .collect();
+
+    let calls: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.source == caller.id && edge.kind == EdgeKind::Calls)
+        .collect();
+    assert_eq!(calls.len(), 3, "nodes: {nodes:#?}\nedges: {edges:#?}");
+    assert!(calls.iter().all(|edge| edge.target == singleton_publish.id));
+    assert!(calls
+        .iter()
+        .all(|edge| !instance_targets.contains(&edge.target.as_str())));
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| {
+                edge.source == publisher.id
+                    && edge.target == singleton_publish.id
+                    && edge.kind == EdgeKind::Calls
+            })
+            .count(),
+        1,
+        "self calls in blocks that retarget self must not be attributed to Publisher"
+    );
+}
+
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_incremental_sync_resolves_calls_to_legacy_ruby_singleton_methods() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::write(
+        project.join("publisher.rb"),
+        "class Publisher\n  class << self\n    def publish; end\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(project.join("caller.rb"), "def run; end\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    cg.db()
+        .conn()
+        .execute(
+            "UPDATE nodes SET kind = 'method' WHERE name = 'publish'",
+            (),
+        )
+        .await
+        .unwrap();
+    cg.db()
+        .conn()
+        .execute(
+            "DELETE FROM metadata WHERE key = 'ruby_singleton_method_kind_v1'",
+            (),
+        )
+        .await
+        .unwrap();
+
+    fs::write(
+        project.join("caller.rb"),
+        "def run\n  Publisher.publish\nend\n",
+    )
+    .unwrap();
+    let sync = cg.sync().await.unwrap();
+    assert!(sync.modified_paths.contains(&"publisher.rb".to_string()));
+
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let publish = nodes.iter().find(|node| node.name == "publish").unwrap();
+    assert_eq!(publish.kind, NodeKind::SingletonMethod);
+    assert!(cg
+        .db()
+        .get_all_edges()
+        .await
+        .unwrap()
+        .iter()
+        .any(|edge| { edge.kind == EdgeKind::Calls && edge.target == publish.id }));
+
+    let settled = cg.sync().await.unwrap();
+    assert!(settled.modified_paths.is_empty());
 }
 
 #[tokio::test]

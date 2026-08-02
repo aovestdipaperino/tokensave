@@ -181,6 +181,7 @@ pub(super) async fn handle_files(
 const PORT_DEFAULT_KINDS: &[&str] = &[
     "function",
     "method",
+    "singleton_method",
     "class",
     "struct",
     "interface",
@@ -202,7 +203,7 @@ fn kind_compat_group(kind: &str) -> u8 {
     match kind {
         "class" | "struct" => 0,
         "function" => 1,
-        "method" => 2,
+        "method" | "singleton_method" => 2,
         "interface" | "trait" => 3,
         "enum" => 4,
         "module" => 5,
@@ -225,6 +226,7 @@ fn port_kind_has_parent(kind: &str) -> bool {
     matches!(
         kind,
         "method"
+            | "singleton_method"
             | "field"
             | "enum_variant"
             | "struct_method"
@@ -806,7 +808,10 @@ pub(super) async fn handle_simplify_scan(
 
         for node in &nodes {
             // 1. Duplication: find similar symbols elsewhere
-            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) {
                 let similar = cg.search(&node.name, 5).await.unwrap_or_default();
                 let dupes: Vec<Value> = similar
                     .iter()
@@ -833,8 +838,10 @@ pub(super) async fn handle_simplify_scan(
             }
 
             // 2. Dead code: function/method with no incoming edges
-            if matches!(node.kind, NodeKind::Function | NodeKind::Method)
-                && node.visibility != Visibility::Pub
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) && node.visibility != Visibility::Pub
                 && node.name != "main"
                 && !node.name.starts_with("test_")
             {
@@ -850,7 +857,10 @@ pub(super) async fn handle_simplify_scan(
             }
 
             // 3. Complexity: check if function exceeds threshold
-            if matches!(node.kind, NodeKind::Function | NodeKind::Method) {
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) {
                 let lines = node.end_line.saturating_sub(node.start_line) as usize;
                 let fan_out = cg
                     .get_outgoing_edges(&node.id)
@@ -1091,6 +1101,7 @@ fn body_kind_preference(kind: &NodeKind) -> u8 {
     match kind {
         NodeKind::Function
         | NodeKind::Method
+        | NodeKind::SingletonMethod
         | NodeKind::StructMethod
         | NodeKind::Constructor
         | NodeKind::AbstractMethod
@@ -1693,7 +1704,8 @@ pub(super) async fn handle_signature_search(
     }
 
     let function_nodes = cg.db().get_nodes_by_kind(NodeKind::Function).await?;
-    let method_nodes = cg.db().get_nodes_by_kind(NodeKind::Method).await?;
+    let mut method_nodes = cg.db().get_nodes_by_kind(NodeKind::Method).await?;
+    method_nodes.extend(cg.db().get_nodes_by_kind(NodeKind::SingletonMethod).await?);
 
     let mut entries: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
