@@ -6,6 +6,8 @@
 //! allowing AI assistants to query the code graph interactively.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "test-transport")]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -258,6 +260,16 @@ struct VersionCheckState {
     checked_at: Option<Instant>,
 }
 
+#[cfg(feature = "test-transport")]
+struct AccountingTaskGuard(Arc<AtomicUsize>);
+
+#[cfg(feature = "test-transport")]
+impl Drop for AccountingTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// The MCP server wrapping a `TokenSave` instance.
 // Lock ordering: file_token_map -> tool_call_counts (never nested)
 pub struct McpServer {
@@ -348,6 +360,12 @@ pub struct McpServer {
     /// action was needed. Production code never reads this; tests poll it via
     /// [`Self::wait_for_version_reindex`].
     version_reindex_done: AtomicBool,
+    /// Number of global-ledger persistence tasks spawned by this server.
+    #[cfg(feature = "test-transport")]
+    accounting_tasks_started: AtomicUsize,
+    /// Number of spawned global-ledger persistence tasks still running.
+    #[cfg(feature = "test-transport")]
+    accounting_tasks_pending: Arc<AtomicUsize>,
 }
 
 impl McpServer {
@@ -452,6 +470,10 @@ impl McpServer {
             startup_catch_up_done: AtomicBool::new(false),
             version_reindex_started: AtomicBool::new(false),
             version_reindex_done: AtomicBool::new(false),
+            #[cfg(feature = "test-transport")]
+            accounting_tasks_started: AtomicUsize::new(0),
+            #[cfg(feature = "test-transport")]
+            accounting_tasks_pending: Arc::new(AtomicUsize::new(0)),
         });
 
         // Catch-up sync (#414): pick up changes made while the server
@@ -762,6 +784,13 @@ impl McpServer {
         self.version_reindex_done.load(Ordering::Acquire)
     }
 
+    /// Returns whether the version-aware reindex gate has been evaluated.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn version_reindex_started(&self) -> bool {
+        self.version_reindex_started.load(Ordering::Acquire)
+    }
+
     /// Polls [`Self::version_reindex_done`] every 25 ms up to `timeout`.
     ///
     /// Returns `true` if the evaluation settled within the budget.
@@ -772,6 +801,34 @@ impl McpServer {
                 return false;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Returns the number of global-ledger persistence tasks spawned.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn accounting_tasks_started(&self) -> usize {
+        self.accounting_tasks_started.load(Ordering::Acquire)
+    }
+
+    /// Returns the number of global-ledger persistence tasks still running.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn accounting_tasks_pending(&self) -> usize {
+        self.accounting_tasks_pending.load(Ordering::Acquire)
+    }
+
+    /// Waits until all spawned global-ledger persistence tasks have settled.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub async fn wait_for_accounting_idle(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while self.accounting_tasks_pending() != 0 {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::task::yield_now().await;
         }
         true
     }
@@ -1899,7 +1956,15 @@ impl McpServer {
                     let project_path_str = self.cg.project_root().to_string_lossy().to_string();
                     let tool_name_owned = tool_name.to_string();
                     let ts = crate::tokensave::current_timestamp();
+                    #[cfg(feature = "test-transport")]
+                    let accounting_tasks_pending = {
+                        self.accounting_tasks_started.fetch_add(1, Ordering::AcqRel);
+                        self.accounting_tasks_pending.fetch_add(1, Ordering::AcqRel);
+                        Arc::clone(&self.accounting_tasks_pending)
+                    };
                     tokio::spawn(async move {
+                        #[cfg(feature = "test-transport")]
+                        let _guard = AccountingTaskGuard(accounting_tasks_pending);
                         if let Some(gdb) = crate::global_db::GlobalDb::open().await {
                             gdb.record_savings(
                                 &project_path_str,

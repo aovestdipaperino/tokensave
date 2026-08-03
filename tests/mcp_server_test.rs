@@ -7,9 +7,12 @@
 
 use serde_json::{json, Value};
 use std::fs;
+use std::path::Path;
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tempfile::TempDir;
+use tokensave::branch_meta;
 use tokensave::db::Database;
 use tokensave::mcp::transport::ChannelTransport;
 use tokensave::mcp::McpServer;
@@ -89,6 +92,94 @@ async fn setup_fallback_project(function_name: &str) -> (TokenSave, TempDir) {
     (cg, dir)
 }
 
+fn run_git(project: &Path, args: &[&str]) {
+    let output = ProcessCommand::new("git")
+        .args(args)
+        .current_dir(project)
+        .env("GIT_AUTHOR_NAME", "TokenSave Test")
+        .env("GIT_AUTHOR_EMAIL", "tokensave@example.invalid")
+        .env("GIT_COMMITTER_NAME", "TokenSave Test")
+        .env("GIT_COMMITTER_EMAIL", "tokensave@example.invalid")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn setup_selected_branch_project() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/lib.rs"), "pub fn main_only() {}\n").unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    run_git(project, &["checkout", "-b", "feature"]);
+    fs::write(project.join("src/lib.rs"), "pub fn feature_only() {}\n").unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "feature"]);
+
+    let tokensave_dir = project.join(".tokensave");
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::copy(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches/feature.db"),
+    )
+    .unwrap();
+    let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
+    meta.add_branch("feature", "branches/feature.db", "main");
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    let feature = TokenSave::open_branch(project, "feature").await.unwrap();
+    feature.index_all().await.unwrap();
+    feature.checkpoint().await.unwrap();
+    drop(feature);
+
+    dir
+}
+
+async fn setup_colliding_project() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        "pub fn shared_caller() { shared_target(); }\npub fn shared_target() {}\n",
+    )
+    .unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    let tokensave_dir = project.join(".tokensave");
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::copy(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches/feature.db"),
+    )
+    .unwrap();
+    let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
+    meta.add_branch("feature", "branches/feature.db", "main");
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    dir
+}
+
 async fn call_server(server: &Arc<McpServer>, id: i64, name: &str, arguments: Value) -> Value {
     let (mut transport, _sender, mut receiver) = ChannelTransport::new();
     let request = jsonrpc_request(
@@ -139,6 +230,169 @@ fn first_graph_id(value: &Value) -> Option<String> {
         Value::Object(values) => values.values().find_map(first_graph_id),
         _ => None,
     }
+}
+
+fn raw_graph_id(qualified: &str) -> &str {
+    qualified
+        .split_once(':')
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .map(|(_, raw)| raw)
+        .unwrap()
+}
+
+fn collect_structured_ids(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_structured_ids(value, ids);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                if key == "id"
+                    || key.ends_with("_id")
+                    || key.ends_with("_ids")
+                    || key == "dispatch_from"
+                {
+                    collect_reference_values(value, ids);
+                } else {
+                    collect_structured_ids(value, ids);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_reference_values(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::String(value) => ids.push(value.clone()),
+        Value::Array(values) => {
+            for value in values {
+                collect_reference_values(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn response_structured_ids(response: &Value) -> Vec<String> {
+    response["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .filter_map(|text| serde_json::from_str::<Value>(text).ok())
+        .fold(Vec::new(), |mut ids, value| {
+            collect_structured_ids(&value, &mut ids);
+            ids
+        })
+}
+
+fn response_payload(response: &Value) -> Value {
+    response["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .find_map(|text| serde_json::from_str(text).ok())
+        .unwrap_or_else(|| panic!("response contains no JSON payload: {response}"))
+}
+
+#[derive(Debug, PartialEq)]
+struct SemanticGraphSnapshot {
+    nodes: Vec<String>,
+    edges: Vec<String>,
+    files: Vec<String>,
+    metadata: Vec<String>,
+    user_version: i64,
+}
+
+#[derive(Debug, PartialEq)]
+struct ProjectSnapshot {
+    source: Vec<u8>,
+    source_mtime: SystemTime,
+    graph: SemanticGraphSnapshot,
+    config: Vec<u8>,
+    branch_meta: Option<Vec<u8>>,
+    last_sync: i64,
+}
+
+async fn query_snapshot_rows(database: &Database, sql: &str) -> Vec<String> {
+    let mut rows = database.conn().query(sql, ()).await.unwrap();
+    let mut snapshot = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        snapshot.push(row.get::<String>(0).unwrap());
+    }
+    snapshot
+}
+
+async fn semantic_graph_snapshot(database: &Database) -> SemanticGraphSnapshot {
+    let nodes = query_snapshot_rows(
+        database,
+        "SELECT json_array(
+            id, kind, name, qualified_name, file_path, start_line, end_line,
+            start_column, end_column, docstring, signature, visibility, is_async,
+            branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls,
+            assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity,
+            distinct_operators, distinct_operands, total_operators, total_operands,
+            search_terms
+         ) FROM nodes ORDER BY id",
+    )
+    .await;
+    let edges = query_snapshot_rows(
+        database,
+        "SELECT json_array(id, source, target, kind, line) FROM edges ORDER BY id",
+    )
+    .await;
+    let files = query_snapshot_rows(
+        database,
+        "SELECT json_array(path, content_hash, size, modified_at, indexed_at, node_count)
+         FROM files ORDER BY path",
+    )
+    .await;
+    let metadata = query_snapshot_rows(
+        database,
+        "SELECT json_array(key, value) FROM metadata ORDER BY key",
+    )
+    .await;
+    let mut rows = database
+        .conn()
+        .query("PRAGMA user_version", ())
+        .await
+        .unwrap();
+    let user_version = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
+    SemanticGraphSnapshot {
+        nodes,
+        edges,
+        files,
+        metadata,
+        user_version,
+    }
+}
+
+async fn project_snapshot(root: &Path, branch: Option<&str>, source: &str) -> ProjectSnapshot {
+    // Active-WAL visibility and writer-checkpoint coexistence are exercised by
+    // migration_test's focused read-only tests. This MCP assertion compares
+    // logical rows through the same read-only open without introducing a
+    // second concurrency test.
+    let graph = TokenSave::open_read_only(root, branch).await.unwrap();
+    let last_sync = graph.last_sync_timestamp().await;
+    let semantic_graph = semantic_graph_snapshot(graph.db()).await;
+
+    let source_path = root.join(source);
+    ProjectSnapshot {
+        source: fs::read(&source_path).unwrap(),
+        source_mtime: fs::metadata(source_path).unwrap().modified().unwrap(),
+        graph: semantic_graph,
+        config: fs::read(root.join(".tokensave/config.json")).unwrap(),
+        branch_meta: fs::read(root.join(".tokensave/branch-meta.json")).ok(),
+        last_sync,
+    }
+}
+
+fn monitor_snapshot(home: &Path) -> Option<Vec<u8>> {
+    fs::read(home.join(".tokensave/monitor.mmap")).ok()
 }
 
 /// Sends a sequence of JSON-RPC messages to a server, runs it to completion,
@@ -491,6 +745,91 @@ async fn selected_search_is_stateless_and_preserves_local_default() {
 }
 
 #[tokio::test]
+async fn selected_explicit_branch_returns_branch_content_and_provenance() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_branch_project().await;
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        34,
+        "tokensave_search",
+        json!({
+            "query": "feature_only",
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "feature"
+        }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    let text = response_text(&response);
+    assert!(text.contains("feature_only"), "{text}");
+    assert!(!text.contains("main_only"), "{text}");
+    assert_eq!(
+        response["result"]["_meta"]["tokensave"]["graph_branch"],
+        "feature"
+    );
+}
+
+#[tokio::test]
+async fn selected_omitted_branch_routes_tracked_current_branch() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_branch_project().await;
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        35,
+        "tokensave_search",
+        json!({
+            "query": "feature_only",
+            "graph_root": selected_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    let text = response_text(&response);
+    assert!(text.contains("feature_only"), "{text}");
+    assert!(!text.contains("main_only"), "{text}");
+    assert!(!text.contains("fallback index"), "{text}");
+    assert_eq!(
+        response["result"]["_meta"]["tokensave"]["graph_branch"],
+        "feature"
+    );
+}
+
+#[tokio::test]
+async fn selected_omitted_branch_uses_checkout_fallback_with_provenance() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (selected, selected_dir) = setup_fallback_project("main_only").await;
+    selected.checkpoint().await.unwrap();
+    drop(selected);
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        35,
+        "tokensave_search",
+        json!({
+            "query": "main_only",
+            "graph_root": selected_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    let text = response_text(&response);
+    assert!(text.contains("main_only"), "{text}");
+    assert!(text.contains("is using a fallback index"), "{text}");
+    assert_eq!(
+        response["result"]["_meta"]["tokensave"]["graph_branch"],
+        "main"
+    );
+}
+
+#[tokio::test]
 async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
     let (local, _local_dir) = setup_named_project("local_only").await;
     let (foreign, foreign_dir) = setup_named_project("foreign_read_source").await;
@@ -524,6 +863,147 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
 
     assert_eq!(read_cache_row_count(&db_path).await, cache_rows_before);
     assert_eq!(fs::read(&db_path).unwrap(), db_before);
+}
+
+#[tokio::test]
+async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let selected_dir = setup_colliding_project().await;
+    let server = McpServer::new(local, None).await;
+
+    let search = call_server(
+        &server,
+        36,
+        "tokensave_search",
+        json!({
+            "query": "shared_target",
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    let qualified = first_graph_id(&search["result"]).unwrap();
+    let raw = raw_graph_id(&qualified);
+    let missing = "function:ffffffffffffffffffffffffffffffff";
+    fs::write(
+        selected_dir.path().join("src/lib.rs"),
+        format!(
+            "pub fn shared_caller() {{ shared_target(); }}\n\
+             pub fn shared_target() {{ /* real node id: {raw}; nonexistent lookalike: {missing} */ }}\n"
+        ),
+    )
+    .unwrap();
+
+    let context = call_server(
+        &server,
+        37,
+        "tokensave_context",
+        json!({
+            "task": "Find shared_target and include its implementation",
+            "include_code": true,
+            "max_code_blocks": 5,
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert!(context["error"].is_null(), "{context}");
+    let context_text = response_text(&context);
+    assert!(context_text.contains(&qualified), "{context_text}");
+    assert!(
+        context_text.contains(&format!(
+            "real node id: {raw}; nonexistent lookalike: {missing}"
+        )),
+        "{context_text}"
+    );
+
+    let full = call_server(
+        &server,
+        38,
+        "tokensave_read",
+        json!({
+            "file": "src/lib.rs",
+            "mode": "full",
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert!(full["error"].is_null(), "{full}");
+    let full_payload = response_payload(&full);
+    let source = full_payload["body"].as_str().unwrap();
+    assert!(source.contains(raw), "{source}");
+    assert!(source.contains(missing), "{source}");
+    assert!(!source.contains(&qualified), "{source}");
+}
+
+#[tokio::test]
+async fn cross_project_selected_queries_leave_both_projects_unchanged() {
+    let (local, local_dir) = setup_named_project("local_only").await;
+    let selected_dir = setup_colliding_project().await;
+    let server = McpServer::new(local, None).await;
+    assert!(
+        server
+            .wait_for_startup_catch_up(std::time::Duration::from_secs(30))
+            .await
+    );
+    server.cg().checkpoint().await.unwrap();
+
+    let local_before = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_before = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+
+    let search = call_server(
+        &server,
+        37,
+        "tokensave_search",
+        json!({
+            "query": "shared_target",
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert!(search["error"].is_null(), "{search}");
+    let qualified = first_graph_id(&search["result"]).unwrap();
+
+    for (id, name, arguments) in [
+        (
+            38,
+            "tokensave_context",
+            json!({
+                "task": "Find shared_target and its caller",
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "main"
+            }),
+        ),
+        (
+            39,
+            "tokensave_callers",
+            json!({
+                "node_id": qualified,
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "main"
+            }),
+        ),
+        (
+            40,
+            "tokensave_read",
+            json!({
+                "file": "src/lib.rs",
+                "mode": "full",
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "main"
+            }),
+        ),
+    ] {
+        let response = call_server(&server, id, name, arguments).await;
+        assert!(response["error"].is_null(), "{response}");
+    }
+
+    let local_after = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_after = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+    assert_eq!(local_after, local_before);
+    assert_eq!(selected_after, selected_before);
 }
 
 #[tokio::test]
@@ -618,21 +1098,41 @@ async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
 }
 
 #[tokio::test]
-async fn invalid_graph_selectors_return_invalid_params() {
+async fn selected_invalid_graph_selectors_return_invalid_params() {
     let (local, local_dir) = setup_named_project("local_only").await;
     let server = McpServer::new(local, None).await;
     let uninitialized = TempDir::new().unwrap();
-    let cases = [
-        (json!({ "graph_root": "relative" }), "absolute"),
+    let selected_dir = setup_selected_branch_project().await;
+    let missing_db_dir = setup_selected_branch_project().await;
+    fs::remove_file(missing_db_dir.path().join(".tokensave/branches/feature.db")).unwrap();
+    let cases = vec![
+        (json!({ "graph_root": "relative" }), "absolute".to_string()),
         (
             json!({ "graph_root": uninitialized.path().display().to_string() }),
-            "initialized",
+            "initialized".to_string(),
         ),
         (
             json!({ "graph_root": local_dir.path().display().to_string() }),
-            "same project",
+            "same project".to_string(),
         ),
-        (json!({ "graph_branch": "feature" }), "requires"),
+        (
+            json!({
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "untracked"
+            }),
+            "not tracked".to_string(),
+        ),
+        (
+            json!({
+                "graph_root": missing_db_dir.path().display().to_string(),
+                "graph_branch": "feature"
+            }),
+            "DB is missing".to_string(),
+        ),
+        (
+            json!({ "graph_branch": "feature" }),
+            "requires a matching graph_root".to_string(),
+        ),
     ];
 
     for (index, (selector, expected)) in cases.into_iter().enumerate() {
@@ -646,7 +1146,7 @@ async fn invalid_graph_selectors_return_invalid_params() {
         assert!(
             response["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains(expected)),
+                .is_some_and(|message| message.contains(&expected)),
             "expected {expected:?} in {response}"
         );
     }
@@ -701,78 +1201,136 @@ async fn graph_scoped_tool_without_selector_preserves_handler_argument_errors() 
 }
 
 #[tokio::test]
-async fn qualified_follow_up_routes_to_matching_selected_graph() {
+async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
     let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
-    drop(foreign);
-    let (other, other_dir) = setup_named_project("other_only").await;
-    drop(other);
+    let first_dir = setup_colliding_project().await;
+    let second_dir = setup_colliding_project().await;
     let server = McpServer::new(local, None).await;
 
-    let search = call_server(
+    let first_search = call_server(
         &server,
         60,
         "tokensave_search",
         json!({
-            "query": "foreign_only",
-            "graph_root": foreign_dir.path().display().to_string()
+            "query": "shared_target",
+            "graph_root": first_dir.path().display().to_string(),
+            "graph_branch": "main"
         }),
     )
     .await;
-    let qualified = first_graph_id(&search["result"])
-        .unwrap_or_else(|| panic!("selected response contains no qualified node ID: {search}"));
+    let second_search = call_server(
+        &server,
+        61,
+        "tokensave_search",
+        json!({
+            "query": "shared_target",
+            "graph_root": second_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    let first_qualified = first_graph_id(&first_search["result"]).unwrap_or_else(|| {
+        panic!("selected response contains no qualified node ID: {first_search}")
+    });
+    let second_qualified = first_graph_id(&second_search["result"]).unwrap_or_else(|| {
+        panic!("selected response contains no qualified node ID: {second_search}")
+    });
+    let raw = raw_graph_id(&first_qualified);
+
+    assert_eq!(raw, raw_graph_id(&second_qualified));
+    assert_ne!(first_qualified, second_qualified);
+    let structured_ids = response_structured_ids(&first_search);
+    assert!(!structured_ids.is_empty(), "{first_search}");
+    assert!(
+        structured_ids.iter().all(|id| id.starts_with("graph:")),
+        "{structured_ids:?}"
+    );
+    assert!(structured_ids.contains(&first_qualified));
 
     let follow_up = call_server(
         &server,
-        61,
-        "tokensave_node",
+        62,
+        "tokensave_callers",
         json!({
-            "node_id": qualified.clone(),
-            "graph_root": foreign_dir.path().display().to_string()
+            "node_id": first_qualified.clone(),
+            "graph_root": first_dir.path().display().to_string(),
+            "graph_branch": "main"
         }),
     )
     .await;
     assert!(follow_up["error"].is_null(), "{follow_up}");
-    assert!(response_text(&follow_up).contains("foreign_only"));
+    assert!(response_text(&follow_up).contains("shared_caller"));
     assert_eq!(follow_up["result"]["_meta"]["tokensave"]["selected"], true);
 
-    let raw = qualified.splitn(3, ':').nth(2).unwrap();
     let raw_response = call_server(
-        &server,
-        62,
-        "tokensave_node",
-        json!({
-            "node_id": raw,
-            "graph_root": foreign_dir.path().display().to_string()
-        }),
-    )
-    .await;
-    assert_eq!(raw_response["error"]["code"], -32602, "{raw_response}");
-
-    let wrong_graph = call_server(
         &server,
         63,
         "tokensave_node",
         json!({
-            "node_id": qualified.clone(),
-            "graph_root": other_dir.path().display().to_string()
+            "node_id": raw,
+            "graph_root": first_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert_eq!(raw_response["error"]["code"], -32602, "{raw_response}");
+    assert!(
+        raw_response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("graph-qualified")),
+        "{raw_response}"
+    );
+
+    let wrong_graph = call_server(
+        &server,
+        64,
+        "tokensave_node",
+        json!({
+            "node_id": first_qualified.clone(),
+            "graph_root": second_dir.path().display().to_string(),
+            "graph_branch": "main"
         }),
     )
     .await;
     assert_eq!(wrong_graph["error"]["code"], -32602, "{wrong_graph}");
+    assert!(
+        wrong_graph["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("does not match graph_root or graph_branch")),
+        "{wrong_graph}"
+    );
+
+    let wrong_branch = call_server(
+        &server,
+        65,
+        "tokensave_node",
+        json!({
+            "node_id": first_qualified.clone(),
+            "graph_root": first_dir.path().display().to_string(),
+            "graph_branch": "feature"
+        }),
+    )
+    .await;
+    assert_eq!(wrong_branch["error"]["code"], -32602, "{wrong_branch}");
+    assert!(
+        wrong_branch["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("does not match graph_root or graph_branch")),
+        "{wrong_branch}"
+    );
 
     let no_selector = call_server(
         &server,
-        64,
+        66,
         "tokensave_node",
-        json!({ "node_id": qualified }),
+        json!({ "node_id": first_qualified }),
     )
     .await;
     assert_eq!(no_selector["error"]["code"], -32602, "{no_selector}");
     assert!(
         no_selector["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("graph_root")),
+            .is_some_and(|message| message.contains("repeat matching graph_root and graph_branch")),
         "{no_selector}"
     );
 }
@@ -850,67 +1408,140 @@ async fn selected_warnings_use_canonical_selected_root_remedies() {
 }
 
 #[tokio::test]
-async fn selected_calls_skip_metrics_and_preserve_local_schema_charge() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+async fn selected_calls_skip_all_accounting_and_preserve_local_schema_charge() {
+    let Some(home) = std::env::var_os("TOKENSAVE_SELECTED_ACCOUNTING_HOME") else {
+        let home = TempDir::new().unwrap();
+        let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "selected_calls_skip_all_accounting_and_preserve_local_schema_charge",
+                "--nocapture",
+            ])
+            .env("TOKENSAVE_SELECTED_ACCOUNTING_HOME", home.path())
+            .env("HOME", home.path())
+            .env("RUST_TEST_THREADS", "1");
+        #[cfg(target_os = "windows")]
+        command.env("USERPROFILE", home.path());
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated accounting helper failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let home = std::path::PathBuf::from(home);
+    let (local, local_dir) = setup_named_project("local_only").await;
     let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, None).await;
-    let responses = run_server_with_messages(
-        server,
-        vec![
-            jsonrpc_request(json!(70), "tools/list", json!({})),
-            jsonrpc_request(
-                json!(71),
-                "tools/call",
-                json!({
-                    "name": "tokensave_search",
-                    "arguments": {
-                        "query": "foreign_only",
-                        "graph_root": foreign_dir.path().display().to_string()
-                    }
-                }),
-            ),
-            jsonrpc_request(
-                json!(72),
-                "tools/call",
-                json!({
-                    "name": "tokensave_search",
-                    "arguments": { "query": "local_only" }
-                }),
-            ),
-            jsonrpc_request(
-                json!(73),
-                "tools/call",
-                json!({
-                    "name": "tokensave_search",
-                    "arguments": { "query": "local_only" }
-                }),
-            ),
-        ],
+    assert!(
+        server
+            .wait_for_startup_catch_up(std::time::Duration::from_secs(30))
+            .await
+    );
+    let listed = run_server_with_messages(
+        Arc::clone(&server),
+        vec![jsonrpc_request(json!(70), "tools/list", json!({}))],
     )
     .await;
+    assert!(parse_response(&listed[0])["error"].is_null());
 
-    let selected = parse_response(
-        responses
-            .iter()
-            .find(|response| parse_response(response)["id"] == 71)
-            .unwrap(),
-    );
+    let global = tokensave::global_db::GlobalDb::open().await.unwrap();
+    let local_path = local_dir.path().to_string_lossy();
+    let foreign_path = foreign_dir.path().to_string_lossy();
+    let local_tokens_before = server.cg().get_tokens_saved().await.unwrap();
+    let total_ledger_before = global.sum_savings(None, 0).await.calls;
+    let local_ledger_before = global.sum_savings(Some(&local_path), 0).await.calls;
+    let foreign_ledger_before = global.sum_savings(Some(&foreign_path), 0).await.calls;
+    let monitor_before = monitor_snapshot(&home);
+    let accounting_started_before = server.accounting_tasks_started();
+    let accounting_pending_before = server.accounting_tasks_pending();
+    assert_eq!(accounting_started_before, 0);
+    assert_eq!(accounting_pending_before, 0);
+
+    let selected = call_server(
+        &server,
+        71,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
     assert!(
         !response_text(&selected).contains("tokensave_metrics:"),
         "{selected}"
     );
-    let first_local = responses
-        .iter()
-        .find(|response| parse_response(response)["id"] == 72)
-        .unwrap();
-    let second_local = responses
-        .iter()
-        .find(|response| parse_response(response)["id"] == 73)
-        .unwrap();
+    assert_eq!(
+        server.accounting_tasks_started(),
+        accounting_started_before,
+        "selected call must not spawn global ledger persistence"
+    );
+    assert_eq!(
+        server.accounting_tasks_pending(),
+        accounting_pending_before,
+        "selected call must not leave accounting work pending"
+    );
+    assert_eq!(
+        server.cg().get_tokens_saved().await.unwrap(),
+        local_tokens_before
+    );
+    assert_eq!(global.sum_savings(None, 0).await.calls, total_ledger_before);
+    assert_eq!(
+        global.sum_savings(Some(&local_path), 0).await.calls,
+        local_ledger_before
+    );
+    assert_eq!(
+        global.sum_savings(Some(&foreign_path), 0).await.calls,
+        foreign_ledger_before
+    );
+    assert_eq!(monitor_snapshot(&home), monitor_before);
+
+    let first_local = call_server(
+        &server,
+        72,
+        "tokensave_search",
+        json!({ "query": "local_only" }),
+    )
+    .await;
+    let second_local = call_server(
+        &server,
+        73,
+        "tokensave_search",
+        json!({ "query": "local_only" }),
+    )
+    .await;
+    assert!(first_local["error"].is_null(), "{first_local}");
+    assert!(second_local["error"].is_null(), "{second_local}");
+    let first_local_text = serde_json::to_string(&first_local).unwrap();
+    let second_local_text = serde_json::to_string(&second_local).unwrap();
     assert!(
-        extract_metrics_field(first_local, "after") > extract_metrics_field(second_local, "after"),
+        extract_metrics_field(&first_local_text, "after")
+            > extract_metrics_field(&second_local_text, "after"),
         "selected call must not consume the local schema charge"
+    );
+    assert!(
+        server
+            .wait_for_accounting_idle(std::time::Duration::from_secs(5))
+            .await,
+        "local ledger persistence did not drain"
+    );
+    assert!(
+        global.sum_savings(None, 0).await.calls > total_ledger_before,
+        "later local calls must increase the global ledger total"
+    );
+    assert!(
+        global.sum_savings(Some(&local_path), 0).await.calls > local_ledger_before,
+        "later local calls must be recorded in the global ledger"
+    );
+    assert!(
+        monitor_snapshot(&home) != monitor_before,
+        "later local calls must be recorded in the monitor"
     );
 }
 
@@ -935,6 +1566,10 @@ async fn first_selected_call_does_not_consume_local_version_reindex_gate() {
     )
     .await;
     assert!(selected["error"].is_null(), "{selected}");
+    assert!(
+        !server.version_reindex_started(),
+        "selected call must not start evaluating the local reindex gate"
+    );
     assert!(
         !server.version_reindex_done(),
         "selected call must not evaluate the local reindex gate"
@@ -2443,56 +3078,6 @@ async fn test_initialize_advertises_logging_capability() {
     assert!(
         resp["result"]["capabilities"]["logging"].is_object(),
         "initialize must advertise logging capability, got: {resp}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// search_call_writes_savings_ledger_row
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn search_call_writes_savings_ledger_row() {
-    let tmp_home = tempfile::tempdir().unwrap();
-    // Note: std::env::set_var is process-wide; this test relies on no parallel test
-    // simultaneously mutating HOME. If flake is observed, mark this #[serial_test::serial].
-    std::env::set_var("HOME", tmp_home.path());
-    #[cfg(target_os = "windows")]
-    std::env::set_var("USERPROFILE", tmp_home.path());
-
-    let (server, _proj_tmp) = setup_server().await;
-
-    let responses = run_server_with_messages(
-        server,
-        vec![jsonrpc_request(
-            json!(9001),
-            "tools/call",
-            json!({
-                "name": "tokensave_search",
-                "arguments": { "query": "hello" }
-            }),
-        )],
-    )
-    .await;
-
-    // Verify the request completed successfully.
-    let resp_str = responses
-        .iter()
-        .find(|r| parse_response(r)["id"] == 9001)
-        .expect("should have a response for id=9001");
-    let resp = parse_response(resp_str);
-    assert!(resp["error"].is_null(), "search should not error");
-
-    // Allow the spawned ledger-write task to complete before opening the DB.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let db = tokensave::global_db::GlobalDb::open()
-        .await
-        .expect("global db opens at isolated HOME");
-    let total = db.sum_savings(None, 0).await;
-    assert!(
-        total.calls >= 1,
-        "expected at least one ledger row, got {}",
-        total.calls
     );
 }
 
