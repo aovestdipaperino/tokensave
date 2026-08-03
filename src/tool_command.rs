@@ -35,6 +35,18 @@ use crate::serve;
 /// side is the canonical MCP suffix (without the `tokensave_` prefix).
 const NAME_ALIASES: &[(&str, &str)] = &[("query", "search")];
 
+fn is_mcp_graph_selector(key: &str) -> bool {
+    matches!(key, "graph_root" | "graph_branch")
+}
+
+fn mcp_graph_selector_error() -> TokenSaveError {
+    TokenSaveError::Config {
+        message: "graph_root and graph_branch are available only through MCP; \
+                  use --project <path> to choose the project for `tokensave tool`"
+            .to_string(),
+    }
+}
+
 /// Entry point for `tokensave tool ...`.
 pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
     let defs = get_tool_definitions();
@@ -136,13 +148,17 @@ fn parse_invocation(def: &ToolDefinition, args: &[String]) -> Result<ParsedInvoc
     let mut collected: Map<String, Value> = Map::new();
     let mut positionals: Vec<String> = Vec::new();
 
+    // A help request asks what the tool accepts rather than running it, so honor
+    // it before validating the rest of the invocation. Otherwise the reader
+    // cannot discover the correct flags without first writing them correctly.
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        out.show_help = true;
+        return Ok(out);
+    }
+
     let mut iter = args.iter();
     while let Some(raw) = iter.next() {
         match raw.as_str() {
-            "-h" | "--help" => {
-                out.show_help = true;
-                return Ok(out);
-            }
             "--json" => out.raw_json = true,
             "--project" => {
                 out.project = Some(take_value(&mut iter, "--project")?);
@@ -158,10 +174,19 @@ fn parse_invocation(def: &ToolDefinition, args: &[String]) -> Result<ParsedInvoc
                         message: "--args must be a JSON object".to_string(),
                     });
                 }
+                if value
+                    .as_object()
+                    .is_some_and(|object| object.keys().any(|key| is_mcp_graph_selector(key)))
+                {
+                    return Err(mcp_graph_selector_error());
+                }
                 explicit_args = Some(value);
             }
             flag if flag.starts_with("--") => {
                 let key = flag.trim_start_matches('-').replace('-', "_");
+                if is_mcp_graph_selector(&key) {
+                    return Err(mcp_graph_selector_error());
+                }
                 let raw_value = take_value(&mut iter, flag)?;
                 let resolved = resolve_at_file(&raw_value)?;
                 let prop_schema = schema_properties.get(&key);
@@ -516,14 +541,7 @@ fn print_tool_help(def: &ToolDefinition) {
     println!("{}", def.description);
     println!();
 
-    let Some(props) = def
-        .input_schema
-        .get("properties")
-        .and_then(Value::as_object)
-    else {
-        println!("(no parameters)");
-        return;
-    };
+    let entries = cli_parameter_entries(def);
     let required: std::collections::HashSet<&str> = def
         .input_schema
         .get("required")
@@ -531,14 +549,12 @@ fn print_tool_help(def: &ToolDefinition) {
         .map(|arr| arr.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
-    if props.is_empty() {
+    if entries.is_empty() {
         println!("(no parameters)");
         return;
     }
 
     println!("Parameters:");
-    let mut entries: Vec<(&String, &Value)> = props.iter().collect();
-    entries.sort_by_key(|(k, _)| (*k).clone());
     for (key, schema) in entries {
         let ty = schema
             .get("type")
@@ -563,6 +579,19 @@ fn print_tool_help(def: &ToolDefinition) {
     }
     println!();
     println!("Reserved flags: --json, --project <path>, --args <json>, -h/--help");
+}
+
+fn cli_parameter_entries(def: &ToolDefinition) -> Vec<(&String, &Value)> {
+    let mut entries: Vec<_> = def
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|properties| properties.iter())
+        .filter(|(key, _)| !is_mcp_graph_selector(key))
+        .collect();
+    entries.sort_by_key(|(key, _)| (*key).clone());
+    entries
 }
 
 #[cfg(test)]
@@ -658,6 +687,100 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.tool_args["query"], json!("foo"));
         assert_eq!(parsed.tool_args["limit"], json!(3));
+    }
+
+    #[test]
+    fn rejects_mcp_graph_selector_flags() {
+        let d = def("search");
+        for flag in ["--graph-root", "--graph-branch"] {
+            let err =
+                parse_invocation(&d, &[flag.to_string(), "/tmp/foreign".to_string()]).unwrap_err();
+            let msg = format!("{err}");
+            assert!(msg.contains("available only through MCP"), "got: {msg}");
+            assert!(msg.contains("--project <path>"), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn rejects_mcp_graph_selectors_in_args_json() {
+        let d = def("search");
+        let err = parse_invocation(
+            &d,
+            &[
+                "--args".to_string(),
+                r#"{"query":"foo","graph_root":"/tmp/foreign"}"#.to_string(),
+            ],
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("available only through MCP"), "got: {msg}");
+        assert!(msg.contains("--project <path>"), "got: {msg}");
+    }
+
+    #[test]
+    fn cli_help_parameters_omit_mcp_graph_selectors() {
+        let d = def("search");
+        let keys: Vec<&str> = cli_parameter_entries(&d)
+            .into_iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert!(!keys.contains(&"graph_root"), "{keys:?}");
+        assert!(!keys.contains(&"graph_branch"), "{keys:?}");
+        assert!(keys.contains(&"query"), "{keys:?}");
+    }
+
+    #[test]
+    fn help_wins_over_mcp_graph_selector_rejection() {
+        let d = def("search");
+        for args in [
+            vec![
+                "--help".to_string(),
+                "--graph-root".to_string(),
+                "/tmp/foreign".to_string(),
+            ],
+            vec![
+                "--graph-root".to_string(),
+                "/tmp/foreign".to_string(),
+                "--help".to_string(),
+            ],
+            vec![
+                "-h".to_string(),
+                "--graph-root".to_string(),
+                "/tmp/foreign".to_string(),
+            ],
+            vec![
+                "--graph-root".to_string(),
+                "/tmp/foreign".to_string(),
+                "-h".to_string(),
+            ],
+            vec![
+                "--help".to_string(),
+                "--args".to_string(),
+                r#"{"query":"foo","graph_branch":"main"}"#.to_string(),
+            ],
+        ] {
+            let parsed = parse_invocation(&d, &args)
+                .unwrap_or_else(|error| panic!("help must be honored for {args:?}: {error}"));
+            assert!(parsed.show_help, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn mcp_graph_selectors_still_rejected_without_help() {
+        let d = def("search");
+        for args in [
+            vec!["--graph-root".to_string(), "/tmp/foreign".to_string()],
+            vec![
+                "--args".to_string(),
+                r#"{"query":"foo","graph_branch":"main"}"#.to_string(),
+            ],
+        ] {
+            let err = parse_invocation(&d, &args).unwrap_err();
+            assert!(
+                format!("{err}").contains("available only through MCP"),
+                "got: {err}"
+            );
+        }
     }
 
     #[test]

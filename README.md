@@ -409,6 +409,44 @@ Different from the criterion bench above: criterion measures per-iteration laten
 
 The server exposes more than 80 tools (one fewer when the optional `ast-grep` binary is not on `PATH`); the tables below group the most commonly used ones by category. Most are read-only, safe to call in parallel, and annotated with `readOnlyHint`. The edit primitives are scoped to single files and re-index in place; session baseline and memory-recording tools also mutate local `.tokensave` state and are annotated as non-read-only. The three core tools (`tokensave_context`, `tokensave_search`, `tokensave_status`) are marked `anthropic/alwaysLoad` so they bypass the client's tool-search round-trip.
 
+### Query another initialized project
+
+Semantic read tools can query an explicitly selected local graph without
+restarting the MCP server:
+
+```json
+{
+  "query": "screenGate",
+  "graph_root": "/absolute/path/to/typewhisper"
+}
+```
+
+Selected results include canonical root/branch provenance. Node IDs are
+namespaced to that graph, and the matching selectors must be repeated on
+follow-up calls. For example, a follow-up to a branch-selected query includes
+both values:
+
+```json
+{
+  "node_id": "graph:<fingerprint>:function:<raw-id>",
+  "graph_root": "/absolute/path/to/typewhisper",
+  "graph_branch": "feature/auth"
+}
+```
+
+`graph_root` must be the exact absolute root of an already initialized project.
+`graph_branch` is optional and, when supplied, must name a tracked branch.
+Selected opens are read-only: they never initialize, sync, migrate, auto-track,
+or write graph/source data. They also do not contribute to savings accounting.
+Calls without selectors behave exactly as before.
+
+Selectors are intentionally unavailable on tools that write, shell out, or
+depend on the current checkout: the edit primitives, VCS and branch tools,
+diagnostics and test execution, dependency and runtime introspection, workflow
+and session-memory tools, the persistent-cache tool (`tokensave_redundancy`),
+and server administration. Those tools reject a selector instead of silently
+ignoring it.
+
 ### Discovery
 
 | Tool | Purpose |
