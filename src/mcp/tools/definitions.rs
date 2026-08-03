@@ -63,6 +63,52 @@ fn def_always_load(
     }
 }
 
+/// Add the explicit selectors and metadata used by tools that can query any
+/// initialized graph.
+fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
+    let Some(properties) = definition
+        .input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
+        panic!("tool input schema must have object properties");
+    };
+    properties.insert(
+        "graph_root".to_string(),
+        json!({
+            "type": "string",
+            "description": "Exact absolute initialized project root to query."
+        }),
+    );
+    properties.insert(
+        "graph_branch".to_string(),
+        json!({
+            "type": "string",
+            "description": "Exact tracked branch to query within graph_root."
+        }),
+    );
+
+    let Some(meta) = definition
+        .meta
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        panic!("tool metadata must be an object");
+    };
+    meta.insert("tokensave/graphScoped".to_string(), json!(true));
+    definition
+}
+
+/// Whether a tool definition explicitly supports selecting another graph.
+pub fn is_graph_scoped_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("tokensave/graphScoped"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// The `tokensave_context` description.
 ///
 /// The description must stay stable across re-indexes so MCP clients that
@@ -90,40 +136,40 @@ pub const CONTEXT_DESCRIPTION: &str = "Build an AI-ready context for a task desc
 /// which shells out to the `ast-grep` binary.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     let mut definitions = vec![
-        def_search(),
-        def_context(),
-        def_callers(),
-        def_callees(),
-        def_impact(),
-        def_node(),
+        graph_scoped(def_search()),
+        graph_scoped(def_context()),
+        graph_scoped(def_callers()),
+        graph_scoped(def_callees()),
+        graph_scoped(def_impact()),
+        graph_scoped(def_node()),
         def_status(),
-        def_files(),
+        graph_scoped(def_files()),
         def_affected(),
-        def_dead_code(),
+        graph_scoped(def_dead_code()),
         def_diff_context(),
-        def_module_api(),
-        def_circular(),
-        def_hotspots(),
-        def_similar(),
-        def_rename_preview(),
-        def_unused_imports(),
-        def_rank(),
-        def_largest(),
-        def_coupling(),
-        def_inheritance_depth(),
-        def_distribution(),
-        def_recursion(),
-        def_complexity(),
-        def_doc_coverage(),
-        def_god_class(),
+        graph_scoped(def_module_api()),
+        graph_scoped(def_circular()),
+        graph_scoped(def_hotspots()),
+        graph_scoped(def_similar()),
+        graph_scoped(def_rename_preview()),
+        graph_scoped(def_unused_imports()),
+        graph_scoped(def_rank()),
+        graph_scoped(def_largest()),
+        graph_scoped(def_coupling()),
+        graph_scoped(def_inheritance_depth()),
+        graph_scoped(def_distribution()),
+        graph_scoped(def_recursion()),
+        graph_scoped(def_complexity()),
+        graph_scoped(def_doc_coverage()),
+        graph_scoped(def_god_class()),
         def_changelog(),
         def_port_status(),
         def_port_order(),
         def_commit_context(),
         def_pr_context(),
         def_simplify_scan(),
-        def_test_map(),
-        def_type_hierarchy(),
+        graph_scoped(def_test_map()),
+        graph_scoped(def_type_hierarchy()),
         def_branch_search(),
         def_branch_diff(),
         def_branch_list(),
@@ -131,45 +177,45 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_multi_str_replace(),
         def_insert_at(),
         def_ast_grep_rewrite(),
-        def_gini(),
-        def_dependency_depth(),
-        def_health(),
+        graph_scoped(def_gini()),
+        graph_scoped(def_dependency_depth()),
+        graph_scoped(def_health()),
         def_redundancy(),
         def_runtime(),
-        def_dsm(),
-        def_test_risk(),
-        def_test_coverage(),
+        graph_scoped(def_dsm()),
+        graph_scoped(def_test_risk()),
+        graph_scoped(def_test_coverage()),
         def_dependencies(),
         def_session_start(),
         def_session_end(),
-        def_body(),
-        def_doc(),
-        def_todos(),
-        def_callers_for(),
-        def_by_qualified_name(),
-        def_signature(),
-        def_impls(),
+        graph_scoped(def_body()),
+        graph_scoped(def_doc()),
+        graph_scoped(def_todos()),
+        graph_scoped(def_callers_for()),
+        graph_scoped(def_by_qualified_name()),
+        graph_scoped(def_signature()),
+        graph_scoped(def_impls()),
         def_diagnose(),
-        def_derives(),
-        def_annotations(),
+        graph_scoped(def_derives()),
+        graph_scoped(def_annotations()),
         def_run_affected_tests(),
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
-        def_read(),
-        def_entities(),
-        def_implementations(),
-        def_unsafe_patterns(),
-        def_diagnostics(),
+        graph_scoped(def_read()),
+        graph_scoped(def_entities()),
+        graph_scoped(def_implementations()),
+        graph_scoped(def_unsafe_patterns()),
+        graph_scoped(def_diagnostics()),
         def_config(),
-        def_signature_search(),
-        def_constructors(),
-        def_field_sites(),
-        def_call_chain(),
-        def_file_dependents(),
+        graph_scoped(def_signature_search()),
+        graph_scoped(def_constructors()),
+        graph_scoped(def_field_sites()),
+        graph_scoped(def_call_chain()),
+        graph_scoped(def_file_dependents()),
         def_replace_symbol(),
         def_insert_at_symbol(),
-        def_find_exact_symbol(),
+        graph_scoped(def_find_exact_symbol()),
         def_blame(),
         def_log(),
         def_diff(),
@@ -2531,6 +2577,151 @@ fn def_diff() -> ToolDefinition {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    fn canonical_graph_scoped_tools() -> BTreeSet<&'static str> {
+        [
+            "tokensave_search",
+            "tokensave_context",
+            "tokensave_callers",
+            "tokensave_callees",
+            "tokensave_impact",
+            "tokensave_node",
+            "tokensave_files",
+            "tokensave_dead_code",
+            "tokensave_module_api",
+            "tokensave_circular",
+            "tokensave_hotspots",
+            "tokensave_similar",
+            "tokensave_rename_preview",
+            "tokensave_unused_imports",
+            "tokensave_rank",
+            "tokensave_largest",
+            "tokensave_coupling",
+            "tokensave_inheritance_depth",
+            "tokensave_distribution",
+            "tokensave_recursion",
+            "tokensave_complexity",
+            "tokensave_doc_coverage",
+            "tokensave_god_class",
+            "tokensave_test_map",
+            "tokensave_type_hierarchy",
+            "tokensave_gini",
+            "tokensave_dependency_depth",
+            "tokensave_health",
+            "tokensave_dsm",
+            "tokensave_test_risk",
+            "tokensave_test_coverage",
+            "tokensave_body",
+            "tokensave_doc",
+            "tokensave_todos",
+            "tokensave_callers_for",
+            "tokensave_by_qualified_name",
+            "tokensave_signature",
+            "tokensave_impls",
+            "tokensave_derives",
+            "tokensave_annotations",
+            "tokensave_read",
+            "tokensave_entities",
+            "tokensave_implementations",
+            "tokensave_unsafe_patterns",
+            "tokensave_diagnostics",
+            "tokensave_signature_search",
+            "tokensave_constructors",
+            "tokensave_field_sites",
+            "tokensave_call_chain",
+            "tokensave_file_dependents",
+            "tokensave_find_exact_symbol",
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn graph_scoped_defs_match_the_canonical_set() {
+        let canonical = canonical_graph_scoped_tools();
+        let definitions = get_tool_definitions();
+
+        for definition in &definitions {
+            let expected = canonical.contains(definition.name.as_str());
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            let graph_root = properties.get("graph_root");
+            let graph_branch = properties.get("graph_branch");
+
+            assert_eq!(
+                graph_root.is_some(),
+                expected,
+                "{} graph_root scope mismatch",
+                definition.name
+            );
+            assert_eq!(
+                graph_branch.is_some(),
+                expected,
+                "{} graph_branch scope mismatch",
+                definition.name
+            );
+            assert_eq!(
+                is_graph_scoped_tool(definition),
+                expected,
+                "{} graph-scoped marker mismatch",
+                definition.name
+            );
+
+            if expected {
+                assert_eq!(graph_root.unwrap()["type"], "string", "{}", definition.name);
+                assert_eq!(
+                    graph_root.unwrap()["description"],
+                    "Exact absolute initialized project root to query.",
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_branch.unwrap()["type"],
+                    "string",
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_branch.unwrap()["description"],
+                    "Exact tracked branch to query within graph_root.",
+                    "{}",
+                    definition.name
+                );
+                let required = definition.input_schema["required"].as_array();
+                assert!(
+                    required.is_none_or(|names| {
+                        names
+                            .iter()
+                            .all(|name| name != "graph_root" && name != "graph_branch")
+                    }),
+                    "{} graph selectors must be optional",
+                    definition.name
+                );
+            }
+        }
+
+        let actual: BTreeSet<&str> = definitions
+            .iter()
+            .filter(|definition| is_graph_scoped_tool(definition))
+            .map(|definition| definition.name.as_str())
+            .collect();
+        assert_eq!(actual, canonical);
+    }
+
+    #[test]
+    fn graph_scoped_schema_and_classification_cannot_drift() {
+        for definition in get_tool_definitions() {
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            let has_scope_schema =
+                properties.contains_key("graph_root") && properties.contains_key("graph_branch");
+            assert_eq!(
+                is_graph_scoped_tool(&definition),
+                has_scope_schema,
+                "{}",
+                definition.name
+            );
+        }
+    }
 
     #[test]
     fn context_description_carries_no_call_budget() {
