@@ -261,6 +261,13 @@ pub(crate) fn normalize_lookup_path(project_root: &std::path::Path, raw: &str) -
     forward
 }
 
+/// Single-quotes a value so it can be embedded safely in a suggested shell
+/// command (for example a branch name in `tokensave branch add '<name>'`).
+/// Any embedded single quote is escaped as `'\''`.
+pub(crate) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// True when the user-supplied query matches either the node's short `name`
 /// or its `qualified_name`. Matching is exact on the short name and substring
 /// on the qualified name, so callers can pass either form for the impl/trait

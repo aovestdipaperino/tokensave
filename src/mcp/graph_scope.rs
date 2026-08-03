@@ -27,7 +27,11 @@ impl GraphSelector {
             .transpose()?;
         let Some(root) = root else {
             if branch.is_some() {
-                return Err(config_error("graph_branch requires a matching graph_root"));
+                return Err(config_error(
+                    "graph_branch requires a matching graph_root; omit graph_branch to query \
+                     the currently served graph (selecting a different branch of the served \
+                     project is not supported)",
+                ));
             }
             return Ok(None);
         };
@@ -98,9 +102,15 @@ pub(crate) async fn select_graph(
         ))
     })?;
     if canonical_root == canonical_served_root {
-        return Err(config_error(
-            "graph_root selects the same project already served by this MCP server",
-        ));
+        let remedy = if selector.branch.is_some() {
+            "; omit graph_root and graph_branch to query the currently served graph \
+             (selecting a different branch of the served project is not supported)"
+        } else {
+            "; omit graph_root to query it"
+        };
+        return Err(config_error(format!(
+            "graph_root selects the same project already served by this MCP server{remedy}"
+        )));
     }
 
     let canonical_utf8 = canonical_root.to_str().ok_or_else(|| {
@@ -735,6 +745,54 @@ mod tests {
             let message = error_text(select_graph(selector, served.path()).await);
             assert!(message.contains(needle), "{message}");
         }
+    }
+
+    #[tokio::test]
+    async fn same_root_rejection_guides_omission_and_branch_limits() {
+        let served = tempfile::tempdir().unwrap();
+
+        let message = error_text(
+            select_graph(
+                GraphSelector {
+                    root: served.path().to_path_buf(),
+                    branch: None,
+                },
+                served.path(),
+            )
+            .await,
+        );
+        assert!(message.contains("same project"), "{message}");
+        assert!(message.contains("omit graph_root to query it"), "{message}");
+
+        let message = error_text(
+            select_graph(
+                GraphSelector {
+                    root: served.path().to_path_buf(),
+                    branch: Some("feature".to_string()),
+                },
+                served.path(),
+            )
+            .await,
+        );
+        assert!(
+            message.contains("omit graph_root and graph_branch"),
+            "{message}"
+        );
+        assert!(message.contains("not supported"), "{message}");
+    }
+
+    #[test]
+    fn branch_without_root_guides_omission_and_branch_limits() {
+        let mut arguments = json!({ "graph_branch": "feature" });
+
+        let message = error_text(GraphSelector::take(&mut arguments));
+
+        assert!(
+            message.contains("requires a matching graph_root"),
+            "{message}"
+        );
+        assert!(message.contains("omit graph_branch"), "{message}");
+        assert!(message.contains("not supported"), "{message}");
     }
 
     #[tokio::test]

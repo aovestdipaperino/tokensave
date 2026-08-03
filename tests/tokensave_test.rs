@@ -179,7 +179,38 @@ async fn open_read_only_rejects_untracked_explicit_branch() {
     assert!(error
         .to_string()
         .contains("branch 'missing' is not tracked"));
+    assert!(error.to_string().contains("in the selected project"));
+    assert!(error.to_string().contains("tokensave branch add 'missing'"));
     fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_untracked_branch_remedy_quotes_branch_name() {
+    let fixture = setup_tracked_branch_project().await;
+
+    let error = TokenSave::open_read_only(fixture.root(), Some("it's"))
+        .await
+        .err()
+        .expect("untracked explicit branch should fail");
+
+    assert!(error
+        .to_string()
+        .contains("tokensave branch add 'it'\\''s'"));
+}
+
+#[tokio::test]
+async fn open_branch_rejects_untracked_branch_with_remedy() {
+    let fixture = setup_tracked_branch_project().await;
+
+    let error = TokenSave::open_branch(fixture.root(), "missing")
+        .await
+        .err()
+        .expect("untracked branch should fail");
+
+    assert!(error
+        .to_string()
+        .contains("branch 'missing' is not tracked"));
+    assert!(error.to_string().contains("tokensave branch add 'missing'"));
 }
 
 #[tokio::test]
