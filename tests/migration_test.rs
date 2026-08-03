@@ -91,6 +91,21 @@ async fn index_exists(conn: &Connection, index_name: &str) -> bool {
         .is_some()
 }
 
+/// Checks whether a trigger exists in sqlite_master.
+async fn trigger_exists(conn: &Connection, trigger_name: &str) -> bool {
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?1",
+            libsql::params![trigger_name],
+        )
+        .await
+        .expect("failed to query sqlite_master");
+    rows.next()
+        .await
+        .expect("failed to read sqlite_master row")
+        .is_some()
+}
+
 /// Checks whether a column exists on a table via PRAGMA table_info.
 async fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     let mut rows = conn
@@ -1303,4 +1318,142 @@ async fn test_migrate_v9_adds_read_cache() {
         index_exists(&conn, "idx_read_cache_session").await,
         "v9 migration should create idx_read_cache_session"
     );
+}
+
+/// V15 restores secondary indexes and FTS triggers dropped by an interrupted
+/// bulk load, even when the dirty sentinel is absent (#358).
+#[tokio::test]
+async fn test_migrate_v15_restores_missing_indexes_and_triggers() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+
+    // Simulate an interrupted bulk load: drop all indexes and FTS triggers
+    // exactly as `begin_bulk_load` does, leaving the DB unindexed.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_nodes_kind;
+         DROP INDEX IF EXISTS idx_nodes_name;
+         DROP INDEX IF EXISTS idx_nodes_qualified_name;
+         DROP INDEX IF EXISTS idx_nodes_file_path;
+         DROP INDEX IF EXISTS idx_nodes_file_path_start_line;
+         DROP INDEX IF EXISTS idx_edges_source;
+         DROP INDEX IF EXISTS idx_edges_target;
+         DROP INDEX IF EXISTS idx_edges_kind;
+         DROP INDEX IF EXISTS idx_edges_source_kind;
+         DROP INDEX IF EXISTS idx_edges_target_kind;
+         DROP INDEX IF EXISTS idx_edges_unique;
+         DROP INDEX IF EXISTS idx_unresolved_refs_from_node_id;
+         DROP INDEX IF EXISTS idx_unresolved_refs_reference_name;
+         DROP INDEX IF EXISTS idx_unresolved_refs_file_path;
+         DROP TRIGGER IF EXISTS nodes_fts_insert;
+         DROP TRIGGER IF EXISTS nodes_fts_delete;
+         DROP TRIGGER IF EXISTS nodes_fts_update;
+         DROP TRIGGER IF EXISTS trait_dispatch_call_insert;
+         DROP TRIGGER IF EXISTS trait_dispatch_implements_insert;
+         DROP TRIGGER IF EXISTS trait_dispatch_call_delete;
+         DROP TRIGGER IF EXISTS trait_dispatch_implements_delete;",
+    )
+    .await
+    .expect("failed to simulate interrupted bulk load");
+    set_user_version(&conn, 14).await;
+
+    // Run migrations - v15 should recreate everything.
+    assert!(migrate(&conn).await.expect("v15 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // Node indexes
+    assert!(index_exists(&conn, "idx_nodes_kind").await);
+    assert!(index_exists(&conn, "idx_nodes_name").await);
+    assert!(index_exists(&conn, "idx_nodes_qualified_name").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path_start_line").await);
+
+    // Edge indexes
+    assert!(index_exists(&conn, "idx_edges_source_kind").await);
+    assert!(index_exists(&conn, "idx_edges_target_kind").await);
+    assert!(index_exists(&conn, "idx_edges_kind").await);
+    assert!(index_exists(&conn, "idx_edges_unique").await);
+
+    // Unresolved refs indexes
+    assert!(index_exists(&conn, "idx_unresolved_refs_from_node_id").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_reference_name").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_file_path").await);
+
+    // FTS triggers exist (the core heal - without these the FTS index
+    // goes stale on every later sync).
+    assert!(trigger_exists(&conn, "nodes_fts_insert").await);
+    assert!(trigger_exists(&conn, "nodes_fts_delete").await);
+    assert!(trigger_exists(&conn, "nodes_fts_update").await);
+
+    // Trait-dispatch triggers (also dropped by begin_bulk_load).
+    assert!(trigger_exists(&conn, "trait_dispatch_call_insert").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_implements_insert").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_call_delete").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_implements_delete").await);
+}
+
+/// V15 is idempotent - running it on an already-healthy DB is a no-op.
+#[tokio::test]
+async fn test_migrate_v15_idempotent_on_healthy_db() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+    set_user_version(&conn, 14).await;
+
+    assert!(migrate(&conn).await.expect("migrate should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // All indexes still present - no error, no data loss.
+    assert!(index_exists(&conn, "idx_edges_unique").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_from_node_id").await);
+}
+
+/// #359: `migrate_v15` must be a safe no-op on a partial schema. A DB whose
+/// `nodes` table predates `parent_id` and that has no `edges` /
+/// `unresolved_refs` / `nodes_fts` (an old or hand-rolled schema) must migrate
+/// without erroring on `no such table: edges` or `no such column: parent_id`.
+/// It still restores the node indexes it can, and never touches `parent_id`
+/// (which bulk load does not drop) or the absent tables.
+#[tokio::test]
+async fn test_migrate_v15_partial_schema_does_not_error() {
+    let (conn, _db, _dir) = create_raw_db().await;
+    // A minimal, pre-`parent_id` nodes table and nothing else.
+    conn.execute_batch(
+        "CREATE TABLE nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+    .await
+    .expect("create minimal nodes table");
+    // Only v15 runs.
+    set_user_version(&conn, 14).await;
+
+    assert!(
+        migrate(&conn)
+            .await
+            .expect("v15 must not error on a partial schema"),
+        "a pending v15 migration should report as run"
+    );
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // Restores the node indexes it can…
+    assert!(index_exists(&conn, "idx_nodes_kind").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path_start_line").await);
+    // …without touching parent_id (never dropped by bulk load) or the absent
+    // edges table.
+    assert!(!column_exists(&conn, "nodes", "parent_id").await);
+    assert!(!index_exists(&conn, "idx_nodes_parent_id").await);
+    assert!(!index_exists(&conn, "idx_edges_source_kind").await);
 }
