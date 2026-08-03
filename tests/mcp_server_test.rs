@@ -7,6 +7,7 @@
 
 use serde_json::{json, Value};
 use std::fs;
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokensave::mcp::transport::ChannelTransport;
@@ -31,6 +32,102 @@ async fn setup_server() -> (Arc<McpServer>, TempDir) {
     cg.index_all().await.unwrap();
     let server = McpServer::new(cg, None).await;
     (server, dir)
+}
+
+async fn setup_named_project(function_name: &str) -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        format!("fn {function_name}() -> i32 {{ 42 }}\n"),
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (cg, dir)
+}
+
+async fn setup_fallback_project(function_name: &str) -> (TokenSave, TempDir) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        format!("fn {function_name}() -> i32 {{ 42 }}\n"),
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=TokenSave Test",
+            "-c",
+            "user.email=tokensave@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    ] {
+        let status = ProcessCommand::new("git")
+            .args(args)
+            .current_dir(project)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let status = ProcessCommand::new("git")
+        .args(["checkout", "-qb", "feature"])
+        .current_dir(project)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    (cg, dir)
+}
+
+async fn call_server(server: &Arc<McpServer>, id: i64, name: &str, arguments: Value) -> Value {
+    let (mut transport, _sender, mut receiver) = ChannelTransport::new();
+    let request = jsonrpc_request(
+        json!(id),
+        "tools/call",
+        json!({ "name": name, "arguments": arguments }),
+    );
+    server.handle_and_write(&request, &mut transport).await;
+    let response = receiver.recv().await.expect("expected tool response");
+    parse_response(response.trim())
+}
+
+fn response_text(response: &Value) -> String {
+    response["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn first_graph_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => value
+            .split(|character: char| {
+                !(character.is_ascii_alphanumeric() || character == '_' || character == ':')
+            })
+            .find(|token| {
+                let parts = token.split(':').collect::<Vec<_>>();
+                parts.len() == 4
+                    && parts[0] == "graph"
+                    && parts[1].len() == 32
+                    && parts[3].len() == 32
+            })
+            .map(ToString::to_string),
+        Value::Array(values) => values.iter().find_map(first_graph_id),
+        Value::Object(values) => values.values().find_map(first_graph_id),
+        _ => None,
+    }
 }
 
 /// Sends a sequence of JSON-RPC messages to a server, runs it to completion,
@@ -317,6 +414,505 @@ async fn test_tools_call_search() {
             .unwrap_or(false)
     });
     assert!(has_helper, "search results should contain 'helper'");
+}
+
+#[tokio::test]
+async fn selected_search_is_stateless_and_preserves_local_default() {
+    let (local, local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let graph_root = foreign_dir.path().display().to_string();
+
+    let selected = call_server(
+        &server,
+        33,
+        "tokensave_search",
+        json!({ "query": "foreign_only", "graph_root": graph_root }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
+    let selected_text = response_text(&selected);
+    assert!(selected_text.contains("foreign_only"), "{selected_text}");
+    assert!(!selected_text.contains("local_only"), "{selected_text}");
+    assert_eq!(
+        selected["result"]["_meta"]["tokensave"]["graph_root"],
+        foreign_dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    assert_eq!(selected["result"]["_meta"]["tokensave"]["selected"], true);
+    assert!(
+        selected_text.contains("tokensave_graph:"),
+        "{selected_text}"
+    );
+
+    let repeated = call_server(
+        &server,
+        34,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(repeated["error"].is_null(), "{repeated}");
+    assert!(response_text(&repeated).contains("foreign_only"));
+
+    let local = call_server(
+        &server,
+        35,
+        "tokensave_search",
+        json!({ "query": "local_only" }),
+    )
+    .await;
+    assert!(local["error"].is_null(), "{local}");
+    let local_text = response_text(&local);
+    assert!(local_text.contains("local_only"), "{local_text}");
+    assert!(!local_text.contains("foreign_only"), "{local_text}");
+    assert!(local["result"]["_meta"]["tokensave"].is_null(), "{local}");
+
+    drop(local_dir);
+}
+
+#[tokio::test]
+async fn selected_truncated_structured_output_returns_clear_error() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let foreign_dir = TempDir::new().unwrap();
+    fs::create_dir_all(foreign_dir.path().join("src")).unwrap();
+    let source = (0..500)
+        .map(|index| format!("fn huge_item_{index:03}() -> usize {{ {index} }}\n"))
+        .collect::<String>();
+    fs::write(foreign_dir.path().join("src/lib.rs"), source).unwrap();
+    let foreign = TokenSave::init(foreign_dir.path()).await.unwrap();
+    foreign.index_all().await.unwrap();
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        36,
+        "tokensave_search",
+        json!({
+            "query": "huge_item",
+            "limit": 500,
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], -32603, "{response}");
+    let message = response["error"]["message"].as_str().unwrap();
+    assert!(message.contains("truncated"), "{message}");
+    assert!(message.contains("lower limit"), "{message}");
+    assert!(message.contains("narrow scope"), "{message}");
+}
+
+#[tokio::test]
+async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
+    let (local, local_dir) = setup_named_project("before_edit").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let graph_root = foreign_dir.path().display().to_string();
+
+    let calls = [
+        (
+            "tokensave_status",
+            json!({ "graph_root": graph_root.clone() }),
+        ),
+        (
+            "tokensave_str_replace",
+            json!({
+                "path": "src/main.rs",
+                "old_str": "before_edit",
+                "new_str": "after_edit",
+                "graph_root": graph_root.clone()
+            }),
+        ),
+        (
+            "tokensave_run_affected_tests",
+            json!({
+                "changed_paths": ["src/main.rs"],
+                "graph_root": graph_root
+            }),
+        ),
+    ];
+
+    for (index, (name, arguments)) in calls.into_iter().enumerate() {
+        let response = call_server(&server, 40 + index as i64, name, arguments).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not support graph_root")),
+            "{response}"
+        );
+    }
+
+    let source = fs::read_to_string(local_dir.path().join("src/main.rs")).unwrap();
+    assert!(source.contains("before_edit"), "{source}");
+    assert!(!source.contains("after_edit"), "{source}");
+    let stats = server.server_stats_json().await;
+    assert_eq!(stats["tool_calls"], 3, "{stats}");
+    assert_eq!(stats["tool_call_counts"]["tokensave_status"], 1, "{stats}");
+    assert_eq!(
+        stats["tool_call_counts"]["tokensave_str_replace"], 1,
+        "{stats}"
+    );
+    assert_eq!(
+        stats["tool_call_counts"]["tokensave_run_affected_tests"], 1,
+        "{stats}"
+    );
+}
+
+#[tokio::test]
+async fn invalid_graph_selectors_return_invalid_params() {
+    let (local, local_dir) = setup_named_project("local_only").await;
+    let server = McpServer::new(local, None).await;
+    let uninitialized = TempDir::new().unwrap();
+    let cases = [
+        (json!({ "graph_root": "relative" }), "absolute"),
+        (
+            json!({ "graph_root": uninitialized.path().display().to_string() }),
+            "initialized",
+        ),
+        (
+            json!({ "graph_root": local_dir.path().display().to_string() }),
+            "same project",
+        ),
+        (json!({ "graph_branch": "feature" }), "requires"),
+    ];
+
+    for (index, (selector, expected)) in cases.into_iter().enumerate() {
+        let mut arguments = json!({ "query": "anything" });
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(selector.as_object().unwrap().clone());
+        let response = call_server(&server, 50 + index as i64, "tokensave_search", arguments).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(expected)),
+            "expected {expected:?} in {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_database_open_failure_returns_internal_error() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    fs::write(
+        foreign_dir.path().join(".tokensave/tokensave.db"),
+        b"not a sqlite database",
+    )
+    .unwrap();
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        58,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], -32603, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("failed to open selected graph")),
+        "{response}"
+    );
+}
+
+#[tokio::test]
+async fn graph_scoped_tool_without_selector_preserves_handler_argument_errors() {
+    let (server, _dir) = setup_server().await;
+
+    let response = call_server(&server, 59, "tokensave_search", Value::Null).await;
+
+    assert_eq!(response["error"]["code"], -32603, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing required parameter: query")),
+        "{response}"
+    );
+}
+
+#[tokio::test]
+async fn qualified_follow_up_routes_to_matching_selected_graph() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let (other, other_dir) = setup_named_project("other_only").await;
+    drop(other);
+    let server = McpServer::new(local, None).await;
+
+    let search = call_server(
+        &server,
+        60,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    let qualified = first_graph_id(&search["result"])
+        .unwrap_or_else(|| panic!("selected response contains no qualified node ID: {search}"));
+
+    let follow_up = call_server(
+        &server,
+        61,
+        "tokensave_node",
+        json!({
+            "node_id": qualified.clone(),
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(follow_up["error"].is_null(), "{follow_up}");
+    assert!(response_text(&follow_up).contains("foreign_only"));
+    assert_eq!(follow_up["result"]["_meta"]["tokensave"]["selected"], true);
+
+    let raw = qualified.splitn(3, ':').nth(2).unwrap();
+    let raw_response = call_server(
+        &server,
+        62,
+        "tokensave_node",
+        json!({
+            "node_id": raw,
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert_eq!(raw_response["error"]["code"], -32602, "{raw_response}");
+
+    let wrong_graph = call_server(
+        &server,
+        63,
+        "tokensave_node",
+        json!({
+            "node_id": qualified.clone(),
+            "graph_root": other_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert_eq!(wrong_graph["error"]["code"], -32602, "{wrong_graph}");
+
+    let no_selector = call_server(
+        &server,
+        64,
+        "tokensave_node",
+        json!({ "node_id": qualified }),
+    )
+    .await;
+    assert_eq!(no_selector["error"]["code"], -32602, "{no_selector}");
+    assert!(
+        no_selector["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("graph_root")),
+        "{no_selector}"
+    );
+}
+
+#[tokio::test]
+async fn selected_graph_ignores_local_scope_and_local_warnings() {
+    let (local, local_dir) = setup_named_project("local_only").await;
+    fs::write(
+        local_dir.path().join("src/main.rs"),
+        "fn locally_stale() {}\n",
+    )
+    .unwrap();
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, Some("path/that/does/not/exist".to_string())).await;
+
+    let selected = call_server(
+        &server,
+        65,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
+    let text = response_text(&selected);
+    assert!(text.contains("foreign_only"), "{text}");
+    assert!(!text.contains("were edited after the last sync"), "{text}");
+    assert!(!text.contains("worktree"), "{text}");
+    assert!(!text.contains("tokensave v"), "{text}");
+}
+
+#[tokio::test]
+async fn selected_warnings_use_canonical_selected_root_remedies() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_fallback_project("foreign_only").await;
+    foreign
+        .db()
+        .set_metadata("last_sync_at", "1")
+        .await
+        .unwrap();
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let canonical_root = foreign_dir.path().canonicalize().unwrap();
+
+    let response = call_server(
+        &server,
+        66,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    let text = response_text(&response);
+    let quoted_root = format!("\"{}\"", canonical_root.display());
+    assert!(text.contains(&quoted_root), "{text}");
+    assert!(
+        text.contains("Run Tokensave synchronization from selected project root"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Add or refresh selected branch \"feature\""),
+        "{text}"
+    );
+    assert!(!text.contains('`'), "{text}");
+    assert!(!text.contains("tokensave sync --path"), "{text}");
+    assert!(!text.contains("tokensave branch add"), "{text}");
+}
+
+#[tokio::test]
+async fn selected_calls_skip_metrics_and_preserve_local_schema_charge() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_request(json!(70), "tools/list", json!({})),
+            jsonrpc_request(
+                json!(71),
+                "tools/call",
+                json!({
+                    "name": "tokensave_search",
+                    "arguments": {
+                        "query": "foreign_only",
+                        "graph_root": foreign_dir.path().display().to_string()
+                    }
+                }),
+            ),
+            jsonrpc_request(
+                json!(72),
+                "tools/call",
+                json!({
+                    "name": "tokensave_search",
+                    "arguments": { "query": "local_only" }
+                }),
+            ),
+            jsonrpc_request(
+                json!(73),
+                "tools/call",
+                json!({
+                    "name": "tokensave_search",
+                    "arguments": { "query": "local_only" }
+                }),
+            ),
+        ],
+    )
+    .await;
+
+    let selected = parse_response(
+        responses
+            .iter()
+            .find(|response| parse_response(response)["id"] == 71)
+            .unwrap(),
+    );
+    assert!(
+        !response_text(&selected).contains("tokensave_metrics:"),
+        "{selected}"
+    );
+    let first_local = responses
+        .iter()
+        .find(|response| parse_response(response)["id"] == 72)
+        .unwrap();
+    let second_local = responses
+        .iter()
+        .find(|response| parse_response(response)["id"] == 73)
+        .unwrap();
+    assert!(
+        extract_metrics_field(first_local, "after") > extract_metrics_field(second_local, "after"),
+        "selected call must not consume the local schema charge"
+    );
+}
+
+#[tokio::test]
+async fn first_selected_call_does_not_consume_local_version_reindex_gate() {
+    let (local, local_dir) = setup_named_project("local_only").await;
+    let mut config = tokensave::config::load_config(local_dir.path()).unwrap();
+    config.last_indexed_version = String::new();
+    tokensave::config::save_config(local_dir.path(), &config).unwrap();
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+
+    let selected = call_server(
+        &server,
+        74,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
+    assert!(
+        !server.version_reindex_done(),
+        "selected call must not evaluate the local reindex gate"
+    );
+
+    let local = call_server(
+        &server,
+        75,
+        "tokensave_search",
+        json!({ "query": "local_only" }),
+    )
+    .await;
+    assert!(local["error"].is_null(), "{local}");
+    assert!(
+        server
+            .wait_for_version_reindex(std::time::Duration::from_secs(30))
+            .await,
+        "later local call must trigger the version reindex"
+    );
+    assert_eq!(
+        tokensave::config::load_config(local_dir.path())
+            .unwrap()
+            .last_indexed_version,
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 // ---------------------------------------------------------------------------

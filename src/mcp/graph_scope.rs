@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -68,7 +67,6 @@ impl GraphIdentity {
 pub(crate) struct SelectedGraph {
     pub(crate) cg: TokenSave,
     pub(crate) identity: GraphIdentity,
-    pub(crate) canonical_root: PathBuf,
     pub(crate) provenance_root: String,
 }
 
@@ -118,7 +116,6 @@ pub(crate) async fn select_graph(
     Ok(SelectedGraph {
         cg,
         identity,
-        canonical_root,
         provenance_root,
     })
 }
@@ -177,33 +174,267 @@ pub(crate) async fn qualify_result(
 ) -> Result<()> {
     let mut value = result.value.clone();
     let mut candidates = HashSet::new();
-    visit_strings(&value, &mut |value| {
-        for range in raw_node_id_ranges(value) {
-            if !is_already_qualified(value, range.start) {
-                candidates.insert(value[range].to_string());
-            }
-        }
-        Ok(())
-    })?;
+    collect_result_reference_ids(&value, &mut candidates)?;
 
     let candidate_ids: Vec<String> = candidates.into_iter().collect();
-    let confirmed: HashSet<String> = selected
-        .cg
-        .db()
-        .get_nodes_by_ids(&candidate_ids)
-        .await?
-        .into_iter()
-        .map(|node| node.id)
-        .collect();
+    let confirmed: HashSet<String> = if candidate_ids.is_empty() {
+        HashSet::new()
+    } else {
+        selected
+            .cg
+            .db()
+            .get_nodes_by_ids(&candidate_ids)
+            .await?
+            .into_iter()
+            .map(|node| node.id)
+            .collect()
+    };
 
-    visit_strings_mut(&mut value, &mut |value| {
-        *value = qualify_confirmed_ids(value, &confirmed, &selected.identity);
-        Ok(())
-    })?;
-
+    rewrite_result_reference_ids(&mut value, &confirmed, &selected.identity)?;
     attach_provenance(selected, &mut value)?;
     result.value = value;
     Ok(())
+}
+
+fn collect_result_reference_ids(value: &Value, candidates: &mut HashSet<String>) -> Result<()> {
+    collect_reference_fields(value, candidates);
+    let Some(content) = value.get("content").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for item in content {
+        let Some(text) = item.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        // Truncation can cut a raw node ID in half, so qualification cannot be
+        // proven complete and returning a mix of qualified and raw IDs would let
+        // a caller replay an unqualified ID against the wrong graph. Payloads
+        // that carry no node IDs at all (file listings, for example) have
+        // nothing to qualify and stay usable.
+        if has_truncation_notice(text) && contains_raw_node_id(text) {
+            return Err(config_error(
+                "selected graph tool output was truncated before node references could be safely \
+                 qualified; lower limit, narrow scope, or use a smaller line range and retry",
+            ));
+        }
+        match serde_json::from_str::<Value>(text) {
+            Ok(payload) => {
+                collect_reference_fields(&payload, candidates);
+                collect_structured_read_body(&payload, candidates)?;
+            }
+            Err(_) => collect_context_seen_node_ids(text, candidates)?,
+        }
+    }
+    Ok(())
+}
+
+fn has_truncation_notice(text: &str) -> bool {
+    let Some((_, notice)) = text.rsplit_once("\n\n") else {
+        return false;
+    };
+    notice
+        .strip_prefix("[... truncated at ")
+        .and_then(|value| value.strip_suffix(" chars]"))
+        .is_some_and(|count| !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn contains_raw_node_id(text: &str) -> bool {
+    text.split(|character: char| {
+        !(character.is_ascii_alphanumeric() || character == '_' || character == ':')
+    })
+    .any(|token| {
+        let segments: Vec<&str> = token.split(':').collect();
+        segments
+            .windows(2)
+            .any(|pair| is_exact_raw_node_id_parts(pair[0], pair[1]))
+    })
+}
+
+fn collect_reference_fields(value: &Value, candidates: &mut HashSet<String>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_reference_fields(value, candidates);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                if is_reference_key(key) {
+                    collect_reference_values(value, candidates);
+                } else {
+                    collect_reference_fields(value, candidates);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_reference_values(value: &Value, candidates: &mut HashSet<String>) {
+    match value {
+        Value::String(value) if is_exact_raw_node_id(value) => {
+            candidates.insert(value.clone());
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_reference_values(value, candidates);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_structured_read_body(payload: &Value, candidates: &mut HashSet<String>) -> Result<()> {
+    let Some(object) = payload.as_object() else {
+        return Ok(());
+    };
+    let Some(mode) = object.get("mode").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if !matches!(mode, "map" | "signatures") {
+        return Ok(());
+    }
+    let Some(body) = object.get("body").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let body: Value = serde_json::from_str(body)?;
+    collect_reference_fields(&body, candidates);
+    Ok(())
+}
+
+fn collect_context_seen_node_ids(text: &str, candidates: &mut HashSet<String>) -> Result<()> {
+    for line in text.lines() {
+        let Some(ids) = line.strip_prefix("seen_node_ids: ") else {
+            continue;
+        };
+        let ids: Value = serde_json::from_str(ids)?;
+        collect_reference_values(&ids, candidates);
+    }
+    Ok(())
+}
+
+fn rewrite_result_reference_ids(
+    value: &mut Value,
+    confirmed: &HashSet<String>,
+    identity: &GraphIdentity,
+) -> Result<()> {
+    rewrite_reference_fields(value, confirmed, identity);
+    let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    for item in content {
+        let Some(text) = item
+            .get_mut("text")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let rewritten = match serde_json::from_str::<Value>(&text) {
+            Ok(mut payload) => {
+                let changed = rewrite_reference_fields(&mut payload, confirmed, identity)
+                    | rewrite_structured_read_body(&mut payload, confirmed, identity)?;
+                changed.then(|| serde_json::to_string_pretty(&payload).unwrap_or(text.clone()))
+            }
+            Err(_) => rewrite_context_seen_node_ids(&text, confirmed, identity)?,
+        };
+        if let Some(rewritten) = rewritten {
+            item["text"] = Value::String(rewritten);
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_reference_fields(
+    value: &mut Value,
+    confirmed: &HashSet<String>,
+    identity: &GraphIdentity,
+) -> bool {
+    match value {
+        Value::Array(values) => values.iter_mut().fold(false, |changed, value| {
+            rewrite_reference_fields(value, confirmed, identity) | changed
+        }),
+        Value::Object(values) => values.iter_mut().fold(false, |changed, (key, value)| {
+            if is_reference_key(key) {
+                rewrite_reference_values(value, confirmed, identity) | changed
+            } else {
+                rewrite_reference_fields(value, confirmed, identity) | changed
+            }
+        }),
+        _ => false,
+    }
+}
+
+fn rewrite_reference_values(
+    value: &mut Value,
+    confirmed: &HashSet<String>,
+    identity: &GraphIdentity,
+) -> bool {
+    match value {
+        Value::String(raw_id) if confirmed.contains(raw_id) => {
+            *raw_id = identity.qualify(raw_id);
+            true
+        }
+        Value::Array(values) => values.iter_mut().fold(false, |changed, value| {
+            rewrite_reference_values(value, confirmed, identity) | changed
+        }),
+        _ => false,
+    }
+}
+
+fn rewrite_structured_read_body(
+    payload: &mut Value,
+    confirmed: &HashSet<String>,
+    identity: &GraphIdentity,
+) -> Result<bool> {
+    let Some(object) = payload.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(mode) = object.get("mode").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    if !matches!(mode, "map" | "signatures") {
+        return Ok(false);
+    }
+    let Some(body) = object.get_mut("body") else {
+        return Ok(false);
+    };
+    let Some(body_text) = body.as_str() else {
+        return Ok(false);
+    };
+    let mut structured: Value = serde_json::from_str(body_text)?;
+    if !rewrite_reference_fields(&mut structured, confirmed, identity) {
+        return Ok(false);
+    }
+    *body = Value::String(serde_json::to_string_pretty(&structured)?);
+    Ok(true)
+}
+
+fn rewrite_context_seen_node_ids(
+    text: &str,
+    confirmed: &HashSet<String>,
+    identity: &GraphIdentity,
+) -> Result<Option<String>> {
+    let mut changed = false;
+    let mut output = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = line
+            .strip_suffix('\n')
+            .map_or((line, ""), |body| (body, "\n"));
+        let Some(ids) = body.strip_prefix("seen_node_ids: ") else {
+            output.push_str(line);
+            continue;
+        };
+        let mut ids: Value = serde_json::from_str(ids)?;
+        changed |= rewrite_reference_values(&mut ids, confirmed, identity);
+        output.push_str("seen_node_ids: ");
+        output.push_str(&serde_json::to_string(&ids)?);
+        output.push_str(newline);
+    }
+    Ok(changed.then_some(output))
+}
+
+fn is_reference_key(key: &str) -> bool {
+    key == "id" || key.ends_with("_id") || key.ends_with("_ids") || key == "dispatch_from"
 }
 
 fn required_string(value: &Value, name: &str) -> Result<String> {
@@ -247,96 +478,13 @@ fn is_exact_raw_node_id(value: &str) -> bool {
     let Some((kind, digest)) = value.split_once(':') else {
         return false;
     };
+    is_exact_raw_node_id_parts(kind, digest)
+}
+
+fn is_exact_raw_node_id_parts(kind: &str, digest: &str) -> bool {
     NodeKind::from_str(kind).is_some()
         && digest.len() == 32
         && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn raw_node_id_ranges(value: &str) -> Vec<Range<usize>> {
-    let bytes = value.as_bytes();
-    let mut ranges = Vec::new();
-    let mut start = 0;
-
-    while start < bytes.len() {
-        if !is_token_byte(bytes[start]) {
-            start += 1;
-            continue;
-        }
-        if start > 0 && is_token_byte(bytes[start - 1]) {
-            start += 1;
-            continue;
-        }
-
-        let mut colon = start;
-        while colon < bytes.len() && is_token_byte(bytes[colon]) {
-            colon += 1;
-        }
-        if colon == bytes.len() || bytes[colon] != b':' {
-            start = colon;
-            continue;
-        }
-
-        let kind = &value[start..colon];
-        let end = colon + 33;
-        let digest = bytes.get(colon + 1..end);
-        if NodeKind::from_str(kind).is_some()
-            && digest.is_some_and(|digest| digest.iter().all(u8::is_ascii_hexdigit))
-            && (end == bytes.len() || !is_token_byte(bytes[end]))
-        {
-            ranges.push(start..end);
-            start = end;
-        } else {
-            start = colon + 1;
-        }
-    }
-
-    ranges
-}
-
-fn is_token_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn is_already_qualified(value: &str, raw_start: usize) -> bool {
-    let Some(prefix) = value.get(..raw_start) else {
-        return false;
-    };
-    let Some(graph_start) = prefix.rfind("graph:") else {
-        return false;
-    };
-    let fingerprint = &prefix[graph_start + "graph:".len()..];
-    fingerprint.len() == 33
-        && fingerprint.ends_with(':')
-        && fingerprint[..32]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && (graph_start == 0 || !is_token_byte(prefix.as_bytes()[graph_start - 1]))
-}
-
-fn qualify_confirmed_ids(
-    value: &str,
-    confirmed: &HashSet<String>,
-    identity: &GraphIdentity,
-) -> String {
-    let ranges = raw_node_id_ranges(value);
-    if ranges.is_empty() {
-        return value.to_string();
-    }
-
-    let mut output = String::with_capacity(value.len());
-    let mut copied_until = 0;
-    for range in ranges {
-        output.push_str(&value[copied_until..range.start]);
-        let raw_id = &value[range.clone()];
-        if confirmed.contains(raw_id) && !is_already_qualified(value, range.start) {
-            output.push_str(&identity.qualify(raw_id));
-        } else {
-            output.push_str(raw_id);
-        }
-        copied_until = range.end;
-    }
-    output.push_str(&value[copied_until..]);
-    output
 }
 
 fn attach_provenance(selected: &SelectedGraph, value: &mut Value) -> Result<()> {
@@ -435,47 +583,6 @@ fn visit_input_strings_mut(
         Value::Object(values) => {
             for (field, value) in values {
                 visit_input_strings_mut(value, Some(field), visitor)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn visit_strings(value: &Value, visitor: &mut impl FnMut(&str) -> Result<()>) -> Result<()> {
-    match value {
-        Value::String(value) => visitor(value),
-        Value::Array(values) => {
-            for value in values {
-                visit_strings(value, visitor)?;
-            }
-            Ok(())
-        }
-        Value::Object(values) => {
-            for value in values.values() {
-                visit_strings(value, visitor)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn visit_strings_mut(
-    value: &mut Value,
-    visitor: &mut impl FnMut(&mut String) -> Result<()>,
-) -> Result<()> {
-    match value {
-        Value::String(value) => visitor(value),
-        Value::Array(values) => {
-            for value in values {
-                visit_strings_mut(value, visitor)?;
-            }
-            Ok(())
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                visit_strings_mut(value, visitor)?;
             }
             Ok(())
         }
@@ -855,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_id_recognition_requires_valid_kind_hex_length_and_boundaries() {
+    fn raw_id_recognition_requires_valid_kind_and_hex_length() {
         assert!(is_exact_raw_node_id(RAW_ID));
         assert!(!is_exact_raw_node_id(
             "unknown:0123456789abcdef0123456789abcdef"
@@ -866,19 +973,6 @@ mod tests {
         assert!(!is_exact_raw_node_id(
             "function:0123456789abcdef0123456789abcdef0"
         ));
-
-        let prose = format!("x{RAW_ID} {RAW_ID}0 ({RAW_ID})");
-        let matches = raw_node_id_ranges(&prose);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(&prose[matches[0].clone()], RAW_ID);
-        assert!(raw_node_id_ranges("function:ééééééééééééééé€").is_empty());
-    }
-
-    #[test]
-    fn raw_id_scanner_handles_max_size_punctuation_input() {
-        let input = ".,;!".repeat(3_750);
-        assert_eq!(input.len(), 15_000);
-        assert!(raw_node_id_ranges(&input).is_empty());
     }
 
     #[tokio::test]
@@ -905,22 +999,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn qualify_result_rewrites_confirmed_ids_and_attaches_single_db_provenance() {
+    async fn qualify_result_rewrites_only_confirmed_reference_fields() {
         let (_served, graph, selected) = selected_graph(true).await;
         let qualified = selected.identity.qualify(RAW_ID);
-        let already_qualified = qualified.clone();
         let mut result = ToolResult {
             value: json!({
                 "content": [{
                     "type": "text",
-                    "text": format!(
-                        "structured={RAW_ID}; missing={MISSING_ID}; existing={already_qualified}"
-                    )
+                    "text": serde_json::to_string_pretty(&json!({
+                        "id": RAW_ID,
+                        "node_ids": [RAW_ID, null],
+                        "parent_id": RAW_ID,
+                        "dispatch_from": RAW_ID,
+                        "missing_id": MISSING_ID,
+                        "source": RAW_ID,
+                        "signature": RAW_ID,
+                        "prose": format!("mentions {RAW_ID}")
+                    })).unwrap()
                 }],
                 "structured": {
                     "id": RAW_ID,
-                    "missing": MISSING_ID,
-                    "nested": [RAW_ID]
+                    "missing_id": MISSING_ID,
+                    "source": RAW_ID
                 }
             }),
             touched_files: vec![],
@@ -929,8 +1029,8 @@ mod tests {
         qualify_result(&selected, &mut result).await.unwrap();
 
         assert_eq!(result.value["structured"]["id"], qualified);
-        assert_eq!(result.value["structured"]["nested"], json!([qualified]));
-        assert_eq!(result.value["structured"]["missing"], MISSING_ID);
+        assert_eq!(result.value["structured"]["missing_id"], MISSING_ID);
+        assert_eq!(result.value["structured"]["source"], RAW_ID);
         let content = result.value["content"].as_array().unwrap();
         assert_eq!(
             content[0]["text"],
@@ -939,14 +1039,15 @@ mod tests {
                 normalize_provenance_path(graph.path().canonicalize().unwrap().to_str().unwrap())
             )
         );
-        let body = content[1]["text"].as_str().unwrap();
-        assert!(body.contains(&format!("structured={qualified}")), "{body}");
-        assert!(body.contains(&format!("missing={MISSING_ID}")), "{body}");
-        assert!(
-            body.contains(&format!("existing={already_qualified}")),
-            "{body}"
-        );
-        assert!(!body.contains("graph:graph:"), "{body}");
+        let body: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["id"], qualified);
+        assert_eq!(body["node_ids"], json!([qualified, null]));
+        assert_eq!(body["parent_id"], qualified);
+        assert_eq!(body["dispatch_from"], qualified);
+        assert_eq!(body["missing_id"], MISSING_ID);
+        assert_eq!(body["source"], RAW_ID);
+        assert_eq!(body["signature"], RAW_ID);
+        assert_eq!(body["prose"], format!("mentions {RAW_ID}"));
         assert_eq!(
             result.value["_meta"]["tokensave"]["graph_root"],
             normalize_provenance_path(graph.path().canonicalize().unwrap().to_str().unwrap())
@@ -957,5 +1058,185 @@ mod tests {
         );
         assert_eq!(result.value["_meta"]["tokensave"]["selected"], true);
         assert_eq!(result.value["_meta"]["tokensave"]["read_only"], true);
+    }
+
+    #[tokio::test]
+    async fn qualify_result_rewrites_context_seen_node_ids_only() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let qualified = selected.identity.qualify(RAW_ID);
+        let mut result = ToolResult {
+            value: json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Code containing {RAW_ID}\n\nseen_node_ids: [\"{RAW_ID}\",\"{MISSING_ID}\"]\n"
+                    )
+                }]
+            }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        let text = result.value["content"][1]["text"].as_str().unwrap();
+        assert!(
+            text.contains(&format!("Code containing {RAW_ID}")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "seen_node_ids: [\"{qualified}\",\"{MISSING_ID}\"]"
+            )),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn qualify_result_rewrites_structured_read_body_but_preserves_source_modes() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let qualified = selected.identity.qualify(RAW_ID);
+        let structured_body = serde_json::to_string_pretty(&json!({
+            "symbols": [{
+                "id": RAW_ID,
+                "signature": RAW_ID,
+                "source": RAW_ID
+            }]
+        }))
+        .unwrap();
+        let mut result = ToolResult {
+            value: json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&json!({
+                            "file": "src/lib.rs",
+                            "mode": "map",
+                            "body": structured_body
+                        })).unwrap()
+                    },
+                    {
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&json!({
+                            "file": "src/lib.rs",
+                            "mode": "signatures",
+                            "body": structured_body
+                        })).unwrap()
+                    },
+                    {
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&json!({
+                            "file": "src/lib.rs",
+                            "mode": "full",
+                            "body": RAW_ID
+                        })).unwrap()
+                    },
+                    {
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&json!({
+                            "file": "src/lib.rs",
+                            "mode": "lines",
+                            "body": RAW_ID
+                        })).unwrap()
+                    }
+                ]
+            }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        let content = result.value["content"].as_array().unwrap();
+        for item in &content[1..=2] {
+            let payload: Value = serde_json::from_str(item["text"].as_str().unwrap()).unwrap();
+            let body: Value = serde_json::from_str(payload["body"].as_str().unwrap()).unwrap();
+            assert_eq!(body["symbols"][0]["id"], qualified);
+            assert_eq!(body["symbols"][0]["signature"], RAW_ID);
+            assert_eq!(body["symbols"][0]["source"], RAW_ID);
+        }
+        for item in &content[3..=4] {
+            let payload: Value = serde_json::from_str(item["text"].as_str().unwrap()).unwrap();
+            assert_eq!(payload["body"], RAW_ID);
+        }
+    }
+
+    #[tokio::test]
+    async fn qualify_result_does_not_double_qualify_references() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let qualified = selected.identity.qualify(RAW_ID);
+        let mut result = ToolResult {
+            value: json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string(&json!({ "id": qualified })).unwrap()
+                }]
+            }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        let payload: Value =
+            serde_json::from_str(result.value["content"][1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["id"], qualified);
+    }
+
+    #[tokio::test]
+    async fn qualify_result_rejects_truncated_structured_text_atomically() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let text = format!(
+            "{{\"id\":\"{RAW_ID}\",\"padding\":\"{}\n\n[... truncated at 15000 chars]",
+            "x".repeat(15_100)
+        );
+        let mut result = ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": text }]
+            }),
+            touched_files: vec!["src/lib.rs".to_string()],
+        };
+        let original = result.value.clone();
+
+        let message = error_text(qualify_result(&selected, &mut result).await);
+
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.contains("lower limit"), "{message}");
+        assert!(message.contains("narrow scope"), "{message}");
+        assert!(message.contains("smaller line range"), "{message}");
+        assert_eq!(result.value, original);
+        assert_eq!(result.touched_files, vec!["src/lib.rs"]);
+    }
+
+    #[tokio::test]
+    async fn qualify_result_allows_truncated_output_without_node_ids() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let text = format!(
+            "src/lib.rs\n{}\n\n[... truncated at 15000 chars]",
+            "src/other.rs\n".repeat(1_200)
+        );
+        let mut result = ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": text }]
+            }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        assert_eq!(result.value["content"][1]["text"], text);
+    }
+
+    #[tokio::test]
+    async fn qualify_result_preserves_untruncated_non_json_prose_without_trailer() {
+        let (_served, _graph, selected) = selected_graph(true).await;
+        let prose = format!("ordinary prose containing {RAW_ID}");
+        let mut result = ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": prose }]
+            }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        assert_eq!(result.value["content"][1]["text"], prose);
     }
 }
