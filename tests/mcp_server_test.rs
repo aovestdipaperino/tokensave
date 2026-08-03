@@ -1234,11 +1234,29 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
             "same project".to_string(),
         ),
         (
+            json!({ "graph_root": local_dir.path().display().to_string() }),
+            "omit graph_root to query it".to_string(),
+        ),
+        (
+            json!({
+                "graph_root": local_dir.path().display().to_string(),
+                "graph_branch": "feature"
+            }),
+            "not supported".to_string(),
+        ),
+        (
             json!({
                 "graph_root": selected_dir.path().display().to_string(),
                 "graph_branch": "untracked"
             }),
             "not tracked".to_string(),
+        ),
+        (
+            json!({
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "untracked"
+            }),
+            "tokensave branch add".to_string(),
         ),
         (
             json!({
@@ -1250,6 +1268,10 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
         (
             json!({ "graph_branch": "feature" }),
             "requires a matching graph_root".to_string(),
+        ),
+        (
+            json!({ "graph_branch": "feature" }),
+            "omit graph_branch".to_string(),
         ),
     ];
 
