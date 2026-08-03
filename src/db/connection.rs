@@ -68,6 +68,7 @@ pub struct Database {
     conn: Connection,
     /// Kept alive so the underlying database is not dropped.
     _db: LibsqlDatabase,
+    read_only: bool,
     pub(super) trait_dispatch_callers: RwLock<HashMap<String, Vec<CachedTraitDispatchCaller>>>,
 }
 
@@ -120,6 +121,7 @@ impl Database {
         let database = Self {
             conn,
             _db: db,
+            read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
         };
         database.refresh_trait_dispatch_callers().await?;
@@ -166,6 +168,7 @@ impl Database {
         let database = Self {
             conn,
             _db: db,
+            read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
         };
         database.refresh_trait_dispatch_callers().await?;
@@ -245,6 +248,7 @@ impl Database {
         let database = Self {
             conn,
             _db: db,
+            read_only: true,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
         };
         database.refresh_trait_dispatch_callers().await?;
@@ -254,6 +258,11 @@ impl Database {
     /// Returns a reference to the underlying libsql connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Returns whether this handle was explicitly opened in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Consumes the `Database`, closing the underlying connection.
