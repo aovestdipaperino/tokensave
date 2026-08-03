@@ -4,6 +4,12 @@
 //! query the code graph interactively. Exposes tools for searching, context
 //! building, call graph traversal, impact analysis, and more.
 
+#[allow(
+    dead_code,
+    reason = "Task 5 wires selected graph routing into MCP dispatch"
+)]
+pub(crate) mod graph_scope;
+
 /// MCP server implementation.
 pub mod server;
 
