@@ -334,14 +334,96 @@ fn test_add_to_gitignore_reports_failure_when_unwritable() {
 
 #[test]
 fn test_resolve_path_with_value() {
-    let result = resolve_path(Some("/tmp/myproject".to_string()));
-    assert_eq!(result, std::path::PathBuf::from("/tmp/myproject"));
+    // An absolute argument is passed through verbatim. On Windows that requires
+    // a drive: `/tmp/myproject` is rooted but driveless, so it is not absolute
+    // there and is resolved against the current drive instead.
+    let absolute = if cfg!(windows) {
+        r"C:\tmp\myproject"
+    } else {
+        "/tmp/myproject"
+    };
+    let result = resolve_path(Some(absolute.to_string()));
+    assert_eq!(result, std::path::PathBuf::from(absolute));
+}
+
+#[cfg(windows)]
+#[test]
+fn resolve_path_gives_a_driveless_rooted_path_the_current_drive() {
+    let result = resolve_path(Some(r"\tmp\myproject".to_string()));
+    assert!(
+        result.is_absolute(),
+        "a driveless rooted path must gain a drive, got {}",
+        result.display()
+    );
+    assert!(result.ends_with(r"tmp\myproject"));
 }
 
 #[test]
 fn test_resolve_path_none_uses_cwd() {
     let result = resolve_path(None);
     assert!(!result.as_os_str().is_empty());
+}
+
+#[test]
+fn resolve_path_makes_dot_absolute() {
+    let result = resolve_path(Some(".".to_string()));
+    assert!(
+        result.is_absolute(),
+        "`.` must resolve to an absolute path, got {}",
+        result.display()
+    );
+    assert_eq!(result, std::env::current_dir().unwrap());
+}
+
+#[test]
+fn resolve_path_resolves_parent_segments_without_touching_the_filesystem() {
+    let result = resolve_path(Some("nested/../sibling".to_string()));
+    assert!(result.is_absolute());
+    assert_eq!(result, std::env::current_dir().unwrap().join("sibling"));
+    assert!(
+        !result.to_string_lossy().contains(".."),
+        "`..` must be resolved, got {}",
+        result.display()
+    );
+}
+
+#[test]
+fn resolve_path_makes_a_relative_argument_absolute() {
+    let result = resolve_path(Some("nested/child".to_string()));
+    assert!(
+        result.is_absolute(),
+        "a relative argument must resolve to an absolute path, got {}",
+        result.display()
+    );
+    assert!(result.ends_with("nested/child"));
+}
+
+#[test]
+fn resolve_path_leaves_an_absolute_argument_alone() {
+    let absolute = if cfg!(windows) {
+        r"C:\projects\myproject"
+    } else {
+        "/tmp/myproject"
+    };
+    let result = resolve_path(Some(absolute.to_string()));
+    assert_eq!(result, std::path::PathBuf::from(absolute));
+}
+
+#[test]
+fn resolve_path_with_discovery_makes_dot_absolute() {
+    let result = tokensave::config::resolve_path_with_discovery(Some(".".to_string()));
+    assert!(
+        result.is_absolute(),
+        "`.` must resolve to an absolute path, got {}",
+        result.display()
+    );
+}
+
+#[test]
+fn resolve_path_with_discovery_makes_a_relative_argument_absolute() {
+    let result = tokensave::config::resolve_path_with_discovery(Some("nested/child".to_string()));
+    assert!(result.is_absolute());
+    assert!(result.ends_with("nested/child"));
 }
 
 #[test]

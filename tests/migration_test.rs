@@ -1,7 +1,9 @@
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokensave::db::migrations::{create_schema, latest_version, migrate};
 use tokensave::db::Database;
+use tokensave::errors::TokenSaveError;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,6 +49,16 @@ async fn get_user_version(conn: &Connection) -> u32 {
         .expect("user_version should return a row");
     let v: i64 = row.get(0).expect("failed to read user_version value");
     v as u32
+}
+
+fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = db_path.as_os_str().to_os_string();
+    path.push(suffix);
+    path.into()
+}
+
+fn file_bytes(path: &Path) -> Vec<u8> {
+    std::fs::read(path).expect("failed to read database bytes")
 }
 
 /// Checks whether a table exists in sqlite_master.
@@ -668,6 +680,238 @@ async fn test_database_open_migrates_v1_to_latest() {
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
     assert_eq!(version as u32, latest_version());
+}
+
+#[tokio::test]
+async fn read_only_open_current_schema_queries_without_writes_or_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only.db");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.close();
+    let before = file_bytes(&db_path);
+
+    let db = Database::open_read_only(&db_path)
+        .await
+        .expect("read-only open should succeed");
+
+    let mut rows = db
+        .conn()
+        .query("PRAGMA user_version", ())
+        .await
+        .expect("read-only query should succeed");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read result")
+        .expect("query should return a row");
+    assert_eq!(
+        row.get::<i64>(0).expect("failed to read schema version") as u32,
+        latest_version()
+    );
+
+    let write_error = db
+        .conn()
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('read_only', 'must fail')",
+            (),
+        )
+        .await
+        .expect_err("writes must fail on a read-only connection");
+    assert!(
+        write_error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("readonly"),
+        "unexpected write error: {write_error}"
+    );
+
+    db.close();
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_old.db");
+    {
+        let raw_db = Builder::new_local(&db_path)
+            .build()
+            .await
+            .expect("failed to build libsql database");
+        let conn = raw_db.connect().expect("failed to connect");
+        create_v1_schema(&conn).await;
+    }
+    let before = file_bytes(&db_path);
+
+    let error = Database::open_read_only(&db_path)
+        .await
+        .err()
+        .expect("old schemas must be rejected");
+
+    assert!(
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
+        "unexpected schema error: {error}"
+    );
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_rejects_newer_schema_as_config_error_without_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_newer.db");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.conn()
+        .execute(
+            &format!("PRAGMA user_version = {}", latest_version() + 1),
+            (),
+        )
+        .await
+        .expect("failed to set future schema version");
+    db.checkpoint()
+        .await
+        .expect("failed to checkpoint database");
+    db.close();
+    let before = file_bytes(&db_path);
+
+    let error = Database::open_read_only(&db_path)
+        .await
+        .err()
+        .expect("newer schemas must be rejected");
+
+    assert!(
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
+        "unexpected schema error: {error}"
+    );
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_reads_active_non_empty_wal() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_live_wal.db");
+    let raw_db = Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("failed to build libsql database");
+    let conn = raw_db.connect().expect("failed to connect");
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .await
+        .expect("failed to configure WAL");
+    create_schema(&conn)
+        .await
+        .expect("failed to create current schema");
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('active_wal', 'visible')",
+        (),
+    )
+    .await
+    .expect("failed to write active WAL row");
+
+    let wal_path = sidecar_path(&db_path, "-wal");
+    assert!(
+        std::fs::metadata(&wal_path)
+            .expect("live WAL should exist")
+            .len()
+            > 0,
+        "live WAL should be non-empty"
+    );
+
+    let db = Database::open_read_only(&db_path)
+        .await
+        .expect("read-only open should coordinate with an active WAL");
+    let mut rows = db
+        .conn()
+        .query("SELECT value FROM metadata WHERE key = 'active_wal'", ())
+        .await
+        .expect("failed to query active WAL row");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read active WAL row")
+        .expect("active WAL row should be visible");
+    assert_eq!(
+        row.get_str(0).expect("failed to read active WAL value"),
+        "visible"
+    );
+}
+
+#[tokio::test]
+async fn read_only_open_remains_valid_while_writer_writes_and_checkpoints() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_concurrent.db");
+    let (initialized, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    initialized.close();
+
+    let writer_db = Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("failed to build writer database");
+    let writer = writer_db.connect().expect("failed to connect writer");
+    writer
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .await
+        .expect("failed to configure writer WAL");
+
+    let reader = Database::open_read_only(&db_path)
+        .await
+        .expect("failed to open reader");
+    writer
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('concurrent', 'visible')",
+            (),
+        )
+        .await
+        .expect("writer insert should succeed");
+    writer
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .await
+        .expect("writer checkpoint should succeed");
+
+    let mut rows = reader
+        .conn()
+        .query("SELECT value FROM metadata WHERE key = 'concurrent'", ())
+        .await
+        .expect("reader should remain valid after checkpoint");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read concurrent row")
+        .expect("reader should see the checkpointed write");
+    assert_eq!(
+        row.get_str(0).expect("failed to read concurrent value"),
+        "visible"
+    );
+}
+
+#[tokio::test]
+async fn read_only_open_accepts_relative_database_path() {
+    let cwd = std::env::current_dir().expect("failed to read current directory");
+    let dir = TempDir::new_in(&cwd).expect("failed to create temp dir under current directory");
+    let db_path = dir.path().join("relative.db");
+    let relative_path = db_path
+        .strip_prefix(&cwd)
+        .expect("temporary database should be under current directory");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.close();
+
+    let db = Database::open_read_only(relative_path)
+        .await
+        .expect("read-only open should accept a relative path");
+    assert_eq!(get_user_version(db.conn()).await, latest_version());
 }
 
 /// V13 repairs v12 databases missing the trait-dispatch cache table.

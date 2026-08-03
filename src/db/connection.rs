@@ -68,6 +68,7 @@ pub struct Database {
     conn: Connection,
     /// Kept alive so the underlying database is not dropped.
     _db: LibsqlDatabase,
+    read_only: bool,
     pub(super) trait_dispatch_callers: RwLock<HashMap<String, Vec<CachedTraitDispatchCaller>>>,
 }
 
@@ -120,6 +121,7 @@ impl Database {
         let database = Self {
             conn,
             _db: db,
+            read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
         };
         database.refresh_trait_dispatch_callers().await?;
@@ -166,15 +168,105 @@ impl Database {
         let database = Self {
             conn,
             _db: db,
+            read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
         };
         database.refresh_trait_dispatch_callers().await?;
         Ok((database, migrated))
     }
 
+    /// Opens a current, checkpointed database without changing it.
+    pub async fn open_read_only(db_path: &Path) -> Result<Self> {
+        let mut attempt = 1;
+        loop {
+            match Self::try_open_read_only(db_path).await {
+                Ok(database) => return Ok(database),
+                Err(error)
+                    if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&error) =>
+                {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn try_open_read_only(db_path: &Path) -> Result<Self> {
+        let db = libsql::Builder::new_local(db_path)
+            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .build()
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to open database read-only: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+        let conn = db.connect().map_err(|error| TokenSaveError::Database {
+            message: format!("failed to connect to database read-only: {error}"),
+            operation: "open_read_only".to_string(),
+        })?;
+
+        conn.execute_batch("PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;")
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to apply read-only pragmas: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+
+        let mut rows = conn
+            .query("PRAGMA user_version", ())
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to read database schema version: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+        let row = rows
+            .next()
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to read database schema version: {error}"),
+                operation: "open_read_only".to_string(),
+            })?
+            .ok_or_else(|| TokenSaveError::Database {
+                message: "database did not report a schema version".to_string(),
+                operation: "open_read_only".to_string(),
+            })?;
+        let version: i64 = row.get(0).map_err(|error| TokenSaveError::Database {
+            message: format!("failed to decode database schema version: {error}"),
+            operation: "open_read_only".to_string(),
+        })?;
+        let latest = migrations::latest_version();
+        if version != i64::from(latest) {
+            let remedy = if version < i64::from(latest) {
+                "run `tokensave sync` in the selected project to migrate it"
+            } else {
+                "upgrade Tokensave to a version compatible with the selected project"
+            };
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "database schema version {version} does not match required version {latest}; {remedy}"
+                ),
+            });
+        }
+
+        let database = Self {
+            conn,
+            _db: db,
+            read_only: true,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok(database)
+    }
+
     /// Returns a reference to the underlying libsql connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Returns whether this handle was explicitly opened in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Consumes the `Database`, closing the underlying connection.

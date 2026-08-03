@@ -399,9 +399,51 @@ fn git_info_exclude_path(project_path: &Path) -> Option<PathBuf> {
 /// working directory.
 pub fn resolve_path(path: Option<String>) -> PathBuf {
     match path {
-        Some(p) => PathBuf::from(p),
+        Some(p) => absolutize(PathBuf::from(p)),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     }
+}
+
+/// Anchors a non-absolute CLI path argument to the current working directory.
+///
+/// Absolute arguments are returned untouched, so a project root a user already
+/// stored keeps its exact spelling, symlinks included.
+///
+/// On Windows a leading-slash path such as `/tmp/project` has a root but no
+/// drive, so `is_absolute` is false and it is resolved against the current
+/// drive. That matches how Windows itself resolves such a path, and it is
+/// required here: leaving it alone would hand a non-absolute path to callers
+/// that require one.
+///
+/// The result is normalized lexically rather than with `canonicalize`, which
+/// would fail on a path that does not exist yet and, on Windows, would return a
+/// `\\?\` verbatim prefix that then leaks into stored roots and user-facing
+/// messages. Normalizing by components also keeps this consistent with the
+/// absolute case, where symlinks are likewise left as the user spelled them.
+fn absolutize(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return path;
+    };
+    normalize_lexically(&cwd.join(path))
+}
+
+/// Removes `.` and resolves `..` textually, without touching the filesystem.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Walks from `start` upward looking for a `.tokensave/tokensave.db`.
@@ -429,7 +471,7 @@ pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
 /// create a fresh project at the target directory).
 pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     if let Some(p) = path {
-        PathBuf::from(p)
+        absolutize(PathBuf::from(p))
     } else {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         discover_project_root(&cwd).unwrap_or(cwd)
