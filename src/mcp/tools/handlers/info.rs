@@ -1305,11 +1305,38 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let project_root = cg.project_root().to_path_buf();
     let project_id = project_root.to_string_lossy().to_string();
     let rel_path = file.trim_start_matches('/').to_string();
-    let abs_path = if std::path::Path::new(file).is_absolute() {
+    let mut abs_path = if std::path::Path::new(file).is_absolute() {
         std::path::PathBuf::from(file)
     } else {
         project_root.join(&rel_path)
     };
+    if cg.db().is_read_only() {
+        let canonical_root =
+            project_root
+                .canonicalize()
+                .map_err(|error| TokenSaveError::Config {
+                    message: format!(
+                        "cannot canonicalize selected graph root '{}': {error}",
+                        project_root.display()
+                    ),
+                })?;
+        let canonical_path = abs_path
+            .canonicalize()
+            .map_err(|error| TokenSaveError::Config {
+                message: format!(
+                    "cannot canonicalize selected tokensave_read path '{file}': {error}"
+                ),
+            })?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                    canonical_root.display()
+                ),
+            });
+        }
+        abs_path = canonical_path;
+    }
     let display_file = if abs_path.starts_with(&project_root) {
         abs_path
             .strip_prefix(&project_root)

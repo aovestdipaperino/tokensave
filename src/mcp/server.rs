@@ -1980,6 +1980,13 @@ impl McpServer {
 
                 JsonRpcResponse::success(id, result.value)
             }
+            Err(TokenSaveError::Config { message }) if selected.is_some() => {
+                JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InvalidParams,
+                    format!("invalid selected graph arguments: {message}"),
+                )
+            }
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,

@@ -206,7 +206,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_entities()),
         graph_scoped(def_implementations()),
         graph_scoped(def_unsafe_patterns()),
-        graph_scoped(def_diagnostics()),
+        def_diagnostics(),
         def_config(),
         graph_scoped(def_signature_search()),
         graph_scoped(def_constructors()),
@@ -2625,7 +2625,6 @@ mod tests {
             "tokensave_entities",
             "tokensave_implementations",
             "tokensave_unsafe_patterns",
-            "tokensave_diagnostics",
             "tokensave_signature_search",
             "tokensave_constructors",
             "tokensave_field_sites",
@@ -2705,6 +2704,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
+        assert_eq!(actual.len(), 50);
         assert_eq!(actual, canonical);
     }
 

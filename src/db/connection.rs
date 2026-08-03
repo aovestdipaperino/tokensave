@@ -237,11 +237,15 @@ impl Database {
         })?;
         let latest = migrations::latest_version();
         if version != i64::from(latest) {
-            return Err(TokenSaveError::Database {
+            let remedy = if version < i64::from(latest) {
+                "run `tokensave sync` in the selected project to migrate it"
+            } else {
+                "upgrade Tokensave to a version compatible with the selected project"
+            };
+            return Err(TokenSaveError::Config {
                 message: format!(
-                    "database schema version {version} does not match required version {latest}; run `tokensave sync` to migrate it"
+                    "database schema version {version} does not match required version {latest}; {remedy}"
                 ),
-                operation: "open_read_only".to_string(),
             });
         }
 

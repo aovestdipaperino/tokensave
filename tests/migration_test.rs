@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokensave::db::migrations::{create_schema, latest_version, migrate};
 use tokensave::db::Database;
+use tokensave::errors::TokenSaveError;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -735,7 +736,45 @@ async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
         .expect("old schemas must be rejected");
 
     assert!(
-        error.to_string().contains("schema version"),
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
+        "unexpected schema error: {error}"
+    );
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_rejects_newer_schema_as_config_error_without_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_newer.db");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.conn()
+        .execute(
+            &format!("PRAGMA user_version = {}", latest_version() + 1),
+            (),
+        )
+        .await
+        .expect("failed to set future schema version");
+    db.checkpoint()
+        .await
+        .expect("failed to checkpoint database");
+    db.close();
+    let before = file_bytes(&db_path);
+
+    let error = Database::open_read_only(&db_path)
+        .await
+        .err()
+        .expect("newer schemas must be rejected");
+
+    assert!(
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
         "unexpected schema error: {error}"
     );
     assert_eq!(file_bytes(&db_path), before);

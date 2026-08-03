@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tempfile::TempDir;
 use tokensave::branch_meta;
-use tokensave::db::Database;
+use tokensave::db::{migrations::latest_version, Database};
 use tokensave::mcp::transport::ChannelTransport;
 use tokensave::mcp::McpServer;
 use tokensave::tokensave::TokenSave;
@@ -866,6 +866,83 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
 }
 
 #[tokio::test]
+async fn selected_read_rejects_paths_outside_canonical_selected_root() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let container = TempDir::new().unwrap();
+    let selected_root = container.path().join("selected");
+    fs::create_dir_all(selected_root.join("src")).unwrap();
+    fs::write(
+        selected_root.join("src/main.rs"),
+        "fn selected_inside() {}\n",
+    )
+    .unwrap();
+    let selected = TokenSave::init(&selected_root).await.unwrap();
+    selected.index_all().await.unwrap();
+    selected.checkpoint().await.unwrap();
+    drop(selected);
+
+    let outside = container.path().join("outside-secret.txt");
+    let secret = "OUTSIDE_BYTES_MUST_NOT_BE_RETURNED";
+    fs::write(&outside, secret).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, selected_root.join("linked-secret.txt")).unwrap();
+
+    let server = McpServer::new(local, None).await;
+    let graph_root = selected_root.display().to_string();
+    let db_path = selected_root.join(".tokensave/tokensave.db");
+    let cache_rows_before = read_cache_row_count(&db_path).await;
+    let mut paths = vec![
+        outside.display().to_string(),
+        "../outside-secret.txt".to_string(),
+    ];
+    #[cfg(unix)]
+    paths.push("linked-secret.txt".to_string());
+
+    for (index, file) in paths.into_iter().enumerate() {
+        let response = call_server(
+            &server,
+            37 + index as i64,
+            "tokensave_read",
+            json!({
+                "file": file,
+                "mode": "full",
+                "graph_root": graph_root
+            }),
+        )
+        .await;
+
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        let serialized = serde_json::to_string(&response).unwrap();
+        assert!(!serialized.contains(secret), "{serialized}");
+        assert!(!serialized.contains("tokensave_graph:"), "{serialized}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("selected graph root")),
+            "{response}"
+        );
+    }
+
+    let inside = call_server(
+        &server,
+        41,
+        "tokensave_read",
+        json!({
+            "file": selected_root.join("src/main.rs").display().to_string(),
+            "mode": "full",
+            "graph_root": graph_root
+        }),
+    )
+    .await;
+    assert!(inside["error"].is_null(), "{inside}");
+    assert!(
+        response_text(&inside).contains("selected_inside"),
+        "{inside}"
+    );
+    assert_eq!(read_cache_row_count(&db_path).await, cache_rows_before);
+}
+
+#[tokio::test]
 async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
     let (local, _local_dir) = setup_named_project("local_only").await;
     let selected_dir = setup_colliding_project().await;
@@ -1098,6 +1175,47 @@ async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
 }
 
 #[tokio::test]
+async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_branch_project().await;
+    fs::write(
+        selected_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"selected-diagnostics\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let server = McpServer::new(local, None).await;
+    let graph_root = selected_dir.path().display().to_string();
+    let target = selected_dir.path().join(".tokensave/target");
+
+    for (index, arguments) in [
+        json!({ "graph_root": graph_root.clone() }),
+        json!({
+            "graph_root": graph_root,
+            "graph_branch": "feature"
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let response = call_server(
+            &server,
+            43 + index as i64,
+            "tokensave_diagnostics",
+            arguments,
+        )
+        .await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not support graph_root")),
+            "{response}"
+        );
+        assert!(!target.exists(), "diagnostics created {}", target.display());
+    }
+}
+
+#[tokio::test]
 async fn selected_invalid_graph_selectors_return_invalid_params() {
     let (local, local_dir) = setup_named_project("local_only").await;
     let server = McpServer::new(local, None).await;
@@ -1183,6 +1301,121 @@ async fn selected_database_open_failure_returns_internal_error() {
             .is_some_and(|message| message.contains("failed to open selected graph")),
         "{response}"
     );
+}
+
+#[tokio::test]
+async fn selected_schema_mismatches_return_invalid_params() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let server = McpServer::new(local, None).await;
+
+    for (index, version) in [1, latest_version() + 1].into_iter().enumerate() {
+        let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+        foreign
+            .db()
+            .conn()
+            .execute(&format!("PRAGMA user_version = {version}"), ())
+            .await
+            .unwrap();
+        foreign.checkpoint().await.unwrap();
+        drop(foreign);
+
+        let response = call_server(
+            &server,
+            59 + index as i64,
+            "tokensave_search",
+            json!({
+                "query": "foreign_only",
+                "graph_root": foreign_dir.path().display().to_string()
+            }),
+        )
+        .await;
+
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("schema version")),
+            "{response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_malformed_node_ids_return_invalid_params_before_dispatch() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let graph_root = foreign_dir.path().display().to_string();
+
+    for (index, (name, arguments)) in [
+        (
+            "tokensave_node",
+            json!({
+                "node_id": "function:short",
+                "graph_root": graph_root.clone()
+            }),
+        ),
+        (
+            "tokensave_callers_for",
+            json!({
+                "node_ids": ["function:short"],
+                "graph_root": graph_root
+            }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let response = call_server(&server, 61 + index as i64, name, arguments).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("malformed node ID")),
+            "{response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_empty_node_ids_return_invalid_params_before_dispatch() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let graph_root = foreign_dir.path().display().to_string();
+
+    for (index, (name, arguments)) in [
+        (
+            "tokensave_node",
+            json!({
+                "node_id": "",
+                "graph_root": graph_root.clone()
+            }),
+        ),
+        (
+            "tokensave_callers_for",
+            json!({
+                "node_ids": [""],
+                "graph_root": graph_root
+            }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let response = call_server(&server, 63 + index as i64, name, arguments).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("malformed node ID")),
+            "{response}"
+        );
+    }
 }
 
 #[tokio::test]
