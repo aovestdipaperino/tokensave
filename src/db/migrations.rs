@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 14;
+const LATEST_VERSION: u32 = 15;
 
 pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
 CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
@@ -434,6 +434,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         12 => migrate_v12(conn).await,
         13 => migrate_v13(conn).await,
         14 => migrate_v14(conn).await,
+        15 => migrate_v15(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1322,6 +1323,162 @@ async fn migrate_v14(conn: &Connection) -> Result<()> {
         message: format!("v14: failed to recreate FTS table: {e}"),
         operation: "migrate_v14".to_string(),
     })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration V15: restore indexes and FTS triggers lost by an interrupted
+// bulk load (#358).  `begin_bulk_load` drops all secondary indexes and FTS
+// triggers; `end_bulk_load` recreates them — but only if it runs.  If the
+// process is killed mid-`index_all` and the `.tokensave/dirty` sentinel is
+// absent, the #318 healing path in `TokenSave::open` never triggers, and
+// no earlier migration checks for or restores the missing objects.  This
+// migration recreates every index and FTS trigger with `IF NOT EXISTS`, so
+// it is instant on a healthy DB and repairs a damaged one.
+//
+// It also fixes a second root cause: `end_bulk_load` recreates the pre-v14
+// FTS triggers (without the `search_terms` column) after every `index_all`
+// on a v14 DB, silently downgrading the FTS sync.  This migration drops
+// and recreates the triggers with the v14-era bodies, and `end_bulk_load`
+// is updated in the same change to match.
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if a table named `name` exists in the current database.
+///
+/// Repair migrations use this to stay no-ops on a partial schema: a DB that
+/// predates a given table, or a minimal fixture, must not make an
+/// unconditional `CREATE INDEX … ON <table>` fail with "no such table".
+async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    let mut rows = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![name],
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to probe sqlite_master for table '{name}': {e}"),
+            operation: "table_exists".to_string(),
+        })?;
+    let exists = rows
+        .next()
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read sqlite_master row for table '{name}': {e}"),
+            operation: "table_exists".to_string(),
+        })?
+        .is_some();
+    Ok(exists)
+}
+
+/// Recreates any missing secondary indexes and FTS triggers that an
+/// interrupted `begin_bulk_load` may have dropped and no prior migration
+/// restored.  Idempotent: `CREATE … IF NOT EXISTS` is a no-op when the
+/// object already exists.
+///
+/// Each object group is gated on its base table existing. On a healthy DB
+/// (the #358 repair target) every table is present and this changes nothing;
+/// the guards keep the migration a safe no-op on a partial schema — a DB
+/// migrated up from a version that predates a table, or a minimal test
+/// fixture — instead of erroring with "no such table: edges" (#359).
+async fn migrate_v15(conn: &Connection) -> Result<()> {
+    // --- Node indexes --------------------------------------------------
+    // Exactly the set `begin_bulk_load` drops and `end_bulk_load` restores —
+    // NOT the full `create_schema` set. `idx_nodes_lower_name` and
+    // `idx_nodes_parent_id` are deliberately omitted: bulk load never drops
+    // them, so they are never lost, and `idx_nodes_parent_id` would reference a
+    // `parent_id` column that only exists from v10 onward (#359).
+    if table_exists(conn, "nodes").await? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+            CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+            CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
+            CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
+            CREATE INDEX IF NOT EXISTS idx_nodes_file_path_start_line ON nodes(file_path, start_line);",
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v15: failed to recreate node indexes: {e}"),
+            operation: "migrate_v15".to_string(),
+        })?;
+    }
+
+    // --- Edge indexes --------------------------------------------------
+    if table_exists(conn, "edges").await? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
+            CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
+            CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique
+                ON edges(source, target, kind, COALESCE(line, -1));",
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v15: failed to recreate edge indexes: {e}"),
+            operation: "migrate_v15".to_string(),
+        })?;
+    }
+
+    // --- Unresolved-ref indexes ----------------------------------------
+    if table_exists(conn, "unresolved_refs").await? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);",
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v15: failed to recreate unresolved_refs indexes: {e}"),
+            operation: "migrate_v15".to_string(),
+        })?;
+    }
+
+    // --- FTS sync triggers (v14-era bodies with `search_terms`) ---------
+    // `end_bulk_load` may have recreated the pre-v14 triggers that omit
+    // `search_terms`.  Drop and recreate to ensure the current bodies. The
+    // triggers fire on `nodes` and write to `nodes_fts`, so both must exist;
+    // by this point `migrate_v14` has already given both the `search_terms`
+    // column.
+    if table_exists(conn, "nodes").await? && table_exists(conn, "nodes_fts").await? {
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS nodes_fts_insert;
+        DROP TRIGGER IF EXISTS nodes_fts_delete;
+        DROP TRIGGER IF EXISTS nodes_fts_update;
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
+            INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+            VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+            VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+            VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
+            INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+            VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
+        END;",
+    )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v15: failed to recreate FTS triggers: {e}"),
+            operation: "migrate_v15".to_string(),
+        })?;
+    }
+
+    // --- Trait-dispatch triggers ---------------------------------------
+    // Fire on `edges` and write to `trait_dispatch_callers`; both must exist.
+    if table_exists(conn, "edges").await? && table_exists(conn, "trait_dispatch_callers").await? {
+        conn.execute_batch(TRAIT_DISPATCH_TRIGGERS_SQL)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v15: failed to recreate trait dispatch triggers: {e}"),
+                operation: "migrate_v15".to_string(),
+            })?;
+    }
 
     Ok(())
 }
