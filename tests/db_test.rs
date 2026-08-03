@@ -62,6 +62,29 @@ async fn test_initialize_creates_database() {
 }
 
 #[tokio::test]
+async fn test_database_read_only_state_matches_open_mode() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("code_graph.db");
+
+    let (initialized, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    assert!(!initialized.is_read_only());
+    initialized.close();
+
+    let (opened, _) = Database::open(&db_path)
+        .await
+        .expect("failed to open database");
+    assert!(!opened.is_read_only());
+    opened.close();
+
+    let read_only = Database::open_read_only(&db_path)
+        .await
+        .expect("failed to open database read-only");
+    assert!(read_only.is_read_only());
+}
+
+#[tokio::test]
 async fn test_insert_and_get_node() {
     let (db, _dir) = setup_db().await;
     let node = sample_node("node-1", "process_data", "src/main.rs");

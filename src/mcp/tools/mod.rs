@@ -16,7 +16,8 @@ pub use accounting::{
     settle_session_debt, BaselinePolicy,
 };
 pub use definitions::{
-    ast_grep_available, get_always_load_tool_definitions, get_tool_definitions, CONTEXT_DESCRIPTION,
+    ast_grep_available, get_always_load_tool_definitions, get_tool_definitions,
+    is_graph_scoped_tool, CONTEXT_DESCRIPTION,
 };
 pub use handlers::handle_tool_call;
 

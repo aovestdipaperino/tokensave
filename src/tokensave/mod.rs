@@ -413,6 +413,71 @@ impl TokenSave {
         )
     }
 
+    /// Opens an initialized project database without mutating it.
+    pub async fn open_read_only(project_root: &Path, branch_name: Option<&str>) -> Result<Self> {
+        let tokensave_dir = get_tokensave_dir(project_root);
+        if !tokensave_dir.join("config.json").is_file() {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "'{}' is not an initialized TokenSave project root; \
+                     run `tokensave init` there",
+                    project_root.display()
+                ),
+            });
+        }
+
+        let config = load_config(project_root)?;
+        let active_branch = branch_name
+            .map(str::to_owned)
+            .or_else(|| branch::current_branch(project_root));
+
+        let (db_path, serving_branch, fallback_warning) = if let Some(explicit) = branch_name {
+            let meta = branch_meta::load_branch_meta(&tokensave_dir).ok_or_else(|| {
+                TokenSaveError::Config {
+                    message: "no branch tracking configured; run `tokensave branch add` first"
+                        .to_string(),
+                }
+            })?;
+            let path = branch::resolve_branch_db_path(&tokensave_dir, explicit, &meta).ok_or_else(
+                || TokenSaveError::Config {
+                    message: format!("branch '{explicit}' is not tracked"),
+                },
+            )?;
+            if !path.is_file() {
+                return Err(TokenSaveError::Config {
+                    message: format!(
+                        "branch '{explicit}' is tracked but its DB is missing at '{}'; \
+                         run `tokensave sync` in the selected project",
+                        path.display()
+                    ),
+                });
+            }
+            (path, Some(explicit.to_string()), None)
+        } else {
+            Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref())
+        };
+
+        if !db_path.is_file() {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "no TokenSave database found at '{}'; run `tokensave init` first",
+                    db_path.display()
+                ),
+            });
+        }
+
+        let db = Database::open_read_only(&db_path).await?;
+        Ok(Self {
+            db,
+            config,
+            project_root: project_root.to_path_buf(),
+            registry: LanguageRegistry::new(),
+            active_branch,
+            serving_branch,
+            fallback_warning,
+        })
+    }
+
     /// Opens a specific branch's DB for read-only queries.
     ///
     /// Returns an error if the branch is not tracked or the DB doesn't exist.

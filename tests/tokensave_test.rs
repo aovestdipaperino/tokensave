@@ -2,7 +2,10 @@
 //! by the MCP handler tests.
 
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tempfile::TempDir;
+use tokensave::branch_meta::{self, BranchMeta};
 use tokensave::tokensave::{is_test_file, TokenSave};
 use tokensave::types::NodeKind;
 
@@ -39,6 +42,299 @@ pub fn helper() { foo(); }
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     (cg, dir)
+}
+
+struct SelectedGraphFixture {
+    _dir: TempDir,
+    root: PathBuf,
+}
+
+impl SelectedGraphFixture {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn tokensave_dir(&self) -> PathBuf {
+        self.root.join(".tokensave")
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.tokensave_dir().join("config.json")
+    }
+
+    fn branch_meta_path(&self) -> PathBuf {
+        self.tokensave_dir().join("branch-meta.json")
+    }
+
+    fn metadata_snapshot(&self) -> (Vec<u8>, Option<Vec<u8>>) {
+        (
+            fs::read(self.config_path()).unwrap(),
+            fs::read(self.branch_meta_path()).ok(),
+        )
+    }
+
+    fn assert_metadata_unchanged(&self, before: &(Vec<u8>, Option<Vec<u8>>)) {
+        assert_eq!(fs::read(self.config_path()).unwrap(), before.0);
+        assert_eq!(fs::read(self.branch_meta_path()).ok(), before.1);
+    }
+}
+
+fn run_git(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "TokenSave Test")
+        .env("GIT_AUTHOR_EMAIL", "tokensave@example.com")
+        .env("GIT_COMMITTER_NAME", "TokenSave Test")
+        .env("GIT_COMMITTER_EMAIL", "tokensave@example.com")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn setup_single_db_project(symbol: &str) -> SelectedGraphFixture {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), format!("pub fn {symbol}() {{}}\n")).unwrap();
+
+    let graph = TokenSave::init(&root).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    SelectedGraphFixture { _dir: dir, root }
+}
+
+async fn setup_tracked_branch_project() -> SelectedGraphFixture {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    run_git(&root, &["init", "-b", "master"]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn master_only() {}\n").unwrap();
+    run_git(&root, &["add", "src/lib.rs"]);
+    run_git(&root, &["commit", "-m", "initial"]);
+
+    let graph = TokenSave::init(&root).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    let tokensave_dir = root.join(".tokensave");
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::copy(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches/feature.db"),
+    )
+    .unwrap();
+    let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
+    meta.add_branch("feature", "branches/feature.db", "master");
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    fs::write(root.join("src/lib.rs"), "pub fn feature_only() {}\n").unwrap();
+    let feature = TokenSave::open_branch(&root, "feature").await.unwrap();
+    feature.index_all().await.unwrap();
+    feature.checkpoint().await.unwrap();
+    drop(feature);
+
+    SelectedGraphFixture { _dir: dir, root }
+}
+
+#[tokio::test]
+async fn open_read_only_uses_explicit_tracked_branch() {
+    let fixture = setup_tracked_branch_project().await;
+    let before = fixture.metadata_snapshot();
+
+    let selected = TokenSave::open_read_only(fixture.root(), Some("feature"))
+        .await
+        .unwrap();
+
+    assert_eq!(selected.active_branch(), Some("feature"));
+    assert_eq!(selected.serving_branch(), Some("feature"));
+    assert_eq!(selected.fallback_warning(), None);
+    assert_eq!(
+        selected.db_path(),
+        fixture.tokensave_dir().join("branches/feature.db")
+    );
+    assert_eq!(selected.search("feature_only", 10).await.unwrap().len(), 1);
+    assert!(selected.search("master_only", 10).await.unwrap().is_empty());
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_rejects_untracked_explicit_branch() {
+    let fixture = setup_tracked_branch_project().await;
+    let before = fixture.metadata_snapshot();
+
+    let error = TokenSave::open_read_only(fixture.root(), Some("missing"))
+        .await
+        .err()
+        .expect("untracked explicit branch should fail");
+
+    assert!(error
+        .to_string()
+        .contains("branch 'missing' is not tracked"));
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_rejects_explicit_branch_with_missing_database() {
+    let fixture = setup_tracked_branch_project().await;
+    fs::remove_file(fixture.tokensave_dir().join("branches/feature.db")).unwrap();
+    let before = fixture.metadata_snapshot();
+
+    let error = TokenSave::open_read_only(fixture.root(), Some("feature"))
+        .await
+        .err()
+        .expect("explicit branch with missing database should fail");
+
+    assert!(error.to_string().contains("branch 'feature'"));
+    assert!(error.to_string().contains("DB is missing"));
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_rejects_explicit_branch_without_branch_metadata() {
+    let fixture = setup_single_db_project("single_only").await;
+    let before = fixture.metadata_snapshot();
+
+    let error = TokenSave::open_read_only(fixture.root(), Some("feature"))
+        .await
+        .err()
+        .expect("explicit branch without branch metadata should fail");
+
+    assert!(error.to_string().contains("no branch tracking configured"));
+    assert!(error.to_string().contains("tokensave branch add"));
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_omitted_branch_uses_existing_fallback() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    let before = fixture.metadata_snapshot();
+
+    let selected = TokenSave::open_read_only(fixture.root(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(selected.active_branch(), Some("work"));
+    assert_eq!(selected.serving_branch(), Some("master"));
+    assert!(selected
+        .fallback_warning()
+        .is_some_and(|warning| warning.contains("branch 'work' is not tracked")));
+    assert_eq!(selected.search("master_only", 10).await.unwrap().len(), 1);
+    assert!(selected
+        .search("feature_only", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_omitted_branch_does_not_auto_track() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.config_path()).unwrap()).unwrap();
+    config["auto_track"] = serde_json::Value::Bool(true);
+    fs::write(
+        fixture.config_path(),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    let before = fixture.metadata_snapshot();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "open_read_only_env_helper", "--nocapture"])
+        .env("TOKENSAVE_OPEN_READ_ONLY_TEST_ROOT", fixture.root())
+        .env("TOKENSAVE_AUTO_TRACK", "true")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!fixture.tokensave_dir().join("branches/work.db").exists());
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_env_helper() {
+    let Some(root) = std::env::var_os("TOKENSAVE_OPEN_READ_ONLY_TEST_ROOT") else {
+        return;
+    };
+    let selected = TokenSave::open_read_only(Path::new(&root), None)
+        .await
+        .unwrap();
+    assert_eq!(selected.serving_branch(), Some("master"));
+}
+
+#[tokio::test]
+async fn open_read_only_opens_branch_only_default_database_layout() {
+    let fixture = setup_single_db_project("branch_only").await;
+    let tokensave_dir = fixture.tokensave_dir();
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::rename(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches/master.db"),
+    )
+    .unwrap();
+    let mut meta = BranchMeta::new("master");
+    meta.branches.get_mut("master").unwrap().db_file = "branches/master.db".to_string();
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+    let before = fixture.metadata_snapshot();
+
+    let selected = TokenSave::open_read_only(fixture.root(), None)
+        .await
+        .unwrap();
+
+    assert!(!tokensave_dir.join("tokensave.db").exists());
+    assert_eq!(selected.serving_branch(), Some("master"));
+    assert_eq!(selected.search("branch_only", 10).await.unwrap().len(), 1);
+    fixture.assert_metadata_unchanged(&before);
+}
+
+#[tokio::test]
+async fn open_read_only_rejects_orphan_database_without_config() {
+    let dir = TempDir::new().unwrap();
+    let tokensave_dir = dir.path().join(".tokensave");
+    fs::create_dir_all(&tokensave_dir).unwrap();
+    let database_path = tokensave_dir.join("tokensave.db");
+    fs::write(&database_path, b"orphan").unwrap();
+    let before = fs::read(&database_path).unwrap();
+
+    let error = TokenSave::open_read_only(dir.path(), None)
+        .await
+        .err()
+        .expect("orphan database should fail exact-root validation");
+
+    assert!(error.to_string().contains("tokensave init"));
+    assert_eq!(fs::read(database_path).unwrap(), before);
+    assert!(!tokensave_dir.join("config.json").exists());
+}
+
+#[tokio::test]
+async fn open_read_only_opens_single_database_layout() {
+    let fixture = setup_single_db_project("single_only").await;
+    let before = fixture.metadata_snapshot();
+
+    let selected = TokenSave::open_read_only(fixture.root(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(selected.active_branch(), None);
+    assert_eq!(selected.serving_branch(), None);
+    assert_eq!(selected.fallback_warning(), None);
+    assert_eq!(selected.search("single_only", 10).await.unwrap().len(), 1);
+    fixture.assert_metadata_unchanged(&before);
 }
 
 // ---------------------------------------------------------------------------
