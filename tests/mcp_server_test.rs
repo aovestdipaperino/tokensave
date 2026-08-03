@@ -10,6 +10,7 @@ use std::fs;
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use tempfile::TempDir;
+use tokensave::db::Database;
 use tokensave::mcp::transport::ChannelTransport;
 use tokensave::mcp::McpServer;
 use tokensave::tokensave::TokenSave;
@@ -108,6 +109,16 @@ fn response_text(response: &Value) -> String {
         .filter_map(|item| item["text"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+async fn read_cache_row_count(db_path: &std::path::Path) -> i64 {
+    let db = Database::open_read_only(db_path).await.unwrap();
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM read_cache", ())
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get(0).unwrap()
 }
 
 fn first_graph_id(value: &Value) -> Option<String> {
@@ -477,6 +488,42 @@ async fn selected_search_is_stateless_and_preserves_local_default() {
     assert!(local["result"]["_meta"]["tokensave"].is_null(), "{local}");
 
     drop(local_dir);
+}
+
+#[tokio::test]
+async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
+    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (foreign, foreign_dir) = setup_named_project("foreign_read_source").await;
+    foreign.db().checkpoint().await.unwrap();
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+    let graph_root = foreign_dir.path().display().to_string();
+    let db_path = foreign_dir.path().join(".tokensave/tokensave.db");
+    let db_before = fs::read(&db_path).unwrap();
+    let cache_rows_before = read_cache_row_count(&db_path).await;
+    assert_eq!(cache_rows_before, 0);
+
+    for id in [35, 36] {
+        let response = call_server(
+            &server,
+            id,
+            "tokensave_read",
+            json!({
+                "file": "src/main.rs",
+                "mode": "full",
+                "graph_root": graph_root
+            }),
+        )
+        .await;
+
+        assert!(response["error"].is_null(), "{response}");
+        let text = response_text(&response);
+        assert!(text.contains("foreign_read_source"), "{text}");
+        assert!(!text.contains("\"unchanged\": true"), "{text}");
+    }
+
+    assert_eq!(read_cache_row_count(&db_path).await, cache_rows_before);
+    assert_eq!(fs::read(&db_path).unwrap(), db_before);
 }
 
 #[tokio::test]

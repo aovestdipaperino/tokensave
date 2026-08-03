@@ -1336,18 +1336,23 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let args_hash = read_cache::args_hash(&hash_input);
 
     let conn = cg.db().conn();
+    let cache_enabled = !cg.db().is_read_only();
 
-    if let Some(cached) = read_cache::get(
-        conn,
-        &project_id,
-        GLOBAL_SESSION,
-        &display_file,
-        mode.as_str(),
-        &args_hash,
-        mtime_ns,
-    )
-    .await?
-    {
+    let cached = if cache_enabled {
+        read_cache::get(
+            conn,
+            &project_id,
+            GLOBAL_SESSION,
+            &display_file,
+            mode.as_str(),
+            &args_hash,
+            mtime_ns,
+        )
+        .await?
+    } else {
+        None
+    };
+    if let Some(cached) = cached {
         let stub = json!({
             "unchanged": true,
             "file": display_file,
@@ -1395,19 +1400,21 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let token_count = read_modes::estimate_tokens(&body_text);
     let digest = read_cache::digest_bytes(body_text.as_bytes());
 
-    read_cache::put(
-        conn,
-        &project_id,
-        GLOBAL_SESSION,
-        &display_file,
-        mtime_ns,
-        mode.as_str(),
-        &args_hash,
-        &digest,
-        body_text.as_bytes(),
-        token_count,
-    )
-    .await?;
+    if cache_enabled {
+        read_cache::put(
+            conn,
+            &project_id,
+            GLOBAL_SESSION,
+            &display_file,
+            mtime_ns,
+            mode.as_str(),
+            &args_hash,
+            &digest,
+            body_text.as_bytes(),
+            token_count,
+        )
+        .await?;
+    }
 
     let payload = json!({
         "file": display_file,
