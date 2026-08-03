@@ -145,6 +145,9 @@ pub(crate) fn decode_selected_inputs(
                     "malformed graph-qualified node ID '{value}' in node ID field '{field}'"
                 )));
             }
+            return Err(config_error(format!(
+                "malformed node ID '{value}' in node ID field '{field}'; selected graph calls require a graph-qualified node ID"
+            )));
         }
         Ok(())
     })
@@ -501,11 +504,12 @@ fn attach_provenance(selected: &SelectedGraph, value: &mut Value) -> Result<()> 
     }
 
     let branch = selected.cg.serving_branch().unwrap_or("single-db");
+    let encoded_root = serde_json::to_string(&selected.provenance_root)?;
+    let encoded_branch = serde_json::to_string(branch)?;
     let banner = json!({
         "type": "text",
         "text": format!(
-            "tokensave_graph: root={} branch={branch} read_only=true",
-            selected.provenance_root
+            "tokensave_graph: root={encoded_root} branch={encoded_branch} read_only=true"
         )
     });
     let provenance = json!({
@@ -538,10 +542,7 @@ fn attach_provenance(selected: &SelectedGraph, value: &mut Value) -> Result<()> 
 }
 
 fn is_node_id_field(field: &str) -> bool {
-    matches!(
-        field,
-        "id" | "node_id" | "node_ids" | "exclude_node_ids" | "from_id" | "to_id"
-    )
+    field == "id" || field.ends_with("_id") || field.ends_with("_ids") || field == "dispatch_from"
 }
 
 fn visit_input_strings(
@@ -874,6 +875,7 @@ mod tests {
             json!({ "exclude_node_ids": ["graph: algorithms"] }),
             json!({ "from_id": "graph: algorithms" }),
             json!({ "to_id": "graph: algorithms" }),
+            json!({ "dispatch_from": "graph: algorithms" }),
         ] {
             let message = error_text(decode_selected_inputs(&selected, &mut arguments));
             assert!(
@@ -881,6 +883,52 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn selected_decoder_rejects_malformed_unqualified_ids_in_known_fields() {
+        let (_served, _graph, selected) = selected_graph(false).await;
+        for mut arguments in [
+            json!({ "node_id": "function:short" }),
+            json!({ "id": "unknown:0123456789abcdef0123456789abcdef" }),
+            json!({ "parent_id": "function:not-hexadecimal-at-all" }),
+            json!({ "node_ids": ["function:short"] }),
+            json!({ "exclude_node_ids": ["function:short"] }),
+            json!({ "dispatch_from": "function:short" }),
+        ] {
+            let message = error_text(decode_selected_inputs(&selected, &mut arguments));
+            assert!(message.contains("malformed node ID"), "{message}");
+        }
+
+        let mut arguments = json!({
+            "query": "function:short",
+            "nested": ["unknown:short"]
+        });
+        let original = arguments.clone();
+        decode_selected_inputs(&selected, &mut arguments).unwrap();
+        assert_eq!(arguments, original);
+    }
+
+    #[tokio::test]
+    async fn selected_decoder_rejects_empty_ids_but_preserves_free_form_empty_strings() {
+        let (_served, _graph, selected) = selected_graph(false).await;
+        for mut arguments in [
+            json!({ "node_id": "" }),
+            json!({ "id": "" }),
+            json!({ "node_ids": [""] }),
+            json!({ "exclude_node_ids": [""] }),
+        ] {
+            let message = error_text(decode_selected_inputs(&selected, &mut arguments));
+            assert!(message.contains("malformed node ID"), "{message}");
+        }
+
+        let mut arguments = json!({
+            "query": "",
+            "nested": [""]
+        });
+        let original = arguments.clone();
+        decode_selected_inputs(&selected, &mut arguments).unwrap();
+        assert_eq!(arguments, original);
     }
 
     #[tokio::test]
@@ -1035,8 +1083,11 @@ mod tests {
         assert_eq!(
             content[0]["text"],
             format!(
-                "tokensave_graph: root={} branch=single-db read_only=true",
-                normalize_provenance_path(graph.path().canonicalize().unwrap().to_str().unwrap())
+                "tokensave_graph: root={} branch=\"single-db\" read_only=true",
+                serde_json::to_string(&normalize_provenance_path(
+                    graph.path().canonicalize().unwrap().to_str().unwrap()
+                ))
+                .unwrap()
             )
         );
         let body: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
@@ -1058,6 +1109,33 @@ mod tests {
         );
         assert_eq!(result.value["_meta"]["tokensave"]["selected"], true);
         assert_eq!(result.value["_meta"]["tokensave"]["read_only"], true);
+    }
+
+    #[tokio::test]
+    async fn text_provenance_json_escapes_values_onto_one_line() {
+        let (_served, _graph, mut selected) = selected_graph(false).await;
+        selected.provenance_root = "root\nwith\rcontrols\u{0008}".to_string();
+        let mut result = ToolResult {
+            value: json!({ "content": [] }),
+            touched_files: vec![],
+        };
+
+        qualify_result(&selected, &mut result).await.unwrap();
+
+        let banner = result.value["content"][0]["text"].as_str().unwrap();
+        assert_eq!(banner.lines().count(), 1, "{banner:?}");
+        assert_eq!(
+            banner,
+            r#"tokensave_graph: root="root\nwith\rcontrols\b" branch="single-db" read_only=true"#
+        );
+        assert_eq!(
+            result.value["_meta"]["tokensave"]["graph_root"],
+            "root\nwith\rcontrols\u{0008}"
+        );
+        assert_eq!(
+            result.value["_meta"]["tokensave"]["graph_branch"],
+            Value::Null
+        );
     }
 
     #[tokio::test]
