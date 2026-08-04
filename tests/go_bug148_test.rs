@@ -16,7 +16,7 @@ fn extract_text(value: &Value) -> &str {
 
 /// Builds a Go module exercising every reference class from the bug report,
 /// then indexes it.
-async fn setup() -> (TokenSave, TempDir) {
+async fn setup() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("obs")).unwrap();
@@ -108,12 +108,12 @@ func NewWorker(s *Store) *Worker                { return nil }
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn dead_code_no_false_positives_for_referenced_functions() {
-    let (cg, _dir) = setup().await;
+    let (_dir, cg) = setup().await;
     // include_public so exported functions (HandleX, MustCounter, …) are
     // candidates — they would all be flagged without the new edges.
     let result = handle_tool_call(
@@ -153,7 +153,7 @@ async fn dead_code_no_false_positives_for_referenced_functions() {
 
 #[tokio::test]
 async fn unused_imports_no_false_positive_for_used_go_import() {
-    let (cg, _dir) = setup().await;
+    let (_dir, cg) = setup().await;
     let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
         .await
         .unwrap();

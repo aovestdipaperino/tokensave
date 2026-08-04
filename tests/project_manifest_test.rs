@@ -9,7 +9,7 @@ use tokensave::tokensave::TokenSave;
 const BASH_PROFILE: &str = "export PATH=\"$HOME/bin:$PATH\"\n\nmy_greet() {\n    echo hello\n}\n";
 const SHRC: &str = "my_prompt() {\n    echo prompt\n}\n";
 
-async fn index_with_manifest(manifest: &str) -> (TokenSave, TempDir) {
+async fn index_with_manifest(manifest: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join(".tokensave")).unwrap();
@@ -22,14 +22,14 @@ async fn index_with_manifest(manifest: &str) -> (TokenSave, TempDir) {
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 // Requires the medium-tier bash extractor; skipped under lite.
 #[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn manifest_indexes_extensionless_and_wrong_extension_files_as_bash() {
-    let (cg, _dir) = index_with_manifest(
+    let (_dir, cg) = index_with_manifest(
         r#"{
   "version": 1,
   "entries": [
@@ -129,7 +129,7 @@ async fn unknown_language_fails_the_sync_loudly() {
 #[cfg(feature = "lang-bash")]
 #[tokio::test]
 async fn sync_picks_up_manifest_files_too() {
-    let (cg, dir) = index_with_manifest(
+    let (dir, cg) = index_with_manifest(
         r#"{ "version": 1, "entries": [ { "path": "homedir/.bashrc.d/*.shrc", "language": "bash" } ] }"#,
     )
     .await;

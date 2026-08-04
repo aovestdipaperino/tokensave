@@ -30,7 +30,7 @@ fn extract_text(value: &Value) -> &str {
 // ---------------------------------------------------------------------------
 
 /// Builds the issue's `bug1-deadcode-collision/` module verbatim.
-async fn setup_bug1() -> (TokenSave, TempDir) {
+async fn setup_bug1() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("internal/obs")).unwrap();
@@ -99,12 +99,12 @@ func NewBarWorker() int     { return 22 }
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn dead_code_does_not_flag_same_name_funcs_in_same_name_packages() {
-    let (cg, _dir) = setup_bug1().await;
+    let (_dir, cg) = setup_bug1().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_dead_code",
@@ -149,7 +149,7 @@ async fn dead_code_does_not_flag_same_name_funcs_in_same_name_packages() {
 
 /// Builds the issue's `bug2-unusedimport-vN/` module verbatim (sans go.sum,
 /// which only matters for `go build`, not for static extraction).
-async fn setup_bug2() -> (TokenSave, TempDir) {
+async fn setup_bug2() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
@@ -179,12 +179,12 @@ func liveVar() error { return jwt.ErrTokenExpired }
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn unused_imports_does_not_flag_used_versioned_go_import() {
-    let (cg, _dir) = setup_bug2().await;
+    let (_dir, cg) = setup_bug2().await;
     let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
         .await
         .unwrap();

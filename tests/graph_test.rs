@@ -8,14 +8,18 @@ use tokensave::graph::traversal::GraphTraverser;
 use tokensave::tokensave::TokenSave;
 use tokensave::types::*;
 
-/// Helper: create a temp database and return (Database, TempDir).
-async fn setup_db() -> (Database, TempDir) {
+/// Helper: create a temp database and return (TempDir, Database).
+///
+/// The `TempDir` comes first so that it is the last binding declared at each
+/// call site and therefore the last dropped: the database must close before the
+/// directory is removed, or Windows refuses the removal and leaks it (#367).
+async fn setup_db() -> (TempDir, Database) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
-    (db, dir)
+    (dir, db)
 }
 
 /// Helper: create a function node with sensible defaults.
@@ -54,8 +58,8 @@ fn make_node(id: &str, name: &str, file_path: &str, visibility: Visibility) -> N
 
 /// Sets up a call chain: main -> process -> validate -> check.
 /// Returns the database and temp dir.
-async fn setup_call_chain() -> (Database, TempDir) {
-    let (db, dir) = setup_db().await;
+async fn setup_call_chain() -> (TempDir, Database) {
+    let (dir, db) = setup_db().await;
 
     let main_node = make_node("n-main", "main", "src/main.rs", Visibility::Pub);
     let process_node = make_node("n-process", "process", "src/main.rs", Visibility::Pub);
@@ -90,7 +94,7 @@ async fn setup_call_chain() -> (Database, TempDir) {
         .await
         .expect("failed to insert edges");
 
-    (db, dir)
+    (dir, db)
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +103,7 @@ async fn setup_call_chain() -> (Database, TempDir) {
 
 #[tokio::test]
 async fn test_get_callers() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let callers = traverser
@@ -123,7 +127,7 @@ async fn test_get_callers() {
 async fn test_get_callers_with_depth_distinguishes_hops() {
     // Chain: main -> process -> validate. Callers of "validate" are the direct
     // caller "process" (depth 1) and the transitive caller "main" (depth 2).
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let callers = traverser
@@ -168,7 +172,7 @@ async fn test_get_callers_with_depth_distinguishes_hops() {
 
 #[tokio::test]
 async fn test_get_callees() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let callees = traverser
@@ -185,7 +189,7 @@ async fn test_get_callees() {
 
 #[tokio::test]
 async fn test_get_callees_transitive() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let callees = traverser
@@ -206,7 +210,7 @@ async fn test_get_callees_transitive() {
 
 #[tokio::test]
 async fn test_impact_radius() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let subgraph = traverser
@@ -231,7 +235,7 @@ async fn test_impact_radius() {
 
 #[tokio::test]
 async fn test_call_graph_bidirectional() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let subgraph = traverser
@@ -256,7 +260,7 @@ async fn test_call_graph_bidirectional() {
 
 #[tokio::test]
 async fn test_bfs_traversal_with_depth_limit() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let opts = TraversalOptions {
@@ -294,7 +298,7 @@ async fn test_bfs_traversal_with_depth_limit() {
 
 #[tokio::test]
 async fn test_bfs_traversal_full_depth() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let opts = TraversalOptions {
@@ -320,7 +324,7 @@ async fn test_bfs_traversal_full_depth() {
 
 #[tokio::test]
 async fn test_dfs_traversal() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let opts = TraversalOptions {
@@ -351,7 +355,7 @@ async fn test_bfs_visits_calls_before_references() {
     // database edge order. We insert the reference edge FIRST (so it would win
     // a naive DB-order traversal) and assert the `calls` neighbor is the one
     // that survives a one-neighbor budget.
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let root = make_node("n-root", "root", "src/root.rs", Visibility::Pub);
     let ref_target = make_node("n-ref", "ref_target", "src/ref.rs", Visibility::Pub);
@@ -419,7 +423,7 @@ async fn test_bfs_visits_calls_before_references() {
 
 #[tokio::test]
 async fn test_find_path() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let path = traverser
@@ -442,7 +446,7 @@ async fn test_find_path() {
 
 #[tokio::test]
 async fn test_find_path_no_route() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     // check -> main has no path via outgoing Calls edges (only reverse direction).
@@ -463,7 +467,7 @@ async fn test_find_path_no_route() {
 
 #[tokio::test]
 async fn test_find_path_same_node() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let path = traverser
@@ -482,7 +486,7 @@ async fn test_find_path_same_node() {
 
 #[tokio::test]
 async fn test_find_dead_code() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
 
     // Add an orphan private function with no incoming edges.
     let orphan = make_node(
@@ -513,7 +517,7 @@ async fn test_find_dead_code() {
 
 #[tokio::test]
 async fn test_find_dead_code_excludes_pub() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // A public function with no incoming edges should not be flagged.
     let pub_node = make_node("n-pub", "public_api", "src/api.rs", Visibility::Pub);
@@ -548,7 +552,7 @@ async fn test_find_dead_code_excludes_pub() {
 /// relied on the edge alone was inert on real codebases (zero such edges).
 #[tokio::test]
 async fn test_find_dead_code_excludes_trait_impl_methods() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // (1) Stdlib trait impl, signature-only, NO `implements` edge — the case
     // the edge-only fix missed. `fmt` must be excluded.
@@ -641,7 +645,7 @@ async fn test_find_dead_code_excludes_trait_impl_methods() {
 /// `Annotates` edges to find a `#[test]` (or `#[tokio::test]` …) attribute.
 #[tokio::test]
 async fn test_find_dead_code_excludes_test_annotated() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // A private function annotated with #[test] but with a non-`test*` name.
     let test_fn = make_node(
@@ -757,7 +761,7 @@ async fn test_find_dead_code_excludes_test_annotated() {
 
 #[tokio::test]
 async fn test_find_dead_code_with_kind_filter() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let func_node = make_node("n-func", "private_func", "src/lib.rs", Visibility::Private);
     let mut struct_node = make_node("n-struct", "MyStruct", "src/lib.rs", Visibility::Private);
@@ -788,7 +792,7 @@ async fn test_find_dead_code_with_kind_filter() {
 
 #[tokio::test]
 async fn test_get_node_metrics() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let qm = GraphQueryManager::new(&db);
 
     let metrics = qm
@@ -811,7 +815,7 @@ async fn test_get_node_metrics() {
 
 #[tokio::test]
 async fn test_get_file_dependencies() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let qm = GraphQueryManager::new(&db);
 
     // src/main.rs has process -> validate (in src/lib.rs), so it depends on src/lib.rs.
@@ -828,7 +832,7 @@ async fn test_get_file_dependencies() {
 
 #[tokio::test]
 async fn test_get_file_dependents() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let qm = GraphQueryManager::new(&db);
 
     // src/lib.rs is called from src/main.rs (process -> validate).
@@ -845,7 +849,7 @@ async fn test_get_file_dependents() {
 
 #[tokio::test]
 async fn test_find_circular_dependencies() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Set up a circular dependency: file_a -> file_b -> file_a.
     let node_a = make_node("n-a", "func_a", "src/a.rs", Visibility::Pub);
@@ -913,7 +917,7 @@ async fn test_find_circular_dependencies() {
 
 #[tokio::test]
 async fn test_type_hierarchy() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut trait_node = make_node("n-trait", "MyTrait", "src/lib.rs", Visibility::Pub);
     trait_node.kind = NodeKind::Trait;
@@ -953,7 +957,7 @@ async fn test_type_hierarchy() {
 
 #[tokio::test]
 async fn test_traversal_with_limit() {
-    let (db, _dir) = setup_call_chain().await;
+    let (_dir, db) = setup_call_chain().await;
     let traverser = GraphTraverser::new(&db);
 
     let opts = TraversalOptions {
@@ -979,7 +983,7 @@ async fn test_traversal_with_limit() {
 
 #[tokio::test]
 async fn test_traversal_nonexistent_start() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     let traverser = GraphTraverser::new(&db);
 
     let opts = TraversalOptions::default();
@@ -996,7 +1000,7 @@ async fn test_traversal_nonexistent_start() {
 
 #[tokio::test]
 async fn test_node_metrics_depth() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Build a containment hierarchy: file -> module -> function.
     let mut file_node = make_node("n-file", "main.rs", "src/main.rs", Visibility::Pub);
@@ -1051,7 +1055,7 @@ async fn test_node_metrics_depth() {
 // ---------------------------------------------------------------------------
 
 /// Creates a temporary Rust project with cross-file calls and indexes it.
-async fn setup_project() -> (TokenSave, TempDir) {
+async fn setup_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let project = dir.path();
     fs::create_dir_all(project.join("src")).expect("failed to create src dir");
@@ -1085,12 +1089,12 @@ pub fn helper() -> String {
         .await
         .expect("failed to init TokenSave");
     cg.index_all().await.expect("failed to index project");
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn test_build_file_adjacency() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let qm = GraphQueryManager::new(cg.db());
     let adj = qm.build_file_adjacency(None).await.unwrap();
 
@@ -1440,7 +1444,7 @@ async fn test_file_churn_nonexistent_dir() {
 ///   temp-table form should comfortably stay under the budget.
 #[tokio::test]
 async fn dead_code_marker_resolve_is_single_pass() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut nodes: Vec<Node> = Vec::with_capacity(60_000);
 

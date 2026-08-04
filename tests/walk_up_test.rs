@@ -8,7 +8,7 @@ use tokensave::tokensave::TokenSave;
 
 /// Sets up a project at the temp root with files in `src/mcp/`, `src/db/`, and `tests/`,
 /// then initialises and indexes a `TokenSave`.
-async fn setup_nested_project() -> (TokenSave, TempDir) {
+async fn setup_nested_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     fs::create_dir_all(root.join("src/mcp")).unwrap();
@@ -62,7 +62,7 @@ fn test_serve() {
 
     let cg = TokenSave::init(root).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 fn extract_text(value: &serde_json::Value) -> &str {
@@ -86,7 +86,7 @@ async fn test_discover_project_root_from_subdir() {
 
 #[tokio::test]
 async fn test_files_scoped_to_subdir() {
-    let (cg, _dir) = setup_nested_project().await;
+    let (_dir, cg) = setup_nested_project().await;
 
     // Scoped to "src/mcp" — should only return mcp files
     let result = handle_tool_call(&cg, "tokensave_files", json!({}), None, Some("src/mcp"))
@@ -106,7 +106,7 @@ async fn test_files_scoped_to_subdir() {
 
 #[tokio::test]
 async fn test_traversal_unscoped() {
-    let (cg, _dir) = setup_nested_project().await;
+    let (_dir, cg) = setup_nested_project().await;
 
     // Search for "serve" to get its node_id (unscoped search to find it)
     let search_result = handle_tool_call(
