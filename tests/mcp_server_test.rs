@@ -23,7 +23,7 @@ use tokensave::tokensave::TokenSave;
 // ---------------------------------------------------------------------------
 
 /// Creates a temporary Rust project, indexes it, and returns a ready server.
-async fn setup_server() -> (Arc<McpServer>, TempDir) {
+async fn setup_server() -> (TempDir, Arc<McpServer>) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -35,10 +35,10 @@ async fn setup_server() -> (Arc<McpServer>, TempDir) {
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(cg, None).await;
-    (server, dir)
+    (dir, server)
 }
 
-async fn setup_named_project(function_name: &str) -> (TokenSave, TempDir) {
+async fn setup_named_project(function_name: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -49,10 +49,10 @@ async fn setup_named_project(function_name: &str) -> (TokenSave, TempDir) {
     .unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
-async fn setup_fallback_project(function_name: &str) -> (TokenSave, TempDir) {
+async fn setup_fallback_project(function_name: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -89,7 +89,7 @@ async fn setup_fallback_project(function_name: &str) -> (TokenSave, TempDir) {
         .status()
         .unwrap();
     assert!(status.success());
-    (cg, dir)
+    (dir, cg)
 }
 
 fn run_git(project: &Path, args: &[&str]) {
@@ -466,7 +466,7 @@ fn parse_response(s: &str) -> Value {
 
 #[tokio::test]
 async fn test_initialize() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(1), "initialize", json!({}))],
@@ -490,7 +490,7 @@ async fn test_initialize() {
 /// live client even once the URI parsing was fixed.
 #[tokio::test]
 async fn test_replayed_initialize_response_is_newline_terminated() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let (mut transport, sender, mut receiver) = ChannelTransport::new();
     let request = jsonrpc_request(json!(1), "initialize", json!({}));
     server.handle_and_write(&request, &mut transport).await;
@@ -526,7 +526,7 @@ async fn test_replayed_initialize_response_is_newline_terminated() {
 
 #[tokio::test]
 async fn test_initialized_notification() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send "initialized" notification (no id), then a ping to verify server is alive.
     let responses = run_server_with_messages(
         server,
@@ -561,7 +561,7 @@ async fn test_initialized_notification() {
 
 #[tokio::test]
 async fn test_notifications_initialized() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send "notifications/initialized" notification, then ping.
     let responses = run_server_with_messages(
         server,
@@ -592,7 +592,7 @@ async fn test_notifications_initialized() {
 
 #[tokio::test]
 async fn test_ping() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses =
         run_server_with_messages(server, vec![jsonrpc_request(json!(10), "ping", json!({}))]).await;
 
@@ -612,7 +612,7 @@ async fn test_ping() {
 
 #[tokio::test]
 async fn test_tools_list() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(20), "tools/list", json!({}))],
@@ -646,7 +646,7 @@ async fn test_tools_list() {
 
 #[tokio::test]
 async fn test_tools_call_search() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -683,8 +683,8 @@ async fn test_tools_call_search() {
 
 #[tokio::test]
 async fn selected_search_is_stateless_and_preserves_local_default() {
-    let (local, local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, None).await;
     let graph_root = foreign_dir.path().display().to_string();
@@ -746,7 +746,7 @@ async fn selected_search_is_stateless_and_preserves_local_default() {
 
 #[tokio::test]
 async fn selected_explicit_branch_returns_branch_content_and_provenance() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let selected_dir = setup_selected_branch_project().await;
     let server = McpServer::new(local, None).await;
 
@@ -774,7 +774,7 @@ async fn selected_explicit_branch_returns_branch_content_and_provenance() {
 
 #[tokio::test]
 async fn selected_omitted_branch_routes_tracked_current_branch() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let selected_dir = setup_selected_branch_project().await;
     let server = McpServer::new(local, None).await;
 
@@ -802,8 +802,8 @@ async fn selected_omitted_branch_routes_tracked_current_branch() {
 
 #[tokio::test]
 async fn selected_omitted_branch_uses_checkout_fallback_with_provenance() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (selected, selected_dir) = setup_fallback_project("main_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (selected_dir, selected) = setup_fallback_project("main_only").await;
     selected.checkpoint().await.unwrap();
     drop(selected);
     let server = McpServer::new(local, None).await;
@@ -831,8 +831,8 @@ async fn selected_omitted_branch_uses_checkout_fallback_with_provenance() {
 
 #[tokio::test]
 async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_read_source").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_read_source").await;
     foreign.db().checkpoint().await.unwrap();
     drop(foreign);
     let server = McpServer::new(local, None).await;
@@ -867,7 +867,7 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
 
 #[tokio::test]
 async fn selected_read_rejects_paths_outside_canonical_selected_root() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let container = TempDir::new().unwrap();
     let selected_root = container.path().join("selected");
     fs::create_dir_all(selected_root.join("src")).unwrap();
@@ -944,7 +944,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
 
 #[tokio::test]
 async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let selected_dir = setup_colliding_project().await;
     let server = McpServer::new(local, None).await;
 
@@ -1016,7 +1016,7 @@ async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
 
 #[tokio::test]
 async fn cross_project_selected_queries_leave_both_projects_unchanged() {
-    let (local, local_dir) = setup_named_project("local_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
     let selected_dir = setup_colliding_project().await;
     let server = McpServer::new(local, None).await;
     assert!(
@@ -1085,7 +1085,7 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
 
 #[tokio::test]
 async fn selected_truncated_structured_output_returns_clear_error() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let foreign_dir = TempDir::new().unwrap();
     fs::create_dir_all(foreign_dir.path().join("src")).unwrap();
     let source = (0..500)
@@ -1118,8 +1118,8 @@ async fn selected_truncated_structured_output_returns_clear_error() {
 
 #[tokio::test]
 async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
-    let (local, local_dir) = setup_named_project("before_edit").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (local_dir, local) = setup_named_project("before_edit").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, None).await;
     let graph_root = foreign_dir.path().display().to_string();
@@ -1176,7 +1176,7 @@ async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
 
 #[tokio::test]
 async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let selected_dir = setup_selected_branch_project().await;
     fs::write(
         selected_dir.path().join("Cargo.toml"),
@@ -1217,7 +1217,7 @@ async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation
 
 #[tokio::test]
 async fn selected_invalid_graph_selectors_return_invalid_params() {
-    let (local, local_dir) = setup_named_project("local_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
     let server = McpServer::new(local, None).await;
     let uninitialized = TempDir::new().unwrap();
     let selected_dir = setup_selected_branch_project().await;
@@ -1272,8 +1272,8 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
 
 #[tokio::test]
 async fn selected_database_open_failure_returns_internal_error() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     fs::write(
@@ -1305,11 +1305,11 @@ async fn selected_database_open_failure_returns_internal_error() {
 
 #[tokio::test]
 async fn selected_schema_mismatches_return_invalid_params() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let server = McpServer::new(local, None).await;
 
     for (index, version) in [1, latest_version() + 1].into_iter().enumerate() {
-        let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+        let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
         foreign
             .db()
             .conn()
@@ -1342,8 +1342,8 @@ async fn selected_schema_mismatches_return_invalid_params() {
 
 #[tokio::test]
 async fn selected_malformed_node_ids_return_invalid_params_before_dispatch() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     let server = McpServer::new(local, None).await;
@@ -1381,8 +1381,8 @@ async fn selected_malformed_node_ids_return_invalid_params_before_dispatch() {
 
 #[tokio::test]
 async fn selected_empty_node_ids_return_invalid_params_before_dispatch() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     let server = McpServer::new(local, None).await;
@@ -1420,7 +1420,7 @@ async fn selected_empty_node_ids_return_invalid_params_before_dispatch() {
 
 #[tokio::test]
 async fn graph_scoped_tool_without_selector_preserves_handler_argument_errors() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
 
     let response = call_server(&server, 59, "tokensave_search", Value::Null).await;
 
@@ -1435,7 +1435,7 @@ async fn graph_scoped_tool_without_selector_preserves_handler_argument_errors() 
 
 #[tokio::test]
 async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
     let first_dir = setup_colliding_project().await;
     let second_dir = setup_colliding_project().await;
     let server = McpServer::new(local, None).await;
@@ -1570,13 +1570,13 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
 
 #[tokio::test]
 async fn selected_graph_ignores_local_scope_and_local_warnings() {
-    let (local, local_dir) = setup_named_project("local_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
     fs::write(
         local_dir.path().join("src/main.rs"),
         "fn locally_stale() {}\n",
     )
     .unwrap();
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, Some("path/that/does/not/exist".to_string())).await;
 
@@ -1600,8 +1600,8 @@ async fn selected_graph_ignores_local_scope_and_local_warnings() {
 
 #[tokio::test]
 async fn selected_warnings_use_canonical_selected_root_remedies() {
-    let (local, _local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_fallback_project("foreign_only").await;
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_fallback_project("foreign_only").await;
     foreign
         .db()
         .set_metadata("last_sync_at", "1")
@@ -1666,8 +1666,8 @@ async fn selected_calls_skip_all_accounting_and_preserve_local_schema_charge() {
         return;
     };
     let home = std::path::PathBuf::from(home);
-    let (local, local_dir) = setup_named_project("local_only").await;
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, None).await;
     assert!(
@@ -1780,11 +1780,11 @@ async fn selected_calls_skip_all_accounting_and_preserve_local_schema_charge() {
 
 #[tokio::test]
 async fn first_selected_call_does_not_consume_local_version_reindex_gate() {
-    let (local, local_dir) = setup_named_project("local_only").await;
+    let (local_dir, local) = setup_named_project("local_only").await;
     let mut config = tokensave::config::load_config(local_dir.path()).unwrap();
     config.last_indexed_version = String::new();
     tokensave::config::save_config(local_dir.path(), &config).unwrap();
-    let (foreign, foreign_dir) = setup_named_project("foreign_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
     drop(foreign);
     let server = McpServer::new(local, None).await;
 
@@ -1836,7 +1836,7 @@ async fn first_selected_call_does_not_consume_local_version_reindex_gate() {
 
 #[tokio::test]
 async fn test_tools_call_timings_flag_off_by_default() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -1861,7 +1861,7 @@ async fn test_tools_call_timings_flag_off_by_default() {
 
 #[tokio::test]
 async fn test_tools_call_timings_flag_on_emits_duration_us() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     server.set_timings_enabled(true);
     let responses = run_server_with_messages(
         server,
@@ -1895,7 +1895,7 @@ async fn test_tools_call_timings_flag_on_emits_duration_us() {
 
 #[tokio::test]
 async fn test_tools_call_status() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -2375,7 +2375,7 @@ async fn test_schema_overhead_charged_after_tools_list_call() {
 /// honest when it matches exactly what the response contains.
 #[tokio::test]
 async fn test_zero_before_call_never_gets_a_metrics_line() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
 
     let responses = run_server_with_messages(
         server,
@@ -2513,7 +2513,7 @@ async fn test_schema_debt_is_paid_down_not_discarded() {
 
 #[tokio::test]
 async fn test_tools_call_missing_params() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send tools/call with no params at all.
     let responses = run_server_with_messages(
         server,
@@ -2549,7 +2549,7 @@ async fn test_tools_call_missing_params() {
 
 #[tokio::test]
 async fn test_tools_call_missing_name() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send tools/call with params but no "name" key.
     let responses = run_server_with_messages(
         server,
@@ -2591,7 +2591,7 @@ async fn test_tools_call_missing_name() {
 
 #[tokio::test]
 async fn test_unknown_method() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(70), "some/unknown/method", json!({}))],
@@ -2614,7 +2614,7 @@ async fn test_unknown_method() {
 
 #[tokio::test]
 async fn test_malformed_json() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send invalid JSON, then a valid ping to verify server continues.
     let responses = run_server_with_messages(
         server,
@@ -2664,7 +2664,7 @@ async fn test_malformed_json() {
 
 #[tokio::test]
 async fn test_blank_lines_skipped() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send blank/whitespace lines, then a ping.
     let responses = run_server_with_messages(
         server,
@@ -2699,7 +2699,7 @@ async fn test_blank_lines_skipped() {
 
 #[tokio::test]
 async fn test_multiple_tool_calls() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![
@@ -2751,7 +2751,7 @@ async fn test_multiple_tool_calls() {
 
 #[tokio::test]
 async fn test_server_stats_initial() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let stats = server.server_stats_json().await;
     assert!(stats["uptime_secs"].is_number(), "should have uptime_secs");
     assert_eq!(
@@ -2768,7 +2768,7 @@ async fn test_server_stats_initial() {
 
 #[tokio::test]
 async fn test_server_stats_after_run() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send several requests then a tokensave_status to check stats are embedded.
     let responses = run_server_with_messages(
         server,
@@ -2817,7 +2817,7 @@ async fn test_server_stats_after_run() {
 
 #[tokio::test]
 async fn test_error_tracking() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     // Send an unknown method (which produces an error), then check status.
     let responses = run_server_with_messages(
         server,
@@ -2889,7 +2889,7 @@ async fn test_error_tracking() {
 
 #[tokio::test]
 async fn test_initialize_has_resources_capability() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(1), "initialize", json!({}))],
@@ -2909,7 +2909,7 @@ async fn test_initialize_has_resources_capability() {
 
 #[tokio::test]
 async fn test_initialize_has_instructions() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(1), "initialize", json!({}))],
@@ -2932,7 +2932,7 @@ async fn test_initialize_has_instructions() {
 
 #[tokio::test]
 async fn test_resources_list() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(400), "resources/list", json!({}))],
@@ -2989,7 +2989,7 @@ async fn test_resources_list() {
 
 #[tokio::test]
 async fn test_resources_read_status() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -3036,7 +3036,7 @@ async fn test_resources_read_status() {
 
 #[tokio::test]
 async fn test_resources_read_files() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -3083,7 +3083,7 @@ async fn test_resources_read_files() {
 
 #[tokio::test]
 async fn test_resources_read_overview() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -3131,7 +3131,7 @@ async fn test_resources_read_overview() {
 
 #[tokio::test]
 async fn test_resources_read_unknown_uri() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -3165,7 +3165,7 @@ async fn test_resources_read_unknown_uri() {
 
 #[tokio::test]
 async fn test_resources_read_missing_uri() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(450), "resources/read", json!({}))],
@@ -3197,7 +3197,7 @@ async fn test_resources_read_missing_uri() {
 /// error on every session start.
 #[tokio::test]
 async fn test_logging_set_level_returns_success() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(
@@ -3238,7 +3238,7 @@ async fn test_logging_set_level_all_levels() {
     ];
     for (idx, level) in levels.iter().enumerate() {
         let id = json!(600 + idx as u64);
-        let (server, _dir) = setup_server().await;
+        let (_dir, server) = setup_server().await;
         let responses = run_server_with_messages(
             server,
             vec![jsonrpc_request(
@@ -3263,7 +3263,7 @@ async fn test_logging_set_level_all_levels() {
 /// `logging/setLevel` mid-session must not disrupt subsequent tool calls.
 #[tokio::test]
 async fn test_logging_set_level_does_not_break_session() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![
@@ -3296,7 +3296,7 @@ async fn test_logging_set_level_does_not_break_session() {
 /// clients know they may send `logging/setLevel`.
 #[tokio::test]
 async fn test_initialize_advertises_logging_capability() {
-    let (server, _dir) = setup_server().await;
+    let (_dir, server) = setup_server().await;
     let responses = run_server_with_messages(
         server,
         vec![jsonrpc_request(json!(800), "initialize", json!({}))],

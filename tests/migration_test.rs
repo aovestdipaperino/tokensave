@@ -10,8 +10,10 @@ use tokensave::errors::TokenSaveError;
 // ---------------------------------------------------------------------------
 
 /// Creates a raw libsql database in a temp directory.
-/// Returns (Connection, Database, TempDir) — all three must stay alive.
-async fn create_raw_db() -> (Connection, LibsqlDatabase, TempDir) {
+/// Returns (TempDir, Connection, Database) — all three must stay alive, and the
+/// `TempDir` comes first so it is the last dropped: the connection must close
+/// before the directory is removed, or Windows leaks it (#367).
+async fn create_raw_db() -> (TempDir, Connection, LibsqlDatabase) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let db = Builder::new_local(&db_path)
@@ -26,7 +28,7 @@ async fn create_raw_db() -> (Connection, LibsqlDatabase, TempDir) {
     )
     .await
     .expect("failed to apply pragmas");
-    (conn, db, dir)
+    (dir, conn, db)
 }
 
 /// Sets PRAGMA user_version on the connection.
@@ -268,7 +270,7 @@ async fn apply_v4(conn: &Connection) {
 /// `create_schema` on a fresh database sets the latest version and creates all tables.
 #[tokio::test]
 async fn test_create_schema_fresh_db() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
@@ -288,7 +290,7 @@ async fn test_create_schema_fresh_db() {
 /// create_schema is idempotent — calling it twice does not error.
 #[tokio::test]
 async fn test_create_schema_idempotent() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
@@ -303,7 +305,7 @@ async fn test_create_schema_idempotent() {
 /// migrate returns false when already at the latest version.
 #[tokio::test]
 async fn test_migrate_already_latest_returns_false() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
@@ -321,7 +323,7 @@ async fn test_migrate_already_latest_returns_false() {
 /// migrate from v0 (completely empty database) applies all migrations to latest.
 #[tokio::test]
 async fn test_migrate_from_v0() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     // user_version defaults to 0 on a fresh database
     assert_eq!(get_user_version(&conn).await, 0);
@@ -364,7 +366,7 @@ async fn test_migrate_from_v0() {
 /// migrate from v1 (tables exist, no metadata, no complexity columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v1() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
 
     assert_eq!(get_user_version(&conn).await, 1);
@@ -399,7 +401,7 @@ async fn test_migrate_from_v1() {
 /// migrate from v2 (has metadata, no complexity columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v2() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
 
@@ -428,7 +430,7 @@ async fn test_migrate_from_v2() {
 /// migrate from v3 (has complexity columns, no safety columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v3() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -456,7 +458,7 @@ async fn test_migrate_from_v3() {
 /// migrate from v4 (has all columns, no edge dedup) to v5.
 #[tokio::test]
 async fn test_migrate_from_v4() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -478,7 +480,7 @@ async fn test_migrate_from_v4() {
 /// V5 migration actually deduplicates edge rows.
 #[tokio::test]
 async fn test_v5_deduplicates_edges() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -563,7 +565,7 @@ async fn test_v5_deduplicates_edges() {
 /// After full migration from v0, all expected indexes exist.
 #[tokio::test]
 async fn test_indexes_exist_after_full_migration() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     migrate(&conn)
         .await
@@ -917,7 +919,7 @@ async fn read_only_open_accepts_relative_database_path() {
 /// V13 repairs v12 databases missing the trait-dispatch cache table.
 #[tokio::test]
 async fn test_migrate_v13_repairs_missing_trait_dispatch_cache() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -939,7 +941,7 @@ async fn test_migrate_v13_repairs_missing_trait_dispatch_cache() {
 /// resolved alike — untouched.
 #[tokio::test]
 async fn test_v14_removes_phantom_annotates_edges() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -1061,7 +1063,7 @@ async fn test_v14_removes_phantom_annotates_edges() {
 /// After create_schema, all v5 columns on nodes exist.
 #[tokio::test]
 async fn test_create_schema_has_all_node_columns() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -1101,7 +1103,7 @@ async fn test_create_schema_has_all_node_columns() {
 /// V5 unique index prevents duplicate edge insertion.
 #[tokio::test]
 async fn test_v5_unique_index_prevents_duplicates() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -1146,7 +1148,7 @@ async fn test_v5_unique_index_prevents_duplicates() {
 /// FTS triggers exist after migration from v0.
 #[tokio::test]
 async fn test_fts_triggers_exist_after_migration() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     migrate(&conn)
         .await
@@ -1173,7 +1175,7 @@ async fn test_fts_triggers_exist_after_migration() {
 
 #[tokio::test]
 async fn test_v8_creates_memory_tables() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn).await.unwrap();
 
     // memory_decisions table exists with expected columns
@@ -1255,7 +1257,7 @@ async fn test_v8_creates_memory_tables() {
 
 #[tokio::test]
 async fn test_v7_to_latest_upgrade_path() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn).await.unwrap();
     conn.execute("PRAGMA user_version = 7", ()).await.unwrap();
@@ -1307,7 +1309,7 @@ async fn test_v7_to_latest_upgrade_path() {
 /// V9 adds the `read_cache` table used by `tokensave_read`.
 #[tokio::test]
 async fn test_migrate_v9_adds_read_cache() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     migrate(&conn).await.expect("migrate should succeed");
 
     assert!(
@@ -1324,7 +1326,7 @@ async fn test_migrate_v9_adds_read_cache() {
 /// bulk load, even when the dirty sentinel is absent (#358).
 #[tokio::test]
 async fn test_migrate_v15_restores_missing_indexes_and_triggers() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -1396,7 +1398,7 @@ async fn test_migrate_v15_restores_missing_indexes_and_triggers() {
 /// V15 is idempotent - running it on an already-healthy DB is a no-op.
 #[tokio::test]
 async fn test_migrate_v15_idempotent_on_healthy_db() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -1419,7 +1421,7 @@ async fn test_migrate_v15_idempotent_on_healthy_db() {
 /// (which bulk load does not drop) or the absent tables.
 #[tokio::test]
 async fn test_migrate_v15_partial_schema_does_not_error() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     // A minimal, pre-`parent_id` nodes table and nothing else.
     conn.execute_batch(
         "CREATE TABLE nodes (

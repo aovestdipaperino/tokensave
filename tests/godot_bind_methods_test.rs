@@ -17,7 +17,7 @@ use tokensave::types::{Edge, Node};
 /// Builds a temp project mirroring the issue's repro: a C++ registry class that
 /// binds an instance method and a static method in `_bind_methods`, plus a
 /// GDScript caller that invokes both through the singleton / class name.
-async fn setup_godot_project() -> (TokenSave, TempDir) {
+async fn setup_godot_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -67,7 +67,7 @@ func _ready():
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 /// True if a `Calls` edge exists whose source node is named `from` and target
@@ -81,7 +81,7 @@ fn has_call_edge(edges: &[Edge], by_id: &HashMap<String, &Node>, from: &str, to:
 
 #[tokio::test]
 async fn gdscript_call_resolves_to_bound_cpp_method() {
-    let (cg, _dir) = setup_godot_project().await;
+    let (_dir, cg) = setup_godot_project().await;
     let nodes = cg.get_all_nodes().await.unwrap();
     let edges = cg.get_all_edges().await.unwrap();
     let by_id: HashMap<String, &Node> = nodes.iter().map(|n| (n.id.clone(), n)).collect();
@@ -99,7 +99,7 @@ async fn gdscript_call_resolves_to_bound_cpp_method() {
 
 #[tokio::test]
 async fn bind_methods_links_to_exposed_methods() {
-    let (cg, _dir) = setup_godot_project().await;
+    let (_dir, cg) = setup_godot_project().await;
     let nodes = cg.get_all_nodes().await.unwrap();
     let edges = cg.get_all_edges().await.unwrap();
     let by_id: HashMap<String, &Node> = nodes.iter().map(|n| (n.id.clone(), n)).collect();
@@ -120,7 +120,7 @@ async fn bind_methods_links_to_exposed_methods() {
 
 #[tokio::test]
 async fn binding_boilerplate_not_reported_dead() {
-    let (cg, _dir) = setup_godot_project().await;
+    let (_dir, cg) = setup_godot_project().await;
     // include_public=true stresses the analysis: register_item / register_global
     // are public methods, so without their incoming binding edges they would be
     // reported dead here.
