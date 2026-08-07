@@ -440,7 +440,11 @@ impl TokenSave {
             })?;
             let path = branch::resolve_branch_db_path(&tokensave_dir, explicit, &meta).ok_or_else(
                 || TokenSaveError::Config {
-                    message: format!("branch '{explicit}' is not tracked"),
+                    message: format!(
+                        "branch '{explicit}' is not tracked; run `tokensave branch add {}` \
+                         in the selected project to track it",
+                        shell_quote(explicit)
+                    ),
                 },
             )?;
             if !path.is_file() {
@@ -494,7 +498,11 @@ impl TokenSave {
 
         let db_path = branch::resolve_branch_db_path(&tokensave_dir, branch_name, &meta)
             .ok_or_else(|| TokenSaveError::Config {
-                message: format!("branch '{branch_name}' is not tracked"),
+                message: format!(
+                    "branch '{branch_name}' is not tracked; run `tokensave branch add {}` \
+                     to track it",
+                    shell_quote(branch_name)
+                ),
             })?;
 
         if !db_path.exists() {
