@@ -2,7 +2,8 @@ use crate::{
     local::{self},
     params::Params,
     statement::Stmt,
-    sync::SyncContext, Column, Result, Rows, Statement,
+    sync::SyncContext,
+    Column, Result, Rows, Statement,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -71,4 +72,3 @@ impl Stmt for SyncedStatement {
         self.inner.columns()
     }
 }
-

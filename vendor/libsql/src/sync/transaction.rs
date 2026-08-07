@@ -1,8 +1,4 @@
-use crate::{
-    connection::Conn,
-    params::Params,
-    transaction::Tx, Result, TransactionBehavior,
-};
+use crate::{connection::Conn, params::Params, transaction::Tx, Result, TransactionBehavior};
 
 use super::connection::SyncedConnection;
 

@@ -36,7 +36,7 @@ fn extract_text(value: &Value) -> &str {
 /// Builds the issue's `bug1-phantom-edges/` module verbatim: three packages
 /// share the name `jobs`, each defines `NewCleanupWorker`, and `wire()` calls
 /// each exactly once.
-async fn setup_bug1() -> (TokenSave, TempDir) {
+async fn setup_bug1() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("internal/a/jobs")).unwrap();
@@ -84,12 +84,12 @@ func wire() {
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn no_phantom_call_edges_for_same_name_funcs_in_same_name_packages() {
-    let (cg, _dir) = setup_bug1().await;
+    let (_dir, cg) = setup_bug1().await;
     let nodes = cg.get_all_nodes().await.unwrap();
 
     let workers: Vec<_> = nodes
@@ -132,7 +132,7 @@ async fn no_phantom_call_edges_for_same_name_funcs_in_same_name_packages() {
 /// Builds the issue's `bug2-unusedimport-pkgname/` module: the import path
 /// `github.com/resend/resend-go/v3` has package clause `resend`, but the
 /// pre-`/vN` segment is `resend-go` (not a legal identifier).
-async fn setup_bug2() -> (TokenSave, TempDir) {
+async fn setup_bug2() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("internal/mail")).unwrap();
@@ -214,12 +214,12 @@ func (s *ResendSender) Send(ctx context.Context, m Message) error {
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn unused_imports_does_not_flag_versioned_import_with_hyphenated_segment() {
-    let (cg, _dir) = setup_bug2().await;
+    let (_dir, cg) = setup_bug2().await;
     let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
         .await
         .unwrap();

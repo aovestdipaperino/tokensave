@@ -66,7 +66,7 @@ impl Client {
         } else {
             "default".to_string()
         };
-        
+
         let namespace = BinaryMetadataValue::from_bytes(ns.as_bytes());
 
         let channel = GrpcChannel::new(connector, http_request_callback);
