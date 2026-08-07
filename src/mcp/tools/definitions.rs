@@ -77,14 +77,17 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
         "graph_root".to_string(),
         json!({
             "type": "string",
-            "description": "Exact absolute initialized project root to query."
+            "description": "Exact absolute initialized project root to query. Omit to query \
+             the project this server already serves; when present it must name a different \
+             project."
         }),
     );
     properties.insert(
         "graph_branch".to_string(),
         json!({
             "type": "string",
-            "description": "Exact tracked branch to query within graph_root."
+            "description": "Exact tracked branch to query within graph_root. Requires \
+             graph_root."
         }),
     );
 
@@ -2670,7 +2673,9 @@ mod tests {
                 assert_eq!(graph_root.unwrap()["type"], "string", "{}", definition.name);
                 assert_eq!(
                     graph_root.unwrap()["description"],
-                    "Exact absolute initialized project root to query.",
+                    "Exact absolute initialized project root to query. Omit to query the \
+                     project this server already serves; when present it must name a different \
+                     project.",
                     "{}",
                     definition.name
                 );
@@ -2682,7 +2687,7 @@ mod tests {
                 );
                 assert_eq!(
                     graph_branch.unwrap()["description"],
-                    "Exact tracked branch to query within graph_root.",
+                    "Exact tracked branch to query within graph_root. Requires graph_root.",
                     "{}",
                     definition.name
                 );
