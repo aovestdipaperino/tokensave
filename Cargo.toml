@@ -150,3 +150,16 @@ criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 name = "large_repos"
 harness = false
 
+# libsql 0.9.30 closes every local connection twice (`sqlite3_close_v2` on an
+# already-freed `sqlite3` handle), which is a use-after-free on every platform
+# and an intermittent STATUS_ACCESS_VIOLATION on Windows (#367, #308). See
+# `vendor/libsql/src/local/connection.rs` for the one-line fix and the upstream
+# references. `vendor/libsql` is a copy of the published 0.9.30 crate: its
+# sources are unchanged apart from that one function, and its examples, tests,
+# benches, test assets, lockfile and contributor notes are dropped, with
+# `[lints]` and `[workspace]` tables added to its manifest and upstream's MIT
+# licence kept alongside it. Drop this
+# patch — and the vendored copy — as soon as a libsql release carries the fix;
+# `tests/vendored_libsql_test.rs` fails if the two drift apart.
+[patch.crates-io]
+libsql = { path = "vendor/libsql" }
