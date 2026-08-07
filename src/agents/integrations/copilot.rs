@@ -21,11 +21,7 @@ use serde_json::json;
 
 use crate::errors::Result;
 
-use super::{
-    backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
-    load_jsonc_file, load_jsonc_file_strict, parse_jsonc, safe_write_json_file, AgentIntegration,
-    DoctorCounters, HealthcheckContext, InstallContext,
-};
+use super::*;
 
 /// GitHub Copilot agent.
 pub struct CopilotIntegration;

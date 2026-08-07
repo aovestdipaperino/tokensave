@@ -11,12 +11,7 @@ use serde_json::json;
 
 use crate::errors::Result;
 
-use super::{
-    backup_and_write_json, backup_config_file, expected_tool_perms, load_json_file_strict,
-    managed_rules_markdown, remove_legacy_rules_block, remove_managed_rules_file,
-    safe_write_json_file, write_json_file, write_managed_rules_file, AgentIntegration,
-    DoctorCounters, HealthcheckContext, InstallContext, InstallScope, RulesVariant,
-};
+use super::*;
 
 /// Claude Code agent.
 pub struct ClaudeIntegration;

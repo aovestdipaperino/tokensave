@@ -1,11 +1,9 @@
-// Rust guideline compliant 2025-10-17
-//! Qwen Code agent integration.
+//! Gemini CLI agent integration.
 //!
-//! Qwen Code is an open-source coding CLI forked from Gemini CLI, so it shares
-//! Gemini's configuration shape: an MCP server registry in
-//! `~/.qwen/settings.json` and prompt rules in `~/.qwen/QWEN.md`. Qwen Code has
-//! no hook system; tool auto-approval is handled via the `trust: true` flag on
-//! the MCP server entry.
+//! Handles registration of the tokensave MCP server in Gemini CLI's config
+//! file (`~/.gemini/settings.json`), and prompt rules via `~/.gemini/GEMINI.md`.
+//! Gemini CLI has no hook system. Tool auto-approval is handled via the
+//! `trust: true` flag on the MCP server entry.
 
 use std::io::Write;
 use std::path::Path;
@@ -14,21 +12,18 @@ use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{
-    backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
-    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-};
+use super::*;
 
-/// Qwen Code agent.
-pub struct QwenIntegration;
+/// Gemini CLI agent.
+pub struct GeminiIntegration;
 
-impl AgentIntegration for QwenIntegration {
+impl AgentIntegration for GeminiIntegration {
     fn name(&self) -> &'static str {
-        "Qwen Code"
+        "Gemini CLI"
     }
 
     fn id(&self) -> &'static str {
-        "qwen"
+        "gemini"
     }
 
     fn supports_local(&self) -> bool {
@@ -36,55 +31,55 @@ impl AgentIntegration for QwenIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let qwen_dir = ctx.base_dir().join(".qwen");
-        std::fs::create_dir_all(&qwen_dir).ok();
-        let settings_path = qwen_dir.join("settings.json");
+        let gemini_dir = ctx.base_dir().join(".gemini");
+        std::fs::create_dir_all(&gemini_dir).ok();
+        let settings_path = gemini_dir.join("settings.json");
 
         install_mcp_server(&settings_path, &ctx.tokensave_bin)?;
 
-        let qwen_md = qwen_dir.join("QWEN.md");
-        install_prompt_rules(&qwen_md)?;
+        let gemini_md = gemini_dir.join("GEMINI.md");
+        install_prompt_rules(&gemini_md)?;
 
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
         crate::agent_note!(
-            "  2. Start a new Qwen Code session — tokensave tools are now available"
+            "  2. Start a new Gemini CLI session — tokensave tools are now available"
         );
         Ok(())
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let qwen_dir = ctx.base_dir().join(".qwen");
-        let settings_path = qwen_dir.join("settings.json");
+        let gemini_dir = ctx.base_dir().join(".gemini");
+        let settings_path = gemini_dir.join("settings.json");
 
         uninstall_mcp_server(&settings_path);
 
-        let qwen_md = qwen_dir.join("QWEN.md");
-        uninstall_prompt_rules(&qwen_md);
+        let gemini_md = gemini_dir.join("GEMINI.md");
+        uninstall_prompt_rules(&gemini_md);
 
         crate::agent_note!();
-        crate::agent_note!("Uninstall complete. Tokensave has been removed from Qwen Code.");
-        crate::agent_note!("Start a new Qwen Code session for changes to take effect.");
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Gemini CLI.");
+        crate::agent_note!("Start a new Gemini CLI session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        crate::agent_note!("\n\x1b[1mQwen Code integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mGemini CLI integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".qwen").is_dir()
+        home.join(".gemini").is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".qwen/settings.json"))
+        Some(home.join(".gemini/settings.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let settings = home.join(".qwen").join("settings.json");
+        let settings = home.join(".gemini").join("settings.json");
         if !settings.exists() {
             return false;
         }
@@ -99,7 +94,7 @@ impl AgentIntegration for QwenIntegration {
 // Install helpers
 // ---------------------------------------------------------------------------
 
-/// Register MCP server in ~/.qwen/settings.json.
+/// Register MCP server in ~/.gemini/settings.json.
 fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     let backup = backup_config_file(settings_path)?;
     let mut settings = match load_json_file_strict(settings_path) {
@@ -130,24 +125,24 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append prompt rules to QWEN.md (idempotent).
-fn install_prompt_rules(qwen_md: &Path) -> Result<()> {
+/// Append prompt rules to GEMINI.md (idempotent).
+fn install_prompt_rules(gemini_md: &Path) -> Result<()> {
     let marker = "## Prefer tokensave MCP tools";
-    let existing = if qwen_md.exists() {
-        std::fs::read_to_string(qwen_md).unwrap_or_default()
+    let existing = if gemini_md.exists() {
+        std::fs::read_to_string(gemini_md).unwrap_or_default()
     } else {
         String::new()
     };
     if existing.contains(marker) {
-        crate::agent_note!("  QWEN.md already contains tokensave rules, skipping");
+        crate::agent_note!("  GEMINI.md already contains tokensave rules, skipping");
         return Ok(());
     }
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(qwen_md)
+        .open(gemini_md)
         .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open QWEN.md: {e}"),
+            message: format!("failed to open GEMINI.md: {e}"),
         })?;
     write!(
         f,
@@ -170,7 +165,7 @@ fn install_prompt_rules(qwen_md: &Path) -> Result<()> {
     .ok();
     crate::agent_note!(
         "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
-        qwen_md.display()
+        gemini_md.display()
     );
     Ok(())
 }
@@ -179,7 +174,7 @@ fn install_prompt_rules(qwen_md: &Path) -> Result<()> {
 // Uninstall helpers
 // ---------------------------------------------------------------------------
 
-/// Remove MCP server from ~/.qwen/settings.json.
+/// Remove MCP server from ~/.gemini/settings.json.
 fn uninstall_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
         return;
@@ -221,16 +216,16 @@ fn uninstall_mcp_server(settings_path: &Path) {
     }
 }
 
-/// Remove tokensave rules from QWEN.md.
-fn uninstall_prompt_rules(qwen_md: &Path) {
-    if !qwen_md.exists() {
+/// Remove tokensave rules from GEMINI.md.
+fn uninstall_prompt_rules(gemini_md: &Path) {
+    if !gemini_md.exists() {
         return;
     }
-    let Ok(contents) = std::fs::read_to_string(qwen_md) else {
+    let Ok(contents) = std::fs::read_to_string(gemini_md) else {
         return;
     };
     if !contents.contains("tokensave") {
-        crate::agent_note!("  QWEN.md does not contain tokensave rules, skipping");
+        crate::agent_note!("  GEMINI.md does not contain tokensave rules, skipping");
         return;
     }
     let marker = "## Prefer tokensave MCP tools";
@@ -250,13 +245,16 @@ fn uninstall_prompt_rules(qwen_md: &Path) {
     }
     let new_contents = new_contents.trim().to_string();
     if new_contents.is_empty() {
-        std::fs::remove_file(qwen_md).ok();
-        crate::agent_note!("\x1b[32m✔\x1b[0m Removed {} (was empty)", qwen_md.display());
+        std::fs::remove_file(gemini_md).ok();
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
+            gemini_md.display()
+        );
     } else {
-        std::fs::write(qwen_md, format!("{new_contents}\n")).ok();
+        std::fs::write(gemini_md, format!("{new_contents}\n")).ok();
         crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            qwen_md.display()
+            gemini_md.display()
         );
     }
 }
@@ -267,10 +265,10 @@ fn uninstall_prompt_rules(qwen_md: &Path) {
 
 /// Check settings.json has tokensave registered.
 fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
-    let settings_path = home.join(".qwen").join("settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     if !settings_path.exists() {
         dc.warn(&format!(
-            "{} not found — run `tokensave install --agent qwen` if you use Qwen Code",
+            "{} not found — run `tokensave install --agent gemini` if you use Gemini CLI",
             settings_path.display()
         ));
         return;
@@ -281,7 +279,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
 
     let Some(server) = server.and_then(|v| v.as_object()) else {
         dc.fail(&format!(
-            "MCP server NOT registered in {} — run `tokensave install --agent qwen`",
+            "MCP server NOT registered in {} — run `tokensave install --agent gemini`",
             settings_path.display()
         ));
         return;
@@ -299,7 +297,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     if has_serve {
         dc.pass("MCP server args include \"serve\"");
     } else {
-        dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent qwen`");
+        dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent gemini`");
     }
 
     // Check trust flag
@@ -310,23 +308,23 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     if is_trusted {
         dc.pass("MCP server has trust: true (tools auto-approved)");
     } else {
-        dc.warn("MCP server missing trust: true — Qwen Code will prompt for each tool call");
+        dc.warn("MCP server missing trust: true — Gemini will prompt for each tool call");
     }
 }
 
-/// Check QWEN.md contains tokensave rules.
+/// Check GEMINI.md contains tokensave rules.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
-    let qwen_md = home.join(".qwen").join("QWEN.md");
-    if qwen_md.exists() {
-        let has_rules = std::fs::read_to_string(&qwen_md)
+    let gemini_md = home.join(".gemini").join("GEMINI.md");
+    if gemini_md.exists() {
+        let has_rules = std::fs::read_to_string(&gemini_md)
             .unwrap_or_default()
             .contains("tokensave");
         if has_rules {
-            dc.pass("QWEN.md contains tokensave rules");
+            dc.pass("GEMINI.md contains tokensave rules");
         } else {
-            dc.fail("QWEN.md missing tokensave rules — run `tokensave install --agent qwen`");
+            dc.fail("GEMINI.md missing tokensave rules — run `tokensave install --agent gemini`");
         }
     } else {
-        dc.warn("~/.qwen/QWEN.md does not exist");
+        dc.warn("~/.gemini/GEMINI.md does not exist");
     }
 }
