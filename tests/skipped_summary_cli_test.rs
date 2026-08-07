@@ -126,3 +126,38 @@ fn nothing_is_reported_when_every_file_is_supported() {
         "a fully supported project must stay quiet: {output}"
     );
 }
+
+/// Regression for #373: a non-interactive `init` (stdin closed, never a TTY)
+/// must still write the default local git exclusion, instead of silently
+/// dropping it and leaving `.tokensave/` untracked.
+#[test]
+fn init_without_tty_still_excludes_tokensave_from_git() {
+    let dir = TempDir::new().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+    let init = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .arg("init")
+        .arg("-q")
+        .status()
+        .expect("failed to git init");
+    assert!(init.success(), "git init must succeed");
+
+    // `run` drives the real binary with stdin closed, so this is the
+    // non-interactive path from #373.
+    let output = run(&repo, &["init"]);
+    assert!(
+        output.contains("Added .tokensave/ to .git/info/exclude (local, untracked)"),
+        "non-interactive init must report the local exclusion: {output}"
+    );
+
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(
+        exclude.lines().any(|l| l.trim() == ".tokensave/"),
+        "non-interactive init must write .tokensave/ to .git/info/exclude, got: {exclude}"
+    );
+}
