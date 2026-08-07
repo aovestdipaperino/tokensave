@@ -267,6 +267,12 @@ impl<'a> GraphQueryManager<'a> {
              WHERE name != 'main'
              AND name != '_bind_methods'
              AND name NOT LIKE 'test%'
+             -- Go package-level `init` is invoked implicitly by the runtime at
+             -- package load and can never be called explicitly, so it carries
+             -- no incoming `calls` edge — the same reason `main`, `test*`, and
+             -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
+             -- function named `init` in another language is still checked (#346).
+             AND NOT (name = 'init' AND file_path LIKE '%.go')
              {visibility_filter}
              {kind_filter}
              {trait_impl_filter}
