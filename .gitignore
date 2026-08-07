@@ -1,4 +1,7 @@
 /target
+# scripts/win-stress.ps1 builds into a separate target dir so a native Windows
+# run does not invalidate a WSL/Linux build of the same working tree.
+/target-win*
 .DS_Store
 .codegraph
 .tokensave
