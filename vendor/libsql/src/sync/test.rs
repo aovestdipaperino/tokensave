@@ -270,7 +270,6 @@ async fn test_bootstrap_db_downloads_export() {
     .await
     .unwrap();
 
-
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(format!("{}-info", db_path.to_str().unwrap()));
 
@@ -292,7 +291,6 @@ async fn test_bootstrap_db_is_idempotent() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().join("bootstrap2.db");
 
-
     gen_metadata_file(&db_path, 3278479626, 0, 0, 1);
 
     let mut sync_ctx = SyncContext::new(
@@ -307,7 +305,6 @@ async fn test_bootstrap_db_is_idempotent() {
 
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(format!("{}-info", db_path.to_str().unwrap()));
-
 
     crate::sync::bootstrap_db(&mut sync_ctx).await.unwrap();
     let first_requests = server.request_count();
@@ -412,8 +409,8 @@ impl MockServer {
         let request_count = Arc::new(AtomicU32::new(0));
 
         let export_bytes: Arc<Vec<u8>> = {
-            use crate::local::Database;
             use crate::database::OpenFlags;
+            use crate::local::Database;
             use std::fs;
             use tempfile::NamedTempFile;
 
@@ -423,7 +420,10 @@ impl MockServer {
                 .expect("open export db");
             let conn = db.connect().expect("connect export db");
 
-            let _ = conn.query("CREATE TABLE IF NOT EXISTS t(x INTEGER);", crate::params::Params::None);
+            let _ = conn.query(
+                "CREATE TABLE IF NOT EXISTS t(x INTEGER);",
+                crate::params::Params::None,
+            );
             drop(conn);
             drop(db);
             let bytes = fs::read(&path).expect("read export db bytes");
@@ -588,7 +588,13 @@ impl hyper::client::connect::Connection for MockConnection {
     }
 }
 
-fn gen_metadata_file(db_path: &Path, hash: u32, version: u32, durable_frame_num: u32, generation: u32) {
+fn gen_metadata_file(
+    db_path: &Path,
+    hash: u32,
+    version: u32,
+    durable_frame_num: u32,
+    generation: u32,
+) {
     let metadata_path = format!("{}-info", db_path.to_str().unwrap());
     std::fs::write(
         &metadata_path,

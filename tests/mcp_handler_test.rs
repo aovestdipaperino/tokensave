@@ -16,7 +16,7 @@ use tokensave::tokensave::TokenSave;
 
 /// Creates a temporary Rust project with cross-file calls, structs, impls,
 /// test files, and doc comments, then initialises and indexes a `TokenSave`.
-async fn setup_project() -> (TokenSave, TempDir) {
+async fn setup_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -65,7 +65,7 @@ fn test_helper() { assert!(!helper().is_empty()); }
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 /// Extracts the text content from a `ToolResult` value (the standard
@@ -99,7 +99,7 @@ async fn find_node_id(cg: &TokenSave, name: &str) -> String {
 
 #[tokio::test]
 async fn test_search() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -119,7 +119,7 @@ async fn test_search() {
 
 #[tokio::test]
 async fn test_search_literal_finds_string_in_body() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // `Hello, {}!` is a string literal inside `format_greeting`'s body — it is
     // NOT a symbol name, so a semantic search would not surface it. Literal
     // mode must scan source text and report file + line + enclosing symbol.
@@ -156,7 +156,7 @@ async fn test_search_literal_finds_string_in_body() {
 
 #[tokio::test]
 async fn test_search_literal_respects_queryignore() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Same query as test_search_literal_finds_string_in_body, but with the
     // matching file suppressed via .tokensave/queryignore — literal mode must
     // honor the project-level ignore just like the ranked path does.
@@ -183,7 +183,7 @@ async fn test_search_literal_respects_queryignore() {
 
 #[tokio::test]
 async fn test_search_literal_no_match_returns_empty() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -201,7 +201,7 @@ async fn test_search_literal_no_match_returns_empty() {
 
 #[tokio::test]
 async fn test_search_literal_respects_limit() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // `helper` appears as a literal substring on several lines across files.
     let result = handle_tool_call(
         &cg,
@@ -219,7 +219,7 @@ async fn test_search_literal_respects_limit() {
 
 #[tokio::test]
 async fn test_search_literal_respects_path_include() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // `helper` appears as a literal substring in src/main.rs, src/utils.rs and
     // tests/test_utils.rs. Restricting to src/utils.rs must drop the others.
     // Regression for #258: literal mode used to ignore path_include entirely.
@@ -254,7 +254,7 @@ async fn test_search_literal_respects_path_include() {
 
 #[tokio::test]
 async fn test_search_literal_respects_path_exclude() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // path_exclude must take precedence and drop matches under tests/.
     let result = handle_tool_call(
         &cg,
@@ -284,7 +284,7 @@ async fn test_search_literal_respects_path_exclude() {
 
 #[tokio::test]
 async fn test_search_literal_case_sensitive() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Source has `Hello` (capital H) only; lowercase `hello` must not match.
     let result = handle_tool_call(
         &cg,
@@ -309,7 +309,7 @@ async fn test_search_literal_case_sensitive() {
 
 #[tokio::test]
 async fn test_context() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_context",
@@ -329,7 +329,7 @@ async fn test_context() {
 
 #[tokio::test]
 async fn test_callers() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -346,7 +346,7 @@ async fn test_callers() {
 
 #[tokio::test]
 async fn test_callers_nonexistent_node_id_errors() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Passing a symbol *name* where a node ID is expected (the #109 CLI nit:
     // `tokensave tool callers Helper`) must error, not return an empty list
     // that reads like a valid "no callers found".
@@ -374,7 +374,7 @@ async fn test_callers_nonexistent_node_id_errors() {
 
 #[tokio::test]
 async fn test_callees() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -391,7 +391,7 @@ async fn test_callees() {
 
 #[tokio::test]
 async fn test_callees_nonexistent_node_id_errors() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_callees",
@@ -416,7 +416,7 @@ async fn test_callees_nonexistent_node_id_errors() {
 
 #[tokio::test]
 async fn test_impact() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -437,7 +437,7 @@ async fn test_impact() {
 
 #[tokio::test]
 async fn test_node_existing() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -473,7 +473,7 @@ async fn test_node_existing() {
 
 #[tokio::test]
 async fn test_node_not_found() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_node",
@@ -497,7 +497,7 @@ async fn test_node_not_found() {
 
 #[tokio::test]
 async fn test_status() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_status",
@@ -524,7 +524,7 @@ async fn test_status() {
 
 #[tokio::test]
 async fn test_files_no_filter() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_files", json!({}), None, None)
         .await
         .unwrap();
@@ -542,7 +542,7 @@ async fn test_files_no_filter() {
 
 #[tokio::test]
 async fn test_files_path_filter() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_files", json!({"path": "src"}), None, None)
         .await
         .unwrap();
@@ -562,7 +562,7 @@ async fn test_files_path_filter() {
 
 #[tokio::test]
 async fn test_files_pattern_filter() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_files",
@@ -582,7 +582,7 @@ async fn test_files_pattern_filter() {
 
 #[tokio::test]
 async fn test_files_flat_format() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_files",
@@ -604,7 +604,7 @@ async fn test_files_flat_format() {
 
 #[tokio::test]
 async fn test_affected() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_affected",
@@ -628,7 +628,7 @@ async fn test_affected() {
 
 #[tokio::test]
 async fn test_dead_code() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_dead_code", json!({}), None, None)
         .await
         .unwrap();
@@ -645,7 +645,7 @@ async fn test_dead_code() {
 
 #[tokio::test]
 async fn test_diff_context() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_diff_context",
@@ -672,7 +672,7 @@ async fn test_diff_context() {
 
 #[tokio::test]
 async fn test_module_api() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_module_api",
@@ -700,7 +700,7 @@ async fn test_module_api() {
 
 #[tokio::test]
 async fn test_circular() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_circular", json!({}), None, None)
         .await
         .unwrap();
@@ -714,7 +714,7 @@ async fn test_circular() {
 
 #[tokio::test]
 async fn test_hotspots() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_hotspots", json!({"limit": 5}), None, None)
         .await
         .unwrap();
@@ -731,7 +731,7 @@ async fn test_hotspots() {
 
 #[tokio::test]
 async fn test_similar() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_similar",
@@ -755,7 +755,7 @@ async fn test_similar() {
 
 #[tokio::test]
 async fn test_rename_preview() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -780,7 +780,7 @@ async fn test_rename_preview() {
 
 #[tokio::test]
 async fn test_unused_imports() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_unused_imports", json!({}), None, None)
         .await
         .unwrap();
@@ -797,7 +797,7 @@ async fn test_unused_imports() {
 
 #[tokio::test]
 async fn test_rank() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_rank",
@@ -821,7 +821,7 @@ async fn test_rank() {
 
 #[tokio::test]
 async fn test_rank_invalid_direction() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_rank",
@@ -849,7 +849,7 @@ async fn test_rank_invalid_direction() {
 
 #[tokio::test]
 async fn test_largest() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_largest", json!({"limit": 5}), None, None)
         .await
         .unwrap();
@@ -867,7 +867,7 @@ async fn test_largest() {
 
 #[tokio::test]
 async fn test_coupling() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_coupling",
@@ -887,7 +887,7 @@ async fn test_coupling() {
 
 #[tokio::test]
 async fn test_inheritance_depth() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_inheritance_depth",
@@ -910,7 +910,7 @@ async fn test_inheritance_depth() {
 
 #[tokio::test]
 async fn test_distribution_default() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_distribution", json!({}), None, None)
         .await
         .unwrap();
@@ -920,7 +920,7 @@ async fn test_distribution_default() {
 
 #[tokio::test]
 async fn test_distribution_summary() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_distribution",
@@ -947,7 +947,7 @@ async fn test_distribution_summary() {
 
 #[tokio::test]
 async fn test_recursion() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_recursion", json!({}), None, None)
         .await
         .unwrap();
@@ -961,7 +961,7 @@ async fn test_recursion() {
 
 #[tokio::test]
 async fn test_complexity() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_complexity", json!({}), None, None)
         .await
         .unwrap();
@@ -976,7 +976,7 @@ async fn test_complexity() {
 
 #[tokio::test]
 async fn test_doc_coverage() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_doc_coverage", json!({}), None, None)
         .await
         .unwrap();
@@ -993,7 +993,7 @@ async fn test_doc_coverage() {
 
 #[tokio::test]
 async fn test_god_class() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_god_class", json!({"limit": 5}), None, None)
         .await
         .unwrap();
@@ -1010,7 +1010,7 @@ async fn test_god_class() {
 
 #[tokio::test]
 async fn test_changelog_no_git() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // The temp dir is not a git repo, so this should return a "git diff failed"
     // message rather than a hard error.
     let result = handle_tool_call(
@@ -1036,7 +1036,7 @@ async fn test_changelog_no_git() {
 
 #[tokio::test]
 async fn test_port_status() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_port_status",
@@ -1169,7 +1169,7 @@ async fn port_status_matches_methods_with_same_parent_type() {
 
 #[tokio::test]
 async fn test_port_order() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_port_order",
@@ -1193,7 +1193,7 @@ async fn test_port_order() {
 
 #[tokio::test]
 async fn test_unknown_tool() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_unknown", json!({}), None, None).await;
     match result {
         Err(err) => {
@@ -1214,7 +1214,7 @@ async fn test_unknown_tool() {
 
 #[tokio::test]
 async fn test_missing_required_params() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_search", json!({}), None, None).await;
     let err_msg = match result {
         Err(err) => format!("{}", err),
@@ -1233,7 +1233,7 @@ async fn test_missing_required_params() {
 
 #[tokio::test]
 async fn test_node_id_alias() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let node_id = find_node_id(&cg, "helper").await;
     // Use "id" instead of "node_id"
     let result = handle_tool_call(&cg, "tokensave_node", json!({"id": node_id}), None, None)
@@ -1252,7 +1252,7 @@ async fn test_node_id_alias() {
 
 #[tokio::test]
 async fn test_status_without_server_stats() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, None)
         .await
         .unwrap();
@@ -1274,7 +1274,7 @@ async fn test_status_without_server_stats() {
 
 #[tokio::test]
 async fn test_search_populates_touched_files() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -1296,7 +1296,7 @@ async fn test_search_populates_touched_files() {
 
 #[tokio::test]
 async fn test_rename_preview_not_found() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_rename_preview",
@@ -1320,7 +1320,7 @@ async fn test_rename_preview_not_found() {
 
 #[tokio::test]
 async fn test_coupling_fan_out() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_coupling",
@@ -1340,7 +1340,7 @@ async fn test_coupling_fan_out() {
 
 #[tokio::test]
 async fn test_rank_outgoing() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_rank",
@@ -1363,35 +1363,35 @@ async fn test_rank_outgoing() {
 
 #[tokio::test]
 async fn test_context_missing_task() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_context", json!({}), None, None).await;
     assert!(result.is_err(), "context without task should error");
 }
 
 #[tokio::test]
 async fn test_callers_missing_node_id() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_callers", json!({}), None, None).await;
     assert!(result.is_err(), "callers without node_id should error");
 }
 
 #[tokio::test]
 async fn test_affected_missing_files() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_affected", json!({}), None, None).await;
     assert!(result.is_err(), "affected without files should error");
 }
 
 #[tokio::test]
 async fn test_module_api_missing_path() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_module_api", json!({}), None, None).await;
     assert!(result.is_err(), "module_api without path should error");
 }
 
 #[tokio::test]
 async fn test_rank_missing_edge_kind() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_rank",
@@ -1405,28 +1405,28 @@ async fn test_rank_missing_edge_kind() {
 
 #[tokio::test]
 async fn test_similar_missing_symbol() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_similar", json!({}), None, None).await;
     assert!(result.is_err(), "similar without symbol should error");
 }
 
 #[tokio::test]
 async fn test_diff_context_missing_files() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_diff_context", json!({}), None, None).await;
     assert!(result.is_err(), "diff_context without files should error");
 }
 
 #[tokio::test]
 async fn test_changelog_missing_refs() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_changelog", json!({}), None, None).await;
     assert!(result.is_err(), "changelog without from_ref should error");
 }
 
 #[tokio::test]
 async fn test_port_status_missing_dirs() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_port_status", json!({}), None, None).await;
     assert!(
         result.is_err(),
@@ -1436,7 +1436,7 @@ async fn test_port_status_missing_dirs() {
 
 #[tokio::test]
 async fn test_port_order_missing_source_dir() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_port_order", json!({}), None, None).await;
     assert!(
         result.is_err(),
@@ -1533,7 +1533,7 @@ async fn test_changelog_with_real_git() {
 
 #[tokio::test]
 async fn test_distribution_with_path_filter() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_distribution",
@@ -1558,7 +1558,7 @@ async fn test_distribution_with_path_filter() {
 
 #[tokio::test]
 async fn test_files_grouped_format() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_files",
@@ -1587,7 +1587,7 @@ async fn test_files_grouped_format() {
 
 #[tokio::test]
 async fn test_dead_code_custom_kinds() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Ask only for struct dead code
     let result = handle_tool_call(
         &cg,
@@ -1622,7 +1622,7 @@ async fn test_dead_code_custom_kinds() {
 
 #[tokio::test]
 async fn test_affected_with_custom_filter() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_affected",
@@ -1646,7 +1646,7 @@ async fn test_affected_with_custom_filter() {
 
 #[tokio::test]
 async fn test_complexity_response_fields() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_complexity", json!({}), None, None)
         .await
         .unwrap();
@@ -1687,7 +1687,7 @@ async fn test_complexity_response_fields() {
 
 #[tokio::test]
 async fn test_doc_coverage_response_structure() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_doc_coverage", json!({}), None, None)
         .await
         .unwrap();
@@ -1717,7 +1717,7 @@ async fn test_doc_coverage_response_structure() {
 
 #[tokio::test]
 async fn test_files_scope_prefix_filters() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // With scope_prefix "src", should only return files under src/
     let result = handle_tool_call(&cg, "tokensave_files", json!({}), None, Some("src"))
         .await
@@ -1732,7 +1732,7 @@ async fn test_files_scope_prefix_filters() {
 
 #[tokio::test]
 async fn test_search_scope_prefix_filters() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Search for "helper" but scoped to "tests" — should only return test file results
     let result = handle_tool_call(
         &cg,
@@ -1757,7 +1757,7 @@ async fn test_search_scope_prefix_filters() {
 
 #[tokio::test]
 async fn test_files_explicit_path_overrides_scope() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Explicit path "tests" should override scope_prefix "src"
     let result = handle_tool_call(
         &cg,
@@ -1777,7 +1777,7 @@ async fn test_files_explicit_path_overrides_scope() {
 
 #[tokio::test]
 async fn test_context_scope_prefix_filters() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Context scoped to "tests" should return results (even if limited to test files)
     let result = handle_tool_call(
         &cg,
@@ -1797,7 +1797,7 @@ async fn test_context_scope_prefix_filters() {
 
 #[tokio::test]
 async fn test_status_reports_scope_prefix() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, Some("src/mcp"))
         .await
         .unwrap();
@@ -1814,7 +1814,7 @@ async fn test_status_reports_scope_prefix() {
 
 #[tokio::test]
 async fn test_status_no_scope_prefix() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_status", json!({}), None, None)
         .await
         .unwrap();
@@ -2174,7 +2174,7 @@ async fn ast_grep_rewrite_uses_current_cli_update_flag() {
 /// callers can rely on consistent behaviour.
 #[tokio::test]
 async fn branch_diff_returns_empty_when_base_equals_head() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
 
     // branch_diff requires branch tracking metadata to be present.
     let tokensave_dir = tokensave::config::get_tokensave_dir(cg.project_root());
@@ -2535,7 +2535,7 @@ async fn test_insert_at_preserves_trailing_newline() {
 
 #[tokio::test]
 async fn test_gini() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_gini",
@@ -2560,7 +2560,7 @@ async fn test_gini() {
 
 #[tokio::test]
 async fn test_gini_default_metric() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_gini", json!({}), None, None)
         .await
         .unwrap();
@@ -2579,7 +2579,7 @@ async fn test_gini_default_metric() {
 
 #[tokio::test]
 async fn test_dependency_depth() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_dependency_depth",
@@ -2608,7 +2608,7 @@ async fn test_dependency_depth() {
 
 #[tokio::test]
 async fn test_health_summary() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_health", json!({}), None, None)
         .await
         .unwrap();
@@ -2627,7 +2627,7 @@ async fn test_health_summary() {
 
 #[tokio::test]
 async fn test_health_detailed() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_health",
@@ -2757,7 +2757,7 @@ pub fn unrelated(x: i32) -> i32 {
 /// without leaving the chat session.
 #[tokio::test]
 async fn test_runtime_snapshot_exposes_process_and_db_signals() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_runtime", json!({}), None, None)
         .await
         .unwrap();
@@ -2803,7 +2803,7 @@ async fn test_runtime_snapshot_exposes_process_and_db_signals() {
 /// six separate tools to reproduce the breakdown.
 #[tokio::test]
 async fn test_health_detailed_includes_raw_signals() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_health",
@@ -2852,7 +2852,7 @@ async fn test_health_detailed_includes_raw_signals() {
 
 #[tokio::test]
 async fn test_dsm_stats() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_dsm",
@@ -2877,7 +2877,7 @@ async fn test_dsm_stats() {
 
 #[tokio::test]
 async fn test_dsm_clusters() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_dsm",
@@ -2902,7 +2902,7 @@ async fn test_dsm_clusters() {
 
 #[tokio::test]
 async fn test_test_risk() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_test_risk",
@@ -2932,7 +2932,7 @@ async fn test_test_risk() {
 
 #[tokio::test]
 async fn test_test_coverage_requires_exactly_one_input() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // No input.
     let result = handle_tool_call(&cg, "tokensave_test_coverage", json!({}), None, None).await;
     let err = result.err().expect("should error with no input");
@@ -2952,7 +2952,7 @@ async fn test_test_coverage_requires_exactly_one_input() {
 
 #[tokio::test]
 async fn test_test_coverage_file_mode_returns_rollup() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Use the first source file from the fixture; just verify the shape.
     let files = cg.get_all_files().await.unwrap();
     let src = files
@@ -3034,7 +3034,7 @@ async fn source_path_override_is_used_by_coverage_and_risk_tools() {
 
 #[tokio::test]
 async fn test_test_coverage_unknown_symbol_errors() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_test_coverage",
@@ -3049,7 +3049,7 @@ async fn test_test_coverage_unknown_symbol_errors() {
 
 #[tokio::test]
 async fn test_test_coverage_clamps_max_depth() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let files = cg.get_all_files().await.unwrap();
     let src = files
         .iter()
@@ -3094,7 +3094,7 @@ tempfile = "3"
 
 #[tokio::test]
 async fn test_dependencies_workspace_summary() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     write_test_cargo_toml(dir.path());
     let result = handle_tool_call(&cg, "tokensave_dependencies", json!({}), None, None)
         .await
@@ -3116,7 +3116,7 @@ async fn test_dependencies_workspace_summary() {
 
 #[tokio::test]
 async fn test_dependencies_unknown_member_reports_available() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     write_test_cargo_toml(dir.path());
     let result = handle_tool_call(
         &cg,
@@ -3139,7 +3139,7 @@ async fn test_dependencies_unknown_member_reports_available() {
 
 #[tokio::test]
 async fn test_dependencies_kind_filter() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     write_test_cargo_toml(dir.path());
     let result = handle_tool_call(
         &cg,
@@ -3167,7 +3167,7 @@ async fn test_dependencies_kind_filter() {
 
 #[tokio::test]
 async fn test_dependencies_surfaces_license_and_drift() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     // Write a workspace with two members declaring `serde` at DIFFERENT
     // versions — that's drift the tool should report.
     fs::write(
@@ -3215,7 +3215,7 @@ async fn test_dependencies_surfaces_license_and_drift() {
 
 #[tokio::test]
 async fn test_dependencies_include_lockfile_stamps_resolved() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     fs::write(
         dir.path().join("Cargo.toml"),
         "[package]\nname = \"app\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\n\n[dependencies]\nserde = \"1.0\"\n",
@@ -3244,7 +3244,7 @@ async fn test_dependencies_include_lockfile_stamps_resolved() {
 
 #[tokio::test]
 async fn test_dependencies_crate_lookup() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     write_test_cargo_toml(dir.path());
     let result = handle_tool_call(
         &cg,
@@ -3271,7 +3271,7 @@ async fn test_dependencies_crate_lookup() {
 
 #[tokio::test]
 async fn test_session_start() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
 
     // Record more decisions than the delta budget to assert the cap.
     for i in 0..10 {
@@ -3305,7 +3305,7 @@ async fn test_session_start() {
 
 #[tokio::test]
 async fn test_session_end() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     handle_tool_call(&cg, "tokensave_session_start", json!({}), None, None)
         .await
         .unwrap();
@@ -3326,7 +3326,7 @@ async fn test_session_end() {
 
 #[tokio::test]
 async fn test_session_end_no_baseline() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_session_end", json!({}), None, None)
         .await
         .unwrap();
@@ -3341,7 +3341,7 @@ async fn test_session_end_no_baseline() {
 
 #[tokio::test]
 async fn test_body_returns_full_function_source() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_body",
@@ -3395,7 +3395,7 @@ async fn test_body_returns_full_function_source() {
 
 #[tokio::test]
 async fn test_body_unknown_symbol() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_body",
@@ -3414,7 +3414,7 @@ async fn test_body_unknown_symbol() {
 
 #[tokio::test]
 async fn test_body_missing_symbol_param() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_body", json!({}), None, None).await;
     assert!(result.is_err(), "should error when symbol is missing");
 }
@@ -3513,7 +3513,7 @@ fn main() {
 
 #[tokio::test]
 async fn test_todos_empty_when_clean() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_todos", json!({}), None, None)
         .await
         .unwrap();
@@ -3528,7 +3528,7 @@ async fn test_todos_empty_when_clean() {
 
 #[tokio::test]
 async fn test_callers_for_returns_caller_set_per_id() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
 
     // Look up two distinct targets in one call.
     let helper_id = find_node_id(&cg, "helper").await;
@@ -3567,7 +3567,7 @@ async fn test_callers_for_returns_caller_set_per_id() {
 
 #[tokio::test]
 async fn test_callers_for_includes_unmatched_ids_as_empty() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let helper_id = find_node_id(&cg, "helper").await;
     let bogus_id = "function:0000000000000000000000000000ffff".to_string();
 
@@ -3588,7 +3588,7 @@ async fn test_callers_for_includes_unmatched_ids_as_empty() {
 
 #[tokio::test]
 async fn test_callers_for_respects_max_per_item() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let helper_id = find_node_id(&cg, "helper").await;
     // Cap at 0 — every caller should be marked truncated.
     let result = handle_tool_call(
@@ -3607,7 +3607,7 @@ async fn test_callers_for_respects_max_per_item() {
 
 #[tokio::test]
 async fn test_callers_for_rejects_empty_input() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_callers_for",
@@ -3624,7 +3624,7 @@ async fn test_callers_for_rejects_empty_input() {
 
 #[tokio::test]
 async fn test_callers_for_rejects_unknown_kind() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let helper_id = find_node_id(&cg, "helper").await;
     let result = handle_tool_call(
         &cg,
@@ -3646,7 +3646,7 @@ async fn test_callers_for_rejects_unknown_kind() {
 
 #[tokio::test]
 async fn test_by_qualified_name_finds_indexed_node() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Find the qualified name of `helper` first.
     let helper = cg
         .get_node(&find_node_id(&cg, "helper").await)
@@ -3675,7 +3675,7 @@ async fn test_by_qualified_name_finds_indexed_node() {
 
 #[tokio::test]
 async fn test_by_qualified_name_returns_empty_for_unknown() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_by_qualified_name",
@@ -3691,7 +3691,7 @@ async fn test_by_qualified_name_returns_empty_for_unknown() {
 
 #[tokio::test]
 async fn test_by_qualified_name_requires_param() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(&cg, "tokensave_by_qualified_name", json!({}), None, None).await;
     let Err(err) = result else {
         panic!("expected error when qualified_name is missing");
@@ -3705,7 +3705,7 @@ async fn test_by_qualified_name_requires_param() {
 
 #[tokio::test]
 async fn test_handle_record_decision() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_record_decision",
@@ -3730,7 +3730,7 @@ async fn test_handle_record_decision() {
 
 #[tokio::test]
 async fn test_handle_record_code_area() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_record_code_area",
@@ -3751,7 +3751,7 @@ async fn test_handle_record_code_area() {
 
 #[tokio::test]
 async fn test_handle_session_recall_returns_recorded_decision() {
-    let (cg, _dir) = setup_project().await;
+    let (_dir, cg) = setup_project().await;
     // Seed a decision first
     handle_tool_call(
         &cg,
@@ -3799,7 +3799,7 @@ async fn test_handle_session_recall_returns_recorded_decision() {
 /// searching for `gmres`: the codebase has both a `pub fn gmres(...)` and a
 /// struct field literally named `gmres`. The function — the body the user
 /// actually wants — must outrank the field.
-async fn setup_function_vs_field_collision() -> (TokenSave, TempDir) {
+async fn setup_function_vs_field_collision() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -3818,12 +3818,12 @@ pub fn gmres(x: u32) -> u32 {
     .unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn body_prefers_function_over_field_with_same_name() {
-    let (cg, _dir) = setup_function_vs_field_collision().await;
+    let (_dir, cg) = setup_function_vs_field_collision().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_body",
@@ -5372,7 +5372,7 @@ async fn mcp_server_owns_watcher_and_refreshes_token_map_on_change() {
 /// (`third_party/`) that both define a function named `helper`, so path
 /// filters can be observed selecting between them. (`vendor/` is excluded by
 /// default config, so the vendored tree uses `third_party/` to stay indexed.)
-async fn setup_vendored_project() -> (TokenSave, TempDir) {
+async fn setup_vendored_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -5402,12 +5402,12 @@ pub fn helper() -> String {
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn test_search_path_exclude_drops_vendored() {
-    let (cg, _dir) = setup_vendored_project().await;
+    let (_dir, cg) = setup_vendored_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -5430,7 +5430,7 @@ async fn test_search_path_exclude_drops_vendored() {
 
 #[tokio::test]
 async fn test_search_path_include_keeps_only_matching() {
-    let (cg, _dir) = setup_vendored_project().await;
+    let (_dir, cg) = setup_vendored_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -5453,7 +5453,7 @@ async fn test_search_path_include_keeps_only_matching() {
 
 #[tokio::test]
 async fn test_search_no_path_filter_unchanged() {
-    let (cg, _dir) = setup_vendored_project().await;
+    let (_dir, cg) = setup_vendored_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
@@ -5472,7 +5472,7 @@ async fn test_search_no_path_filter_unchanged() {
 
 #[tokio::test]
 async fn test_context_path_exclude_drops_vendored() {
-    let (cg, _dir) = setup_vendored_project().await;
+    let (_dir, cg) = setup_vendored_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_context",
@@ -5491,7 +5491,7 @@ async fn test_context_path_exclude_drops_vendored() {
 
 #[tokio::test]
 async fn test_context_path_include_keeps_only_matching() {
-    let (cg, _dir) = setup_vendored_project().await;
+    let (_dir, cg) = setup_vendored_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_context",
@@ -6080,7 +6080,7 @@ fn init_git_with_commits(project: &std::path::Path) {
 /// staleness warning derived from `last_updated == 0`.
 #[tokio::test]
 async fn test_status_mid_rebuild_reports_rebuild_in_progress() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     let project = dir.path();
     init_git_with_commits(project);
 
@@ -6117,7 +6117,7 @@ async fn test_status_mid_rebuild_reports_rebuild_in_progress() {
 /// `Database::clear()`.
 #[tokio::test]
 async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
-    let (cg, dir) = setup_project().await;
+    let (dir, cg) = setup_project().await;
     let project = dir.path();
     init_git_with_commits(project);
 
@@ -6158,7 +6158,7 @@ async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
 // ---------------------------------------------------------------------------
 
 /// Indexes a project carrying both doc conventions and returns it.
-async fn setup_documented_project() -> (TokenSave, TempDir) {
+async fn setup_documented_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -6182,12 +6182,12 @@ async fn setup_documented_project() -> (TokenSave, TempDir) {
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
-    (cg, dir)
+    (dir, cg)
 }
 
 #[tokio::test]
 async fn doc_tool_returns_sidecar_documentation() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_doc",
@@ -6219,7 +6219,7 @@ async fn doc_tool_returns_sidecar_documentation() {
 
 #[tokio::test]
 async fn doc_tool_returns_docs_dir_doc_for_every_covered_file() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     for file in ["src/search_es8.rs", "src/feed_es8.rs"] {
         let result = handle_tool_call(&cg, "tokensave_doc", json!({"file": file}), None, None)
             .await
@@ -6239,7 +6239,7 @@ async fn doc_tool_returns_docs_dir_doc_for_every_covered_file() {
 
 #[tokio::test]
 async fn doc_tool_reports_no_doc_for_undocumented_file() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_doc",
@@ -6257,7 +6257,7 @@ async fn doc_tool_reports_no_doc_for_undocumented_file() {
 
 #[tokio::test]
 async fn doc_tool_can_omit_content() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_doc",
@@ -6276,7 +6276,7 @@ async fn doc_tool_can_omit_content() {
 
 #[tokio::test]
 async fn doc_tool_normalizes_backslash_paths() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_doc",
@@ -6294,7 +6294,7 @@ async fn doc_tool_normalizes_backslash_paths() {
 async fn doc_staleness_is_unknown_without_git_history() {
     // The fixture is not a git repo, so drift cannot be determined. That must
     // read as `null` (unknown), never as a confident "not stale".
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_doc",
@@ -6310,7 +6310,7 @@ async fn doc_staleness_is_unknown_without_git_history() {
 
 #[tokio::test]
 async fn doc_tool_is_registered_in_the_tool_list() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     // A missing definition would leave the handler unreachable over MCP.
     let defs = tokensave::mcp::tools::get_tool_definitions();
     assert!(
@@ -6322,7 +6322,7 @@ async fn doc_tool_is_registered_in_the_tool_list() {
 
 #[tokio::test]
 async fn entities_marks_files_that_have_companion_docs() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_entities",
@@ -6340,7 +6340,7 @@ async fn entities_marks_files_that_have_companion_docs() {
 
 #[tokio::test]
 async fn entities_marks_undocumented_files_without_a_doc_path() {
-    let (cg, _dir) = setup_documented_project().await;
+    let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
         &cg,
         "tokensave_entities",

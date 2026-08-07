@@ -256,15 +256,15 @@ impl Statement {
     /// sure that current statement has already been stepped once before
     /// calling this method.
     pub fn column_names(&self) -> Vec<&str> {
-       let n = self.column_count();
-       let mut cols = Vec::with_capacity(n);
-       for i in 0..n {
-           let s = self.column_name(i);
-           if let Some(s) = s {
-               cols.push(s);
-           }
-       }
-       cols
+        let n = self.column_count();
+        let mut cols = Vec::with_capacity(n);
+        for i in 0..n {
+            let s = self.column_name(i);
+            if let Some(s) = s {
+                cols.push(s);
+            }
+        }
+        cols
     }
 
     /// Return the number of columns in the result set returned by the prepared

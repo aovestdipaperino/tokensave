@@ -13,14 +13,18 @@ use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::types::*;
 
-/// Helper: create a temp database and return (Database, TempDir, db_path).
-async fn setup_db() -> (Database, TempDir, std::path::PathBuf) {
+/// Helper: create a temp database and return (TempDir, Database, db_path).
+///
+/// The `TempDir` comes first so that it is the last binding declared at each
+/// call site and therefore the last dropped: the database must close before the
+/// directory is removed, or Windows refuses the removal and leaks it (#367).
+async fn setup_db() -> (TempDir, Database, std::path::PathBuf) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
-    (db, dir, db_path)
+    (dir, db, db_path)
 }
 
 /// Helper: create a sample node.
@@ -61,7 +65,7 @@ fn sample_node(id: &str, name: &str) -> Node {
 
 #[tokio::test]
 async fn quick_check_passes_on_healthy_db() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
     assert!(
         db.quick_check().await.unwrap(),
         "fresh database should pass quick_check"
@@ -70,7 +74,7 @@ async fn quick_check_passes_on_healthy_db() {
 
 #[tokio::test]
 async fn quick_check_passes_after_inserts() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
     let nodes: Vec<Node> = (0..50)
         .map(|i| sample_node(&format!("n{i}"), &format!("func_{i}")))
         .collect();
@@ -83,7 +87,7 @@ async fn quick_check_passes_after_inserts() {
 
 #[tokio::test]
 async fn quick_check_detects_page_level_corruption() {
-    let (db, _dir, db_path) = setup_db().await;
+    let (_dir, db, db_path) = setup_db().await;
 
     // Insert enough data to create multiple pages
     let nodes: Vec<Node> = (0..100)
@@ -121,14 +125,14 @@ async fn quick_check_detects_page_level_corruption() {
 
 #[tokio::test]
 async fn rebuild_fts_on_fresh_db() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
     // rebuild on empty db should not error
     db.rebuild_fts().await.unwrap();
 }
 
 #[tokio::test]
 async fn rebuild_fts_restores_search_after_fts_damage() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     let nodes = vec![
         sample_node("a1", "process_data"),
@@ -164,7 +168,7 @@ async fn rebuild_fts_restores_search_after_fts_damage() {
 
 #[tokio::test]
 async fn search_nodes_falls_back_to_like_when_fts_empty() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     let nodes = vec![sample_node("b1", "my_function")];
     db.insert_nodes(&nodes).await.unwrap();
@@ -186,7 +190,7 @@ async fn search_nodes_falls_back_to_like_when_fts_empty() {
 
 #[tokio::test]
 async fn bulk_load_preserves_synchronous_normal() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     db.begin_bulk_load().await.unwrap();
 
@@ -205,7 +209,7 @@ async fn bulk_load_preserves_synchronous_normal() {
 
 #[tokio::test]
 async fn bulk_load_round_trip_preserves_data() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     db.begin_bulk_load().await.unwrap();
 
@@ -369,7 +373,7 @@ async fn corrupt_db_detected_and_repaired_on_reopen() {
 
 #[tokio::test]
 async fn fts_corruption_healed_by_search_nodes() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     // Insert data so FTS has content
     let nodes = vec![
@@ -436,7 +440,7 @@ async fn edge_count(db: &Database) -> i64 {
 /// permanently un-indexed (#318).
 #[tokio::test]
 async fn end_bulk_load_dedupes_edges_before_unique_index() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     db.insert_nodes(&[sample_node("s", "src_fn"), sample_node("t", "dst_fn")])
         .await

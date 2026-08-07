@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -11,7 +11,8 @@ use libsql_replication::frame::{FrameHeader, FrameNo};
 use libsql_replication::meta::WalIndexMeta;
 use libsql_replication::replicator::{Error, ReplicatorClient};
 use libsql_replication::rpc::replication::{
-    Frame as RpcFrame, verify_session_token, Frames, HelloRequest, HelloResponse, LogOffset, SESSION_TOKEN_KEY,
+    verify_session_token, Frame as RpcFrame, Frames, HelloRequest, HelloResponse, LogOffset,
+    SESSION_TOKEN_KEY,
 };
 use tokio_stream::Stream;
 use tonic::metadata::AsciiMetadataValue;
@@ -50,34 +51,42 @@ impl SyncStats {
     }
 
     fn add_prefetched_bytes(&self, bytes: u64) {
-        self.prefetched_bytes.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.prefetched_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_prefetched_bytes_discarded_due_to_new_session(&self, bytes: u64) {
-        self.prefetched_bytes_discarded_due_to_new_session.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.prefetched_bytes_discarded_due_to_new_session
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_prefetched_bytes_discarded_due_to_consecutive_handshake(&self, bytes: u64) {
-        self.prefetched_bytes_discarded_due_to_consecutive_handshake.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.prefetched_bytes_discarded_due_to_consecutive_handshake
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_prefetched_bytes_discarded_due_to_invalid_frame_header(&self, bytes: u64) {
-        self.prefetched_bytes_discarded_due_to_invalid_frame_header.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.prefetched_bytes_discarded_due_to_invalid_frame_header
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_synced_bytes_discarded_due_to_invalid_frame_headear(&self, bytes: u64) {
-        self.synced_bytes_discarded_due_to_invalid_frame_header.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.synced_bytes_discarded_due_to_invalid_frame_header
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_prefetched_bytes_used(&self, bytes: u64) {
-        self.prefetched_bytes_used.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.prefetched_bytes_used
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn add_synced_bytes_used(&self, bytes: u64) {
-        self.synced_bytes_used.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.synced_bytes_used
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
     fn add_snapshot_bytes(&self, bytes: u64) {
-        self.snapshot_bytes.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        self.snapshot_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -176,8 +185,14 @@ impl RemoteClient {
         tracing::info!("Attempting to perform handshake with primary.");
         if let Some((Ok(frames), _)) = &self.prefetched_batch_log_entries {
             // TODO: check if it's ok to just do 4096 * frames.len()
-            let bytes = frames.get_ref().frames.iter().map(|f| f.data.len() as u64).sum();
-            self.sync_stats.add_prefetched_bytes_discarded_due_to_consecutive_handshake(bytes);
+            let bytes = frames
+                .get_ref()
+                .frames
+                .iter()
+                .map(|f| f.data.len() as u64)
+                .sum();
+            self.sync_stats
+                .add_prefetched_bytes_discarded_due_to_consecutive_handshake(bytes);
         }
         if self.dirty {
             self.prefetched_batch_log_entries = None;
@@ -207,7 +222,12 @@ impl RemoteClient {
         };
         let mut prefetched_bytes = None;
         if let Some((Ok(frames), _)) = &frames {
-            let bytes = frames.get_ref().frames.iter().map(|f| f.data.len() as u64).sum();
+            let bytes = frames
+                .get_ref()
+                .frames
+                .iter()
+                .map(|f| f.data.len() as u64)
+                .sum();
             self.sync_stats.add_prefetched_bytes(bytes);
             prefetched_bytes = Some(bytes);
         }
@@ -216,7 +236,8 @@ impl RemoteClient {
                 "Frames prefetching failed because of new session token returned by handshake"
             );
             if let Some(bytes) = prefetched_bytes {
-                self.sync_stats.add_prefetched_bytes_discarded_due_to_new_session(bytes);
+                self.sync_stats
+                    .add_prefetched_bytes_discarded_due_to_new_session(bytes);
             }
             None
         } else {
@@ -238,13 +259,15 @@ impl RemoteClient {
             let header_result = FrameHeader::read_from_prefix(&f.data);
             if header_result.is_none() {
                 if prefetched {
-                    self.sync_stats.add_prefetched_bytes_discarded_due_to_invalid_frame_header(bytes);
+                    self.sync_stats
+                        .add_prefetched_bytes_discarded_due_to_invalid_frame_header(bytes);
                 } else {
-                    self.sync_stats.add_synced_bytes_discarded_due_to_invalid_frame_headear(bytes);
+                    self.sync_stats
+                        .add_synced_bytes_discarded_due_to_invalid_frame_headear(bytes);
                 }
             }
-            let header: FrameHeader = header_result
-                .ok_or_else(|| Error::Internal("invalid frame header".into()))?;
+            let header: FrameHeader =
+                header_result.ok_or_else(|| Error::Internal("invalid frame header".into()))?;
             self.last_received = Some(header.frame_no.get());
         }
 
@@ -254,9 +277,7 @@ impl RemoteClient {
             self.sync_stats.add_synced_bytes_used(bytes);
         }
 
-        let frames_iter = frames
-            .into_iter()
-            .map(Ok);
+        let frames_iter = frames.into_iter().map(Ok);
 
         let stream = tokio_stream::iter(frames_iter);
 
@@ -312,7 +333,6 @@ impl RemoteClient {
                 self.last_received = Some(header.frame_no.get());
             }
         }
-
 
         Ok(Box::pin(frames))
     }

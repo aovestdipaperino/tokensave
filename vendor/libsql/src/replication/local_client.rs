@@ -3,10 +3,10 @@ use std::pin::Pin;
 
 use futures::{StreamExt, TryStreamExt};
 use libsql_replication::{
-    rpc::replication::Frame as RpcFrame,
     frame::{Frame, FrameNo},
     meta::WalIndexMeta,
     replicator::{Error, ReplicatorClient},
+    rpc::replication::Frame as RpcFrame,
 };
 use tokio_stream::Stream;
 
@@ -47,7 +47,14 @@ impl ReplicatorClient for LocalClient {
     async fn next_frames(&mut self) -> Result<Self::FrameStream, Error> {
         match self.frames.take() {
             Some(Frames::Vec(f)) => {
-                let iter = f.into_iter().map(|f| RpcFrame { data: f.bytes(), timestamp: None, durable_frame_no: None }).map(Ok);
+                let iter = f
+                    .into_iter()
+                    .map(|f| RpcFrame {
+                        data: f.bytes(),
+                        timestamp: None,
+                        durable_frame_no: None,
+                    })
+                    .map(Ok);
                 Ok(Box::pin(tokio_stream::iter(iter)))
             }
             Some(f @ Frames::Snapshot(_)) => {

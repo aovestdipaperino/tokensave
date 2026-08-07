@@ -183,13 +183,13 @@ impl EmbeddedReplicator {
         encryption_config: Option<EncryptionConfig>,
         perodic_sync: Option<Duration>,
     ) -> Result<Self> {
-        let mut replicator =
-            Replicator::new_sqlite(
-                Either::Left(client),
-                db_path,
-                auto_checkpoint,
-                encryption_config,
-            ).await?;
+        let mut replicator = Replicator::new_sqlite(
+            Either::Left(client),
+            db_path,
+            auto_checkpoint,
+            encryption_config,
+        )
+        .await?;
         replicator.set_primary_handshake_retries(3);
         let replicator = Arc::new(Mutex::new(replicator));
 
@@ -247,30 +247,39 @@ impl EmbeddedReplicator {
     pub async fn get_sync_usage_stats(&self) -> Result<SyncUsageStats> {
         let mut replicator = self.replicator.lock().await;
         match replicator.client_mut() {
-            Either::Right(_) => {
-                Err(crate::errors::Error::Misuse(
-                    "Trying to get sync usage stats, but this is a local replicator".into(),
-                ))
-            }
+            Either::Right(_) => Err(crate::errors::Error::Misuse(
+                "Trying to get sync usage stats, but this is a local replicator".into(),
+            )),
             Either::Left(c) => {
                 let stats = c.sync_stats();
                 Ok(SyncUsageStats {
-                    prefetched_bytes: stats.prefetched_bytes.load(std::sync::atomic::Ordering::SeqCst),
+                    prefetched_bytes: stats
+                        .prefetched_bytes
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     prefetched_bytes_discarded_due_to_new_session: stats
-                        .prefetched_bytes_discarded_due_to_new_session.load(std::sync::atomic::Ordering::SeqCst),
+                        .prefetched_bytes_discarded_due_to_new_session
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     prefetched_bytes_discarded_due_to_consecutive_handshake: stats
-                        .prefetched_bytes_discarded_due_to_consecutive_handshake.load(std::sync::atomic::Ordering::SeqCst),
+                        .prefetched_bytes_discarded_due_to_consecutive_handshake
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     prefetched_bytes_discarded_due_to_invalid_frame_header: stats
-                        .prefetched_bytes_discarded_due_to_invalid_frame_header.load(std::sync::atomic::Ordering::SeqCst),
+                        .prefetched_bytes_discarded_due_to_invalid_frame_header
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     synced_bytes_discarded_due_to_invalid_frame_header: stats
-                        .synced_bytes_discarded_due_to_invalid_frame_header.load(std::sync::atomic::Ordering::SeqCst),
-                    prefetched_bytes_used: stats.prefetched_bytes_used.load(std::sync::atomic::Ordering::SeqCst),
-                    synced_bytes_used: stats.synced_bytes_used.load(std::sync::atomic::Ordering::SeqCst),
-                    snapshot_bytes: stats.snapshot_bytes.load(std::sync::atomic::Ordering::SeqCst),
+                        .synced_bytes_discarded_due_to_invalid_frame_header
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    prefetched_bytes_used: stats
+                        .prefetched_bytes_used
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    synced_bytes_used: stats
+                        .synced_bytes_used
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    snapshot_bytes: stats
+                        .snapshot_bytes
+                        .load(std::sync::atomic::Ordering::SeqCst),
                 })
             }
         }
-
     }
 
     pub async fn sync_oneshot(&self) -> Result<Replicated> {

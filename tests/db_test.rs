@@ -3,15 +3,19 @@ use tokensave::db::migrations::latest_version;
 use tokensave::db::Database;
 use tokensave::types::*;
 
-/// Helper: create an in-memory-style temp database and return (Database, TempDir).
+/// Helper: create an in-memory-style temp database and return (TempDir, Database).
+///
+/// The `TempDir` comes first so that it is the last binding declared at each
+/// call site and therefore the last dropped: the database must close before the
+/// directory is removed, or Windows refuses the removal and leaks it (#367).
 /// The TempDir is returned so that it stays alive for the duration of the test.
-async fn setup_db() -> (Database, TempDir) {
+async fn setup_db() -> (TempDir, Database) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
-    (db, dir)
+    (dir, db)
 }
 
 /// Helper: create a sample node with reasonable defaults.
@@ -86,7 +90,7 @@ async fn test_database_read_only_state_matches_open_mode() {
 
 #[tokio::test]
 async fn test_insert_and_get_node() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     let node = sample_node("node-1", "process_data", "src/main.rs");
 
     db.insert_node(&node).await.expect("failed to insert node");
@@ -116,7 +120,7 @@ async fn test_insert_and_get_node() {
 
 #[tokio::test]
 async fn test_insert_and_get_edge() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     let node_a = sample_node("node-a", "caller", "src/lib.rs");
     let node_b = sample_node("node-b", "callee", "src/lib.rs");
 
@@ -171,7 +175,7 @@ async fn test_insert_and_get_edge() {
 
 #[tokio::test]
 async fn test_upsert_file() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let file = FileRecord {
         path: "src/main.rs".to_string(),
@@ -221,7 +225,7 @@ async fn test_upsert_file() {
 
 #[tokio::test]
 async fn test_fts_search() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let node = sample_node("fts-node", "process_request", "src/handler.rs");
     db.insert_node(&node).await.expect("failed to insert node");
@@ -240,7 +244,7 @@ async fn test_fts_search() {
 
 #[tokio::test]
 async fn test_get_stats() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let node = sample_node("stats-node", "my_func", "src/lib.rs");
     db.insert_node(&node).await.expect("failed to insert node");
@@ -259,7 +263,7 @@ async fn test_get_stats() {
 
 #[tokio::test]
 async fn test_delete_nodes_by_file() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let node1 = sample_node("del-1", "func_a", "src/target.rs");
     let node2 = sample_node("del-2", "func_b", "src/target.rs");
@@ -301,7 +305,7 @@ async fn test_delete_nodes_by_file() {
 
 #[tokio::test]
 async fn test_unresolved_refs() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Insert a node first (FK constraint)
     let node = sample_node("ref-node", "my_func", "src/lib.rs");
@@ -345,7 +349,7 @@ async fn test_unresolved_refs() {
 
 #[tokio::test]
 async fn test_batch_insert_nodes() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes: Vec<Node> = (0..10)
         .map(|i| sample_node(&format!("batch-{i}"), &format!("func_{i}"), "src/batch.rs"))
@@ -364,7 +368,7 @@ async fn test_batch_insert_nodes() {
 
 #[tokio::test]
 async fn test_clear() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let node = sample_node("clear-1", "func", "src/lib.rs");
     db.insert_node(&node).await.expect("failed to insert node");
@@ -389,7 +393,7 @@ async fn test_clear() {
 
 #[tokio::test]
 async fn test_get_node_not_found() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     let result = db
         .get_node_by_id("nonexistent")
         .await
@@ -399,13 +403,13 @@ async fn test_get_node_not_found() {
 
 #[tokio::test]
 async fn test_optimize() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     db.optimize().await.expect("optimize should not fail");
 }
 
 #[tokio::test]
 async fn test_database_size() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     let size = db.size().await.expect("size should not fail");
     assert!(size > 0, "database should have non-zero size");
 }
@@ -694,7 +698,7 @@ async fn test_migrate_v14_backfills_search_terms_and_rebuilds_fts() {
 
 #[tokio::test]
 async fn test_search_nodes_bounded_returns_real_descending_scores() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     // One strong match (term in name) and one weak match (term only in docstring).
     let strong = sample_node("s", "ranking_engine", "src/rank.rs");
     let mut weak = sample_node("w", "helper", "src/helper.rs");
