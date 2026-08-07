@@ -49,6 +49,97 @@ pub fn global_db_path() -> Option<PathBuf> {
     crate::agents::home_dir().map(|h| h.join(".tokensave").join("global.db"))
 }
 
+/// Resolves a project directory to the canonical string used as its global-DB key.
+///
+/// Every spelling of one directory must land on one row, so `.`, `./`, `../name`
+/// and trailing separators are resolved away and symlinks followed. On Windows
+/// the verbatim `\\?\` prefix that [`Path::canonicalize`] adds is stripped and
+/// the drive letter upper-cased, so `d:\foo` and `D:\foo` share a row. Paths that
+/// cannot be resolved on disk (a deleted project, or a synthetic path in a test)
+/// fall back to a lexical absolute form, which is still stable for that caller.
+///
+/// # Examples
+///
+/// ```
+/// use tokensave::global_db::normalize_project_key;
+///
+/// let cwd = std::env::current_dir().unwrap();
+/// assert_eq!(normalize_project_key("."), normalize_project_key(&cwd));
+/// ```
+pub fn normalize_project_key(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref();
+    let resolved = path
+        .canonicalize()
+        .unwrap_or_else(|_| lexical_absolute(path));
+    normalize_key_string(&resolved.to_string_lossy())
+}
+
+/// Applies the textual half of [`normalize_project_key`] to an already-absolute path.
+fn normalize_key_string(path: &str) -> String {
+    let mut s = path.to_string();
+
+    // Windows canonicalization yields verbatim paths (`\\?\C:\x`, `\\?\UNC\srv\s`),
+    // which no other code path produces. Strip the prefix so keys stay comparable.
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        s = format!(r"\\{rest}");
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        s = rest.to_string();
+    }
+
+    // `d:\foo` and `D:\foo` are the same directory. Only a drive-letter prefix is
+    // case-folded — the rest of the path is left alone, since a case-insensitive
+    // filesystem is not something we can assume from the string.
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        s.replace_range(..1, &s[..1].to_ascii_uppercase());
+    }
+
+    trim_trailing_separators(&mut s);
+    s
+}
+
+/// Makes a path absolute without touching the filesystem, resolving `.` and `..`.
+fn lexical_absolute(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+
+    let mut out = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // A leading `..` on a relative fallback has nothing to pop; keep it
+                // rather than silently changing which directory is meant.
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Strips trailing `/` and `\` without eating a root (`/`, `C:\`).
+fn trim_trailing_separators(s: &mut String) {
+    let root_len =
+        if s.len() >= 3 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
+            3
+        } else {
+            1
+        };
+    while s.len() > root_len && (s.ends_with('/') || s.ends_with('\\')) {
+        s.pop();
+    }
+}
+
 impl GlobalDb {
     /// Opens (or creates) the global database at an explicit path. Returns
     /// `None` if the directory cannot be created or the DB fails to open.
@@ -116,8 +207,18 @@ impl GlobalDb {
         .await
         .ok()?;
 
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .await
+        .ok()?;
+
         // Migrate existing DBs: add agent/credits columns if absent.
         Self::migrate_turns_columns(&conn).await;
+        Self::migrate_project_paths(&conn).await;
 
         Some(Self { conn, _db: db })
     }
@@ -161,9 +262,95 @@ impl GlobalDb {
         }
     }
 
+    /// Rewrites pre-existing project keys to their canonical form, once per DB.
+    ///
+    /// Rows written before keys were canonicalised can name the same directory
+    /// several ways (`d:\p` vs `D:\p`), splitting one project's savings across
+    /// duplicates; those are merged by summing. Rows keyed by a relative path
+    /// (a literal `.`) name no recoverable directory and are dropped — they
+    /// would otherwise be permanently unattributable and never purged as stale.
+    /// Best-effort: failures leave the DB as it was and the flag unset, so the
+    /// next open retries.
+    async fn migrate_project_paths(conn: &Connection) {
+        if let Ok(mut flag) = conn
+            .query(
+                "SELECT 1 FROM meta WHERE key = 'projects_path_normalized'",
+                (),
+            )
+            .await
+        {
+            if matches!(flag.next().await, Ok(Some(_))) {
+                return;
+            }
+        }
+
+        let Ok(mut rows) = conn
+            .query("SELECT path, tokens_saved FROM projects", ())
+            .await
+        else {
+            return;
+        };
+        let mut existing: Vec<(String, i64)> = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let (Ok(path), Ok(tokens)) = (row.get::<String>(0), row.get::<i64>(1)) {
+                existing.push((path, tokens));
+            }
+        }
+
+        // old key -> canonical key, for the rows that actually move.
+        let mut remapped: Vec<(String, String)> = Vec::new();
+        let mut merged: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        let mut dropped: Vec<String> = Vec::new();
+        for (path, tokens) in existing {
+            if !Path::new(&path).is_absolute() {
+                dropped.push(path);
+                continue;
+            }
+            let key = normalize_project_key(&path);
+            if key != path {
+                remapped.push((path, key.clone()));
+            }
+            *merged.entry(key).or_insert(0) += tokens;
+        }
+
+        if !remapped.is_empty() || !dropped.is_empty() {
+            if conn.execute("DELETE FROM projects", ()).await.is_err() {
+                return;
+            }
+            for (key, tokens) in &merged {
+                let _ = conn
+                    .execute(
+                        "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)",
+                        params![key.as_str(), *tokens],
+                    )
+                    .await;
+            }
+            // Keep the ledger addressable by the same keys, so `gain` for a
+            // project still sees the history recorded under its old spelling.
+            for (old, new) in &remapped {
+                let _ = conn
+                    .execute(
+                        "UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2",
+                        params![new.as_str(), old.as_str()],
+                    )
+                    .await;
+            }
+        }
+
+        let _ = conn
+            .execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')",
+                (),
+            )
+            .await;
+    }
+
     /// Registers or updates a project's tokens-saved count. Best-effort.
+    ///
+    /// The path is canonicalised via [`normalize_project_key`] so that `.`,
+    /// relative paths and case-variant drive letters all update one row.
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
-        let path_str = project_path.to_string_lossy().to_string();
+        let path_str = normalize_project_key(project_path);
         let _ = self
             .conn
             .execute(
@@ -176,7 +363,7 @@ impl GlobalDb {
 
     /// Returns the stored `tokens_saved` count for a specific project, or 0 if not found.
     pub async fn get_project_tokens(&self, project_path: &Path) -> u64 {
-        let path_str = project_path.to_string_lossy().to_string();
+        let path_str = normalize_project_key(project_path);
         let Ok(mut rows) = self
             .conn
             .query(
@@ -215,6 +402,7 @@ impl GlobalDb {
         after_tokens: u64,
         ts: i64,
     ) {
+        let project_path = normalize_project_key(project_path);
         let result = self
             .conn
             .execute(
@@ -238,7 +426,7 @@ impl GlobalDb {
             "SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) \
              FROM savings_ledger WHERE ts >= ?1";
 
-        let rows = match project {
+        let rows = match project.map(normalize_project_key) {
             Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
             None => self.conn.query(sql_all, params![since]).await,
         };
@@ -275,7 +463,7 @@ impl GlobalDb {
              FROM savings_ledger WHERE ts >= ?1 \
              GROUP BY day ORDER BY day DESC";
 
-        let rows = match project {
+        let rows = match project.map(normalize_project_key) {
             Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
             None => self.conn.query(sql_all, params![since]).await,
         };
@@ -295,7 +483,7 @@ impl GlobalDb {
 
     /// Removes a project's row from the global DB. Best-effort.
     pub async fn delete_project(&self, project_path: &Path) {
-        let path_str = project_path.to_string_lossy().to_string();
+        let path_str = normalize_project_key(project_path);
         let _ = self
             .conn
             .execute("DELETE FROM projects WHERE path = ?1", params![path_str])
@@ -652,5 +840,138 @@ impl GlobalDb {
             .conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_resolves_to_the_same_key_as_the_absolute_path() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(normalize_project_key("."), normalize_project_key(&cwd));
+        assert_eq!(normalize_project_key("./"), normalize_project_key(&cwd));
+    }
+
+    #[test]
+    fn parent_relative_path_resolves_to_the_parent_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        let parent = cwd.parent().unwrap();
+        assert_eq!(normalize_project_key(".."), normalize_project_key(parent));
+    }
+
+    #[test]
+    fn trailing_separators_do_not_create_a_second_key() {
+        let cwd = std::env::current_dir().unwrap();
+        let with_slash = format!("{}/", cwd.display());
+        assert_eq!(
+            normalize_project_key(&with_slash),
+            normalize_project_key(&cwd)
+        );
+    }
+
+    #[test]
+    fn drive_letter_case_is_folded() {
+        assert_eq!(
+            normalize_key_string(r"d:\Work\ProjectA"),
+            normalize_key_string(r"D:\Work\ProjectA")
+        );
+        assert_eq!(
+            normalize_key_string(r"d:\Work\ProjectA"),
+            r"D:\Work\ProjectA"
+        );
+    }
+
+    #[test]
+    fn windows_verbatim_prefixes_are_stripped() {
+        assert_eq!(normalize_key_string(r"\\?\D:\Work\P"), r"D:\Work\P");
+        assert_eq!(normalize_key_string(r"\\?\UNC\srv\share"), r"\\srv\share");
+    }
+
+    #[test]
+    fn a_root_is_not_trimmed_away() {
+        let mut unix_root = "/".to_string();
+        trim_trailing_separators(&mut unix_root);
+        assert_eq!(unix_root, "/");
+
+        let mut drive_root = r"D:\".to_string();
+        trim_trailing_separators(&mut drive_root);
+        assert_eq!(drive_root, r"D:\");
+    }
+
+    #[test]
+    fn unresolvable_absolute_paths_keep_a_stable_key() {
+        // A deleted project must still map to one key, not to the cwd.
+        let key = normalize_project_key("/definitely/not/here/../here");
+        assert_eq!(key, normalize_project_key("/definitely/not/here"));
+    }
+
+    #[tokio::test]
+    async fn relative_and_absolute_writes_share_one_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = GlobalDb::open_at(&dir.path().join("global.db"))
+            .await
+            .unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+
+        db.upsert(&project, 100).await;
+        db.upsert(&project.join("."), 250).await;
+
+        assert_eq!(db.list_project_paths().await.len(), 1);
+        assert_eq!(db.get_project_tokens(&project).await, 250);
+    }
+
+    #[tokio::test]
+    async fn migration_merges_duplicates_and_drops_relative_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("global.db");
+        let project = dir.path().join("proj");
+        std::fs::create_dir(&project).unwrap();
+        let canonical = normalize_project_key(&project);
+        let trailing = format!("{canonical}/");
+
+        {
+            // Simulate a pre-canonicalisation DB: one duplicate pair and a `.` row.
+            let db = GlobalDb::open_at(&db_path).await.unwrap();
+            db.conn
+                .execute_batch(
+                    "DELETE FROM meta WHERE key = 'projects_path_normalized';
+                     DELETE FROM projects;",
+                )
+                .await
+                .unwrap();
+            for (path, tokens) in [
+                (canonical.as_str(), 14_000_i64),
+                (trailing.as_str(), 12_000),
+                (".", 999),
+            ] {
+                db.conn
+                    .execute(
+                        "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)",
+                        params![path, tokens],
+                    )
+                    .await
+                    .unwrap();
+            }
+            // Raw insert: record_savings would canonicalise it for us.
+            db.conn
+                .execute(
+                    "INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) \
+                     VALUES (42, ?1, 'tokensave_context', 1000, 100)",
+                    params![trailing.as_str()],
+                )
+                .await
+                .unwrap();
+        }
+
+        let db = GlobalDb::open_at(&db_path).await.unwrap();
+        let paths = db.list_project_paths().await;
+        assert_eq!(paths, vec![canonical.clone()]);
+        assert_eq!(db.get_project_tokens(&project).await, 26_000);
+        // The ledger row written under the old spelling still answers for the project.
+        assert_eq!(db.sum_savings(Some(&canonical), 0).await.calls, 1);
     }
 }
