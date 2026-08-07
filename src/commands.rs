@@ -512,33 +512,38 @@ pub(crate) async fn init_and_index(
         // diff; offer the tracked .gitignore as an explicit opt-in.
         //
         // Skipped entirely outside a git working tree — neither answer has any
-        // effect there — and when stdin isn't a TTY, so a scripted or
-        // agent-driven `init` never consumes a line of the caller's stdin and
-        // takes it for an answer (#288). Success is reported only when the
-        // helper confirms the entry was actually written.
+        // effect there. When stdin isn't a TTY, the prompt is skipped so a
+        // scripted or agent-driven `init` never consumes a line of the caller's
+        // stdin and takes it for an answer (#288), but the write itself needs
+        // no answer, so the default local exclusion is still applied (#373).
+        // Success is reported only when the helper confirms the entry was
+        // actually written.
         if tokensave::config::is_inside_git_repo(project_path)
             && !tokensave::config::is_in_gitignore(project_path)
-            && io::stdin().is_terminal()
         {
-            eprint!(
-                "Exclude .tokensave from git? [Y] .git/info/exclude (local) / [g] .gitignore (tracked) / [n] no "
-            );
-            io::stderr().flush().ok();
-            let mut answer = String::new();
-            if io::stdin().lock().read_line(&mut answer).is_ok() {
-                let answer = answer.trim();
-                let reported = if answer.eq_ignore_ascii_case("g") {
-                    tokensave::config::add_to_gitignore(project_path)
-                        .then_some("Added .tokensave to .gitignore")
-                } else if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    tokensave::config::add_to_git_info_exclude(project_path)
-                        .then_some("Added .tokensave/ to .git/info/exclude (local, untracked)")
-                } else {
-                    None
-                };
-                if let Some(message) = reported {
-                    eprintln!("{message}");
+            if io::stdin().is_terminal() {
+                eprint!(
+                    "Exclude .tokensave from git? [Y] .git/info/exclude (local) / [g] .gitignore (tracked) / [n] no "
+                );
+                io::stderr().flush().ok();
+                let mut answer = String::new();
+                if io::stdin().lock().read_line(&mut answer).is_ok() {
+                    let answer = answer.trim();
+                    let reported = if answer.eq_ignore_ascii_case("g") {
+                        tokensave::config::add_to_gitignore(project_path)
+                            .then_some("Added .tokensave to .gitignore")
+                    } else if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+                        tokensave::config::add_to_git_info_exclude(project_path)
+                            .then_some("Added .tokensave/ to .git/info/exclude (local, untracked)")
+                    } else {
+                        None
+                    };
+                    if let Some(message) = reported {
+                        eprintln!("{message}");
+                    }
                 }
+            } else if tokensave::config::add_to_git_info_exclude(project_path) {
+                eprintln!("Added .tokensave/ to .git/info/exclude (local, untracked)");
             }
         }
         cg
