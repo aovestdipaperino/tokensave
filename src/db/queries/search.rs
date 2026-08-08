@@ -25,6 +25,24 @@ pub(crate) fn to_fts_match_query(query: &str) -> Option<String> {
     (!fts_query.is_empty()).then_some(fts_query)
 }
 
+/// Converts a multi-word query into an FTS5 *phrase* expression.
+///
+/// [`to_fts_match_query`] joins tokens with `OR`, which is right for a
+/// natural-language query but loses an exact phrase entirely: every symbol
+/// matching just the common word competes on equal footing, and BM25 then
+/// ranks a unique hit inside a large field — a localization catalog stored as
+/// one symbol's signature — below hundreds of short generic matches (#362).
+/// Matching the phrase as a phrase gives the exact hit its own channel.
+/// Returns `None` for single-word queries, where the two forms are identical.
+pub(crate) fn to_fts_phrase_query(query: &str) -> Option<String> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.chars().filter(|c| *c != '"').collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect();
+    (words.len() >= 2).then(|| format!("\"{}\"", words.join(" ")))
+}
+
 impl Database {
     /// Replaces executable-body FTS documents in one prepared-statement
     /// transaction. Callers delete stale documents by file before supplying
@@ -180,6 +198,25 @@ impl Database {
     /// Attempts an FTS5 prefix match first. If the FTS index is corrupted,
     /// it is automatically rebuilt and the query retried. If FTS returns no
     /// results, falls back to a `LIKE` query.
+    /// Returns symbols whose indexed text contains `query` as an exact phrase.
+    ///
+    /// Empty for a single-word query, where an ordinary term match is the same
+    /// thing. Best-effort: an FTS error yields no hits rather than failing the
+    /// caller's search, since this is a supplementary channel (#362).
+    pub async fn search_nodes_phrase(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        match to_fts_phrase_query(query) {
+            Some(phrase) => Ok(self
+                .search_nodes_fts(&phrase, limit)
+                .await
+                .unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         debug_assert!(!query.is_empty(), "search_nodes called with empty query");
         debug_assert!(limit > 0, "search_nodes limit must be positive");
@@ -187,16 +224,38 @@ impl Database {
             return Ok(Vec::new());
         };
 
+        // Exact-phrase channel. A caller who types a quoted-sounding phrase is
+        // giving the most specific evidence they have; it must not lose to
+        // symbols that merely share one common word (#362). Best-effort: any
+        // error here falls through to the ordinary path below.
+        let phrase_hits: Vec<SearchResult> = match to_fts_phrase_query(query) {
+            Some(phrase) => self
+                .search_nodes_fts(&phrase, limit)
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let merge = |general: Vec<SearchResult>| -> Vec<SearchResult> {
+            if phrase_hits.is_empty() {
+                return general;
+            }
+            let seen: HashSet<String> = phrase_hits.iter().map(|r| r.node.id.clone()).collect();
+            let mut merged = phrase_hits.clone();
+            merged.extend(general.into_iter().filter(|r| !seen.contains(&r.node.id)));
+            merged.truncate(limit);
+            merged
+        };
+
         // Try FTS search, with one self-healing retry on corruption.
         let fts_result = self.search_nodes_fts(&fts_query, limit).await;
         match fts_result {
-            Ok(ref results) if !results.is_empty() => return fts_result,
+            Ok(results) if !results.is_empty() => return Ok(merge(results)),
             Ok(_) => {} // empty — fall through to LIKE
             Err(ref e) if Self::is_corruption_error(e) => {
                 eprintln!("[tokensave] FTS index corruption detected — rebuilding…");
                 if self.rebuild_fts().await.is_ok() {
                     match self.search_nodes_fts(&fts_query, limit).await {
-                        Ok(results) if !results.is_empty() => return Ok(results),
+                        Ok(results) if !results.is_empty() => return Ok(merge(results)),
                         Ok(_) => {} // fall through to LIKE
                         Err(e) => return Err(e),
                     }
@@ -236,7 +295,7 @@ impl Database {
             })?;
             results.push(SearchResult { node, score: 1.0 });
         }
-        Ok(results)
+        Ok(merge(results))
     }
 
     /// Returns the BM25-ranked top-`limit` FTS candidates for one search term.

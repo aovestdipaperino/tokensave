@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use crate::types::TaskContext;
 
 /// Longest signature rendered inline for an entry point, in bytes.
-const MAX_SIGNATURE_LEN: usize = 200;
+pub const MAX_SIGNATURE_LEN: usize = 200;
 
 /// Renders a signature as one bounded line.
 ///
@@ -14,7 +14,7 @@ const MAX_SIGNATURE_LEN: usize = 200;
 /// than the file it came from, which is a poor trade in a tool whose purpose is
 /// spending fewer of them. The first line identifies the symbol; the code block
 /// below it carries content under its own limits.
-fn compact_signature(sig: &str) -> String {
+pub fn compact_signature(sig: &str) -> String {
     let first = sig.lines().next().unwrap_or("").trim_end();
     let truncated_lines = sig.lines().nth(1).is_some();
     match first.char_indices().nth(MAX_SIGNATURE_LEN) {

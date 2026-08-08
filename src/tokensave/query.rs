@@ -81,6 +81,24 @@ impl TokenSave {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
         });
+        // Exact-phrase evidence outranks the kind heuristic. The sort above is
+        // tier-first by design, so a `const` can never beat a function however
+        // well it scores — which is right for a name query and wrong for a
+        // quoted phrase, where the one symbol whose text actually contains the
+        // phrase is the answer. A UI string lives in a catalog, not a function,
+        // and was being buried under hundreds of generic matches it shared not
+        // one word with (#362). Prepend before truncation so the hit survives
+        // the limit; ordinary single-word searches are untouched, since
+        // `search_nodes_phrase` returns nothing for them.
+        let phrase_hits = self.db.search_nodes_phrase(trimmed_query, limit).await?;
+        if !phrase_hits.is_empty() {
+            let promoted: HashSet<String> = phrase_hits.iter().map(|r| r.node.id.clone()).collect();
+            ranked.retain(|r| !promoted.contains(&r.node.id));
+            let mut merged = phrase_hits;
+            merged.append(&mut ranked);
+            ranked = merged;
+        }
+
         ranked.truncate(limit);
         Ok(ranked)
     }

@@ -152,3 +152,58 @@ async fn single_word_keywords_do_not_pull_in_the_catalog() {
         "no exact phrase was given, so the catalog must not be scanned in: {names:?}"
     );
 }
+
+#[tokio::test]
+async fn search_surfaces_the_catalog_for_an_exact_phrase() {
+    // `tokensave_search` has no exact-source channel, so before this the only
+    // symbol in the codebase containing the phrase did not appear at all: the
+    // result list is sorted by kind tier first, and a `const` can never
+    // outrank a function however well it scores (#362).
+    let (_dir, cg) = fixture().await;
+    let hits = cg.search("Waiting for status", 10).await.unwrap();
+    let names: Vec<&str> = hits.iter().map(|h| h.node.name.as_str()).collect();
+
+    assert_eq!(
+        names.first(),
+        Some(&"MESSAGES"),
+        "the one symbol containing the phrase must lead; got {names:?}"
+    );
+    assert!(
+        names.len() > 1,
+        "promoting the phrase hit must not discard the other results; got {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn single_word_search_ranking_is_unchanged() {
+    // The phrase channel must not disturb ordinary name lookup, which is what
+    // search is overwhelmingly used for.
+    let (_dir, cg) = fixture().await;
+    let hits = cg.search("loadDashboardStatus23", 5).await.unwrap();
+    assert_eq!(
+        hits.first().map(|h| h.node.name.as_str()),
+        Some("loadDashboardStatus23"),
+        "exact name match must still win for a single-word query"
+    );
+}
+
+#[tokio::test]
+async fn search_results_do_not_carry_an_unbounded_signature() {
+    // The catalog's signature is ~44 KB. Emitted verbatim it blew the tool's
+    // 15,000-char response budget, and the truncation cut mid-string, so
+    // `tokensave_search` returned *invalid JSON* to its caller.
+    let (_dir, cg) = fixture().await;
+    let hits = cg.search("Waiting for status", 10).await.unwrap();
+    let catalog = hits
+        .iter()
+        .find(|h| h.node.name == "MESSAGES")
+        .expect("catalog must be present");
+    let rendered = tokensave::context::compact_signature(
+        catalog.node.signature.as_deref().unwrap_or_default(),
+    );
+    assert!(
+        rendered.len() < 300,
+        "signature must be bounded before serialization, got {} bytes",
+        rendered.len()
+    );
+}
