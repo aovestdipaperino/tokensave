@@ -412,6 +412,14 @@ impl TokenSave {
         qm.find_circular_dependencies().await
     }
 
+    /// Builds the module-level import graph at the given grouping depth (#334).
+    pub async fn build_module_import_graph(
+        &self,
+        depth: usize,
+    ) -> Result<crate::graph::imports::ModuleImportGraph> {
+        self.db.build_module_import_graph(depth).await
+    }
+
     /// Builds an AI-ready context for a given task description.
     pub async fn build_context(
         &self,

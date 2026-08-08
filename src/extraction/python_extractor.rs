@@ -250,8 +250,41 @@ impl PythonExtractor {
             // stack attributes the nested def as its child, matching how
             // `visit_class` already indexes a nested class's body.
             state.node_stack.push((name.clone(), id.clone()));
+            // Imports written inside a function body were never visited, so a
+            // lazy import produced no Use node and was invisible to the module
+            // import graph (#334) — exactly the imports that matter most there,
+            // since a lazy import usually exists *because* of a cycle. Walked
+            // while this function is on the stack so the Use node's Contains
+            // parent is the function, which is what marks it lazy.
+            Self::visit_body_imports(state, body);
             Self::visit_nested_defs(state, body);
             state.node_stack.pop();
+        }
+    }
+
+    /// Walks a function body for `import` / `from … import` statements at any
+    /// nesting depth, stopping at nested definitions.
+    ///
+    /// A nested def's own imports are visited when that def is visited, so
+    /// descending into it here would attribute them to the wrong function.
+    fn visit_body_imports(state: &mut ExtractionState, node: TsNode<'_>) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "import_statement" => Self::visit_import(state, child),
+                    "import_from_statement" => Self::visit_import_from(state, child),
+                    "function_definition" | "decorated_definition" | "class_definition" => {}
+                    // `if`/`try`/`with` blocks are where conditional and
+                    // deferred imports actually live, so the walk has to reach
+                    // through them rather than only reading top-level statements.
+                    _ => Self::visit_body_imports(state, child),
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
         }
     }
 

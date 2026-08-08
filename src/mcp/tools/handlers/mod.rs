@@ -322,6 +322,7 @@ pub async fn handle_tool_call(
         "tokensave_diff_context" => git::handle_diff_context(cg, args).await,
         "tokensave_module_api" => analysis::handle_module_api(cg, args, scope_prefix).await,
         "tokensave_circular" => analysis::handle_circular(cg, args).await,
+        "tokensave_imports" => analysis::handle_imports(cg, args).await,
         "tokensave_hotspots" => analysis::handle_hotspots(cg, args, scope_prefix).await,
         "tokensave_similar" => graph::handle_similar(cg, args).await,
         "tokensave_rename_preview" => graph::handle_rename_preview(cg, args).await,
@@ -426,9 +427,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            83
+            84
         } else {
-            82
+            83
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -449,6 +450,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_impact"));
         assert!(tool_names.contains(&"tokensave_node"));
         assert!(tool_names.contains(&"tokensave_status"));
+        assert!(tool_names.contains(&"tokensave_imports"));
         assert!(tool_names.contains(&"tokensave_files"));
         assert!(tool_names.contains(&"tokensave_affected"));
         assert!(tool_names.contains(&"tokensave_dead_code"));
