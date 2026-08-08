@@ -205,15 +205,8 @@ impl TokenSave {
         // a real per-branch DB instead of silently falling back. Best-effort —
         // never fail open() on this. Gated by config.auto_track, overridable
         // per-run via TOKENSAVE_AUTO_TRACK (git-hook path is separate).
-        let auto_track = match std::env::var("TOKENSAVE_AUTO_TRACK") {
-            // Present → enabled unless an explicit falsey value.
-            Ok(v) => !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "no" | "off" | ""
-            ),
-            // Absent → fall back to the per-project config (default false).
-            Err(_) => config.auto_track,
-        };
+        let auto_track =
+            crate::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
         if auto_track {
             if let Some(b) = active_branch.as_deref() {
                 match branch::track_branch_copy(project_root, &tokensave_dir, b).await {

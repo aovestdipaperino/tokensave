@@ -1142,7 +1142,7 @@ impl McpServer {
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(Self::handle_initialize(id)),
+            "initialize" => Some(Self::handle_initialize(id, self.cg.report_savings())),
             "initialized" => {
                 // Notification - no response required
                 None
@@ -1177,7 +1177,32 @@ impl McpServer {
     }
 
     /// Handles the `initialize` method, returning server capabilities.
-    fn handle_initialize(id: Value) -> JsonRpcResponse {
+    ///
+    /// `report_savings` gates the closing sentence only. Asking the agent to
+    /// report savings makes it spend output tokens narrating them on nearly
+    /// every turn, which for some users offsets the input-token win the server
+    /// exists to deliver (#356); when the setting is off the sentence is
+    /// omitted, and `handle_tools_call` correspondingly stops appending the
+    /// `tokensave_metrics:` line it refers to.
+    fn handle_initialize(id: Value, report_savings: bool) -> JsonRpcResponse {
+        const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
+            Start with tokensave_context for any code exploration task \
+            — it returns relevant symbols, relationships, and code \
+            snippets for a natural-language query. Use tokensave_search \
+            to find specific symbols by name. Discovery and analysis \
+            tools are read-only and safe to call in parallel. Edit \
+            and session-memory tools can mutate local project state \
+            and declare readOnlyHint=false.";
+        const REPORT_SAVINGS_INSTRUCTION: &str =
+            " When a tool result contains a `tokensave_metrics:` line, \
+             report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
+
+        let instructions = if report_savings {
+            format!("{BASE_INSTRUCTIONS}{REPORT_SAVINGS_INSTRUCTION}")
+        } else {
+            BASE_INSTRUCTIONS.to_string()
+        };
+
         JsonRpcResponse::success(
             id,
             json!({
@@ -1191,16 +1216,7 @@ impl McpServer {
                     "name": "tokensave",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "tokensave is a code-graph MCP server. \
-                    Start with tokensave_context for any code exploration task \
-                    — it returns relevant symbols, relationships, and code \
-                    snippets for a natural-language query. Use tokensave_search \
-                    to find specific symbols by name. Discovery and analysis \
-                    tools are read-only and safe to call in parallel. Edit \
-                    and session-memory tools can mutate local project state \
-                    and declare readOnlyHint=false. \
-                    When a tool result contains a `tokensave_metrics:` line, \
-                    report the savings to the user (e.g. 'TokenSave\\'d ~N tokens')."
+                "instructions": instructions
             }),
         )
     }
@@ -1891,7 +1907,13 @@ impl McpServer {
                 // `before == 0` call invisible in both the response and
                 // what's persisted. One shared bool drives both decisions so
                 // they can't drift apart again.
-                let emit_metrics_line = before_tokens > 0;
+                // `report_savings = false` suppresses the line outright (#356).
+                // It flows through the same bool as the `before_tokens > 0`
+                // case, so the line's own token cost is not charged for a line
+                // that was never sent — and accounting to the global DB below
+                // is deliberately left outside this gate, so `tokensave gain`
+                // still sees every call.
+                let emit_metrics_line = before_tokens > 0 && self.cg.report_savings();
                 let render_metrics = |before: u64, after: u64, saved: u64| -> String {
                     format!("\ntokensave_metrics: before={before} after={after} saved={saved}")
                 };

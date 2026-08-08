@@ -87,6 +87,37 @@ pub struct TokenSaveConfig {
     /// switch when `tokensave install` set it up.
     #[serde(default)]
     pub auto_track: bool,
+    /// Surface per-call savings to the agent, so it can report them to the
+    /// user. Defaults to `true` (current behavior). When `false`, tool results
+    /// omit the `tokensave_metrics:` line and the MCP `instructions` drop the
+    /// sentence asking the agent to report savings — the two things that make a
+    /// model spend *output* tokens narrating what tokensave saved on *input*
+    /// (#356). The `TOKENSAVE_REPORT_SAVINGS` env var overrides this per-run.
+    /// Accounting is unaffected either way: savings are still recorded to the
+    /// global DB, so `tokensave gain` and `tokensave list` keep working.
+    #[serde(default = "default_report_savings")]
+    pub report_savings: bool,
+}
+
+/// Serde default for [`TokenSaveConfig::report_savings`], so configs written
+/// before #356 keep reporting savings rather than silently going quiet.
+fn default_report_savings() -> bool {
+    true
+}
+
+/// Resolves a boolean setting that an environment variable may override.
+///
+/// Presence of `var` enables the setting unless its value is explicitly falsey
+/// (`0`, `false`, `no`, `off`, or empty); absence falls back to `config_value`.
+/// This is the convention `TOKENSAVE_AUTO_TRACK` established.
+pub fn env_bool_override(var: &str, config_value: bool) -> bool {
+    match std::env::var(var) {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off" | ""
+        ),
+        Err(_) => config_value,
+    }
 }
 
 impl Default for TokenSaveConfig {
@@ -126,6 +157,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: false,
+            report_savings: default_report_savings(),
         }
     }
 }
@@ -657,8 +689,8 @@ pub fn load_query_ignore(project_root: &Path) -> QueryIgnore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        is_excluded, is_excluded_dir, is_ignored_by_git, is_included, load_query_ignore,
-        QueryIgnore, TokenSaveConfig,
+        env_bool_override, is_excluded, is_excluded_dir, is_ignored_by_git, is_included,
+        load_query_ignore, QueryIgnore, TokenSaveConfig,
     };
     use std::fs;
     use std::process::Command;
@@ -839,5 +871,39 @@ mod tests {
         assert!(qi.is_ignored("src/generated/x.rs"));
         assert!(qi.is_ignored("tests/foo.rs"));
         assert!(!qi.is_ignored("src/main.rs"));
+    }
+
+    #[test]
+    fn report_savings_defaults_to_on() {
+        // #356 asked for an opt-out, not a change of default.
+        assert!(TokenSaveConfig::default().report_savings);
+    }
+
+    #[test]
+    fn configs_written_before_the_field_existed_keep_reporting() {
+        // Serde must not read a missing field as `false` and silently go quiet
+        // on every project initialized before #356.
+        let json = r#"{"version":1,"root_dir":"/x","exclude":[],"max_file_size":1000,
+                       "extract_docstrings":true,"track_call_sites":true}"#;
+        let config: TokenSaveConfig = serde_json::from_str(json).unwrap();
+        assert!(config.report_savings);
+    }
+
+    #[test]
+    fn report_savings_round_trips_when_disabled() {
+        let config = TokenSaveConfig {
+            report_savings: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: TokenSaveConfig = serde_json::from_str(&json).unwrap();
+        assert!(!back.report_savings);
+    }
+
+    #[test]
+    fn env_override_respects_falsey_spellings() {
+        // Absent → the config value wins, in both directions.
+        assert!(env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", true));
+        assert!(!env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", false));
     }
 }
