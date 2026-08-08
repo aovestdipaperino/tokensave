@@ -40,7 +40,7 @@ pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
 pub use zed::ZedIntegration;
 
-use crate::agents::traits::*;
 use crate::agents::fs::*;
 use crate::agents::rules::*;
+use crate::agents::traits::*;
 use crate::agents::*;

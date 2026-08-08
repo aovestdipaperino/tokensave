@@ -125,22 +125,22 @@ macro_rules! agent_note_inline {
 }
 
 pub mod fs;
-pub mod rules;
 pub mod hooks;
-pub mod registry;
-pub mod traits;
 pub mod integrations;
+pub mod registry;
+pub mod rules;
+pub mod traits;
 
 use std::path::{Path, PathBuf};
 
 use crate::mcp::tools::get_tool_definitions;
 
 pub use fs::*;
-pub use rules::*;
 pub use hooks::*;
-pub use registry::*;
-pub use traits::*;
 pub use integrations::*;
+pub use registry::*;
+pub use rules::*;
+pub use traits::*;
 
 /// Finds the tokensave binary path.
 ///

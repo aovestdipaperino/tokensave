@@ -2,10 +2,10 @@
 // Git post-commit hook
 // ---------------------------------------------------------------------------
 
-use std::path::{Path, PathBuf};
-use clap::ValueEnum;
-use crate::agents::home_dir;
 use crate::agents::expand_tilde;
+use crate::agents::home_dir;
+use clap::ValueEnum;
+use std::path::{Path, PathBuf};
 
 /// Whether `tokensave install` should install the global git `post-commit`
 /// hook, and if so, whether to ask the user interactively or act
@@ -127,8 +127,8 @@ fn should_chain_repo_hooks(
     }
     claiming_hookspath
         || (hooks_dir_is_default
-        && existing_contents
-        .is_none_or(|c| c.contains(HOOK_MARKER) || c.contains(HOOK_MARKER_CHECKOUT)))
+            && existing_contents
+                .is_none_or(|c| c.contains(HOOK_MARKER) || c.contains(HOOK_MARKER_CHECKOUT)))
 }
 
 /// The hook snippet appended to (or written as) the post-commit script.
@@ -262,8 +262,8 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             home.join(".gitconfig"),
             home.join(".config").join("git").join("config"),
         ]
-            .iter()
-            .find_map(|p| parse_gitconfig_value(p, "init", "templatedir"));
+        .iter()
+        .find_map(|p| parse_gitconfig_value(p, "init", "templatedir"));
         if let Some(dir) = template_dir {
             eprintln!(
                 "  \x1b[33m⚠\x1b[0m git init.templateDir is set ({dir}). Installing sets a global \

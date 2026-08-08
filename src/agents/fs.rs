@@ -2,8 +2,8 @@
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-use std::path::{Path, PathBuf};
 use crate::errors::TokenSaveError;
+use std::path::{Path, PathBuf};
 
 /// Load a JSON file, returning an empty object on missing/invalid.
 /// Use this for **read-only** paths (healthcheck, `has_tokensave`, etc.).
@@ -250,7 +250,7 @@ pub fn safe_write_json_file(
 /// sibling `.new` file and renames it into place. A failure at either step —
 /// e.g. disk exhaustion mid-write — leaves the original file untouched
 /// instead of a partially-written, truncated one.
-pub fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result<()> {
+pub(crate) fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result<()> {
     let real_path = resolve_symlink_target(path).map_err(|e| TokenSaveError::Config {
         message: format!(
             "cannot safely resolve symlink {}: {e}\n  \
@@ -304,7 +304,7 @@ pub fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result
 /// case. Falling back would make the caller write (and atomically rename)
 /// straight onto the symlink itself, destroying it — the exact bug this
 /// function exists to prevent, just reached through a different route.
-pub fn resolve_symlink_target(path: &Path) -> std::result::Result<PathBuf, String> {
+pub(crate) fn resolve_symlink_target(path: &Path) -> std::result::Result<PathBuf, String> {
     let is_symlink = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_symlink {
         return Ok(path.to_path_buf());
@@ -395,7 +395,7 @@ pub fn backup_and_write_json(path: &Path, value: &serde_json::Value) -> bool {
 
 /// Replace backslashes with forward slashes so paths work in JSON/shell
 /// contexts on Windows. No-op on Unix where paths already use `/`.
-pub fn normalize_path_separators(path: &str) -> String {
+pub(crate) fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
 }
 
@@ -408,7 +408,7 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// Expand a leading `~` to the given home directory.
-pub fn expand_tilde(s: &str, home: &Path) -> String {
+pub(crate) fn expand_tilde(s: &str, home: &Path) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
         return home.join(rest).to_string_lossy().replace('\\', "/");
     }
@@ -701,7 +701,6 @@ pub fn write_toml_file(path: &Path, value: &toml::Value) -> crate::errors::Resul
     Ok(())
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod jsonc_tests {
@@ -786,8 +785,8 @@ mod jsonc_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod safe_config_tests {
-    use crate::agents::*;
     use crate::agents::fs::MAX_SYMLINK_HOPS;
+    use crate::agents::*;
     use std::fs;
 
     /// Create a temp directory that is cleaned up on drop.
@@ -902,7 +901,7 @@ mod safe_config_tests {
             &path,
             "{\n  // comment\n  \"key\": \"val\",\n  /* block */ \"n\": 1,\n}",
         )
-            .unwrap();
+        .unwrap();
         let val = load_jsonc_file_strict(&path).unwrap();
         assert_eq!(val["key"], "val");
         assert_eq!(val["n"], 1);
@@ -1432,7 +1431,7 @@ mod safe_config_tests {
                  This is MY content about tokensave, not the installed block.\n"
             ),
         )
-            .unwrap();
+        .unwrap();
 
         remove_legacy_rules_block(&path, CLAUDE_MARKER, &[CLAUDE_SUBHEADING]).unwrap();
 
@@ -1475,7 +1474,7 @@ mod safe_config_tests {
             &path,
             format!("{CLAUDE_MARKER}\n\nlegacy body\n\n{CLAUDE_SUBHEADING}\n\nlegacy sub-body\n"),
         )
-            .unwrap();
+        .unwrap();
 
         remove_legacy_rules_block(&path, CLAUDE_MARKER, &[CLAUDE_SUBHEADING]).unwrap();
 
@@ -1606,8 +1605,8 @@ mod path_normalize_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod install_scope_tests {
-    use crate::agents::InstallScope;
     use crate::agents::InstallContext;
+    use crate::agents::InstallScope;
     use std::path::PathBuf;
 
     #[test]

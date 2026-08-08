@@ -14,7 +14,6 @@ use crate::errors::{Result, TokenSaveError};
 
 use super::*;
 
-
 /// Grok Build agent.
 pub struct GrokIntegration;
 
