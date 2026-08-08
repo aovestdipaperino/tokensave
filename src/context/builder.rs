@@ -517,7 +517,9 @@ impl<'a> ContextBuilder<'a> {
             return Ok(Vec::new());
         }
 
-        let mut files = self.db.get_all_files().await?;
+        // Candidates are keyed by the nodes a file contains, so an artifact
+        // could never contribute one — scanning them would only cost I/O (#323).
+        let mut files = self.db.get_code_files().await?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let mut candidates: HashMap<String, SearchResult> = HashMap::new();
 

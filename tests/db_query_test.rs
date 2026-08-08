@@ -67,6 +67,7 @@ fn sample_file(path: &str) -> FileRecord {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 3,
+        kind: Default::default(),
     }
 }
 
@@ -1330,6 +1331,7 @@ async fn test_upsert_files_batch() {
         modified_at: 5000,
         indexed_at: 6000,
         node_count: 99,
+        kind: Default::default(),
     }];
 
     db.upsert_files(&updated_files)

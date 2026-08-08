@@ -169,6 +169,7 @@ pub(crate) fn row_to_file(row: &libsql::Row) -> std::result::Result<FileRecord, 
         modified_at: row.get::<i64>(3)?,
         indexed_at: row.get::<i64>(4)?,
         node_count: row.get::<u32>(5)?,
+        kind: crate::types::FileKind::from_str_or_code(&row.get::<String>(6)?),
     })
 }
 

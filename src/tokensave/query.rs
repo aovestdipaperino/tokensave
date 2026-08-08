@@ -427,6 +427,11 @@ impl TokenSave {
         self.db.get_all_files().await
     }
 
+    /// Returns only the source-file records, excluding tracked artifacts (#323).
+    pub async fn get_code_files(&self) -> Result<Vec<FileRecord>> {
+        self.db.get_code_files().await
+    }
+
     /// Returns the `#[derive(...)]` names attached to the given node.
     ///
     /// The graph's `DerivesMacro` edges are unreliable here: the resolver

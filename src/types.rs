@@ -397,6 +397,49 @@ pub struct Edge {
     pub line: Option<u32>,
 }
 
+/// What kind of file a [`FileRecord`] describes.
+///
+/// Artifacts are tracked so that path-shaped questions ("where are the
+/// `.feature` files?") can be answered from the graph instead of a blocked
+/// shell command (#323). They are deliberately distinguishable from source:
+/// a source file with no extractable symbols is a fact about the code, while
+/// an artifact never had symbols to begin with, and analyses that mean "code"
+/// must not count them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    /// A source file processed by a language extractor.
+    #[default]
+    Code,
+    /// A non-source file tracked by path only; never parsed.
+    Artifact,
+}
+
+impl FileKind {
+    /// Returns the stored string form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Artifact => "artifact",
+        }
+    }
+
+    /// Parses the stored string form, defaulting to [`FileKind::Code`].
+    ///
+    /// Rows written before the `kind` column existed are source files, and so
+    /// is anything unrecognized: mislabelling an artifact as code hides it from
+    /// one filter, while the reverse would drop real source out of analyses.
+    #[must_use]
+    pub fn from_str_or_code(value: &str) -> Self {
+        if value == "artifact" {
+            Self::Artifact
+        } else {
+            Self::Code
+        }
+    }
+}
+
 /// Record tracking an indexed file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileRecord {
@@ -406,6 +449,8 @@ pub struct FileRecord {
     pub modified_at: i64,
     pub indexed_at: i64,
     pub node_count: u32,
+    #[serde(default)]
+    pub kind: FileKind,
 }
 
 /// An unresolved reference found during parsing, to be resolved later.

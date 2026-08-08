@@ -318,6 +318,7 @@ impl TokenSave {
 
         let phase_start = Instant::now();
         crate::memstats::record("index:extract");
+        let (files, artifact_files) = Self::partition_artifacts(files, &self.artifact_extensions());
         let (extractions, _skipped) =
             extract_files_isolated(&project_root, registry, files.clone());
 
@@ -349,6 +350,7 @@ impl TokenSave {
                 modified_at: *mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
+                kind: FileKind::Code,
             });
         }
 
@@ -425,6 +427,9 @@ impl TokenSave {
         all_edges.dedup_by(|a, b| {
             a.source == b.source && a.target == b.target && a.kind == b.kind && a.line == b.line
         });
+        // Artifacts contribute a `files` row and nothing else — no nodes, no
+        // edges, no body documents (#323).
+        file_records.extend(self.artifact_file_records(&artifact_files));
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         let total_edges = all_edges.len();
 
@@ -703,6 +708,7 @@ impl TokenSave {
                 modified_at: *mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
+                kind: FileKind::Code,
             };
             self.db.upsert_file(&file_record).await?;
         }
@@ -966,6 +972,13 @@ impl TokenSave {
 
         // Re-index stale and new files — extract in parallel, insert sequentially
         let to_index: Vec<String> = stale.iter().chain(new_files.iter()).cloned().collect();
+        // Artifacts take the same add/modify/remove path as source but skip
+        // extraction entirely; their row is the whole record (#323).
+        let (to_index, changed_artifacts) =
+            Self::partition_artifacts(to_index, &self.artifact_extensions());
+        for record in self.artifact_file_records(&changed_artifacts) {
+            self.db.upsert_file(&record).await?;
+        }
         let registry = &self.registry;
 
         let phase_start = Instant::now();
@@ -1022,6 +1035,7 @@ impl TokenSave {
                 modified_at: *mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
+                kind: FileKind::Code,
             };
             self.db.upsert_file(&file_record).await?;
         }
@@ -1151,11 +1165,19 @@ impl TokenSave {
             self.project_root.is_dir(),
             "scan_files: project_root is not a directory"
         );
-        let supported_exts = self.registry.supported_extensions();
+        // Artifacts ride the same walk as source rather than getting a second
+        // one (#323). Everything that decides whether a path is in the project
+        // — exclude globs, gitignore, the symlink-cycle prune, the size limit —
+        // lives in that walk, and a parallel implementation would drift from it.
+        // Declared before the borrowed list so it outlives the `&str`s taken from it.
+        let artifact_exts = self.artifact_extensions();
+
+        let mut supported_exts = self.registry.supported_extensions();
         debug_assert!(
             !supported_exts.is_empty(),
             "scan_files: no supported extensions registered"
         );
+        supported_exts.extend(artifact_exts.iter().map(String::as_str));
 
         let mut skipped_map: HashMap<String, usize> = HashMap::new();
         let mut files = self.scan_project_files(&supported_exts, &mut skipped_map);
@@ -1423,6 +1445,66 @@ impl TokenSave {
         Some(rel_str)
     }
 
+    /// Returns the artifact extensions actually in effect for this project.
+    ///
+    /// An extension a language extractor already handles is dropped: the symbol
+    /// pass owns those files and records them with their symbols, so listing
+    /// one here would only race the two passes to write the same row.
+    pub(crate) fn artifact_extensions(&self) -> Vec<String> {
+        let supported = self.registry.supported_extensions();
+        self.config
+            .artifact_extensions
+            .iter()
+            .map(|ext| ext.trim_start_matches('.').to_ascii_lowercase())
+            .filter(|ext| !ext.is_empty() && !supported.contains(&ext.as_str()))
+            .collect()
+    }
+
+    /// Splits scanned paths into source files and artifacts.
+    ///
+    /// Artifacts are never handed to the extractor: they have no symbols by
+    /// definition, and routing them through extraction would mean teaching both
+    /// the in-process and subprocess paths to return an empty result.
+    pub(crate) fn partition_artifacts(
+        files: Vec<String>,
+        artifact_exts: &[String],
+    ) -> (Vec<String>, Vec<String>) {
+        files.into_iter().partition(|path| {
+            !std::path::Path::new(path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
+        })
+    }
+
+    /// Builds the `files` row for an artifact, hashing it like any other file.
+    ///
+    /// The hash and stat are what incremental sync compares against, so an
+    /// artifact whose row omitted them would be re-processed on every sync.
+    fn artifact_file_record(&self, rel_path: &str) -> Option<FileRecord> {
+        let abs_path = self.project_root.join(rel_path);
+        let source = sync::read_source_file(&abs_path).ok()?;
+        let (modified_at, size) = sync::file_stat(&abs_path)
+            .unwrap_or_else(|| (current_timestamp(), source.len() as u64));
+        Some(FileRecord {
+            path: rel_path.to_string(),
+            content_hash: sync::content_hash(&source),
+            size,
+            modified_at,
+            indexed_at: current_timestamp(),
+            node_count: 0,
+            kind: FileKind::Artifact,
+        })
+    }
+
+    /// Builds `files` rows for every artifact path, in parallel.
+    fn artifact_file_records(&self, paths: &[String]) -> Vec<FileRecord> {
+        paths
+            .par_iter()
+            .filter_map(|path| self.artifact_file_record(path))
+            .collect()
+    }
+
     /// Gets the absolute path for a relative path.
     pub(crate) fn absolute_path(&self, relative_path: &str) -> PathBuf {
         self.project_root.join(relative_path)
@@ -1520,6 +1602,7 @@ impl TokenSave {
             modified_at: mtime,
             indexed_at: current_timestamp(),
             node_count: result.nodes.len() as u32,
+            kind: FileKind::Code,
         };
         self.db.upsert_file(&file_record).await?;
         self.db.rebuild_trait_dispatch_callers().await?;

@@ -22,7 +22,7 @@ impl Database {
             })?;
 
         let stmt = self.conn()
-            .prepare("INSERT OR REPLACE INTO files (path,content_hash,size,modified_at,indexed_at,node_count) VALUES (?1,?2,?3,?4,?5,?6)")
+            .prepare("INSERT OR REPLACE INTO files (path,content_hash,size,modified_at,indexed_at,node_count,kind) VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),
@@ -37,6 +37,7 @@ impl Database {
                 file.modified_at,
                 file.indexed_at,
                 i64::from(file.node_count),
+                file.kind.as_str(),
             ])
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -60,8 +61,8 @@ impl Database {
         self.conn()
             .execute(
                 "INSERT OR REPLACE INTO files
-                (path, content_hash, size, modified_at, indexed_at, node_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (path, content_hash, size, modified_at, indexed_at, node_count, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     file.path.as_str(),
                     file.content_hash.as_str(),
@@ -69,6 +70,7 @@ impl Database {
                     file.modified_at,
                     file.indexed_at,
                     i64::from(file.node_count),
+                    file.kind.as_str(),
                 ],
             )
             .await
@@ -84,7 +86,7 @@ impl Database {
         let mut rows = self
             .conn()
             .query(
-                "SELECT path, content_hash, size, modified_at, indexed_at, node_count
+                "SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind
                  FROM files WHERE path = ?1",
                 params![path],
             )
@@ -114,7 +116,7 @@ impl Database {
         let mut rows = self
             .conn()
             .query(
-                "SELECT path, content_hash, size, modified_at, indexed_at, node_count FROM files",
+                "SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind FROM files",
                 (),
             )
             .await
@@ -124,6 +126,28 @@ impl Database {
             })?;
 
         collect_rows(&mut rows, row_to_file, "get_all_files").await
+    }
+
+    /// Returns only the source-file records, excluding tracked artifacts.
+    ///
+    /// Use this wherever "every file" means "every file a language extractor
+    /// parsed" — source-text scanners, in particular, which would otherwise
+    /// read every tracked schema and fixture looking for code constructs (#323).
+    pub async fn get_code_files(&self) -> Result<Vec<FileRecord>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT path, content_hash, size, modified_at, indexed_at, node_count, kind
+                 FROM files WHERE kind = 'code'",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query code files: {e}"),
+                operation: "get_code_files".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_file, "get_code_files").await
     }
 
     /// Deletes a file record and cascades to delete its nodes first.

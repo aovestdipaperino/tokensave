@@ -1754,7 +1754,9 @@ pub(super) async fn handle_unsafe_patterns(
         .map_or(200, |v| v.min(2000) as usize);
 
     let project_root = cg.project_root();
-    let files = cg.get_all_files().await?;
+    // Source-text scan: tracked artifacts have no code constructs to find, so
+    // reading them is pure cost (#323).
+    let files = cg.get_code_files().await?;
     let mut matches: Vec<Value> = Vec::new();
     let mut by_kind: HashMap<String, u64> = HashMap::new();
     let mut touched: Vec<String> = Vec::new();
@@ -1989,7 +1991,9 @@ pub(super) async fn handle_constructors(
     }
 
     let project_root = cg.project_root();
-    let files = cg.get_all_files().await?;
+    // Source-text scan: tracked artifacts have no code constructs to find, so
+    // reading them is pure cost (#323).
+    let files = cg.get_code_files().await?;
     let mut sites: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
 
@@ -2347,7 +2351,9 @@ pub(super) async fn handle_field_sites(
     };
 
     let project_root = cg.project_root();
-    let files = cg.get_all_files().await?;
+    // Source-text scan: tracked artifacts have no code constructs to find, so
+    // reading them is pure cost (#323).
+    let files = cg.get_code_files().await?;
     let mut writes: Vec<Value> = Vec::new();
     let mut reads: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();

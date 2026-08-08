@@ -97,6 +97,29 @@ pub struct TokenSaveConfig {
     /// global DB, so `tokensave gain` and `tokensave list` keep working.
     #[serde(default = "default_report_savings")]
     pub report_savings: bool,
+    /// Extensions of non-code files tracked by path so `tokensave_files` can
+    /// find them (#323). These are never parsed and contribute no symbols; the
+    /// point is that a question like "where are the `.feature` files?" has a
+    /// graph answer, since the shell alternative is blocked by the hook.
+    ///
+    /// An extension already handled by a language extractor is ignored here —
+    /// the symbol pass owns those files and records them with their symbols.
+    #[serde(default = "default_artifact_extensions")]
+    pub artifact_extensions: Vec<String>,
+}
+
+/// Serde default for [`TokenSaveConfig::artifact_extensions`].
+///
+/// Deliberately narrow: these are the formats that carry project meaning and
+/// are looked up by path — specifications, schemas, fixtures, and docs. Adding
+/// every text extension would turn `tokensave_files` into a directory listing.
+fn default_artifact_extensions() -> Vec<String> {
+    [
+        "feature", "json", "yaml", "yml", "sql", "toml", "proto", "graphql", "md",
+    ]
+    .iter()
+    .map(|ext| (*ext).to_string())
+    .collect()
 }
 
 /// Serde default for [`TokenSaveConfig::report_savings`], so configs written
@@ -158,6 +181,7 @@ impl Default for TokenSaveConfig {
             last_indexed_version: String::new(),
             auto_track: false,
             report_savings: default_report_savings(),
+            artifact_extensions: default_artifact_extensions(),
         }
     }
 }

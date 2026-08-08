@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 15;
+const LATEST_VERSION: u32 = 16;
 
 pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
 CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
@@ -173,7 +173,8 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             size INTEGER NOT NULL,
             modified_at INTEGER NOT NULL,
             indexed_at INTEGER NOT NULL,
-            node_count INTEGER NOT NULL DEFAULT 0
+            node_count INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'code'
         );
 
         CREATE TABLE IF NOT EXISTS unresolved_refs (
@@ -435,6 +436,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         13 => migrate_v13(conn).await,
         14 => migrate_v14(conn).await,
         15 => migrate_v15(conn).await,
+        16 => migrate_v16(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -483,7 +485,8 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
             size INTEGER NOT NULL,
             modified_at INTEGER NOT NULL,
             indexed_at INTEGER NOT NULL,
-            node_count INTEGER NOT NULL DEFAULT 0
+            node_count INTEGER NOT NULL DEFAULT 0,
+            kind TEXT NOT NULL DEFAULT 'code'
         );
 
         CREATE TABLE IF NOT EXISTS unresolved_refs (
@@ -1501,6 +1504,67 @@ async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
         let name: String = row.get(1).map_err(|e| TokenSaveError::Database {
             message: format!("failed to read column name: {e}"),
             operation: "node_columns".to_string(),
+        })?;
+        cols.push(name);
+    }
+    Ok(cols)
+}
+
+// ---------------------------------------------------------------------------
+// Migration V16: file kind column
+// ---------------------------------------------------------------------------
+
+/// Adds the `kind` column to `files`, distinguishing source from artifacts.
+///
+/// Tracking non-code artifacts (#323) needs a way to tell a source file that
+/// happens to yield no symbols from a file that was never parsed at all, so
+/// analyses meaning "code" can exclude the latter. Existing rows are all
+/// source, which the column default already states.
+///
+/// `migrate_v1` creates `files` with the column, so a database migrated all
+/// the way up from v0 arrives here already holding it; the probe keeps that
+/// path a no-op rather than failing on a duplicate column.
+async fn migrate_v16(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "files").await? {
+        return Ok(());
+    }
+    if table_columns(conn, "files")
+        .await?
+        .iter()
+        .any(|c| c == "kind")
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch("ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';")
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v16: failed to add files.kind: {e}"),
+            operation: "migrate_v16".to_string(),
+        })?;
+    Ok(())
+}
+
+/// Returns the column names of `table` via `PRAGMA table_info`.
+async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    // PRAGMA does not accept a bound parameter for the table name, and this is
+    // only ever called with literals from this module.
+    let mut rows = conn
+        .query(&format!("PRAGMA table_info({table})"), ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read {table} table_info: {e}"),
+            operation: "table_columns".to_string(),
+        })?;
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read table_info row: {e}"),
+        operation: "table_columns".to_string(),
+    })? {
+        // PRAGMA table_info columns: cid(0), name(1), type(2), ...
+        let name: String = row.get(1).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read column name: {e}"),
+            operation: "table_columns".to_string(),
         })?;
         cols.push(name);
     }

@@ -617,7 +617,7 @@ fn def_files() -> ToolDefinition {
     def(
         "tokensave_files",
         "File List",
-        "List indexed project files. Use to explore file structure without reading file contents.",
+        "List indexed project files, including non-code artifacts such as .feature specs, schemas, and fixtures. Use to explore file structure, or to locate files by path pattern, without reading file contents.",
         json!({
             "type": "object",
             "properties": {
@@ -627,7 +627,12 @@ fn def_files() -> ToolDefinition {
                 },
                 "pattern": {
                     "type": "string",
-                    "description": "Filter files matching this glob pattern (e.g. '**/*.rs')"
+                    "description": "Filter files matching this glob pattern (e.g. '**/*.rs', '**/*.feature')"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["code", "artifact"],
+                    "description": "Filter by file kind: 'code' for parsed source files, 'artifact' for non-code files tracked by path only (specs, schemas, fixtures, docs). Omit for both."
                 },
                 "format": {
                     "type": "string",
