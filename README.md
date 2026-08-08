@@ -440,6 +440,14 @@ Selected opens are read-only: they never initialize, sync, migrate, auto-track,
 or write graph/source data. They also do not contribute to savings accounting.
 Calls without selectors behave exactly as before.
 
+`graph_root` is only useful if you know the other project exists, so the server
+tells you: initialized projects sitting directly beside the served root are
+named in the MCP `instructions`, in `tokensave_status`, and in empty
+`tokensave_search` / `tokensave_context` results — the point at which a session
+would otherwise conclude a symbol does not exist rather than look next door
+(#375). Only immediate siblings are offered, at most five, and nothing is opened
+or indexed on their behalf; querying one still requires an explicit `graph_root`.
+
 Selectors are intentionally unavailable on tools that write, shell out, or
 depend on the current checkout: the edit primitives, VCS and branch tools,
 diagnostics and test execution, dependency and runtime introspection, workflow
@@ -454,13 +462,24 @@ ignoring it.
 | `tokensave_context` | Get relevant code context for a task -- entry points, related symbols, code snippets |
 | `tokensave_search` | Find symbols by name (functions, classes, types) |
 | `tokensave_node` | Get details + source code for a specific symbol |
-| `tokensave_files` | List indexed project files with filtering |
+| `tokensave_files` | List indexed project files (source and tracked artifacts) with filtering |
 | `tokensave_module_api` | Public API surface of a file or directory |
 | `tokensave_similar` | Find symbols with similar names |
 | `tokensave_annotations` | Attribute/annotation/decorator introspection -- histogram of all annotations or per-site listings with target filters |
 | `tokensave_doc` | Companion Markdown documentation for a source file -- doc content, the files it covers, and a staleness signal |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
 | `tokensave_status` | Index status, statistics, tokens saved |
+
+#### Non-code artifacts
+
+`tokensave_files` covers more than source. Files whose extension is listed in
+`artifact_extensions` (`.feature`, `.json`, `.yaml`, `.yml`, `.sql`, `.toml`,
+`.proto`, `.graphql`, `.md` by default) are tracked by path so questions like
+"where are the `.feature` files for the login flow?" have a graph answer rather
+than a blocked `find` (#323). They are never parsed and contribute no symbols;
+`kind: "artifact"` and `kind: "code"` filter between the two, and analyses that
+mean "code" exclude them. An extension already handled by a language extractor
+is ignored in this list, so it cannot be used to stop a language being parsed.
 
 ### Call Graph & Impact
 
@@ -483,6 +502,7 @@ ignoring it.
 | `tokensave_coupling` | Rank files by fan-in/fan-out |
 | `tokensave_inheritance_depth` | Find the deepest inheritance hierarchies |
 | `tokensave_circular` | Detect circular file dependencies |
+| `tokensave_imports` | Module-level import dependencies, cycles, and cut simulation |
 | `tokensave_recursion` | Detect recursive/mutually-recursive call cycles |
 | `tokensave_unused_imports` | Import statements never referenced |
 | `tokensave_doc_coverage` | Public symbols missing documentation |
