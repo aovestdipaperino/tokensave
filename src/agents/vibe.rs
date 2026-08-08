@@ -156,6 +156,17 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         crate::agent_note!("  Vibe prompt already contains tokensave rules, skipping");
         return Ok(());
     }
+    // The savings-reporting rule is what makes the agent spend output tokens
+    // narrating savings on nearly every turn (#356). Install runs at global
+    // scope with no project config in reach, so the env var is the only signal
+    // available here; omitting the rule bakes the choice into the file, which
+    // is re-generated whenever the user re-runs `tokensave install`.
+    let savings_rule = if crate::config::env_bool_override("TOKENSAVE_REPORT_SAVINGS", true) {
+        "\nWhen a tokensave tool result contains a `tokensave_metrics:` line, report the \
+         savings to the user (e.g. \"TokenSave'd ~N tokens\"). Never silently omit this.\n"
+    } else {
+        ""
+    };
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -174,9 +185,8 @@ fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
         If a code analysis question cannot be fully answered by tokensave MCP tools, \
         try querying the SQLite database directly at `.tokensave/tokensave.db` \
         (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-        that go beyond what the built-in tools expose.\n\n\
-        When a tokensave tool result contains a `tokensave_metrics:` line, report the \
-        savings to the user (e.g. \"TokenSave'd ~N tokens\"). Never silently omit this.\n"
+        that go beyond what the built-in tools expose.\n\
+        {savings_rule}"
     )
     .map_err(|e| TokenSaveError::Config {
         message: format!("failed to write Vibe prompt: {e}"),

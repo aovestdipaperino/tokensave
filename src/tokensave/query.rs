@@ -752,6 +752,16 @@ impl TokenSave {
         &self.project_root
     }
 
+    /// Whether per-call savings should be surfaced to the agent (#356).
+    ///
+    /// Resolves `report_savings` from the project config, letting the
+    /// `TOKENSAVE_REPORT_SAVINGS` env var override it per-run. Accounting to
+    /// the global DB happens regardless — this governs only what the agent is
+    /// shown and asked to narrate.
+    pub fn report_savings(&self) -> bool {
+        crate::config::env_bool_override("TOKENSAVE_REPORT_SAVINGS", self.config.report_savings)
+    }
+
     /// Recompute the on-disk path to the `SQLite` DB this instance is
     /// serving. Useful for diagnostics (e.g. WAL/SHM size sampling) —
     /// returns the same path that `Database::open` was called with.

@@ -570,6 +570,8 @@ Four resources are exposed via `resources/list` and `resources/read`:
 
 tokensave measures the tokens it saves on every MCP tool call. Each tool response includes a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided by that specific call.
 
+**Turning the reporting off.** The metrics line, together with a sentence in the MCP `instructions`, asks the agent to report savings to you — which means the model spends *output* tokens narrating a saving tokensave made on *input* tokens. Output tokens are the more expensive kind, so if your agent mentions tokensave on nearly every turn, that narration can offset the win (#356). Set `report_savings` to `false` in `.tokensave/config.json`, or the `TOKENSAVE_REPORT_SAVINGS` environment variable to override it per-run (any value enables it except `0`, `false`, `no`, `off`, or empty). Both the metrics line and the instruction disappear; `tokensave install` likewise stops writing the reporting rule into agent prompt files. Measurement is untouched either way — every call still lands in the savings ledger, so `tokensave gain`, `tokensave list`, `status` and `monitor` keep reporting exactly as before. The default stays `true`.
+
 ### Cost observability
 
 ```bash
