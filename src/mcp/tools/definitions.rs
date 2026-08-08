@@ -152,6 +152,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_diff_context(),
         graph_scoped(def_module_api()),
         graph_scoped(def_circular()),
+        graph_scoped(def_imports()),
         graph_scoped(def_hotspots()),
         graph_scoped(def_similar()),
         graph_scoped(def_rename_preview()),
@@ -771,6 +772,35 @@ fn def_circular() -> ToolDefinition {
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum cycle detection depth (default: 10)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_imports() -> ToolDefinition {
+    def(
+        "tokensave_imports",
+        "Import Graph",
+        "Module-level import dependencies, cycles, and cut simulation. Unlike tokensave_circular (which works on files via symbol edges), this groups by module and reports the actual import statements holding each dependency together — so you can see how many edits removing it would take, and whether cutting it would break a cycle at all.",
+        json!({
+            "type": "object",
+            "properties": {
+                "depth": {
+                    "type": "number",
+                    "description": "Path components to group files into a module, 1-10 (default: 1). Depth 1 makes 'anomaly/alerts/slack.py' the module 'anomaly'; depth 2 makes it 'anomaly/alerts'."
+                },
+                "module": {
+                    "type": "string",
+                    "description": "Report the individual import statements for dependencies into or out of this module. Omit to get only the cycle summary."
+                },
+                "simulate_removal_from": {
+                    "type": "string",
+                    "description": "With simulate_removal_to: recompute cycles as if this dependency did not exist, to test whether a proposed cut actually breaks anything."
+                },
+                "simulate_removal_to": {
+                    "type": "string",
+                    "description": "Target module of the simulated cut. Requires simulate_removal_from."
                 }
             }
         }),
@@ -2639,6 +2669,7 @@ mod tests {
             "tokensave_call_chain",
             "tokensave_file_dependents",
             "tokensave_find_exact_symbol",
+            "tokensave_imports",
         ]
         .into_iter()
         .collect()
@@ -2714,7 +2745,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 50);
+        assert_eq!(actual.len(), 51);
         assert_eq!(actual, canonical);
     }
 

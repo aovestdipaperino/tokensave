@@ -7,6 +7,9 @@ pub mod queries;
 /// Tarjan's strongly-connected-components algorithm.
 pub mod scc;
 
+/// Module-level import graph, cycles, and cut simulation.
+pub mod imports;
+
 /// Structural health analysis algorithms.
 pub mod health;
 
