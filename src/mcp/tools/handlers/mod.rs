@@ -165,6 +165,44 @@ pub(crate) fn unique_file_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec
     result
 }
 
+/// Advice attached wherever sibling projects are surfaced.
+pub(crate) const SIBLING_HINT: &str =
+    "Other initialized projects sit beside this one. If a symbol is missing here, \
+     retry the same call with graph_root set to one of them.";
+
+/// Returns the initialized projects sitting directly beside `project_root`.
+///
+/// Best-effort like every other global-DB read: an unavailable global DB yields
+/// no siblings rather than an error, since this only ever adds a hint.
+pub(crate) async fn sibling_projects(project_root: &std::path::Path) -> Vec<String> {
+    match crate::global_db::GlobalDb::open().await {
+        Some(gdb) => gdb.sibling_projects(project_root).await,
+        None => Vec::new(),
+    }
+}
+
+/// Builds the empty-result payload naming reachable sibling graphs, if any.
+///
+/// Returns `None` when the caller has results to return, or when no sibling
+/// project exists — in both cases the ordinary response shape is kept.
+pub(crate) async fn sibling_note(
+    is_empty: bool,
+    project_root: &std::path::Path,
+) -> Option<serde_json::Value> {
+    if !is_empty {
+        return None;
+    }
+    let siblings = sibling_projects(project_root).await;
+    if siblings.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "results": [],
+        "sibling_projects": siblings,
+        "hint": SIBLING_HINT,
+    }))
+}
+
 /// Truncates a string to the maximum response character limit, appending
 /// a truncation notice if necessary.
 pub(crate) fn truncate_response(s: &str) -> String {

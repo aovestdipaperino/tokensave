@@ -6,6 +6,7 @@
 //! allowing AI assistants to query the code graph interactively.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 #[cfg(feature = "test-transport")]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -314,6 +315,10 @@ pub struct McpServer {
     last_flush_at: AtomicI64,
     /// User-level database tracking all projects (best-effort).
     global_db: Option<GlobalDb>,
+    /// Initialized projects sitting directly beside the served root, snapshotted
+    /// at startup and named in the `initialize` instructions so a session knows
+    /// which other graphs `graph_root` can reach (#375).
+    sibling_projects: Vec<String>,
     /// Cached latest-version check result.
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
@@ -421,8 +426,13 @@ impl McpServer {
         let persisted = cg.get_tokens_saved().await.unwrap_or(0);
         let global_db = GlobalDb::open().await;
         // Register this project in the global DB with its current tokens
+        let mut sibling_projects = Vec::new();
         if let Some(ref gdb) = global_db {
             gdb.upsert(cg.project_root(), persisted).await;
+            // Snapshot the neighbouring graphs once, for the initialize
+            // instructions (#375). `tokensave_status` re-reads them live, so a
+            // project indexed later in the session is still discoverable.
+            sibling_projects = gdb.sibling_projects(cg.project_root()).await;
         }
 
         // Detect borrowed-worktree index once at startup so every read
@@ -456,6 +466,7 @@ impl McpServer {
             last_flushed_tokens: AtomicU64::new(persisted),
             last_flush_at: AtomicI64::new(0),
             global_db,
+            sibling_projects,
             version_cache: std::sync::Mutex::new(VersionCheckState {
                 latest: None,
                 checked_at: None,
@@ -1142,7 +1153,11 @@ impl McpServer {
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(Self::handle_initialize(id, self.cg.report_savings())),
+            "initialize" => Some(Self::handle_initialize(
+                id,
+                self.cg.report_savings(),
+                &self.sibling_projects,
+            )),
             "initialized" => {
                 // Notification - no response required
                 None
@@ -1184,7 +1199,11 @@ impl McpServer {
     /// exists to deliver (#356); when the setting is off the sentence is
     /// omitted, and `handle_tools_call` correspondingly stops appending the
     /// `tokensave_metrics:` line it refers to.
-    fn handle_initialize(id: Value, report_savings: bool) -> JsonRpcResponse {
+    fn handle_initialize(
+        id: Value,
+        report_savings: bool,
+        sibling_projects: &[String],
+    ) -> JsonRpcResponse {
         const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
             Start with tokensave_context for any code exploration task \
             — it returns relevant symbols, relationships, and code \
@@ -1197,11 +1216,21 @@ impl McpServer {
             " When a tool result contains a `tokensave_metrics:` line, \
              report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
 
-        let instructions = if report_savings {
-            format!("{BASE_INSTRUCTIONS}{REPORT_SAVINGS_INSTRUCTION}")
-        } else {
-            BASE_INSTRUCTIONS.to_string()
-        };
+        let mut instructions = BASE_INSTRUCTIONS.to_string();
+        if report_savings {
+            instructions.push_str(REPORT_SAVINGS_INSTRUCTION);
+        }
+        // Sibling checkouts are queryable through `graph_root` but nothing else
+        // reveals that they exist, so a cross-repo session reads an empty result
+        // as "no such symbol" instead of retrying next door (#375).
+        if !sibling_projects.is_empty() {
+            let _ = write!(
+                instructions,
+                " These other initialized projects sit beside this one and can be \
+                 queried by passing graph_root: {}.",
+                sibling_projects.join(", ")
+            );
+        }
 
         JsonRpcResponse::success(
             id,

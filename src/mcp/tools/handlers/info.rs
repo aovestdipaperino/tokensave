@@ -11,7 +11,10 @@ use crate::tokensave::TokenSave;
 use crate::types::{NodeKind, Visibility};
 
 use super::super::ToolResult;
-use super::{effective_path, require_node_id, truncate_response, unique_file_paths};
+use super::{
+    effective_path, require_node_id, sibling_projects, truncate_response, unique_file_paths,
+    SIBLING_HINT,
+};
 
 /// Handles `tokensave_status` tool calls.
 pub(super) async fn handle_status(
@@ -89,6 +92,16 @@ pub(super) async fn handle_status(
 
     if let Some(prefix) = scope_prefix {
         output["scope_prefix"] = json!(prefix);
+    }
+
+    // Sibling repos are reachable through `graph_root` but invisible otherwise,
+    // so a session working across two checkouts concludes the symbol does not
+    // exist rather than querying the other graph (#375). Surfaced here as well
+    // as at initialize, because a sibling may have been indexed mid-session.
+    let siblings = sibling_projects(cg.project_root()).await;
+    if !siblings.is_empty() {
+        output["sibling_projects"] = json!(siblings);
+        output["sibling_projects_hint"] = json!(SIBLING_HINT);
     }
 
     let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();

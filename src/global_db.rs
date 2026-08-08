@@ -140,7 +140,71 @@ fn trim_trailing_separators(s: &mut String) {
     }
 }
 
+/// Splits a normalized project key into its parent directory, or `None` at a root.
+///
+/// Both separators are accepted because a key may have been written by either
+/// platform, and the string half of normalization does not rewrite separators.
+fn parent_key(key: &str) -> Option<&str> {
+    let cut = key.rfind(['/', '\\'])?;
+    let parent = &key[..cut];
+    // `/foo` and `C:\foo` sit directly under a root that the cut erased.
+    if parent.is_empty() || parent.ends_with(':') {
+        return None;
+    }
+    Some(parent)
+}
+
+/// Most siblings ever surfaced, however many share the parent directory.
+///
+/// A shared scratch or checkout directory can hold dozens of indexed projects.
+/// Naming them all buries the useful ones and, since this list is embedded in
+/// tool responses, can consume the whole response budget on its own.
+pub const MAX_SIBLING_PROJECTS: usize = 5;
+
+/// Selects the projects that sit directly beside `served`, from `all` known keys.
+///
+/// Only immediate siblings qualify: a nested project or an unrelated checkout
+/// elsewhere on disk is not something the served session can be assumed to care
+/// about, and a broader net would make the hint noisy enough to ignore. Inputs
+/// are normalized here so callers may pass raw rows. The result is sorted — so
+/// the surfaced list is stable across calls — and capped at
+/// [`MAX_SIBLING_PROJECTS`].
+///
+/// # Examples
+///
+/// ```
+/// use tokensave::global_db::sibling_project_keys;
+///
+/// let all = vec!["/w/svc".to_string(), "/w/lib".to_string(), "/other/x".to_string()];
+/// assert_eq!(sibling_project_keys("/w/svc", &all), vec!["/w/lib".to_string()]);
+/// ```
+pub fn sibling_project_keys(served: &str, all: &[String]) -> Vec<String> {
+    let served = normalize_key_string(served);
+    let Some(parent) = parent_key(&served) else {
+        return Vec::new();
+    };
+
+    let mut siblings: Vec<String> = all
+        .iter()
+        .map(|path| normalize_key_string(path))
+        .filter(|key| *key != served && parent_key(key) == Some(parent))
+        .collect();
+    siblings.sort();
+    siblings.dedup();
+    siblings.truncate(MAX_SIBLING_PROJECTS);
+    siblings
+}
+
 impl GlobalDb {
+    /// Returns the initialized projects sitting directly beside `served_root`.
+    ///
+    /// Used to tell a session which other graphs it can reach with `graph_root`;
+    /// see [`sibling_project_keys`] for the selection rule.
+    pub async fn sibling_projects(&self, served_root: &Path) -> Vec<String> {
+        let served = normalize_project_key(served_root);
+        sibling_project_keys(&served, &self.list_project_paths().await)
+    }
+
     /// Opens (or creates) the global database at an explicit path. Returns
     /// `None` if the directory cannot be created or the DB fails to open.
     pub async fn open_at(db_path: &std::path::Path) -> Option<Self> {

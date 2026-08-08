@@ -130,7 +130,15 @@ pub(super) async fn handle_search(
         })
         .collect();
 
-    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    // An empty array is where a cross-repo session gives up and concludes the
+    // symbol does not exist, so this is the one place the sibling graphs are
+    // worth naming (#375). Shape only changes when there is nothing to return.
+    let payload = match super::sibling_note(items.is_empty(), cg.project_root()).await {
+        Some(note) => note,
+        None => Value::Array(items),
+    };
+
+    let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
         value: json!({
             "content": [{ "type": "text", "text": truncate_response(&output) }]
@@ -441,6 +449,24 @@ pub(super) async fn handle_context(
             "\nseen_node_ids: {}\n",
             serde_json::to_string(&context.seen_node_ids).unwrap_or_default()
         );
+    }
+
+    // See the matching note in `handle_search` (#375): a context request that
+    // found nothing is exactly when a sibling graph is worth naming.
+    if context.subgraph.nodes.is_empty() {
+        let siblings = super::sibling_projects(cg.project_root()).await;
+        if !siblings.is_empty() {
+            let _ = write!(
+                output,
+                "\n### Other initialized projects\n{}\n\n{}\n",
+                siblings
+                    .iter()
+                    .map(|path| format!("- `{path}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                super::SIBLING_HINT,
+            );
+        }
     }
 
     Ok(ToolResult {
