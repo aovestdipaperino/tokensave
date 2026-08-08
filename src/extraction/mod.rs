@@ -101,6 +101,8 @@ mod quint_extractor;
 mod r_extractor;
 #[cfg(feature = "lang-sql")]
 mod sql_extractor;
+#[cfg(feature = "lang-systemverilog")]
+mod systemverilog_extractor;
 #[cfg(feature = "lang-toml")]
 mod toml_extractor;
 #[cfg(feature = "lang-wgsl")]
@@ -208,6 +210,8 @@ pub use quint_extractor::QuintExtractor;
 pub use r_extractor::RExtractor;
 #[cfg(feature = "lang-sql")]
 pub use sql_extractor::SqlExtractor;
+#[cfg(feature = "lang-systemverilog")]
+pub use systemverilog_extractor::SystemVerilogExtractor;
 #[cfg(feature = "lang-toml")]
 pub use toml_extractor::TomlExtractor;
 #[cfg(feature = "lang-wgsl")]
@@ -322,6 +326,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(XamlExtractor));
         #[cfg(feature = "lang-hlsl")]
         extractors.push(Box::new(HlslExtractor));
+        #[cfg(feature = "lang-systemverilog")]
+        extractors.push(Box::new(SystemVerilogExtractor));
         #[cfg(feature = "lang-cuda")]
         extractors.push(Box::new(CudaExtractor));
         #[cfg(feature = "lang-metal")]

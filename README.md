@@ -845,6 +845,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Minecraft Function | `.mcfunction` | `lang-mcfunction` |
 | WGSL | `.wgsl` | `lang-wgsl` |
 | HLSL | `.hlsl`, `.fx` | `lang-hlsl` |
+| Verilog / SystemVerilog | `.v`, `.vh`, `.sv`, `.svh` | `lang-systemverilog` |
 | Metal | `.metal` | `lang-metal` |
 | CUDA / HIP | `.cu`, `.cuh` | `lang-cuda` |
 | Markdown | `.md`, `.markdown` | `lang-markdown` |

@@ -1084,6 +1084,14 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
                     | NodeKind::TypeAlias
             )
         }
+        // An HDL instantiation names a module or interface and nothing else
+        // (#344). Left permissive, `child u_child (...)` would happily bind to
+        // any same-named symbol in any language in the index — a vendor cell
+        // that is not indexed must produce no edge, not a fabricated one.
+        EdgeKind::Instantiates => matches!(
+            target_kind,
+            NodeKind::Module | NodeKind::Interface | NodeKind::InterfaceType
+        ),
         EdgeKind::Calls => matches!(
             target_kind,
             NodeKind::Function

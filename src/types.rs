@@ -262,6 +262,12 @@ pub enum EdgeKind {
     Receives,
     /// A documentation file describes a source file (#154).
     Documents,
+    /// An HDL module or interface instantiates another (#344).
+    ///
+    /// Kept distinct from `Calls`: a module instantiation is structural
+    /// hierarchy, not invocation, and folding it into `Calls` would pollute
+    /// callers/callees, impact, and dead-code for every other language.
+    Instantiates,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -280,6 +286,7 @@ impl EdgeKind {
             EdgeKind::Annotates => "annotates",
             EdgeKind::Receives => "receives",
             EdgeKind::Documents => "documents",
+            EdgeKind::Instantiates => "instantiates",
         }
     }
 
@@ -297,6 +304,7 @@ impl EdgeKind {
             "annotates" => Some(EdgeKind::Annotates),
             "receives" => Some(EdgeKind::Receives),
             "documents" => Some(EdgeKind::Documents),
+            "instantiates" => Some(EdgeKind::Instantiates),
             _ => None,
         }
     }
