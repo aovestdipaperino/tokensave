@@ -183,7 +183,17 @@ impl TypeScriptExtractor {
                     Self::visit_namespace(state, internal);
                 } else if let Some(call) = find_child_by_kind(node, "call_expression") {
                     // Top-level describe()/it()/test() suites (#211).
-                    Self::maybe_visit_test_call(state, call);
+                    if !Self::maybe_visit_test_call(state, call) {
+                        // Any other statement-level call — module side effects
+                        // such as `registerHandlers();` run at import time and
+                        // are a real use of the callee. They sit inside no
+                        // function, so before this they were attributed
+                        // nowhere and the callee looked dead (#346). The
+                        // enclosing scope is the file node at module level.
+                        if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                            Self::extract_call_sites(state, node, &scope_id);
+                        }
+                    }
                 }
             }
             _ => {
@@ -540,11 +550,19 @@ impl TypeScriptExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
             });
         }
+
+        // Calls made while computing the value belong to this binding. The
+        // initializer is frequently where the work happens — a store built by
+        // `defineStore("x", () => { helper() })`, a memoized value, a factory
+        // call — and the arrow passed as an argument gets no graph node of its
+        // own, so without this the helpers it calls look uncalled and are
+        // reported as dead code (#346).
+        Self::extract_call_sites(state, declarator, &id);
     }
 
     /// Extract a class declaration node.
