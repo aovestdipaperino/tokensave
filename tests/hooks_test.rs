@@ -618,10 +618,16 @@ fn test_bash_allows_git_grep() {
 }
 
 #[test]
-fn test_bash_allows_find_without_grep() {
+fn test_bash_redirects_find_by_name() {
+    // This asserted pass-through until #294, when `find -name` gained a policy
+    // of its own: `tokensave_files` can answer discovery by path now that it
+    // also tracks non-code artifacts (#323). See `hook_find_glob_test.rs` for
+    // the boundaries — unmodelled predicates and non-code extensions still
+    // pass through.
     let input = r#"{"command": "find . -name \"*.rs\" -type f"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
-    assert!(result.is_empty(), "find alone should pass through");
+    assert!(is_blocked(&result), "find -name should redirect");
+    assert!(get_block_reason(&result).contains("tokensave_files"));
 }
 
 #[test]
