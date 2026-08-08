@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Documentation
+- **SECURITY.md described the database as structural metadata only, which understated what it retains (#377).** The policy named `read_cache` as the sole place source text is kept, but `executable_body_fts` is declared without `content=''`, so FTS5 retains the original text of every column in `executable_body_fts_content` — including `body`, which holds complete function bodies. The enumeration above the sentence said "FTS5 search index", which does not tell a reader that full source is retained. Corrected in three places: the storage list, the sentence that follows it, and the Best Practices note, which likewise mentioned only symbol names and `read_cache`. No storage change is involved: the bodies are load-bearing for `tokensave_context`, and a contentless table would return NULL for `SELECT node_id, body`. The "Supported Versions" table, still listing 6.x as current, is updated to 7.x in the same pass.
+
 ## [7.9.0] - 2026-08-08
 
 ### Added

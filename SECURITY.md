@@ -15,8 +15,8 @@ Only the current major release line is supported. All minor and patch versions w
 
 | Version | Supported |
 |---------|-----------|
-| 6.x (current) | Yes — all minor and patch releases |
-| < 6 | No |
+| 7.x (current) | Yes — all minor and patch releases |
+| < 7 | No |
 
 **No vulnerabilities have been reported or discovered to date.**
 
@@ -31,11 +31,11 @@ tokensave builds a **local** code graph stored in a SQLite (libSQL) database (`.
 - Symbol names, signatures, and docstrings
 - File paths, sizes, and content hashes
 - Call relationships and dependency edges
-- FTS5 search index
+- FTS5 search index (`executable_body_fts`): the `body` column retains the complete text of every indexed function body
 - Cross-session memory (recorded decisions and code-area notes)
 - A response cache for `tokensave_read` (`read_cache` table): the rendered output served to the agent, stored as a BLOB keyed by file path, mode, and arguments. For full/line-range reads this rendered output contains source text. Rows are freshness-gated by file mtime and swept after a period of inactivity.
 
-Aside from the `read_cache`, the graph itself does **not** persist raw source code — it stores structural metadata only. The database is local-only — there is no cloud sync, remote database, or server-side storage.
+The database stores structural metadata, plus source text in two places: the `read_cache` table, and the `executable_body_fts` full-text index, whose `body` column retains complete function bodies. Treat `.tokensave/tokensave.db` as containing your source code, and keep it out of version control. The database is local-only — there is no cloud sync, remote database, or server-side storage.
 
 A second database (`~/.tokensave/global.db`) tracks which projects have been indexed, aggregate token-saved counts, and cost accounting data parsed from Claude Code session transcripts. It contains directory paths, counters, per-turn cost/token/category records, and JSONL parse offsets. No source code or conversation content is stored.
 
@@ -114,7 +114,7 @@ The Windows-elevation `unsafe` documented in earlier versions was removed alongs
 ## Best Practices
 
 - Add `.tokensave/` to your `.gitignore` to avoid committing the local database.
-- If your project contains sensitive code, be aware that the database stores symbol names and signatures, and the `read_cache` table can hold rendered source text from `tokensave_read` responses. Adding `.tokensave/` to `.gitignore` keeps both out of version control.
+- If your project contains sensitive code, be aware that the database stores symbol names and signatures, that the `executable_body_fts` index retains complete function bodies, and that the `read_cache` table can hold rendered source text from `tokensave_read` responses. Adding `.tokensave/` to `.gitignore` keeps all three out of version control.
 - Keep tokensave updated (`tokensave upgrade`) to receive security fixes.
 - Review the [CHANGELOG](CHANGELOG.md) before upgrading to understand what changed.
 
