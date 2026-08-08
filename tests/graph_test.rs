@@ -884,6 +884,7 @@ async fn test_find_circular_dependencies() {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 1,
+        kind: Default::default(),
     };
     let file_b = tokensave::types::FileRecord {
         path: "src/b.rs".to_string(),
@@ -892,6 +893,7 @@ async fn test_find_circular_dependencies() {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 1,
+        kind: Default::default(),
     };
     db.upsert_file(&file_a).await.expect("upsert file_a failed");
     db.upsert_file(&file_b).await.expect("upsert file_b failed");

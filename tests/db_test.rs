@@ -184,6 +184,7 @@ async fn test_upsert_file() {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 5,
+        kind: Default::default(),
     };
 
     db.upsert_file(&file).await.expect("failed to upsert file");
@@ -209,6 +210,7 @@ async fn test_upsert_file() {
         modified_at: 3000,
         indexed_at: 4000,
         node_count: 10,
+        kind: Default::default(),
     };
     db.upsert_file(&updated_file)
         .await
@@ -380,6 +382,7 @@ async fn test_clear() {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 1,
+        kind: Default::default(),
     };
     db.upsert_file(&file).await.expect("failed to upsert file");
 
