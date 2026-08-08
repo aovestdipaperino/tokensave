@@ -66,6 +66,8 @@ static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
     // HLSL uses the newer LanguageFn API.
     #[cfg(feature = "lang-hlsl")]
     map.insert("hlsl", tree_sitter_hlsl::LANGUAGE_HLSL.into());
+    #[cfg(feature = "lang-systemverilog")]
+    map.insert("systemverilog", tree_sitter_systemverilog::LANGUAGE.into());
 
     map
 });

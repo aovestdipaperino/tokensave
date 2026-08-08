@@ -1545,10 +1545,12 @@ async fn test_index_all_reports_skipped_extensions() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
+    // Originally used `.v`, which #344 has since made a supported extension.
+    // VHDL keeps the case honest: a real hardware language with no extractor.
     fs::write(project.join("README.md"), "# readme\n").unwrap();
     fs::write(
-        project.join("example.v"),
-        "module example (\n    input wire clk\n);\nendmodule\n",
+        project.join("example.vhd"),
+        "entity example is\nend example;\n",
     )
     .unwrap();
 
@@ -1557,7 +1559,7 @@ async fn test_index_all_reports_skipped_extensions() {
 
     assert_eq!(
         result.skipped_extensions,
-        vec![("v".to_string(), 1)],
+        vec![("vhd".to_string(), 1)],
         "skipped_extensions: {:?}",
         result.skipped_extensions
     );

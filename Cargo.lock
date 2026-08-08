@@ -4197,6 +4197,7 @@ dependencies = [
  "tree-sitter-dart",
  "tree-sitter-hlsl",
  "tree-sitter-language",
+ "tree-sitter-systemverilog",
  "ureq",
  "walkdir",
  "windows-sys 0.61.2",
@@ -4947,6 +4948,16 @@ name = "tree-sitter-swift"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe36052155b9dd69ca82b3b8f1b4ccfb2d867125ac1a4db1dd7331829242668c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-systemverilog"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc40d99fa6fb0a24b9eb62082b5667d40359b5da175d17d44052b3b1bf9dcca9"
 dependencies = [
  "cc",
  "tree-sitter-language",
