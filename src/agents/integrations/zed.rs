@@ -9,11 +9,7 @@ use serde_json::json;
 
 use crate::errors::Result;
 
-use super::{
-    backup_and_write_json, backup_config_file, load_jsonc_file, load_jsonc_file_strict,
-    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    InstallScope,
-};
+use super::*;
 
 /// Zed agent.
 pub struct ZedIntegration;

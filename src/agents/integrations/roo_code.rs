@@ -1,6 +1,6 @@
-//! Cline agent integration.
+//! Roo Code agent integration.
 //!
-//! Handles registration of the tokensave MCP server in Cline's
+//! Handles registration of the tokensave MCP server in Roo Code's
 //! `cline_mcp_settings.json` under the `mcpServers.tokensave` key.
 
 use std::path::{Path, PathBuf};
@@ -9,30 +9,39 @@ use serde_json::json;
 
 use crate::errors::Result;
 
-use super::{
-    backup_and_write_json, backup_config_file, load_json_file, load_json_file_strict,
-    safe_write_json_file, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-};
+use super::*;
+/// Roo Code agent.
+pub struct RooCodeIntegration;
 
-/// Cline agent.
-pub struct ClineIntegration;
-
-/// Returns the Cline VS Code extension global storage directory.
-fn cline_ext_dir(home: &Path) -> PathBuf {
-    super::vscode_data_dir(home).join("User/globalStorage/saoudrizwan.claude-dev")
+/// Returns the Roo Code VS Code extension global storage directory.
+fn roo_ext_dir(home: &Path) -> PathBuf {
+    super::vscode_data_dir(home).join("User/globalStorage/rooveterinaryinc.roo-cline")
 }
 
-impl AgentIntegration for ClineIntegration {
+/// Roo Code MCP settings path for this install: the extension global storage
+/// for a global install, `<project>/.roo/mcp.json` for `--local`.
+fn roo_settings_path(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => roo_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json"),
+        InstallScope::Local { project_path } => project_path.join(".roo/mcp.json"),
+    }
+}
+
+impl AgentIntegration for RooCodeIntegration {
     fn name(&self) -> &'static str {
-        "Cline"
+        "Roo Code"
     }
 
     fn id(&self) -> &'static str {
-        "cline"
+        "roo-code"
+    }
+
+    fn supports_local(&self) -> bool {
+        true
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = cline_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = roo_settings_path(ctx);
 
         if let Some(parent) = settings_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -67,35 +76,35 @@ impl AgentIntegration for ClineIntegration {
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
-        crate::agent_note!("  2. Restart VS Code — tokensave tools are now available in Cline");
+        crate::agent_note!("  2. Restart VS Code — tokensave tools are now available in Roo Code");
         Ok(())
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = cline_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = roo_settings_path(ctx);
         uninstall_mcp_server(&settings_path);
 
         crate::agent_note!();
-        crate::agent_note!("Uninstall complete. Tokensave has been removed from Cline.");
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Roo Code.");
         crate::agent_note!("Restart VS Code for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        crate::agent_note!("\n\x1b[1mCline integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mRoo Code integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        cline_ext_dir(home).is_dir()
+        roo_ext_dir(home).is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<PathBuf> {
-        Some(cline_ext_dir(home).join("settings/cline_mcp_settings.json"))
+        Some(roo_ext_dir(home).join("settings/cline_mcp_settings.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let settings_path = cline_ext_dir(home).join("settings/cline_mcp_settings.json");
+        let settings_path = roo_ext_dir(home).join("settings/cline_mcp_settings.json");
         if !settings_path.exists() {
             return false;
         }
@@ -110,7 +119,7 @@ impl AgentIntegration for ClineIntegration {
 // Uninstall helpers
 // ---------------------------------------------------------------------------
 
-/// Remove MCP server entry from Cline's `cline_mcp_settings.json`.
+/// Remove MCP server entry from Roo Code's `cline_mcp_settings.json`.
 fn uninstall_mcp_server(settings_path: &Path) {
     if !settings_path.exists() {
         crate::agent_note!("  {} not found, skipping", settings_path.display());
@@ -166,13 +175,13 @@ fn uninstall_mcp_server(settings_path: &Path) {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check Cline's `cline_mcp_settings.json` has tokensave MCP server registered.
+/// Check Roo Code's `cline_mcp_settings.json` has tokensave MCP server registered.
 fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
-    let settings_path = cline_ext_dir(home).join("settings/cline_mcp_settings.json");
+    let settings_path = roo_ext_dir(home).join("settings/cline_mcp_settings.json");
 
     if !settings_path.exists() {
         dc.warn(&format!(
-            "{} not found — run `tokensave install --agent cline` if you use Cline",
+            "{} not found — run `tokensave install --agent roo-code` if you use Roo Code",
             settings_path.display()
         ));
         return;
@@ -188,7 +197,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
         ));
     } else {
         dc.fail(&format!(
-            "MCP server NOT registered in {} — run `tokensave install --agent cline`",
+            "MCP server NOT registered in {} — run `tokensave install --agent roo-code`",
             settings_path.display()
         ));
     }

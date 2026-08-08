@@ -1,84 +1,79 @@
 // Rust guideline compliant 2025-10-17
-//! Grok Build (xAI Grok CLI / TUI) agent integration.
+//! `OpenAI` Codex CLI agent integration.
 //!
-//! Handles registration of the tokensave MCP server in Grok's native config
-//! file (`~/.grok/config.toml`) using the documented `[mcp_servers.tokensave]`
-//! table form, and prompt rules via `~/.grok/AGENTS.md` (and project-scoped
-//! `.grok/AGENTS.md`). Grok has no hook system; permissions are handled via
-//! its TUI / `permission_mode` settings.
+//! Handles registration of the tokensave MCP server in Codex's config
+//! file (`~/.codex/config.toml`), per-tool auto-approval settings,
+//! and prompt rules via `AGENTS.md`. Codex has no hook system.
 
 use std::io::Write;
 use std::path::Path;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{
-    load_toml_file, write_toml_file, AgentIntegration, DoctorCounters, HealthcheckContext,
-    InstallContext,
-};
+use super::*;
 
-/// Grok Build agent.
-pub struct GrokIntegration;
+/// `OpenAI` Codex CLI agent.
+pub struct CodexIntegration;
 
-impl AgentIntegration for GrokIntegration {
+impl AgentIntegration for CodexIntegration {
     fn name(&self) -> &'static str {
-        "Grok Build"
+        "Codex CLI"
     }
 
     fn id(&self) -> &'static str {
-        "grok"
+        "codex"
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let grok_dir = ctx.home.join(".grok");
-        std::fs::create_dir_all(&grok_dir).ok();
-        let config_path = grok_dir.join("config.toml");
+        let codex_dir = ctx.home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).ok();
+        let config_path = codex_dir.join("config.toml");
 
         install_mcp_server(&config_path, &ctx.tokensave_bin)?;
 
-        let agents_md = grok_dir.join("AGENTS.md");
+        let agents_md = codex_dir.join("AGENTS.md");
         install_prompt_rules(&agents_md)?;
 
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
-        crate::agent_note!("  2. Start a new Grok Build session — tokensave tools are now available via search_tool + use_tool");
+        crate::agent_note!("  2. Start a new Codex session — tokensave tools are now available");
         Ok(())
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let grok_dir = ctx.home.join(".grok");
-        let config_path = grok_dir.join("config.toml");
+        let codex_dir = ctx.home.join(".codex");
+        let config_path = codex_dir.join("config.toml");
 
         uninstall_mcp_server(&config_path)?;
 
-        let agents_md = grok_dir.join("AGENTS.md");
+        let agents_md = codex_dir.join("AGENTS.md");
         uninstall_prompt_rules(&agents_md);
 
         crate::agent_note!();
-        crate::agent_note!("Uninstall complete. Tokensave has been removed from Grok Build.");
-        crate::agent_note!("Start a new Grok Build session for changes to take effect.");
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Codex CLI.");
+        crate::agent_note!("Start a new Codex session for changes to take effect.");
         Ok(())
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        crate::agent_note!("\n\x1b[1mGrok Build integration\x1b[0m");
-        let grok_dir = ctx.home.join(".grok");
-        let config_path = grok_dir.join("config.toml");
+        crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
+        let codex_dir = ctx.home.join(".codex");
+        let config_path = codex_dir.join("config.toml");
         doctor_check_config(dc, &config_path);
-        doctor_check_prompt(dc, &grok_dir);
+        doctor_check_prompt(dc, &codex_dir);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".grok").is_dir()
+        home.join(".codex").is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".grok/config.toml"))
+        Some(home.join(".codex/config.toml"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let config = home.join(".grok").join("config.toml");
+        let config = home.join(".codex").join("config.toml");
         if !config.exists() {
             return false;
         }
@@ -96,10 +91,11 @@ impl AgentIntegration for GrokIntegration {
 // Install helpers
 // ---------------------------------------------------------------------------
 
-/// Register MCP server under [`mcp_servers.tokensave`] in ~/.grok/config.toml.
+/// Register MCP server and auto-approve tools in ~/.codex/config.toml.
 fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     let mut config = load_toml_file(config_path)?;
 
+    // Ensure [mcp_servers.tokensave] exists
     let table = config
         .as_table_mut()
         .ok_or_else(|| TokenSaveError::Config {
@@ -127,8 +123,18 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
         "args".to_string(),
         toml::Value::Array(vec![toml::Value::String("serve".to_string())]),
     );
-    // Explicit enabled is optional (defaults true in Grok) but makes the entry clear.
-    server_table.insert("enabled".to_string(), toml::Value::Boolean(true));
+
+    // Auto-approve all tokensave tools so Codex doesn't prompt for each one
+    let mut tools_table = toml::map::Map::new();
+    for tool_name in tool_names() {
+        let mut tool_config = toml::map::Map::new();
+        tool_config.insert(
+            "approval_mode".to_string(),
+            toml::Value::String("auto".to_string()),
+        );
+        tools_table.insert(tool_name.clone(), toml::Value::Table(tool_config));
+    }
+    server_table.insert("tools".to_string(), toml::Value::Table(tools_table));
 
     servers.insert("tokensave".to_string(), toml::Value::Table(server_table));
 
@@ -140,9 +146,7 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append prompt rules to ~/.grok/AGENTS.md (idempotent).
-/// Grok supports AGENTS.md (global and .grok/AGENTS.md project-scoped) for
-/// instructions that influence the system prompt.
+/// Append prompt rules to AGENTS.md (idempotent).
 fn install_prompt_rules(agents_md: &Path) -> Result<()> {
     let marker = "## Prefer tokensave MCP tools";
     let existing = if agents_md.exists() {
@@ -164,16 +168,11 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
     write!(
         f,
         "\n{marker}\n\n\
-        Before reading source files or scanning the codebase with file tools or \
-        sub-agents (especially the `explore` sub-agent), use the tokensave MCP tools. \
-        Discover them with the built-in `search_tool` (query for \"tokensave\" or a code \
-        concept) and invoke via `use_tool` with the namespaced name \
-        (e.g. `tokensave__tokensave_context`, `tokensave__tokensave_search`, \
-        `tokensave__tokensave_callers`, `tokensave__tokensave_callees`, \
-        `tokensave__tokensave_impact`, `tokensave__tokensave_node`, \
-        `tokensave__tokensave_files`, `tokensave__tokensave_affected`).\n\n\
+        Before reading source files or scanning the codebase, use the tokensave MCP tools \
+        (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
+        `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
         They provide instant semantic results from a pre-built knowledge graph and are \
-        faster and lower-token than raw file reads or sub-agent exploration.\n\n\
+        faster than file reads.\n\n\
         If a code analysis question cannot be fully answered by tokensave MCP tools, \
         try querying the SQLite database directly at `.tokensave/tokensave.db` \
         (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
@@ -196,7 +195,7 @@ fn install_prompt_rules(agents_md: &Path) -> Result<()> {
 // Uninstall helpers
 // ---------------------------------------------------------------------------
 
-/// Remove MCP server from ~/.grok/config.toml.
+/// Remove MCP server from ~/.codex/config.toml.
 fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
     if !config_path.exists() {
         return Ok(());
@@ -281,11 +280,11 @@ fn uninstall_prompt_rules(agents_md: &Path) {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check config.toml has tokensave registered under [`mcp_servers.tokensave`].
+/// Check config.toml has tokensave registered.
 fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
     if !config_path.exists() {
         dc.warn(&format!(
-            "{} not found — run `tokensave install --agent grok` if you use Grok Build",
+            "{} not found — run `tokensave install --agent codex` if you use Codex CLI",
             config_path.display()
         ));
         return;
@@ -306,7 +305,7 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
 
     if !has_server {
         dc.fail(&format!(
-            "MCP server NOT registered in {} — run `tokensave install --agent grok`",
+            "MCP server NOT registered in {} — run `tokensave install --agent codex`",
             config_path.display()
         ));
         return;
@@ -316,33 +315,35 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
         config_path.display()
     ));
 
-    // Light validation of the entry (command/args present and looks reasonable)
-    let server = config
+    // Check tool auto-approval
+    let tools = config
         .get("mcp_servers")
         .and_then(|v| v.get("tokensave"))
+        .and_then(|v| v.get("tools"))
         .and_then(|v| v.as_table());
 
-    if let Some(s) = server {
-        if let Some(cmd) = s.get("command").and_then(|v| v.as_str()) {
-            if !cmd.is_empty() {
-                dc.pass(&format!("MCP server command present: {cmd}"));
-            }
-        }
-        let has_serve = s
-            .get("args")
-            .and_then(|v| v.as_array())
-            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("serve")));
-        if has_serve {
-            dc.pass("MCP server args include \"serve\"");
-        } else {
-            dc.warn("MCP server args missing \"serve\" — consider re-running install");
-        }
+    let auto_count = tools.map_or(0, |t| {
+        t.values()
+            .filter(|v| v.get("approval_mode").and_then(|m| m.as_str()) == Some("auto"))
+            .count()
+    });
+
+    let tools = tool_names();
+    let tools_len = tools.len();
+    if auto_count >= tools_len {
+        dc.pass(&format!("All {tools_len} tools set to auto-approve"));
+    } else if auto_count > 0 {
+        dc.warn(&format!(
+            "{auto_count}/{tools_len} tools auto-approved — run `tokensave install --agent codex` to update"
+        ));
+    } else {
+        dc.warn("No tools auto-approved — Codex will prompt for each tool call");
     }
 }
 
-/// Check AGENTS.md (in ~/.grok/) contains tokensave rules.
-fn doctor_check_prompt(dc: &mut DoctorCounters, grok_dir: &Path) {
-    let agents_md = grok_dir.join("AGENTS.md");
+/// Check AGENTS.md contains tokensave rules.
+fn doctor_check_prompt(dc: &mut DoctorCounters, codex_dir: &Path) {
+    let agents_md = codex_dir.join("AGENTS.md");
     if agents_md.exists() {
         let has_rules = std::fs::read_to_string(&agents_md)
             .unwrap_or_default()
@@ -350,9 +351,9 @@ fn doctor_check_prompt(dc: &mut DoctorCounters, grok_dir: &Path) {
         if has_rules {
             dc.pass("AGENTS.md contains tokensave rules");
         } else {
-            dc.fail("AGENTS.md missing tokensave rules — run `tokensave install --agent grok`");
+            dc.fail("AGENTS.md missing tokensave rules — run `tokensave install --agent codex`");
         }
     } else {
-        dc.warn("~/.grok/AGENTS.md does not exist (rules are optional but recommended)");
+        dc.warn("~/.codex/AGENTS.md does not exist");
     }
 }
