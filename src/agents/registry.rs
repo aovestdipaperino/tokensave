@@ -2,10 +2,10 @@
 // Registry
 // ---------------------------------------------------------------------------
 
-use std::path::Path;
-use crate::errors::TokenSaveError;
-use crate::agents::traits::AgentIntegration;
 use crate::agents::integrations::*;
+use crate::agents::traits::AgentIntegration;
+use crate::errors::TokenSaveError;
+use std::path::Path;
 
 /// Returns the agent matching `id`, or an error if unknown.
 pub fn get_integration(id: &str) -> crate::errors::Result<Box<dyn AgentIntegration>> {
@@ -91,7 +91,6 @@ pub fn available_integrations() -> Vec<&'static str> {
     ]
 }
 
-
 /// Returns agent IDs that have tokensave configured under `home` but are
 /// absent from `current`. Pure — does no I/O on the config file.
 pub fn detect_missing_installed_agents(home: &Path, current: &[String]) -> Vec<String> {
@@ -121,7 +120,6 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
     config.installed_agents.extend(additions);
     config.save();
 }
-
 
 /// Interactively pick which agents to install/uninstall.
 ///
@@ -196,7 +194,7 @@ mod migrate_tests {
             &claude_json,
             r#"{"mcpServers":{"tokensave":{"command":"tokensave","args":["serve"]}}}"#,
         )
-            .unwrap();
+        .unwrap();
     }
 
     /// Regression test for the bug where `tokensave reinstall` skipped Claude

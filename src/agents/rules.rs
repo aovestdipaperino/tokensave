@@ -10,9 +10,9 @@
 // since the file belongs entirely to tokensave, it can be unconditionally
 // overwritten on every install/upgrade so rule-text improvements propagate.
 
-use std::path::Path;
-use crate::errors::TokenSaveError;
 use crate::agents::fs::*;
+use crate::errors::TokenSaveError;
+use std::path::Path;
 
 /// Which prescriptive rules body [`managed_rules_markdown`] should render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
