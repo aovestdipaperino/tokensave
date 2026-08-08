@@ -124,7 +124,7 @@ pub(super) async fn handle_search(
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
                 "line": super::display_line(r.node.start_line),
-                "signature": r.node.signature,
+                "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
                 "score": r.score,
             })
         })
@@ -635,7 +635,7 @@ pub(super) async fn handle_find_exact_symbol(
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
                 "line": super::display_line(n.start_line),
-                "signature": n.signature,
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
             })
         })
         .collect();
@@ -834,7 +834,7 @@ pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResul
                 "file": n.file_path,
                 "start_line": super::display_line(n.start_line),
                 "end_line": super::display_line(n.end_line),
-                "signature": n.signature,
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
                 "docstring": n.docstring,
                 "visibility": n.visibility.as_str(),
                 "is_async": n.is_async,
@@ -939,7 +939,7 @@ pub(super) async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
                 "line": super::display_line(r.node.start_line),
-                "signature": r.node.signature,
+                "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
                 "score": r.score,
             })
         })
@@ -1188,7 +1188,7 @@ pub(super) async fn handle_signature(cg: &TokenSave, args: Value) -> Result<Tool
             "kind": n.kind.as_str(),
             "visibility": n.visibility.as_str(),
             "is_async": n.is_async,
-            "signature": n.signature,
+            "signature": n.signature.as_deref().map(crate::context::compact_signature),
             "docstring": n.docstring,
             "file": n.file_path,
             "start_line": super::display_line(n.start_line),
@@ -1546,7 +1546,7 @@ pub(super) async fn handle_implementations(
                 "file": n.file_path,
                 "line": super::display_line(n.start_line),
                 "end_line": super::display_line(n.end_line),
-                "signature": n.signature,
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
                 "body": body,
             }));
         }
