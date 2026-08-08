@@ -208,7 +208,12 @@ impl<'a> ContextBuilder<'a> {
         // name) is merged in place via MAX score rather than first-seen-wins.
         let mut index_of: HashMap<String, usize> = HashMap::new();
         let mut candidates: Vec<SearchResult> = Vec::new();
-        let literal_terms = exact_source_terms(query, &options.extra_keywords);
+        // Qualified paths (`foo::bar`) and verbatim multi-word phrases are both
+        // exact-copy evidence and share one source scan. The phrases matter for
+        // string literals, which live in no symbol name and which FTS ranks
+        // badly when they sit inside a large object literal (#362).
+        let mut literal_terms = exact_source_terms(query, &options.extra_keywords);
+        literal_terms.extend(exact_phrase_terms(query, &options.extra_keywords));
         let exact_source_candidates = self
             .find_exact_source_candidates(&literal_terms, options)
             .await?;
@@ -1104,6 +1109,58 @@ fn is_authored_symbol(symbol: &str, query: &str, extra_keywords: &[String]) -> b
 /// Extracts exact, namespace-qualified source tokens from the task and extra
 /// keywords. Surrounding prose punctuation and Markdown backticks are removed,
 /// but the original case is retained for case-sensitive literal matching.
+/// Shortest phrase accepted as exact-copy evidence. Two short words ("is not")
+/// would match half a codebase and turn the source scan into noise.
+const MIN_EXACT_PHRASE_LEN: usize = 8;
+
+/// Cap on phrase terms, so a keyword list can't make the source scan unbounded.
+const MAX_EXACT_PHRASES: usize = 8;
+
+/// Extracts multi-word phrases to be matched verbatim against file source.
+///
+/// A quoted phrase is the most specific evidence a caller can give — UI copy, a
+/// log line, an error message — and it is precisely what identifier extraction
+/// cannot represent, since it survives in the source as a string literal and
+/// nowhere in any symbol name. Left to FTS alone such a phrase loses: it may hit
+/// exactly one node in the codebase, but if that node is a large object literal
+/// (a localization catalog, say) BM25's length normalization scores the unique
+/// hit below hundreds of generic short matches, and the highest-signal evidence
+/// ranks last (#362).
+///
+/// Phrases come from two places: any caller-supplied keyword containing inner
+/// whitespace, and any double-quoted span in the task text. Single words are
+/// deliberately excluded — they are already handled by FTS, and scanning source
+/// for one common word would match everywhere.
+fn exact_phrase_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut phrases = Vec::new();
+
+    let mut push = |candidate: &str, phrases: &mut Vec<String>| {
+        let phrase = candidate.trim();
+        if phrase.len() >= MIN_EXACT_PHRASE_LEN
+            && phrase.split_whitespace().count() >= 2
+            && seen.insert(phrase.to_string())
+        {
+            phrases.push(phrase.to_string());
+        }
+    };
+
+    for keyword in extra_keywords {
+        push(keyword, &mut phrases);
+    }
+    // Double-quoted spans in the task text: `"..."` pairs, in order.
+    let mut rest = query;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        push(&after[..close], &mut phrases);
+        rest = &after[close + 1..];
+    }
+
+    phrases.truncate(MAX_EXACT_PHRASES);
+    phrases
+}
+
 fn exact_source_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     std::iter::once(query)
@@ -1433,6 +1490,72 @@ mod tests {
                 "crate::types::Node".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn exact_phrase_terms_takes_multiword_keywords_verbatim() {
+        // The whole point: a quoted phrase survives in source as a string
+        // literal and appears in no symbol name, so it must be matched as-is.
+        let terms = exact_phrase_terms(
+            "Diagnose the dashboard",
+            &["Waiting for status".to_string()],
+        );
+        assert_eq!(terms, vec!["Waiting for status".to_string()]);
+    }
+
+    #[test]
+    fn exact_phrase_terms_rejects_single_words_and_short_phrases() {
+        // A single common word would match everywhere; FTS already covers it.
+        let terms = exact_phrase_terms(
+            "no quotes here",
+            &["dashboard".to_string(), "status".to_string()],
+        );
+        assert!(
+            terms.is_empty(),
+            "single words must not trigger a source scan"
+        );
+
+        // Two very short words are no more specific than one.
+        let terms = exact_phrase_terms("x", &["is не".to_string(), "a b".to_string()]);
+        assert!(
+            terms.is_empty(),
+            "sub-minimum phrases must be rejected: {terms:?}"
+        );
+    }
+
+    #[test]
+    fn exact_phrase_terms_extracts_quoted_spans_from_the_task() {
+        let terms = exact_phrase_terms(
+            r#"Why does it show "Waiting for status" instead of "Ready to go" now?"#,
+            &[],
+        );
+        assert_eq!(
+            terms,
+            vec!["Waiting for status".to_string(), "Ready to go".to_string()]
+        );
+    }
+
+    #[test]
+    fn exact_phrase_terms_ignores_an_unclosed_quote() {
+        let terms = exact_phrase_terms(r#"look for "Waiting for status"#, &[]);
+        assert!(
+            terms.is_empty(),
+            "an unterminated quote must not scan: {terms:?}"
+        );
+    }
+
+    #[test]
+    fn exact_phrase_terms_dedupes_and_caps() {
+        // Same phrase from both the keyword list and the task text counts once.
+        let terms = exact_phrase_terms(
+            r#"see "Waiting for status" please"#,
+            &["Waiting for status".to_string()],
+        );
+        assert_eq!(terms.len(), 1);
+
+        // The source scan reads every file, so the term list must stay bounded.
+        let many: Vec<String> = (0..40).map(|i| format!("phrase number {i}")).collect();
+        assert_eq!(exact_phrase_terms("x", &many).len(), MAX_EXACT_PHRASES);
     }
 
     #[test]

@@ -3,6 +3,27 @@ use std::fmt::Write as _;
 
 use crate::types::TaskContext;
 
+/// Longest signature rendered inline for an entry point, in bytes.
+const MAX_SIGNATURE_LEN: usize = 200;
+
+/// Renders a signature as one bounded line.
+///
+/// A signature is normally a one-liner, but for a value binding the extractor
+/// stores the whole initializer — a localization catalog or a generated lookup
+/// table can run to tens of kilobytes. Emitting that verbatim costs more tokens
+/// than the file it came from, which is a poor trade in a tool whose purpose is
+/// spending fewer of them. The first line identifies the symbol; the code block
+/// below it carries content under its own limits.
+fn compact_signature(sig: &str) -> String {
+    let first = sig.lines().next().unwrap_or("").trim_end();
+    let truncated_lines = sig.lines().nth(1).is_some();
+    match first.char_indices().nth(MAX_SIGNATURE_LEN) {
+        Some((idx, _)) => format!("{} …", &first[..idx].trim_end()),
+        None if truncated_lines => format!("{first} …"),
+        None => first.to_string(),
+    }
+}
+
 /// Markdown fence language for a source file path, derived from its extension.
 /// Unknown extensions produce an unlabeled fence.
 fn fence_language(file_path: &str) -> &'static str {
@@ -79,7 +100,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                 node.start_line + 1,
             );
             if let Some(ref sig) = node.signature {
-                let _ = writeln!(out, "  `{sig}`");
+                let _ = writeln!(out, "  `{}`", compact_signature(sig));
             }
             // A docstring's first line often answers the question without a
             // code fetch — cheap to include, expensive to omit.
@@ -354,5 +375,40 @@ mod tests {
         assert_eq!(super::fence_language("a/b.ts"), "typescript");
         assert_eq!(super::fence_language("a/b.rs"), "rust");
         assert_eq!(super::fence_language("a/b.unknownext"), "");
+    }
+
+    #[test]
+    fn compact_signature_leaves_a_normal_signature_alone() {
+        let sig = "pub fn process_data(input: &str) -> Result<()>";
+        assert_eq!(super::compact_signature(sig), sig);
+    }
+
+    #[test]
+    fn compact_signature_collapses_a_multiline_initializer() {
+        // A localization catalog stored as a const "signature" can run to tens
+        // of kilobytes; emitting it verbatim costs more than the source file.
+        let sig = "MESSAGES = {\n  \"a\": \"one\",\n  \"b\": \"two\",\n}";
+        assert_eq!(super::compact_signature(sig), "MESSAGES = { …");
+    }
+
+    #[test]
+    fn compact_signature_bounds_a_long_single_line() {
+        let sig = format!("const TABLE = [{}]", "0, ".repeat(500));
+        let out = super::compact_signature(&sig);
+        assert!(
+            out.len() <= super::MAX_SIGNATURE_LEN + 8,
+            "got {} bytes",
+            out.len()
+        );
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn compact_signature_truncates_on_a_char_boundary() {
+        // Multi-byte characters must not be split; slicing mid-char panics.
+        let sig = format!("const EMOJI = \"{}\"", "🚀".repeat(400));
+        let out = super::compact_signature(&sig);
+        assert!(out.ends_with('…'));
+        assert!(out.chars().count() <= super::MAX_SIGNATURE_LEN + 2);
     }
 }
