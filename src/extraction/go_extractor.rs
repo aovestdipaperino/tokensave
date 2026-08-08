@@ -1064,6 +1064,27 @@ impl GoExtractor {
 
         // Scan the initializer for value references (registry/handler tables).
         Self::extract_call_sites(state, node, &id);
+
+        // A bare identifier initializer is a function value, not a call:
+        // `var SandboxSuffixFunc = randomSandboxSuffix` keeps that function
+        // very much alive, but it appears in no call expression, so the
+        // scan above sees nothing and the target is reported dead (#346).
+        // Deliberately scoped to the var spec's own initializer rather than
+        // every `expression_list`: emitting a reference for each identifier
+        // in every assignment and return would link unrelated same-named
+        // symbols across packages, which is the over-linking that fabricates
+        // cycles elsewhere in the same report.
+        if let Some(init) = find_child_by_kind(node, "expression_list") {
+            let mut cursor = init.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    Self::push_value_ref(state, cursor.node(), &id);
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // ----------------------------
