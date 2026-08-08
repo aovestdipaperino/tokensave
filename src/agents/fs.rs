@@ -250,7 +250,7 @@ pub fn safe_write_json_file(
 /// sibling `.new` file and renames it into place. A failure at either step —
 /// e.g. disk exhaustion mid-write — leaves the original file untouched
 /// instead of a partially-written, truncated one.
-pub fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result<()> {
+pub(crate) fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result<()> {
     let real_path = resolve_symlink_target(path).map_err(|e| TokenSaveError::Config {
         message: format!(
             "cannot safely resolve symlink {}: {e}\n  \
@@ -304,7 +304,7 @@ pub fn safe_write_text_file(path: &Path, content: &str) -> crate::errors::Result
 /// case. Falling back would make the caller write (and atomically rename)
 /// straight onto the symlink itself, destroying it — the exact bug this
 /// function exists to prevent, just reached through a different route.
-pub fn resolve_symlink_target(path: &Path) -> std::result::Result<PathBuf, String> {
+pub(crate) fn resolve_symlink_target(path: &Path) -> std::result::Result<PathBuf, String> {
     let is_symlink = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if !is_symlink {
         return Ok(path.to_path_buf());
@@ -395,7 +395,7 @@ pub fn backup_and_write_json(path: &Path, value: &serde_json::Value) -> bool {
 
 /// Replace backslashes with forward slashes so paths work in JSON/shell
 /// contexts on Windows. No-op on Unix where paths already use `/`.
-pub fn normalize_path_separators(path: &str) -> String {
+pub(crate) fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
 }
 
@@ -408,7 +408,7 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// Expand a leading `~` to the given home directory.
-pub fn expand_tilde(s: &str, home: &Path) -> String {
+pub(crate) fn expand_tilde(s: &str, home: &Path) -> String {
     if let Some(rest) = s.strip_prefix("~/") {
         return home.join(rest).to_string_lossy().replace('\\', "/");
     }
