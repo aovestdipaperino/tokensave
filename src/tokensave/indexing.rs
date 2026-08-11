@@ -1147,6 +1147,16 @@ impl TokenSave {
         crate::project_manifest::manifest_for(&self.project_root, &self.registry)
     }
 
+    /// Returns a warning message if git-tracked files in hidden directories were skipped by indexing.
+    pub fn warn_skipped_hidden_dirs(&self) -> Option<String> {
+        detect_skipped_hidden_dirs(
+            &self.project_root,
+            &self.config,
+            self.manifest().as_deref(),
+            &self.registry.supported_extensions(),
+        )
+    }
+
     pub(crate) fn scan_files(&self) -> Vec<String> {
         self.scan_files_diagnostics().0
     }
@@ -1444,7 +1454,123 @@ impl TokenSave {
         }
         Some(rel_str)
     }
+}
 
+/// Detects git-tracked, indexable files that the hidden-directory filter
+/// skipped. Returns a formatted warning string if any exist.
+///
+/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
+/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
+/// unless that directory path itself matches an include glob or manifest
+/// entry. Matching only the files inside (e.g. `.github/**` without a bare
+/// `.github` entry) does not re-enable descent, so this check walks each
+/// ancestor prefix the same way the walker does instead of testing the file
+/// path — otherwise the warning would go silent in exactly that trap.
+pub fn detect_skipped_hidden_dirs(
+    project_root: &Path,
+    config: &TokenSaveConfig,
+    manifest: Option<&crate::project_manifest::CompiledManifest>,
+    supported_exts: &[&str],
+) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        // -z: NUL-separated output, no C-quoting of non-ASCII paths.
+        .args(["ls-files", "-z"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut dir_counts: HashMap<String, usize> = HashMap::new();
+    // Sibling files share the same verdict, so evaluate the globs once per
+    // parent directory instead of once per file. `Some(prefix)` = the hidden
+    // ancestor the walker would prune at; `None` = reachable or deliberately
+    // excluded.
+    let mut dir_cache: HashMap<String, Option<String>> = HashMap::new();
+
+    for rel_path in stdout.split('\0') {
+        // Only count files an extractor could actually index; otherwise every
+        // repo with a tracked `.github/workflows/*.yml` would warn.
+        let ext = Path::new(rel_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            continue;
+        }
+        // File-level excludes are a deliberate opt-out; including the dir
+        // would not index these files, so warning about them is a false
+        // promise.
+        if is_excluded(rel_path, config) {
+            continue;
+        }
+        // Root-level dotfiles have no hidden ancestor directory.
+        let Some((dirs, _file)) = rel_path.rsplit_once('/') else {
+            continue;
+        };
+
+        let blocked = dir_cache.entry(dirs.to_string()).or_insert_with(|| {
+            // Apply the walker's hidden-directory test at each ancestor prefix.
+            let mut end = 0;
+            for comp in dirs.split('/') {
+                end += comp.len() + usize::from(end > 0);
+                if !comp.starts_with('.') {
+                    continue;
+                }
+                let prefix = &dirs[..end];
+                // Explicitly excluded dirs are a deliberate opt-out, not a trap.
+                if is_excluded_dir(prefix, config) {
+                    return None;
+                }
+                let allowed = is_included(prefix, config)
+                    || manifest.is_some_and(|m| {
+                        m.matches_local_file(prefix) || m.local_dir_may_contain(prefix)
+                    });
+                if !allowed {
+                    return Some(prefix.to_string());
+                }
+            }
+            None
+        });
+        if let Some(prefix) = blocked {
+            // `git ls-files` lists index entries that may not exist on disk
+            // (sparse checkouts, deletions staged but not committed); the
+            // walker never would have seen those, so don't warn about them.
+            if !project_root.join(rel_path).is_file() {
+                continue;
+            }
+            *dir_counts.entry(prefix.clone()).or_insert(0) += 1;
+        }
+    }
+
+    if dir_counts.is_empty() {
+        return None;
+    }
+
+    let total: usize = dir_counts.values().sum();
+    let mut dir_vec: Vec<(String, usize)> = dir_counts.into_iter().collect();
+    dir_vec.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let dir_summary = dir_vec
+        .iter()
+        .map(|(dir, count)| format!("{dir}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let top_dir = &dir_vec[0].0;
+    let file_word = if total == 1 { "file" } else { "files" };
+
+    Some(format!(
+        "\x1b[33mwarning:\x1b[0m skipped {total} tracked {file_word} in hidden directories ({dir_summary}) — add \"{top_dir}\" and \"{top_dir}/**\" to include[] in .tokensave/config.json, then run `tokensave sync -f` to index them (or add \"{top_dir}/**\" to exclude[] to silence this warning)"
+    ))
+}
+
+impl TokenSave {
     /// Returns the artifact extensions actually in effect for this project.
     ///
     /// An extension a language extractor already handles is dropped: the symbol
