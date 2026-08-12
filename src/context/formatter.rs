@@ -152,7 +152,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         if test_symbols > 0 {
             let _ = writeln!(
                 out,
-                "- tests/fixtures: {} symbols across {} files (tokensave_callers on an entry point for details)",
+                "- test/fixture files: {} symbols across {} files (tokensave_callers on an entry point for details)",
                 test_symbols,
                 test_files.len()
             );
@@ -160,46 +160,12 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         out.push('\n');
     }
 
-    // Code blocks
-    out.push_str("### Code\n");
-    if context.code_blocks.is_empty() {
-        out.push_str("_No code blocks extracted._\n");
-    } else {
-        for block in &context.code_blocks {
-            // Determine a label from the node if available
-            let label = if let Some(ref node_id) = block.node_id {
-                // Try to find a matching entry point name
-                context
-                    .entry_points
-                    .iter()
-                    .find(|n| &n.id == node_id)
-                    .map_or_else(|| node_id.clone(), |n| n.name.clone())
-            } else {
-                "unknown".to_string()
-            };
-
-            let _ = writeln!(
-                out,
-                "#### {} ({}:{})",
-                label,
-                block.file_path,
-                block.start_line + 1,
-            );
-            // Fence language from the block's file extension, not a hardcoded
-            // `rust` (#208).
-            let _ = writeln!(out, "```{}", fence_language(&block.file_path));
-            out.push_str(&block.content);
-            if !block.content.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str("```\n\n");
-        }
-    }
-
     // Retrieval diagnostics: tells the caller whether to trust this result
     // or reformulate. Zero-hit terms are the reformulation signal; the match
-    // tier separates exact/strong hits from lexical-only straws. The footer
-    // also fires whenever no entry points were found, even with no term data:
+    // tier separates exact/strong hits from lexical-only straws. Emitted
+    // before the Code section so response truncation (which keeps a
+    // bounded prefix) can never remove it. It also fires whenever no
+    // entry points were found, even with no term data:
     // a task made of only short or stop-word tokens ("fix bug") extracts no
     // searchable terms at all, and that miss must not stay silent.
     let diag = &context.diagnostics;
@@ -260,6 +226,42 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
             }
         }
         out.push('\n');
+    }
+
+    // Code blocks
+    out.push_str("### Code\n");
+    if context.code_blocks.is_empty() {
+        out.push_str("_No code blocks extracted._\n");
+    } else {
+        for block in &context.code_blocks {
+            // Determine a label from the node if available
+            let label = if let Some(ref node_id) = block.node_id {
+                // Try to find a matching entry point name
+                context
+                    .entry_points
+                    .iter()
+                    .find(|n| &n.id == node_id)
+                    .map_or_else(|| node_id.clone(), |n| n.name.clone())
+            } else {
+                "unknown".to_string()
+            };
+
+            let _ = writeln!(
+                out,
+                "#### {} ({}:{})",
+                label,
+                block.file_path,
+                block.start_line + 1,
+            );
+            // Fence language from the block's file extension, not a hardcoded
+            // `rust` (#208).
+            let _ = writeln!(out, "```{}", fence_language(&block.file_path));
+            out.push_str(&block.content);
+            if !block.content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
     }
 
     debug_assert!(
@@ -532,7 +534,7 @@ mod tests {
         assert!(md.contains("- src/lib.rs: real_fn:2"), "{md}");
         assert!(!md.contains("test_one"), "{md}");
         assert!(
-            md.contains("- tests/fixtures: 2 symbols across 2 files"),
+            md.contains("- test/fixture files: 2 symbols across 2 files"),
             "{md}"
         );
     }
