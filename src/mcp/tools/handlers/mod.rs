@@ -219,6 +219,44 @@ pub(crate) fn truncate_response(s: &str) -> String {
     }
 }
 
+/// Like `truncate_response`, but everything from the last occurrence of
+/// `marker` to the end of the string survives truncation as a suffix.
+///
+/// `tokensave_context` ends with the `### Retrieval` diagnostics footer,
+/// followed by `seen_node_ids` and occasional hints — the small, load-bearing
+/// tail of the response. Plain prefix truncation removes exactly that tail
+/// whenever the Code section is large, which is also when a caller most needs
+/// to know whether the retrieval behind it was trustworthy. The truncation
+/// notice stays where content was cut, so the seam remains visible.
+///
+/// Falls back to plain truncation when the marker is absent or the tail is
+/// too large to be the footer it is meant for (a marker echoed inside a huge
+/// code block must not defeat the response limit).
+pub(crate) fn truncate_response_keep_tail(s: &str, marker: &str) -> String {
+    const MAX_TAIL_CHARS: usize = 2_000;
+    if s.len() <= MAX_RESPONSE_CHARS {
+        return s.to_string();
+    }
+    let Some(idx) = s.rfind(marker) else {
+        return truncate_response(s);
+    };
+    let tail = &s[idx..];
+    if tail.len() > MAX_TAIL_CHARS {
+        return truncate_response(s);
+    }
+    let budget = MAX_RESPONSE_CHARS - tail.len();
+    let mut end = budget.min(idx);
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n[... truncated at {} chars]\n\n{}",
+        &s[..end],
+        end,
+        tail
+    )
+}
+
 /// Edit tools resolve an absolute `path` verbatim (see
 /// `TokenSave::resolve_edit_target`) rather than only matching it against
 /// the DB's canonical forward-slash paths, so they must keep a
@@ -418,6 +456,43 @@ mod tests {
 
     use super::super::get_tool_definitions;
     use super::*;
+
+    #[test]
+    fn test_truncate_keep_tail_preserves_footer_and_ids() {
+        let body = "x".repeat(MAX_RESPONSE_CHARS + 5_000);
+        let tail =
+            "### Retrieval\n- match: strong (best score 12.00)\n\nseen_node_ids: [\"a\",\"b\"]\n";
+        let s = format!("{body}\n{tail}");
+        let out = truncate_response_keep_tail(&s, "### Retrieval");
+        assert!(out.contains("[... truncated at"), "{}", &out[..200]);
+        assert!(out.ends_with(tail), "tail must survive truncation");
+        assert!(out.len() <= MAX_RESPONSE_CHARS + 100, "len {}", out.len());
+    }
+
+    #[test]
+    fn test_truncate_keep_tail_short_input_unchanged() {
+        let s = "short\n### Retrieval\n- match: exact\n";
+        assert_eq!(truncate_response_keep_tail(s, "### Retrieval"), s);
+    }
+
+    #[test]
+    fn test_truncate_keep_tail_falls_back_without_marker() {
+        let s = "y".repeat(MAX_RESPONSE_CHARS + 100);
+        let out = truncate_response_keep_tail(&s, "### Retrieval");
+        assert_eq!(out, truncate_response(&s));
+    }
+
+    #[test]
+    fn test_truncate_keep_tail_rejects_oversized_tail() {
+        // A marker echoed inside a huge code block must not defeat the limit.
+        let s = format!(
+            "{}### Retrieval\n{}",
+            "b".repeat(100),
+            "z".repeat(MAX_RESPONSE_CHARS)
+        );
+        let out = truncate_response_keep_tail(&s, "### Retrieval");
+        assert_eq!(out, truncate_response(&s));
+    }
 
     #[test]
     fn test_tool_definitions_complete() {
