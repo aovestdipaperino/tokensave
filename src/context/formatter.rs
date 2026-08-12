@@ -152,7 +152,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         if test_symbols > 0 {
             let _ = writeln!(
                 out,
-                "- tests: {} symbols across {} files (tokensave_callers on an entry point for details)",
+                "- tests/fixtures: {} symbols across {} files (tokensave_callers on an entry point for details)",
                 test_symbols,
                 test_files.len()
             );
@@ -198,9 +198,12 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
 
     // Retrieval diagnostics: tells the caller whether to trust this result
     // or reformulate. Zero-hit terms are the reformulation signal; the match
-    // tier separates exact/strong hits from lexical-only straws.
+    // tier separates exact/strong hits from lexical-only straws. The footer
+    // also fires whenever no entry points were found, even with no term data:
+    // a task made of only short or stop-word tokens ("fix bug") extracts no
+    // searchable terms at all, and that miss must not stay silent.
     let diag = &context.diagnostics;
-    if !diag.term_hits.is_empty() || diag.best_score.is_some() {
+    if !diag.term_hits.is_empty() || diag.best_score.is_some() || context.entry_points.is_empty() {
         out.push_str("### Retrieval\n");
         match (diag.match_quality.as_deref(), diag.best_score) {
             (Some(quality), Some(score)) => {
@@ -210,6 +213,12 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                     format!("{score:.2}")
                 };
                 let _ = writeln!(out, "- match: {quality} (best score {score_text})");
+            }
+            _ if diag.term_hits.is_empty() => {
+                out.push_str(
+                    "- match: none (no searchable terms extracted — \
+                     rephrase with concrete identifiers or add `keywords`)\n",
+                );
             }
             _ => {
                 out.push_str("- match: none (no candidates)\n");
@@ -488,8 +497,23 @@ mod tests {
 
     #[test]
     fn test_retrieval_footer_absent_without_diagnostics() {
-        let md = format_context_as_markdown(&make_test_context());
+        // With entry points present and no diagnostics data there is nothing
+        // to report, so the footer stays out of the output.
+        let mut ctx = make_test_context();
+        ctx.entry_points = vec![make_node("found_fn", "src/lib.rs")];
+        let md = format_context_as_markdown(&ctx);
         assert!(!md.contains("### Retrieval"), "{md}");
+    }
+
+    #[test]
+    fn test_retrieval_footer_present_when_no_entry_points_and_no_terms() {
+        // A task of only short or stop-word tokens extracts no searchable
+        // terms; the resulting miss must still be visible in the footer.
+        let ctx = make_test_context();
+        assert!(ctx.entry_points.is_empty());
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("### Retrieval"), "{md}");
+        assert!(md.contains("no searchable terms extracted"), "{md}");
     }
 
     #[test]
@@ -507,7 +531,10 @@ mod tests {
         let md = format_context_as_markdown(&ctx);
         assert!(md.contains("- src/lib.rs: real_fn:2"), "{md}");
         assert!(!md.contains("test_one"), "{md}");
-        assert!(md.contains("- tests: 2 symbols across 2 files"), "{md}");
+        assert!(
+            md.contains("- tests/fixtures: 2 symbols across 2 files"),
+            "{md}"
+        );
     }
 
     #[test]

@@ -279,7 +279,7 @@ impl<'a> ContextBuilder<'a> {
             );
         }
         // Record per-term hit counts before the fill loop consumes the queues.
-        // Counts are capped at `search_limit` by the bounded query; zero-hit
+        // Counts are capped at `fetch_limit` by the bounded query; zero-hit
         // terms are the signal the caller needs to reformulate.
         let term_hits: Vec<(String, usize)> = fts_terms
             .iter()
