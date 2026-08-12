@@ -308,6 +308,14 @@ impl Database {
     /// Scores carry the negated BM25 rank (higher = better), matching
     /// `search_nodes_fts` — flattening them to `1.0` erased FTS relevance
     /// before context building's multi-signal reranking ever saw it.
+    ///
+    /// `file` and `doc` nodes are excluded: this fetch feeds the context
+    /// builder's *symbol* candidate pool, and both kinds have their own
+    /// surfacing channels (related-files collection, `tokensave_doc`). Left
+    /// in, artifact file nodes (#323) and companion docs win raw-BM25 slots
+    /// for common terms and displace the code symbols the query is about —
+    /// rerank-time down-weighting cannot repair a pool polluted at fetch
+    /// time.
     pub async fn search_nodes_bounded(
         &self,
         query: &str,
@@ -347,6 +355,7 @@ impl Database {
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND n.kind NOT IN ('file', 'doc')
                  ORDER BY rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
