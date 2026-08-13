@@ -587,3 +587,18 @@ fn test_objc_full_sample_file() {
         contains.len()
     );
 }
+
+#[test]
+fn test_objc_symbols_inside_preproc_conditional() {
+    let source = r#"
+#ifdef DEBUG
+void debug_log(const char* msg) {
+}
+#endif
+"#;
+    let extractor = ObjcExtractor;
+    let result = extractor.extract("logging.m", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"debug_log"), "nodes: {:?}", names);
+}

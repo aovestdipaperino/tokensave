@@ -186,6 +186,16 @@ impl CppExtractor {
             // `declaration_list` before dispatch, so this can't double-visit
             // them.
             "linkage_specification" | "declaration_list" => Self::visit_children(state, node),
+            // A conditional block carries no symbol itself, but its body does.
+            // Without this every declaration inside an `#if` / `#ifdef` is
+            // invisible -- which silently drops whole files: the `#ifndef FOO_H`
+            // include-guard idiom wraps an entire header, and build-config
+            // guards (`#if !NDEBUG` and friends) wrap entire .cpp files.
+            // Both arms of an `#if/#else` are extracted: deciding which one
+            // compiles needs a preprocessor, and dropping both is strictly
+            // worse than reporting a symbol that some configuration excludes.
+            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => Self::visit_children(state, node),
             _ => {
                 // For other node types, skip. Comments are picked up as docstrings.
             }
