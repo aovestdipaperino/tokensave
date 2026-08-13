@@ -27,6 +27,14 @@ const HOOK_MARKER: &str = "# tokensave: auto-sync";
 /// Marker comment identifying tokensave's section in the post-checkout hook.
 const HOOK_MARKER_CHECKOUT: &str = "# tokensave: auto-init";
 
+/// Marker comment closing tokensave's section in the post-checkout hook.
+///
+/// Written since #391 so that a migration can replace the section body in
+/// place instead of having to pattern-match the shapes that shipped in 6.4.3
+/// and 7.3.0 (both of which end in a bare `fi`). Whether such a migration runs
+/// automatically or only on prompt is the open policy question in #342 Q1.
+const HOOK_MARKER_CHECKOUT_END: &str = "# tokensave: end auto-init";
+
 /// Marker comment identifying the repo-hook chaining preamble (issue #164).
 const HOOK_MARKER_CHAIN: &str = "# tokensave: chain-repo-hook";
 
@@ -142,21 +150,40 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
 
 /// The hook snippet appended to (or written as) the post-checkout script.
 ///
-/// Runs `tokensave init` in the background on the initial checkout of a fresh
-/// clone — git passes the all-zeros sentinel as the previous HEAD in that case.
-/// On an ordinary **branch** checkout (git passes flag `$3 == 1`) it runs
-/// `tokensave branch add` to transparently track the just-checked-out branch;
-/// that is a no-op when the branch is already tracked or is the default branch.
-/// File checkouts (`$3 == 0`) trigger nothing.
+/// git reports the initial checkout of a fresh clone — and of every new
+/// `git worktree add` — by passing the all-zeros sentinel as the previous
+/// HEAD. That checkout is **also** a branch checkout (git passes flag
+/// `$3 == 1`) and it can land on a branch that is not the default one:
+/// `git worktree add -b feature` and `git clone -b feature` both do. So the
+/// sentinel arm runs `tokensave init` **and then** `tokensave branch add`:
+/// sequentially, because `branch add` copies the index that `init` creates,
+/// and inside a single background job, because two independent background
+/// jobs would race (#391).
+///
+/// Any other branch checkout (`$3 == 1` with a real previous HEAD) runs
+/// `tokensave branch add` alone to transparently track the just-checked-out
+/// branch; that is a no-op when the branch is already tracked or is the
+/// default branch. File checkouts (`$3 == 0`) trigger nothing.
+///
+/// The section is fenced by [`HOOK_MARKER_CHECKOUT`] and
+/// [`HOOK_MARKER_CHECKOUT_END`]. Changing this body does not reach an install
+/// that already has the hook: the installer skips a post-checkout file that
+/// already carries the marker, and [`write_global_hook`] never replaces
+/// existing content. Migrating those installs is the open policy question in
+/// #342 Q1.
 fn post_checkout_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
     format!(
         "{HOOK_MARKER_CHECKOUT}\n\
          if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
-         \t{bin} init >/dev/null 2>&1 &\n\
+         \t(\n\
+         \t\t{bin} init >/dev/null 2>&1 || exit 0\n\
+         \t\t{bin} branch add >/dev/null 2>&1\n\
+         \t) &\n\
          elif [ \"$3\" = \"1\" ]; then\n\
          \t{bin} branch add >/dev/null 2>&1 &\n\
-         fi\n"
+         fi\n\
+         {HOOK_MARKER_CHECKOUT_END}\n"
     )
 }
 
@@ -355,9 +382,11 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         );
     }
 
-    // Install the post-checkout hook so a fresh clone auto-initializes. Its
-    // marker is independent of post-commit's, so this is skipped only when the
-    // post-checkout hook itself is already present.
+    // Install the post-checkout hook so a fresh clone or worktree
+    // auto-initializes and tracks its branch. Its marker is independent of
+    // post-commit's, so this is skipped only when the post-checkout hook
+    // itself is already present — which also means a body change here never
+    // reaches an existing install (#342 Q1).
     let checkout_path = hooks_dir.join("post-checkout");
     let checkout_contents = std::fs::read_to_string(&checkout_path).ok();
     if should_chain_repo_hooks(
@@ -716,6 +745,92 @@ mod git_hook_tests {
             s.contains("elif [ \"$3\" = \"1\" ]")
                 && s.contains("/usr/local/bin/tokensave branch add"),
             "must transparently track the branch on a branch checkout (flag $3==1), got: {s}"
+        );
+        assert!(
+            s.trim_end().ends_with(HOOK_MARKER_CHECKOUT_END),
+            "the section must be fenced so a migration can replace it in place, got: {s}"
+        );
+    }
+
+    /// Runs the generated post-checkout snippet under `sh`, with a stub script
+    /// standing in for the tokensave binary, and returns the commands it
+    /// invoked in the order it invoked them.
+    ///
+    /// The snippet backgrounds its work — git does not wait for it — so the
+    /// wrapper appends `wait` to make the observation deterministic.
+    #[cfg(unix)]
+    fn run_post_checkout_snippet(dir: &Path, args: &[&str]) -> Vec<String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let log = dir.join("calls.log");
+        let stub = dir.join("tokensave-stub");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\necho \"$*\" >> \"{}\"\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let hook = dir.join("post-checkout");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\n{}\nwait\n",
+                post_checkout_snippet(stub.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+
+        // `sh` is required for this test; a missing shell is a broken
+        // environment, not a skippable condition.
+        let status = std::process::Command::new("sh")
+            .arg(&hook)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "hook script failed: {status}");
+
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect()
+    }
+
+    /// The regression test for #391, and the reason it is written by executing
+    /// the snippet rather than by matching substrings: the bug was that two
+    /// correct-looking commands sat in mutually exclusive arms, which every
+    /// `contains` assertion in the test above passes straight over.
+    #[cfg(unix)]
+    #[test]
+    fn post_checkout_snippet_tracks_the_branch_of_a_fresh_worktree_or_clone() {
+        const ZERO: &str = "0000000000000000000000000000000000000000";
+        const SHA: &str = "1111111111111111111111111111111111111111";
+
+        // A new worktree or a fresh clone: git passes the all-zeros previous
+        // HEAD *and* flag 1, and the branch checked out need not be the
+        // default one (`git worktree add -b`, `git clone -b`). Both commands
+        // must run, `init` first, so `branch add` has an index to copy.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            run_post_checkout_snippet(dir.path(), &[ZERO, SHA, "1"]),
+            vec!["init".to_string(), "branch add".to_string()],
+            "a fresh worktree/clone must be indexed AND have its branch tracked"
+        );
+
+        // An ordinary branch switch tracks the branch without re-indexing.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            run_post_checkout_snippet(dir.path(), &[SHA, SHA, "1"]),
+            vec!["branch add".to_string()],
+            "a branch switch must not re-run init"
+        );
+
+        // A file checkout triggers nothing at all.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            run_post_checkout_snippet(dir.path(), &[SHA, SHA, "0"]).is_empty(),
+            "a file checkout must not run tokensave"
         );
     }
 
