@@ -944,7 +944,7 @@ impl<'a> ReferenceResolver<'a> {
             });
         }
 
-        let best = Self::find_best_match(uref, candidates, &self.import_index)?;
+        let best = Self::find_best_match_unambiguous(uref, candidates, &self.import_index)?;
 
         Some(ResolvedRef {
             original: uref.clone(),
@@ -952,6 +952,71 @@ impl<'a> ReferenceResolver<'a> {
             confidence: 0.7,
             resolved_by: "simple-name-match".to_string(),
         })
+    }
+
+    /// Scores one candidate against a reference.
+    ///
+    /// Extracted from [`Self::find_best_match`] so ambiguity can be detected
+    /// by comparing scores rather than re-deriving them (#378).
+    fn score_candidate(
+        uref: &UnresolvedRef,
+        node: &Node,
+        import_index: &HashMap<String, HashSet<String>>,
+    ) -> i64 {
+        let ref_lang = lang_from_path(&uref.file_path);
+        let mut score: i64 = 0;
+
+        // Same file bonus
+        if node.file_path == uref.file_path {
+            score += 100;
+
+            // Line proximity bonus (same file only)
+            let distance = node.start_line.abs_diff(uref.line);
+            let proximity = 20_i64.saturating_sub(i64::from(distance) / 10);
+            score += proximity.max(0);
+        } else {
+            // Directory proximity bonus (different files only)
+            score += path_proximity(&uref.file_path, &node.file_path);
+        }
+
+        // Language matching
+        let candidate_lang = lang_from_path(&node.file_path);
+        if ref_lang != "unknown" && candidate_lang != "unknown" {
+            if ref_lang == candidate_lang {
+                score += 50;
+            } else {
+                score -= 80;
+            }
+        }
+
+        // Exported / pub bonus
+        if node.visibility == Visibility::Pub {
+            score += 10;
+        }
+
+        // Callable kind bonus for Calls references
+        if uref.reference_kind == EdgeKind::Calls
+            && matches!(
+                node.kind,
+                NodeKind::Function
+                    | NodeKind::Method
+                    | NodeKind::SingletonMethod
+                    | NodeKind::StructMethod
+                    | NodeKind::Constructor
+                    | NodeKind::AbstractMethod
+            )
+        {
+            score += 25;
+        }
+
+        // Import match bonus: caller explicitly imports a name that matches
+        if let Some(imports) = import_index.get(&uref.file_path) {
+            if imports.contains(&node.name) {
+                score += 30;
+            }
+        }
+
+        score
     }
 
     /// Scores candidate nodes for a reference and returns the best match.
@@ -973,63 +1038,20 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
-        let ref_lang = lang_from_path(&uref.file_path);
         let mut best_score = i64::MIN;
         let mut best_node: Option<&Node> = None;
 
         for node in candidates {
-            let mut score: i64 = 0;
+            let score = Self::score_candidate(uref, node, import_index);
 
-            // Same file bonus
-            if node.file_path == uref.file_path {
-                score += 100;
-
-                // Line proximity bonus (same file only)
-                let distance = node.start_line.abs_diff(uref.line);
-                let proximity = 20_i64.saturating_sub(i64::from(distance) / 10);
-                score += proximity.max(0);
-            } else {
-                // Directory proximity bonus (different files only)
-                score += path_proximity(&uref.file_path, &node.file_path);
-            }
-
-            // Language matching
-            let candidate_lang = lang_from_path(&node.file_path);
-            if ref_lang != "unknown" && candidate_lang != "unknown" {
-                if ref_lang == candidate_lang {
-                    score += 50;
-                } else {
-                    score -= 80;
-                }
-            }
-
-            // Exported / pub bonus
-            if node.visibility == Visibility::Pub {
-                score += 10;
-            }
-
-            // Callable kind bonus for Calls references
-            if uref.reference_kind == EdgeKind::Calls
-                && matches!(
-                    node.kind,
-                    NodeKind::Function
-                        | NodeKind::Method
-                        | NodeKind::SingletonMethod
-                        | NodeKind::StructMethod
-                        | NodeKind::Constructor
-                        | NodeKind::AbstractMethod
-                )
-            {
-                score += 25;
-            }
-
-            // Import match bonus: caller explicitly imports a name that matches
-            if let Some(imports) = import_index.get(&uref.file_path) {
-                if imports.contains(&node.name) {
-                    score += 30;
-                }
-            }
-
+            // NOTE: `>` means the first candidate the scan reaches wins a tie,
+            // and "first" is file enumeration order — so a tied resolution is
+            // not a function of the source (#378). Measured on this repository,
+            // ~2,834 call edges (12.7%) are decided by this tie, so making the
+            // tie deterministic re-points that many edges in one go. That is a
+            // large enough change to be decided deliberately rather than folded
+            // into a bug fix; the ambiguity refusal below removes the phantom
+            // edges #378 reported without touching it.
             if score > best_score {
                 best_score = score;
                 best_node = Some(node);
@@ -1037,6 +1059,39 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         best_node.cloned()
+    }
+
+    /// [`Self::find_best_match`], but refusing to guess when the evidence
+    /// cannot separate the top candidates.
+    ///
+    /// Used only by the bare-name fallback, which is reached when a
+    /// `Type::method` or `recv.method` reference failed to match precisely and
+    /// all that is left is the trailing segment. There, two candidates tied on
+    /// every scoring dimension are genuinely indistinguishable, and picking one
+    /// is a coin flip that does damage in both directions: it fabricates a
+    /// caller for code that has none, and it attributes a real call to the
+    /// wrong target — which is how a live `StatusBar.dispose` ended up reported
+    /// as dead while `ProviderManager.dispose` absorbed its call (#378).
+    ///
+    /// No edge is the honest answer. A missing edge degrades an answer; a
+    /// fabricated one corrupts it, and #346 showed fabricated edges going on to
+    /// invent cross-language cycles and inflate `dead_code` false positives.
+    fn find_best_match_unambiguous(
+        uref: &UnresolvedRef,
+        candidates: &[&Node],
+        import_index: &HashMap<String, HashSet<String>>,
+    ) -> Option<Node> {
+        let best = Self::find_best_match(uref, candidates, import_index)?;
+        let best_score = Self::score_candidate(uref, &best, import_index);
+        let tied = candidates
+            .iter()
+            .filter(|n| n.id != best.id)
+            .filter(|n| Self::score_candidate(uref, n, import_index) == best_score)
+            .count();
+        if tied > 0 {
+            return None;
+        }
+        Some(best)
     }
 }
 
