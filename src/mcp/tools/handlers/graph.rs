@@ -15,7 +15,7 @@ use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
 use super::super::ToolResult;
 use super::{
     effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
-    truncate_response, unique_file_paths,
+    truncate_response, truncate_response_keep_tail, unique_file_paths,
 };
 
 /// Rounds a derived health metric to two decimal places for compact JSON.
@@ -471,7 +471,12 @@ pub(super) async fn handle_context(
 
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&output) }]
+            // Keep everything from the Retrieval footer down: the footer,
+            // `seen_node_ids`, and any sibling hint are the small,
+            // load-bearing tail of this response, and plain prefix
+            // truncation would cut exactly those whenever the Code
+            // section is large.
+            "content": [{ "type": "text", "text": truncate_response_keep_tail(&output, "### Retrieval") }]
         }),
         touched_files,
     })

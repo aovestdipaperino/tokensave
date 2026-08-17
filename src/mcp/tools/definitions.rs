@@ -129,7 +129,11 @@ pub fn is_graph_scoped_tool(definition: &ToolDefinition) -> bool {
 /// and costing far more than the calls it discouraged. Keep this a `const`;
 /// never derive any part of it from graph state.
 pub const CONTEXT_DESCRIPTION: &str = "Build an AI-ready context for a task description. \
-     Returns relevant symbols, relationships, and optionally code snippets.";
+     Returns relevant symbols, relationships, and optionally code snippets. \
+     The output includes a `### Retrieval` section: when it lists zero-hit terms, \
+     re-query once with `keywords` synonyms for them (or use tokensave_search); \
+     a `match: fts-only` tier means weak lexical matches, so verify entry points \
+     before building on them.";
 
 /// Returns the list of all tool definitions exposed by this MCP server.
 ///
@@ -286,7 +290,9 @@ fn def_search() -> ToolDefinition {
     def_always_load(
         "tokensave_search",
         "Search Symbols",
-        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.",
+        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword. \
+         Persistent noise (vendored trees, docs) can be suppressed project-wide via gitignore-style \
+         patterns in .tokensave/queryignore.",
         json!({
             "type": "object",
             "properties": {
