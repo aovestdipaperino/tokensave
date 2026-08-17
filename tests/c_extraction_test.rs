@@ -555,3 +555,35 @@ fn test_c_language_name() {
     let extractor = CExtractor;
     assert_eq!(extractor.language_name(), "C");
 }
+
+#[test]
+fn test_c_symbols_inside_preproc_conditional() {
+    let source = r#"
+#ifdef FEATURE_X
+int feature_fn(int a) {
+    return a + 1;
+}
+#endif
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("feature.c", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"feature_fn"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_c_symbols_inside_include_guard() {
+    let source = r#"
+#ifndef LIST_H
+#define LIST_H
+struct List { int len; };
+int list_len(struct List* l);
+#endif
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("list.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"List"), "nodes: {:?}", names);
+}

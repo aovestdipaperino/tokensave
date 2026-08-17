@@ -113,6 +113,14 @@ impl CExtractor {
             "enum_specifier" => Self::visit_standalone_enum(state, node),
             "preproc_def" => Self::visit_preproc_def(state, node),
             "preproc_include" => Self::visit_preproc_include(state, node),
+            // A conditional block carries no symbol itself, but its body does.
+            // Without this every declaration inside an `#if` / `#ifdef` is
+            // invisible -- which silently drops whole files: the `#ifndef FOO_H`
+            // include-guard idiom wraps an entire header. Both arms of an
+            // `#if/#else` are extracted: deciding which one compiles needs a
+            // preprocessor, and dropping both is strictly worse.
+            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => Self::visit_children(state, node),
             _ => {
                 // For other node types, skip. Comments are picked up as docstrings.
             }
