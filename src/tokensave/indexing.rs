@@ -727,11 +727,20 @@ impl TokenSave {
 
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
-            // #253: `from_nodes` now borrows rather than clones; the
-            // remaining peak is `get_all_nodes` materializing the whole
-            // graph at once (#306).
+            // #253: `from_nodes` borrows rather than clones. #306: the load
+            // drops `docstring` and `signature`, which resolution never
+            // reads and which are unbounded TEXT — a const's whole
+            // initializer lives in `signature` (43 KB for one node in
+            // #362). The remaining peak is the node count itself: the
+            // resolver borrows from this slice for its whole life and needs
+            // a global name index, so the pass cannot be chunked without a
+            // redesign.
             crate::memstats::record("sync:resolve:load_nodes");
-            let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+            let all_nodes = self
+                .db
+                .get_all_nodes_for_resolution()
+                .await
+                .unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
             crate::memstats::record("sync:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
@@ -1068,11 +1077,17 @@ impl TokenSave {
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
-                // #253: `from_nodes` now borrows rather than clones; the
-                // remaining peak is `get_all_nodes` materializing the whole
-                // graph at once (#306).
+                // #253: `from_nodes` borrows rather than clones. #306: the
+                // load drops `docstring` and `signature`, which resolution
+                // never reads and which are unbounded TEXT. The remaining
+                // peak is the node count itself — see the sibling site in
+                // the incremental path for why it cannot be chunked.
                 crate::memstats::record("sync:resolve:load_nodes");
-                let all_nodes = self.db.get_all_nodes().await.unwrap_or_default();
+                let all_nodes = self
+                    .db
+                    .get_all_nodes_for_resolution()
+                    .await
+                    .unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);
                 crate::memstats::record("sync:resolve:build_caches");
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
