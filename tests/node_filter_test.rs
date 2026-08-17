@@ -251,3 +251,33 @@ async fn an_empty_filter_returns_every_node() {
         .unwrap();
     assert_eq!(ids_ref(&all), ids(filtered));
 }
+
+/// `handle_test_risk` needs a graph-wide `node_id → file_path` map, because
+/// it walks every edge and an edge can point anywhere — a test in `tests/`
+/// calling a function in `src/` is the point of the tool, so the map cannot
+/// be scoped (#411).
+///
+/// What it does not need is the other twenty-six columns. `get_node_paths`
+/// returns the mapping straight from SQL instead of materialising a `Node`
+/// per row, each 248 bytes plus its unbounded `signature` and `docstring`,
+/// to keep two short strings.
+#[tokio::test]
+async fn node_paths_matches_the_map_built_from_full_nodes() {
+    let (_tmp, cg) = indexed().await;
+
+    let expected: std::collections::HashMap<String, String> = cg
+        .get_all_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|n| (n.id, n.file_path))
+        .collect();
+
+    let actual = cg.db().get_node_paths().await.unwrap();
+
+    assert!(!expected.is_empty(), "fixture must have nodes");
+    assert_eq!(
+        expected, actual,
+        "the projection must agree with the map built from full nodes"
+    );
+}

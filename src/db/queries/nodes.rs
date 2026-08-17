@@ -692,6 +692,46 @@ impl Database {
         collect_rows(&mut rows, row_to_node, "get_all_nodes").await
     }
 
+    /// Every node's id paired with its file path, without building a `Node`.
+    ///
+    /// `handle_test_risk` needs this mapping for the *whole* graph — it walks
+    /// every edge, and an edge can point anywhere, so a test in `tests/`
+    /// calling a function in `src/` is exactly what it is looking for. The map
+    /// therefore cannot be scoped the way the predicates in
+    /// [`Self::get_nodes_filtered`] can (#411).
+    ///
+    /// What it can avoid is the other twenty-six columns: materialising a
+    /// `Node` per row costs 248 bytes of struct plus its unbounded `signature`
+    /// and `docstring` strings, to keep two short ones. Asserted equal to the
+    /// map built from `get_all_nodes` in `tests/node_filter_test.rs`.
+    pub async fn get_node_paths(&self) -> Result<HashMap<String, String>> {
+        let mut rows = self
+            .conn()
+            .query("SELECT id, file_path FROM nodes", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query node paths: {e}"),
+                operation: "get_node_paths".to_string(),
+            })?;
+
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read node path row: {e}"),
+            operation: "get_node_paths".to_string(),
+        })? {
+            let id = get_string_lossy(&row, 0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read node id: {e}"),
+                operation: "get_node_paths".to_string(),
+            })?;
+            let path = get_string_lossy(&row, 1).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read node file_path: {e}"),
+                operation: "get_node_paths".to_string(),
+            })?;
+            map.insert(id, path);
+        }
+        Ok(map)
+    }
+
     /// Every node matching `filter`, evaluated in SQL rather than in Rust.
     ///
     /// The handlers this replaces each loaded the whole node table and kept a
