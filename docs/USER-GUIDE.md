@@ -418,6 +418,27 @@ daemon and the CLI. The on-demand model is its replacement.
 Multiple MCP servers on the same project (e.g. two agents) coordinate via
 a per-project sync lock: only one sync runs at a time.
 
+### What an automatic sync will not do
+
+Both refreshes above are *automatic* — you did not ask for them — so they
+are bounded, and they decline rather than run in two cases:
+
+- **The project has no indexed files.** Building the first index is
+  `tokensave init`'s job: it is explicit, it reports progress, and you chose
+  the directory. A background task will not index a project from scratch by
+  inference. Without this, a server started in a directory that was never
+  initialised would try to index the whole tree — on a home directory that
+  reached tens of gigabytes of memory before anyone noticed (#396).
+- **More than `max_auto_sync_files` files are stale** (default 2000). The
+  30-second cooldown bounds how *often* a sync runs, never what one costs,
+  so the file count is capped separately.
+
+Either way the server prints what it skipped and what to run. `tokensave sync`
+is deliberately unbounded and is the supported way to index a large change on
+purpose. To change the ceiling, set `max_auto_sync_files` in
+`.tokensave/config.json`; `0` disables the file-count check (the empty-index
+guard always applies).
+
 The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
 from that watcher. It is still accepted, but nothing reads it, and the
 30-second cooldown is not configurable.

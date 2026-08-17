@@ -87,6 +87,16 @@ pub struct TokenSaveConfig {
     /// switch when `tokensave install` set it up.
     #[serde(default)]
     pub auto_track: bool,
+    /// Ceiling on how many files a single *automatic* sync will take on
+    /// before refusing (#396, #393). `0` disables the check.
+    ///
+    /// Applies only to syncs the user did not ask for — the MCP server's
+    /// startup catch-up and its per-`tools/call` staleness check. An explicit
+    /// `tokensave sync` is unbounded and is the supported way to index a large
+    /// change deliberately. The 30 s cooldown bounds how *often* an automatic
+    /// sync runs, never what one costs, so the file count is capped as well.
+    #[serde(default = "default_max_auto_sync_files")]
+    pub max_auto_sync_files: usize,
     /// Surface per-call savings to the agent, so it can report them to the
     /// user. Defaults to `true` (current behavior). When `false`, tool results
     /// omit the `tokensave_metrics:` line and the MCP `instructions` drop the
@@ -126,6 +136,12 @@ fn default_artifact_extensions() -> Vec<String> {
 /// before #356 keep reporting savings rather than silently going quiet.
 fn default_report_savings() -> bool {
     true
+}
+
+/// Serde default for [`TokenSaveConfig::max_auto_sync_files`], so configs
+/// written before #396 gain the bound instead of staying unbounded.
+fn default_max_auto_sync_files() -> usize {
+    crate::tokensave::DEFAULT_MAX_AUTO_SYNC_FILES
 }
 
 /// Resolves a boolean setting that an environment variable may override.
@@ -180,6 +196,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: false,
+            max_auto_sync_files: default_max_auto_sync_files(),
             report_savings: default_report_savings(),
             artifact_extensions: default_artifact_extensions(),
         }
