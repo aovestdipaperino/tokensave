@@ -432,6 +432,15 @@ are bounded, and they decline rather than run in two cases:
 - **More than `max_auto_sync_files` files are stale** (default 2000). The
   30-second cooldown bounds how *often* a sync runs, never what one costs,
   so the file count is capped separately.
+- **The working tree has moved to a different branch than the server is
+  serving.** A running server resolves its branch once, at startup, so a
+  `git checkout` underneath it does not change which database it holds.
+  Syncing then would write the new branch's files into the old branch's
+  index, which is how `main` ends up holding a file that only ever existed
+  on `feature` (#400). Restart the MCP server to serve the new branch; each
+  tool response also carries a warning naming both branches while the drift
+  lasts. This applies only to projects using per-branch databases — a
+  single-index project is unaffected by a checkout.
 
 Either way the server prints what it skipped and what to run. `tokensave sync`
 is deliberately unbounded and is the supported way to index a large change on
