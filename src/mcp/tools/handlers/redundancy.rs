@@ -98,27 +98,19 @@ async fn collect_candidates(
     path_prefix: Option<&str>,
     min_lines: u32,
 ) -> Result<Vec<Node>> {
-    let all = cg.get_all_nodes().await?;
-    Ok(all
-        .into_iter()
-        .filter(|n| {
-            matches!(
-                n.kind,
-                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
-            )
-        })
-        .filter(|n| n.end_line.saturating_sub(n.start_line) + 1 >= min_lines)
-        .filter(|n| {
-            path_prefix.is_none_or(|pfx| {
-                let prefix = if pfx.ends_with('/') {
-                    pfx.to_string()
-                } else {
-                    format!("{pfx}/")
-                };
-                n.file_path.starts_with(&prefix) || n.file_path == pfx
-            })
-        })
-        .collect())
+    // Filtered in SQL rather than by loading every node and discarding most
+    // of them (#410). All three predicates are the caller's own.
+    let mut filter = crate::db::NodeFilter::new()
+        .kinds(&[
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::SingletonMethod,
+        ])
+        .min_lines(min_lines);
+    if let Some(prefix) = path_prefix {
+        filter = filter.path_prefix(prefix);
+    }
+    cg.db().get_nodes_filtered(&filter).await
 }
 
 // ---------------------------------------------------------------------------

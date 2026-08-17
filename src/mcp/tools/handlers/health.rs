@@ -66,20 +66,15 @@ pub(super) async fn compute_health_snapshot(
     let depth_result = dependency_depth(&adj, 1);
     let depth = depth_score(depth_result.max_depth, depth_result.ideal_depth);
 
-    let all_nodes = cg.get_all_nodes().await?;
-    let nodes: Vec<_> = all_nodes
-        .iter()
-        .filter(|n| {
-            path_prefix.is_none_or(|pfx| {
-                let with_slash = if pfx.ends_with('/') {
-                    pfx.to_string()
-                } else {
-                    format!("{pfx}/")
-                };
-                n.file_path.starts_with(&with_slash) || n.file_path == pfx
-            })
-        })
-        .collect();
+    // Scoped in SQL rather than by loading every node and filtering (#410).
+    // Unscoped, this is still the whole table — the snapshot aggregates over
+    // the project by definition — but a `path` request now costs its subset.
+    let mut filter = crate::db::NodeFilter::new();
+    if let Some(prefix) = path_prefix {
+        filter = filter.path_prefix(prefix);
+    }
+    let scoped = cg.db().get_nodes_filtered(&filter).await?;
+    let nodes: Vec<_> = scoped.iter().collect();
 
     let mut per_file_complexity: HashMap<String, f64> = HashMap::new();
     for n in &nodes {
@@ -204,27 +199,20 @@ pub(super) async fn handle_gini(
         .map_or(10, |v| v.min(100) as usize);
     let path_prefix = effective_path(&args, scope_prefix);
 
-    let all_nodes = cg.get_all_nodes().await?;
+    // Path scoping happens in SQL (#410); `all_edges` still spans the graph
+    // because fan-in/fan-out of a scoped node counts edges from outside it.
+    let mut node_filter = crate::db::NodeFilter::new();
+    if let Some(prefix) = path_prefix {
+        node_filter = node_filter.path_prefix(prefix);
+    }
+    let all_nodes = cg.db().get_nodes_filtered(&node_filter).await?;
     let all_edges = if metric == "fan_in" || metric == "fan_out" {
         cg.get_all_edges().await?
     } else {
         vec![]
     };
 
-    // Apply path filter
-    let nodes: Vec<_> = all_nodes
-        .into_iter()
-        .filter(|n| {
-            path_prefix.is_none_or(|pfx| {
-                let with_slash = if pfx.ends_with('/') {
-                    pfx.to_string()
-                } else {
-                    format!("{pfx}/")
-                };
-                n.file_path.starts_with(&with_slash) || n.file_path == pfx
-            })
-        })
-        .collect();
+    let nodes = all_nodes;
 
     // Build named_values per metric+scope
     let named_values: Vec<(String, f64)> = match (metric, scope) {
