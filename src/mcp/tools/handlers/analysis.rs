@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
-use crate::types::{NodeKind, Visibility};
+use crate::types::NodeKind;
 
 use super::super::ToolResult;
 use super::{
@@ -429,22 +429,14 @@ pub(super) async fn handle_module_api(
         message: "missing required parameter: path".to_string(),
     })?;
 
-    let all_nodes = cg.get_all_nodes().await?;
+    // Public nodes under `path`, selected in SQL rather than by loading the
+    // whole node table and discarding the rest (#410).
+    let scoped = cg
+        .db()
+        .get_nodes_filtered(&crate::db::NodeFilter::new().path_prefix(path).public_only())
+        .await?;
 
-    // Filter to nodes in matching files (exact path or directory prefix)
-    let prefix = if path.ends_with('/') {
-        path.to_string()
-    } else {
-        format!("{path}/")
-    };
-
-    let mut pub_nodes: Vec<&crate::types::Node> = all_nodes
-        .iter()
-        .filter(|n| {
-            n.visibility == Visibility::Pub
-                && (n.file_path == path || n.file_path.starts_with(&prefix))
-        })
-        .collect();
+    let mut pub_nodes: Vec<&crate::types::Node> = scoped.iter().collect();
 
     pub_nodes.sort_by(|a, b| {
         a.file_path
@@ -684,23 +676,14 @@ pub(super) async fn handle_unused_imports(
         &cfg.default_path_exclude,
     );
 
-    let all_nodes = cg.get_all_nodes().await?;
+    // `Use` nodes under the requested path, selected in SQL (#410).
+    let mut use_filter = crate::db::NodeFilter::new().kinds(&[NodeKind::Use]);
+    if let Some(prefix) = path_prefix {
+        use_filter = use_filter.path_prefix(prefix);
+    }
+    let scoped_uses = cg.db().get_nodes_filtered(&use_filter).await?;
 
-    // Find all Use nodes
-    let use_nodes: Vec<&crate::types::Node> = all_nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Use)
-        .filter(|n| {
-            path_prefix.is_none_or(|prefix| {
-                let with_slash = if prefix.ends_with('/') {
-                    prefix.to_string()
-                } else {
-                    format!("{prefix}/")
-                };
-                n.file_path.starts_with(&with_slash) || n.file_path == prefix
-            })
-        })
-        .collect();
+    let use_nodes: Vec<&crate::types::Node> = scoped_uses.iter().collect();
     let use_nodes = filter_by_path_lists(use_nodes, &path_include, &path_exclude, |n| &n.file_path);
 
     let mut unused: Vec<Value> = Vec::new();

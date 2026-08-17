@@ -936,11 +936,17 @@ pub(super) async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolRe
 
     // If FTS didn't return enough, supplement with substring matching
     if results.len() < limit {
-        let all_nodes = cg.get_all_nodes().await?;
+        // The substring match runs in SQL rather than over every node (#410).
+        // `LIKE '%x%'` cannot use an index, but it keeps the rows that miss out
+        // of the process instead of materialising the table to discard them.
         let lower_symbol = symbol.to_ascii_lowercase();
+        let candidates = cg
+            .db()
+            .get_nodes_filtered(&crate::db::NodeFilter::new().name_contains(&lower_symbol))
+            .await?;
         let existing_ids: HashSet<String> = results.iter().map(|r| r.node.id.clone()).collect();
 
-        let mut substring_matches: Vec<crate::types::SearchResult> = all_nodes
+        let mut substring_matches: Vec<crate::types::SearchResult> = candidates
             .into_iter()
             .filter(|n| {
                 !existing_ids.contains(&n.id)

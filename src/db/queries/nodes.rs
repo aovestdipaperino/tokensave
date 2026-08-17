@@ -5,6 +5,151 @@ use super::*;
 // Node operations
 // ---------------------------------------------------------------------------
 
+/// A predicate for [`Database::get_nodes_filtered`], built by the caller
+/// instead of applied to a materialised `Vec<Node>` in Rust.
+///
+/// Six MCP handlers used to call `get_all_nodes()` and filter the result,
+/// so a single tool call materialised the whole node table to keep a
+/// fraction of it (#410). Each field here is one of the predicates they
+/// applied; an empty filter is exactly `get_all_nodes()`.
+#[derive(Debug, Clone, Default)]
+pub struct NodeFilter {
+    path_prefix: Option<String>,
+    kinds: Option<Vec<&'static str>>,
+    public_only: bool,
+    min_lines: Option<u32>,
+    name_contains: Option<String>,
+}
+
+/// Escapes a string for use inside a `LIKE` pattern.
+///
+/// Without this, a path containing `_` or `%` acts as a wildcard: a filter for
+/// the directory `a_b` would also match `axb`. That is a wrong-results bug
+/// rather than an error, so it fails silently — which is why the escaping is
+/// paired with a test rather than left to review. `\` is the escape character,
+/// declared with `ESCAPE` at each use site.
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+impl NodeFilter {
+    /// An unconstrained filter, equivalent to selecting every node.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Restricts to a file path, or to a directory containing it.
+    ///
+    /// Matches the exact path, or the path plus a `/` separator, mirroring the
+    /// rule the handlers each wrote by hand — so `src` never matches `srcfoo`.
+    #[must_use]
+    pub fn path_prefix(mut self, prefix: &str) -> Self {
+        self.path_prefix = Some(prefix.to_string());
+        self
+    }
+
+    /// Restricts to a set of node kinds.
+    #[must_use]
+    pub fn kinds(mut self, kinds: &[NodeKind]) -> Self {
+        self.kinds = Some(kinds.iter().map(NodeKind::as_str).collect());
+        self
+    }
+
+    /// Restricts to publicly visible nodes.
+    #[must_use]
+    pub fn public_only(mut self) -> Self {
+        self.public_only = true;
+        self
+    }
+
+    /// Restricts to nodes spanning at least `lines` lines, inclusive of both
+    /// endpoints — the same arithmetic the redundancy handler used.
+    #[must_use]
+    pub fn min_lines(mut self, lines: u32) -> Self {
+        self.min_lines = Some(lines);
+        self
+    }
+
+    /// Restricts to nodes whose name or qualified name contains `needle`,
+    /// case-insensitively.
+    #[must_use]
+    pub fn name_contains(mut self, needle: &str) -> Self {
+        self.name_contains = Some(needle.to_ascii_lowercase());
+        self
+    }
+
+    /// Renders the `WHERE` clause, or an empty string when unconstrained.
+    ///
+    /// Values are inlined rather than bound because the kind list is variadic
+    /// and libsql's `params!` is fixed-arity; every inlined value therefore
+    /// goes through `push_quoted` or is an integer, and every `LIKE` pattern
+    /// through [`escape_like`] first.
+    fn where_clause(&self) -> String {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(prefix) = &self.path_prefix {
+            let exact = prefix.trim_end_matches('/');
+            let mut sql = String::from("(file_path = ");
+            push_quoted(&mut sql, exact);
+            sql.push_str(" OR file_path LIKE ");
+            push_quoted(&mut sql, &format!("{}/%", escape_like(exact)));
+            sql.push_str(" ESCAPE '\\')");
+            clauses.push(sql);
+        }
+
+        if let Some(kinds) = &self.kinds {
+            if kinds.is_empty() {
+                // An explicit empty set matches nothing; without this the
+                // `IN ()` below would be a syntax error.
+                return " WHERE 0".to_string();
+            }
+            let mut sql = String::from("kind IN (");
+            for (i, kind) in kinds.iter().enumerate() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                push_quoted(&mut sql, kind);
+            }
+            sql.push(')');
+            clauses.push(sql);
+        }
+
+        if self.public_only {
+            let mut sql = String::from("visibility = ");
+            push_quoted(&mut sql, Visibility::Pub.as_str());
+            clauses.push(sql);
+        }
+
+        if let Some(lines) = self.min_lines {
+            // `end_line - start_line + 1`, matching the handler. Written with
+            // the subtraction on the right so a node whose end precedes its
+            // start cannot underflow into a huge span the way saturating
+            // integer arithmetic would.
+            clauses.push(format!("(end_line + 1 - start_line) >= {lines}"));
+        }
+
+        if let Some(needle) = &self.name_contains {
+            let pattern = format!("%{}%", escape_like(needle));
+            let mut sql = String::from("(LOWER(name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\' OR LOWER(qualified_name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\')");
+            clauses.push(sql);
+        }
+
+        if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        }
+    }
+}
+
 impl Database {
     /// Inserts or replaces a single node.
     pub async fn insert_node(&self, node: &Node) -> Result<()> {
@@ -545,6 +690,39 @@ impl Database {
             })?;
 
         collect_rows(&mut rows, row_to_node, "get_all_nodes").await
+    }
+
+    /// Every node matching `filter`, evaluated in SQL rather than in Rust.
+    ///
+    /// The handlers this replaces each loaded the whole node table and kept a
+    /// fraction of it, so one tool call on a large project re-triggered a
+    /// graph-sized allocation on a *read* (#410). An empty [`NodeFilter`] is
+    /// equivalent to [`Self::get_all_nodes`], so a handler with nothing to
+    /// scope by keeps working.
+    ///
+    /// Behaviour is asserted equal to the in-Rust filters in
+    /// `tests/node_filter_test.rs` — these predicates are user-visible through
+    /// `redundancy`, `module_api`, `unused_imports`, `gini`, `health` and
+    /// `literal_search`, so a subtly different one would silently change what
+    /// those tools report rather than fail.
+    pub async fn get_nodes_filtered(&self, filter: &NodeFilter) -> Result<Vec<Node>> {
+        let sql = format!(
+            "SELECT id, kind, name, qualified_name, file_path,
+                start_line, end_line, start_column, end_column,
+                docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
+             FROM nodes{}",
+            filter.where_clause()
+        );
+        let mut rows = self
+            .conn()
+            .query(&sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query filtered nodes: {e}"),
+                operation: "get_nodes_filtered".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_node, "get_nodes_filtered").await
     }
 
     /// Every node, without the two columns resolution never reads (#306).
