@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use crate::context::ranking::is_test_path;
 use crate::types::TaskContext;
 
 /// Longest signature rendered inline for an entry point, in bytes.
@@ -115,14 +116,22 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         out.push('\n');
     }
 
-    // Related Symbols grouped by file
+    // Related Symbols grouped by file. Test/fixture symbols are collapsed to
+    // a one-line count: they dominate BFS expansion by volume but rarely
+    // answer a navigation query, so listing each name is noise.
     out.push_str("### Related Symbols\n");
     if context.subgraph.nodes.is_empty() {
         out.push_str("_No related symbols._\n\n");
     } else {
-        // Group nodes by file_path
         let mut by_file: HashMap<&str, Vec<(&str, u32)>> = HashMap::new();
+        let mut test_symbols = 0usize;
+        let mut test_files: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for node in &context.subgraph.nodes {
+            if is_test_path(&node.file_path) {
+                test_symbols += 1;
+                test_files.insert(&node.file_path);
+                continue;
+            }
             by_file
                 .entry(&node.file_path)
                 .or_default()
@@ -139,6 +148,14 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                 .map(|(name, line)| format!("{name}:{line}"))
                 .collect();
             let _ = writeln!(out, "- {}: {}", file, formatted.join(", "));
+        }
+        if test_symbols > 0 {
+            let _ = writeln!(
+                out,
+                "- test/fixture files: {} symbols across {} files (tokensave_callers on an entry point for details)",
+                test_symbols,
+                test_files.len()
+            );
         }
         out.push('\n');
     }
@@ -179,6 +196,75 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         }
     }
 
+    // Retrieval diagnostics: tells the caller whether to trust this result
+    // or reformulate. Zero-hit terms are the reformulation signal; the match
+    // tier separates exact/strong hits from lexical-only straws. This is
+    // the last formatter section; the context handler's truncation
+    // preserves it as a suffix, so a large Code section cannot push it
+    // over the response limit. It also fires whenever no entry points
+    // were found, even with no term data:
+    // a task made of only short or stop-word tokens ("fix bug") extracts no
+    // searchable terms at all, and that miss must not stay silent.
+    let diag = &context.diagnostics;
+    if !diag.term_hits.is_empty() || diag.best_score.is_some() || context.entry_points.is_empty() {
+        out.push_str("### Retrieval\n");
+        match (diag.match_quality.as_deref(), diag.best_score) {
+            (Some(quality), Some(score)) => {
+                let score_text = if score < 0.01 {
+                    "<0.01".to_string()
+                } else {
+                    format!("{score:.2}")
+                };
+                let _ = writeln!(out, "- match: {quality} (best score {score_text})");
+            }
+            _ if diag.term_hits.is_empty() => {
+                out.push_str(
+                    "- match: none (no searchable terms extracted — \
+                     rephrase with concrete identifiers or add `keywords`)\n",
+                );
+            }
+            _ => {
+                out.push_str("- match: none (no candidates)\n");
+            }
+        }
+        if !diag.term_hits.is_empty() {
+            // Hit terms listed with counts; zero-hit terms (mostly synthesized
+            // bigram/stem variants) collapsed to a capped list so the footer
+            // stays token-lean.
+            const MAX_MISSES_SHOWN: usize = 6;
+            let hits: Vec<String> = diag
+                .term_hits
+                .iter()
+                .filter(|(_, count)| *count > 0)
+                .map(|(term, count)| format!("{term}({count})"))
+                .collect();
+            if !hits.is_empty() {
+                let _ = writeln!(out, "- terms: {}", hits.join(", "));
+            }
+            let misses: Vec<&str> = diag
+                .term_hits
+                .iter()
+                .filter(|(_, count)| *count == 0)
+                .map(|(term, _)| term.as_str())
+                .collect();
+            if !misses.is_empty() {
+                let shown = misses.len().min(MAX_MISSES_SHOWN);
+                let overflow = misses.len() - shown;
+                let mut listed = misses[..shown].join(", ");
+                if overflow > 0 {
+                    let _ = write!(listed, ", +{overflow} more");
+                }
+                let _ = writeln!(
+                    out,
+                    "- ⚠ no hits ({}): {} — add `keywords` synonyms or try tokensave_search",
+                    misses.len(),
+                    listed
+                );
+            }
+        }
+        out.push('\n');
+    }
+
     debug_assert!(
         !out.is_empty(),
         "format_context_as_markdown produced empty output"
@@ -210,6 +296,7 @@ mod tests {
             code_blocks: vec![],
             related_files: vec![],
             seen_node_ids: vec![],
+            diagnostics: RetrievalDiagnostics::default(),
         }
     }
 
@@ -268,6 +355,7 @@ mod tests {
             code_blocks: vec![],
             related_files: vec!["src/lib.rs".to_string()],
             seen_node_ids: vec![],
+            diagnostics: RetrievalDiagnostics::default(),
         };
 
         let md = format_context_as_markdown(&ctx);
@@ -322,6 +410,7 @@ mod tests {
             }],
             related_files: vec!["src/main.rs".to_string()],
             seen_node_ids: vec![],
+            diagnostics: RetrievalDiagnostics::default(),
         };
 
         let md = format_context_as_markdown(&ctx);
@@ -330,22 +419,20 @@ mod tests {
         assert!(md.contains("fn my_fn()"));
     }
 
-    #[test]
-    fn test_entry_point_docstring_first_line_shown() {
-        let mut ctx = make_test_context();
-        ctx.entry_points = vec![Node {
-            id: "function:doc".to_string(),
+    fn make_node(name: &str, file_path: &str) -> Node {
+        Node {
+            id: format!("function:{name}"),
             kind: NodeKind::Function,
-            name: "documented".to_string(),
-            qualified_name: "src/lib.rs::documented".to_string(),
-            file_path: "src/lib.rs".to_string(),
+            name: name.to_string(),
+            qualified_name: format!("{file_path}::{name}"),
+            file_path: file_path.to_string(),
             start_line: 1,
             attrs_start_line: 1,
             end_line: 5,
             start_column: 0,
             end_column: 1,
             signature: None,
-            docstring: Some("Parses the config file.\n\nLong detail here.".to_string()),
+            docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
             branches: 0,
@@ -362,7 +449,103 @@ mod tests {
             total_operands: 0,
             updated_at: 0,
             parent_id: None,
-        }];
+        }
+    }
+
+    #[test]
+    fn test_retrieval_footer_reports_term_hits_and_zero_hit_warning() {
+        let mut ctx = make_test_context();
+        ctx.diagnostics = RetrievalDiagnostics {
+            term_hits: vec![
+                ("context".to_string(), 3),
+                ("ranking".to_string(), 0),
+                ("budget".to_string(), 0),
+            ],
+            best_score: Some(21.5),
+            match_quality: Some("exact".to_string()),
+        };
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("### Retrieval"), "{md}");
+        assert!(md.contains("- match: exact (best score 21.50)"), "{md}");
+        assert!(md.contains("- terms: context(3)"), "{md}");
+        assert!(md.contains("no hits (2): ranking, budget"), "{md}");
+    }
+
+    #[test]
+    fn test_retrieval_footer_caps_zero_hit_term_list() {
+        let mut ctx = make_test_context();
+        ctx.diagnostics = RetrievalDiagnostics {
+            term_hits: (0..10).map(|i| (format!("miss{i}"), 0)).collect(),
+            best_score: None,
+            match_quality: None,
+        };
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("no hits (10):"), "{md}");
+        assert!(md.contains("+4 more"), "{md}");
+        assert!(!md.contains("miss7"), "{md}");
+    }
+
+    #[test]
+    fn test_retrieval_footer_tiny_score_shown_as_below_threshold() {
+        let mut ctx = make_test_context();
+        ctx.diagnostics = RetrievalDiagnostics {
+            term_hits: vec![("foo".to_string(), 1)],
+            best_score: Some(1e-6),
+            match_quality: Some("fts-only".to_string()),
+        };
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("- match: fts-only (best score <0.01)"), "{md}");
+        assert!(!md.contains("no hits"), "{md}");
+    }
+
+    #[test]
+    fn test_retrieval_footer_absent_without_diagnostics() {
+        // With entry points present and no diagnostics data there is nothing
+        // to report, so the footer stays out of the output.
+        let mut ctx = make_test_context();
+        ctx.entry_points = vec![make_node("found_fn", "src/lib.rs")];
+        let md = format_context_as_markdown(&ctx);
+        assert!(!md.contains("### Retrieval"), "{md}");
+    }
+
+    #[test]
+    fn test_retrieval_footer_present_when_no_entry_points_and_no_terms() {
+        // A task of only short or stop-word tokens extracts no searchable
+        // terms; the resulting miss must still be visible in the footer.
+        let ctx = make_test_context();
+        assert!(ctx.entry_points.is_empty());
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("### Retrieval"), "{md}");
+        assert!(md.contains("no searchable terms extracted"), "{md}");
+    }
+
+    #[test]
+    fn test_related_symbols_collapse_test_files() {
+        let mut ctx = make_test_context();
+        ctx.subgraph = Subgraph {
+            nodes: vec![
+                make_node("real_fn", "src/lib.rs"),
+                make_node("test_one", "tests/a_test.rs"),
+                make_node("test_two", "tests/b_test.rs"),
+            ],
+            edges: vec![],
+            roots: vec![],
+        };
+        let md = format_context_as_markdown(&ctx);
+        assert!(md.contains("- src/lib.rs: real_fn:2"), "{md}");
+        assert!(!md.contains("test_one"), "{md}");
+        assert!(
+            md.contains("- test/fixture files: 2 symbols across 2 files"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn test_entry_point_docstring_first_line_shown() {
+        let mut ctx = make_test_context();
+        let mut node = make_node("documented", "src/lib.rs");
+        node.docstring = Some("Parses the config file.\n\nLong detail here.".to_string());
+        ctx.entry_points = vec![node];
         let md = format_context_as_markdown(&ctx);
         assert!(md.contains("  Parses the config file."), "{md}");
         assert!(!md.contains("Long detail here"), "{md}");

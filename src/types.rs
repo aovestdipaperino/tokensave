@@ -685,6 +685,24 @@ pub struct TaskContext {
     pub related_files: Vec<String>,
     /// IDs of all nodes returned as entry points (pass to next call's `exclude_node_ids` for dedup).
     pub seen_node_ids: Vec<String>,
+    /// Retrieval quality signals for this query (which terms hit, best match tier).
+    #[serde(default)]
+    pub diagnostics: RetrievalDiagnostics,
+}
+
+/// Per-query retrieval diagnostics: which search terms found candidates and
+/// how strong the best entry-point match was. Lets the caller distinguish a
+/// strong answer from a vocabulary miss and re-query instead of trusting
+/// weak results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetrievalDiagnostics {
+    /// `(term, candidate_count)` for each FTS search term, in search order.
+    pub term_hits: Vec<(String, usize)>,
+    /// Highest candidate score after all ranking boosts (`None` if no candidates).
+    pub best_score: Option<f64>,
+    /// Tier of the best match: "exact" (name or source literal), "strong"
+    /// (body/co-occurrence supplement), or "fts-only" (lexical BM25 only).
+    pub match_quality: Option<String>,
 }
 
 /// A block of source code extracted from a file.
