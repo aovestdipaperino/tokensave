@@ -473,6 +473,7 @@ impl TokenSave {
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
         self.db.set_metadata("last_sync_at", &now_str).await?;
+        self.touch_branch_synced();
         self.db
             .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
             .await?;
@@ -758,6 +759,7 @@ impl TokenSave {
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
+        self.touch_branch_synced();
         self.db
             .set_metadata(
                 "last_sync_duration_ms",
@@ -1102,6 +1104,7 @@ impl TokenSave {
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
+        self.touch_branch_synced();
         self.db
             .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
             .await?;
@@ -1156,6 +1159,30 @@ impl TokenSave {
             self.manifest().as_deref(),
             &self.registry.supported_extensions(),
         )
+    }
+
+    /// Advances `last_synced_at` on the branch this handle serves.
+    ///
+    /// Called wherever `last_sync_at` metadata is written, so the DB-level
+    /// timestamp and the per-branch one cannot drift apart. Before #399
+    /// `touch_synced` had a single caller in `branch add`, so the field
+    /// recorded when a branch entry was *created* and never moved again —
+    /// while `tokensave branch list`, `tokensave_branch_list`, and the
+    /// `tokensave://branches` resource all render it as live freshness.
+    ///
+    /// Best-effort: a sync that indexed correctly must not fail because a
+    /// metadata file could not be rewritten. Silent on projects with no
+    /// branch metadata, and on a branch with no entry of its own.
+    fn touch_branch_synced(&self) {
+        let Some(branch) = self.serving_branch.as_ref().or(self.active_branch.as_ref()) else {
+            return;
+        };
+        let dir = get_tokensave_dir(&self.project_root);
+        let Some(mut meta) = branch_meta::load_branch_meta(&dir) else {
+            return;
+        };
+        meta.touch_synced(branch);
+        let _ = branch_meta::save_branch_meta(&dir, &meta);
     }
 
     pub(crate) fn scan_files(&self) -> Vec<String> {
