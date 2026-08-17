@@ -107,6 +107,14 @@ impl ObjcExtractor {
         match node.kind() {
             "preproc_include" => Self::visit_preproc_include(state, node),
             "preproc_def" => Self::visit_preproc_def(state, node),
+            // A conditional block carries no symbol itself, but its body does.
+            // Without this every declaration inside an `#if` / `#ifdef` is
+            // invisible -- which silently drops whole files: the `#ifndef FOO_H`
+            // include-guard idiom wraps an entire header. Both arms of an
+            // `#if/#else` are extracted: deciding which one compiles needs a
+            // preprocessor, and dropping both is strictly worse.
+            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => Self::visit_children(state, node),
             "type_definition" => Self::visit_type_definition(state, node),
             "protocol_declaration" => Self::visit_protocol(state, node),
             "class_interface" => Self::visit_class_interface(state, node),

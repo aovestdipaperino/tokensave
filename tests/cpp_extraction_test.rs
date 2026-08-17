@@ -883,3 +883,56 @@ void normal_func(int x) {
     assert!(fns.contains(&"wrapped"), "functions: {fns:?}");
     assert!(fns.contains(&"normal_func"), "functions: {fns:?}");
 }
+
+#[test]
+fn test_cpp_symbols_inside_preproc_conditional() {
+    let source = r#"
+#if !NDEBUG
+int guarded_fn(int a) {
+    return a + 1;
+}
+struct GuardedStruct { int x; };
+#endif
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("guarded.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"guarded_fn"), "nodes: {:?}", names);
+    assert!(names.contains(&"GuardedStruct"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_cpp_symbols_inside_include_guard() {
+    let source = r#"
+#ifndef WIDGET_H
+#define WIDGET_H
+class Widget {
+public:
+    void Draw();
+};
+#endif
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("widget.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"Widget"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_cpp_extracts_both_preproc_branches() {
+    let source = r#"
+#if defined(PLATFORM_A)
+int platform_init(void) { return 1; }
+#else
+int platform_fallback(void) { return 2; }
+#endif
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("platform.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"platform_init"), "nodes: {:?}", names);
+    assert!(names.contains(&"platform_fallback"), "nodes: {:?}", names);
+}

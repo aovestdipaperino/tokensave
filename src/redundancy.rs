@@ -155,6 +155,62 @@ pub fn find_node_at_lines<'tree>(
     best
 }
 
+/// Locate a child node within `tree` whose start and end positions match
+/// the given (line, column) pairs exactly. Used to map a `Node` row with
+/// its full four-coordinate span back to a tree-sitter node after
+/// re-parsing, unlike `find_node_at_lines` which only uses the line
+/// (row) portion and can pick the wrong node when two functions appear
+/// on the same line (`fn a() {} fn b() {}`).
+///
+/// Tree-sitter can produce parent/child nodes with identical (line, column)
+/// spans — e.g. `fn f() {}` without a trailing newline yields `source_file
+/// (0,0)..(0,9)` and `function_item (0,0)..(0,9)`.  We deliberately select
+/// the deepest exact match (the most specific node) by continuing to descend
+/// after finding a candidate.  All exact-match nodes share the same
+/// coordinates, so line-span comparison cannot distinguish them; traversal
+/// depth is the only signal.
+pub fn find_node_at_exact_range(
+    tree: &Tree,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+) -> Option<Node<'_>> {
+    let root = tree.root_node();
+    let mut best: Option<Node<'_>> = None;
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let ns = node.start_position();
+        let ne = node.end_position();
+        let ns_row = ns.row as u32;
+        let ns_col = ns.column as u32;
+        let ne_row = ne.row as u32;
+        let ne_col = ne.column as u32;
+        if ns_row == start_line
+            && ns_col == start_column
+            && ne_row == end_line
+            && ne_col == end_column
+        {
+            // Found an exact match — record it but keep descending.
+            // A deeper descendant (e.g. function_item inside source_file)
+            // may share the same span and is the node we actually want.
+            best = Some(node);
+        }
+        if ns_row <= start_line && ne_row >= end_line {
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    stack.push(cursor.node());
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
 // ---------------------------------------------------------------------------
 // Tokenisation
 // ---------------------------------------------------------------------------
@@ -162,7 +218,7 @@ pub fn find_node_at_lines<'tree>(
 /// Split body text into alphanumeric runs (a–z, A–Z, 0–9, underscore).
 /// Whitespace and punctuation are skipped. Numbers are kept as their
 /// literal text so `1` and `2` are different tokens (helps shingles).
-fn tokenize(body: &str) -> Vec<&str> {
+pub(crate) fn tokenize(body: &str) -> Vec<&str> {
     let bytes = body.as_bytes();
     let mut tokens: Vec<&str> = Vec::new();
     let mut i = 0usize;
@@ -594,5 +650,81 @@ mod tests {
         assert_eq!(severity_bucket(0.10, "naming"), "naming_only");
         assert_eq!(severity_bucket(0.30, "token_overlap"), "naming_only");
         assert_eq!(severity_bucket(0.60, "control_flow"), "likely");
+    }
+
+    // ------------------------------------------------------------------
+    // Regression tests for #380 (dead cache + poison survival)
+    // ------------------------------------------------------------------
+
+    /// Finding 1: verify that `compute_fingerprint`'s `source_hash`
+    /// (hashed from `utf8_text` — no trailing `\n`, no leading indent,
+    /// no trailing comment) matches the exact byte-range hash produced by
+    /// `body_bytes`. This is the alignment contract that `ensure_fingerprints`
+    /// relies on for cache hits.
+    #[test]
+    fn source_hash_matches_exact_body_bytes() {
+        let src = "fn validate(x: i32) -> bool {\n    x > 0\n}\n";
+        let fp = fingerprint_for_rust_fn(src);
+        // The function_item node covers (0,0)..(2,1) — exact byte range,
+        // matching what body_bytes in the handler extracts.
+        assert_eq!(
+            fp.source_hash,
+            short_sha256("fn validate(x: i32) -> bool {\n    x > 0\n}"),
+            "source_hash must equal short_sha256 of the exact utf8_text byte range"
+        );
+    }
+
+    /// `compute_fingerprint` sets `body_tokens` from the exact function body
+    /// (`ts_node.utf8_text`), never from the whole file. Verify this holds
+    /// for both a multi-item file and a single-function file — the latter
+    /// is the case the old whole-file heuristic could not distinguish from a
+    /// poisoned row.
+    #[test]
+    fn body_tokens_matches_exact_body_token_count() {
+        let lang = crate::extraction::ts_provider::language("rust");
+
+        // File with imports + other items — the common case.
+        let src_multi =
+            "use std::collections::HashMap;\n\nfn validate(x: i32) -> bool {\n    x > 0\n}\n";
+        let fp_multi = fingerprint_for_rust_fn(src_multi);
+        let tree = parse_file(src_multi, &lang).unwrap();
+        let fn_node = find_first_kind(tree.root_node(), "function_item").unwrap();
+        let exact_body = fn_node.utf8_text(src_multi.as_bytes()).unwrap();
+        assert_eq!(
+            fp_multi.body_tokens,
+            tokenize(exact_body).len(),
+            "body_tokens must match token count of exact function body (multi-item file)"
+        );
+
+        // Single-function file — no imports, no module items, nothing else.
+        let src_single = "fn f() { let x = 1; x + 2 }\n";
+        let fp_single = fingerprint_for_rust_fn(src_single);
+        let tree = parse_file(src_single, &lang).unwrap();
+        let fn_node = find_first_kind(tree.root_node(), "function_item").unwrap();
+        let exact_body = fn_node.utf8_text(src_single.as_bytes()).unwrap();
+        assert_eq!(
+            fp_single.body_tokens,
+            tokenize(exact_body).len(),
+            "body_tokens must match token count of exact function body (single-function file)"
+        );
+    }
+
+    /// `find_node_at_exact_range` must return the deepest matching node, not
+    /// the outermost wrapper. When a file has no trailing newline, tree-sitter
+    /// produces `source_file` and `function_item` with identical spans
+    /// — the lookup must select `function_item`.
+    #[test]
+    fn find_node_at_exact_range_returns_deepest_match() {
+        // No trailing newline: both source_file and function_item span (0,0)..(0,9).
+        let src = "fn f() {}";
+        let lang = crate::extraction::ts_provider::language("rust");
+        let tree = parse_file(src, &lang).unwrap();
+        let found =
+            find_node_at_exact_range(&tree, 0, 0, 0, 9).expect("must find a node at (0,0)..(0,9)");
+        assert_eq!(
+            found.kind(),
+            "function_item",
+            "must return function_item (deepest match), not source_file"
+        );
     }
 }
