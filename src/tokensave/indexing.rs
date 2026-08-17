@@ -580,11 +580,12 @@ impl TokenSave {
 
     /// Like `sync_if_stale` but treats lock contention as success.
     ///
-    /// Use this from the embedded MCP watcher when another MCP (or any peer
-    /// process) already holds the project sync lock. If the peer holds the
-    /// lock, wait (bounded) for it to release so the DB is fresh by the time
-    /// the caller refreshes its view; if the peer covered our files, return
-    /// without doing extra work, otherwise sync ourselves.
+    /// Use this from the MCP server's connect-time catch-up and its per-call
+    /// staleness check, when another MCP (or any peer process) already holds
+    /// the project sync lock. If the peer holds the lock, wait (bounded) for
+    /// it to release so the DB is fresh by the time the caller refreshes its
+    /// view; if the peer covered our files, return without doing extra work,
+    /// otherwise sync ourselves.
     pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
         if stale_files.is_empty() {
             return Ok(());
@@ -601,7 +602,7 @@ impl TokenSave {
             lock
         } else {
             // Peer is syncing. Wait for them to release the lock so the
-            // caller (e.g. the embedded watcher's refresh hook) sees the
+            // caller (e.g. the MCP server's refresh hook) sees the
             // post-sync DB state — returning early here leaves the caller
             // refreshing against pre-sync data and silently dropping the
             // update on the floor.
