@@ -668,26 +668,27 @@ pub(super) async fn handle_test_risk(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let all_nodes = cg.get_all_nodes().await?;
     let all_edges = cg.get_all_edges().await?;
 
-    // Build a map from node_id to file_path for fast lookup
-    let node_to_file: HashMap<String, String> = all_nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.file_path.clone()))
-        .collect();
+    // Graph-wide id -> file_path, taken as a two-column projection rather than
+    // by materialising every `Node` (#411). The map has to span the whole
+    // graph — the edge walk below follows references anywhere, and a test in
+    // `tests/` calling a function in `src/` is precisely what this tool looks
+    // for — but it never needs the other twenty-six columns.
+    let node_to_file: HashMap<String, String> = cg.db().get_node_paths().await?;
 
-    // Collect all function/method IDs to check for #[test] annotations.
-    let fn_ids: Vec<String> = all_nodes
-        .iter()
-        .filter(|n| {
-            matches!(
-                n.kind,
-                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
-            )
-        })
-        .map(|n| n.id.clone())
-        .collect();
+    // Everything else here concerns executable nodes only, so the kinds are
+    // selected in SQL instead of filtered out of the whole table three times.
+    let all_nodes = cg
+        .db()
+        .get_nodes_filtered(&crate::db::NodeFilter::new().kinds(&[
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::SingletonMethod,
+        ]))
+        .await?;
+
+    let fn_ids: Vec<String> = all_nodes.iter().map(|n| n.id.clone()).collect();
     let test_annotated_fns = cg
         .get_test_annotated_node_ids(&fn_ids)
         .await
