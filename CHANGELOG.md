@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Cargo-driven tests no longer inherit developer-level Git hooks (#381).** A developer who had run `tokensave install` also had a global `core.hooksPath`, so real Git operations inside temporary test repositories executed TokenSave's background `post-commit` and `post-checkout` hooks. Those hooks raced the fixture itself, intermittently taking its sync lock or modifying `.tokensave/` while assertions were running. Cargo now supplies an empty command-scope `core.hooksPath` to the processes Cargo launches, while leaving the developer's global Git configuration unchanged.
+
 ### Documentation
 - **SECURITY.md described the database as structural metadata only, which understated what it retains (#377).** The policy named `read_cache` as the sole place source text is kept, but `executable_body_fts` is declared without `content=''`, so FTS5 retains the original text of every column in `executable_body_fts_content` — including `body`, which holds complete function bodies. The enumeration above the sentence said "FTS5 search index", which does not tell a reader that full source is retained. Corrected in three places: the storage list, the sentence that follows it, and the Best Practices note, which likewise mentioned only symbol names and `read_cache`. No storage change is involved: the bodies are load-bearing for `tokensave_context`, and a contentless table would return NULL for `SELECT node_id, body`. The "Supported Versions" table, still listing 6.x as current, is updated to 7.x in the same pass.
 
