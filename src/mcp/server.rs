@@ -541,6 +541,80 @@ impl McpServer {
         server
     }
 
+    /// Tools that stay callable when strict mode refuses everything else.
+    ///
+    /// Refusing *every* tool would leave an agent unable to discover why it was
+    /// refused from inside the session that hit it. The exemption is deliberately
+    /// one tool: `tokensave_status` reports the server's own state — the root and
+    /// branch being served, whether a fallback is active — which is precisely
+    /// what a refused caller needs, and it reads no graph content, so it cannot
+    /// carry a wrong-tree answer.
+    ///
+    /// Three tools whose names suggest they belong here do not:
+    ///
+    /// - `tokensave_config` queries arbitrary TOML/JSON files by key path. It
+    ///   has nothing to do with tokensave's own configuration, and knowing a
+    ///   `Cargo.toml` value does not help diagnose a refusal.
+    /// - `tokensave_diagnose` maps `cargo check`/`clippy` output onto the
+    ///   smallest containing **graph node**, with callers attached.
+    /// - `tokensave_diagnostics` runs the type-checker and resolves each
+    ///   diagnostic's **enclosing graph node**.
+    ///
+    /// The last two are graph reads wearing diagnostic names: under a wrong-tree
+    /// index they would attribute a real compiler error to a node from another
+    /// tree, which is the exact failure strict mode exists to prevent.
+    const STRICT_MODE_DIAGNOSTIC_TOOLS: &'static [&'static str] = &["tokensave_status"];
+
+    /// Why this call must be refused under strict mode, or `None` to proceed.
+    ///
+    /// Strict mode (`strict_tree`, default off — #372 §2) turns the two
+    /// existing wrong-tree detections from advisory into refusals: a borrowed
+    /// worktree index (#312) and a branch that drifted under a running server
+    /// (#400). Nothing new is detected here; this only decides what a detection
+    /// does.
+    ///
+    /// The reporter's case for it: every tool built on tokensave inherits a
+    /// wrong-tree answer with no signal, and an empty result reads as "no such
+    /// symbol" rather than "wrong tree". The case for it staying opt-in: a
+    /// shared index across a family of worktrees is a legitimate setup, and
+    /// hard-erroring that would be a bad surprise in a point release.
+    ///
+    /// The message names both trees or branches and the setting responsible, so
+    /// the refusal is actionable without reading the docs.
+    fn strict_tree_refusal(&self, tool_name: &str) -> Option<String> {
+        if !self.cg.get_config().strict_tree {
+            return None;
+        }
+        if Self::STRICT_MODE_DIAGNOSTIC_TOOLS.contains(&tool_name) {
+            return None;
+        }
+
+        if let Some(m) = &self.worktree_mismatch {
+            return Some(format!(
+                "refusing: strict_tree is enabled and this index belongs to a different git \
+                 working tree. Running in '{}', index from '{}'. Run `tokensave init` here for \
+                 a worktree-local index, or set strict_tree to false to answer with a warning \
+                 instead.",
+                m.worktree_root.display(),
+                m.index_root.display()
+            ));
+        }
+
+        // Re-checked per call, unlike the worktree mismatch above: drift is
+        // caused by a `git checkout` during the session, so a value computed
+        // at startup would always report none.
+        if let Some(drift) = self.cg.branch_drift() {
+            return Some(format!(
+                "refusing: strict_tree is enabled and this server is serving branch '{}' while \
+                 the working tree is on '{}'. Restart the MCP server to serve this branch, or \
+                 set strict_tree to false to answer with a warning instead.",
+                drift.serving, drift.working_tree
+            ));
+        }
+
+        None
+    }
+
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
     pub fn scope_prefix(&self) -> Option<&str> {
         self.scope_prefix.as_deref()
@@ -1662,6 +1736,15 @@ impl McpServer {
         };
 
         if selected.is_none() {
+            // Strict mode (#372 §2): refuse rather than answer from a tree the
+            // user is not in. Checked before freshness and before dispatch, so
+            // a refused call does no work. Selected graphs are exempt — naming
+            // `graph_root` is an explicit request for another project's
+            // snapshot, so "this isn't your working tree" is the point.
+            if let Some(reason) = self.strict_tree_refusal(tool_name) {
+                return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
+            }
+
             // Notification-free freshness: walk the local tree and resync any
             // stale files, gated by a 30 s cooldown. Explicitly selected
             // graphs are read-only snapshots and never run local repair.

@@ -87,6 +87,27 @@ pub struct TokenSaveConfig {
     /// switch when `tokensave install` set it up.
     #[serde(default)]
     pub auto_track: bool,
+    /// Refuse `tokensave_*` MCP calls when the index describes a different
+    /// working tree than the one you are in, instead of answering with a
+    /// warning attached (#372 §2). Defaults to `false`.
+    ///
+    /// Two conditions qualify: a borrowed worktree index (#312), and a branch
+    /// that drifted under a running server (#400). Both are detected already;
+    /// this only decides whether a detection warns or refuses.
+    ///
+    /// The argument for opting in is that a wrong answer is worse than no
+    /// answer: every tool built on top of tokensave — an agent rule saying
+    /// "always check tokensave before reading files", say — inherits the
+    /// wrong-tree result with no signal that anything is off, and an empty
+    /// result reads as "no such symbol". The argument for it staying opt-in is
+    /// that a shared index across a family of worktrees is a legitimate setup,
+    /// and hard-erroring it would be a bad surprise.
+    ///
+    /// The diagnostic tools (`status`, `config`, `diagnose`, `diagnostics`)
+    /// are never refused, so the refusal stays investigable from inside the
+    /// session that hit it.
+    #[serde(default)]
+    pub strict_tree: bool,
     /// Ceiling on how many files a single *automatic* sync will take on
     /// before refusing (#396, #393). `0` disables the check.
     ///
@@ -196,6 +217,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: false,
+            strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
             report_savings: default_report_savings(),
             artifact_extensions: default_artifact_extensions(),

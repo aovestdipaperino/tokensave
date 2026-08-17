@@ -452,6 +452,38 @@ The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
 from that watcher. It is still accepted, but nothing reads it, and the
 30-second cooldown is not configurable.
 
+### Strict mode: refuse instead of answering from the wrong tree
+
+By default, when tokensave notices its index describes a different working tree
+than the one you are in, it answers anyway and prefixes a warning. Two
+situations trigger that: the index belongs to a **different git worktree**, or
+the server is serving a **different branch** than your working tree is on
+(see [BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md#how-syncing-interacts-with-branches)).
+
+For worktree-heavy or branch-heavy workflows, a warning may not be enough. An
+agent rule that says "always check tokensave before reading files" inherits the
+wrong-tree answer with no signal anything is off, and an empty result reads as
+"no such symbol" rather than "wrong tree". If a wrong answer is worse than no
+answer for you, set `strict_tree` in `.tokensave/config.json`:
+
+```json
+{
+  "strict_tree": true
+}
+```
+
+Every `tokensave_*` tool then **fails** with an error naming both trees (or both
+branches) and the remedy, instead of answering. `tokensave_status` stays
+callable so you can still see what is being served and why the refusal
+happened.
+
+It stays off by default deliberately: sharing one index across a family of
+worktrees is a legitimate setup, and turning that into a hard error without
+being asked would be a bad surprise. Nothing new is detected when you enable
+it — the same conditions were already detected, this only changes whether they
+warn or refuse.
+
+
 ### CLI-Only Workflows
 
 If you don't keep an agent attached, no MCP server is running to refresh the
