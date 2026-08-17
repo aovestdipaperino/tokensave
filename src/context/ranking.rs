@@ -48,6 +48,12 @@ pub fn visibility_boost(visibility: &Visibility) -> f64 {
     }
 }
 
+/// Returns `true` for paths under test or fixture trees — the same
+/// classification `path_boost` uses for down-ranking.
+pub fn is_test_path(file_path: &str) -> bool {
+    path_boost(file_path) < 1.0
+}
+
 /// Boost factor based on file path.
 pub fn path_boost(file_path: &str) -> f64 {
     if file_path.contains("tests/fixtures/")

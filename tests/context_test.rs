@@ -133,6 +133,7 @@ fn test_format_context_markdown() {
         code_blocks: vec![],
         related_files: vec![],
         seen_node_ids: vec![],
+        diagnostics: RetrievalDiagnostics::default(),
     };
     let md = format_context_as_markdown(&context);
     assert!(md.contains("## Code Context"));
@@ -149,6 +150,7 @@ fn test_format_context_json() {
         code_blocks: vec![],
         related_files: vec![],
         seen_node_ids: vec![],
+        diagnostics: RetrievalDiagnostics::default(),
     };
     let json = format_context_as_json(&context);
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

@@ -41,7 +41,7 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(options.max_nodes > 0, "max_nodes must be positive");
         // Step 1-3: find relevant subgraph and entry points
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        let (entry_points, diagnostics) = self.find_entry_points(query, &symbols, options).await?;
         let subgraph = self.expand_subgraph(&entry_points, options).await?;
 
         // Step 4: extract code blocks from source files
@@ -75,6 +75,7 @@ impl<'a> ContextBuilder<'a> {
             code_blocks,
             related_files,
             seen_node_ids,
+            diagnostics,
         })
     }
 
@@ -88,7 +89,7 @@ impl<'a> ContextBuilder<'a> {
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
         let symbols = extract_symbols_from_query(query);
-        let entry_points = self.find_entry_points(query, &symbols, options).await?;
+        let (entry_points, _) = self.find_entry_points(query, &symbols, options).await?;
         self.expand_subgraph(&entry_points, options).await
     }
 
@@ -189,12 +190,15 @@ impl<'a> ContextBuilder<'a> {
         query: &str,
         symbols: &[String],
         options: &BuildContextOptions,
-    ) -> Result<Vec<Node>> {
+    ) -> Result<(Vec<Node>, RetrievalDiagnostics)> {
         // Base score for an exact name match. Negated-BM25 scores from
         // `search_nodes_bounded` run roughly 5–30 before structural boosts,
         // so this must sit well above that band for a perfect name match to
         // win the MAX merge over FTS hits and rank ahead of them.
         const EXACT_MATCH_SCORE: f64 = 100.0;
+        // Floor for the "strong" diagnostics tier: supplements and solidly
+        // boosted FTS hits land above this; weak lexical matches fall below.
+        const STRONG_MATCH_SCORE: f64 = 10.0;
         debug_assert!(
             !query.is_empty(),
             "find_entry_points called with empty query"
@@ -274,6 +278,14 @@ impl<'a> ContextBuilder<'a> {
                     .into(),
             );
         }
+        // Record per-term hit counts before the fill loop consumes the queues.
+        // Counts are capped at `fetch_limit` by the bounded query; zero-hit
+        // terms are the signal the caller needs to reformulate.
+        let term_hits: Vec<(String, usize)> = fts_terms
+            .iter()
+            .zip(&per_term)
+            .map(|(term, queue)| (term.clone(), queue.len()))
+            .collect();
         'fill: loop {
             let mut advanced = false;
             for queue in &mut per_term {
@@ -320,6 +332,12 @@ impl<'a> ContextBuilder<'a> {
             .filter(|s| is_authored_symbol(s, query, &options.extra_keywords))
             .cloned()
             .collect();
+        // Nodes that arrived through exact-name or exact-source evidence, by
+        // id. The diagnostics tier derives `exact` from this provenance, not
+        // from the score: multiplicative boosts make the score bands overlap
+        // (a well-boosted lexical hit can clear EXACT_MATCH_SCORE, and a
+        // down-weighted exact match can fall below it).
+        let mut exact_ids: HashSet<String> = exact_source_ids.clone();
         if !exact_names.is_empty() {
             let exact_nodes = self
                 .db
@@ -329,6 +347,7 @@ impl<'a> ContextBuilder<'a> {
                 if excluded.contains(&node.id) {
                     continue;
                 }
+                exact_ids.insert(node.id.clone());
                 // Exact matches bypass the min_score gate by design. If the node
                 // already arrived via FTS (with a low score), upgrade it in place
                 // to the exact-match score rather than dropping the duplicate.
@@ -464,6 +483,37 @@ impl<'a> ContextBuilder<'a> {
         // boosts all re-sort). Apply diversity before the final root limit so
         // a large file's executable owner is still available to the cap.
         // --- Per-file diversity cap + final BFS root limit ---
+        // Best post-boost score and the id that holds it, captured before
+        // `candidates` is consumed by the partition below. The `exact` tier
+        // comes from provenance (`exact_ids`), never from the score: boosts
+        // make the bands overlap, so a score threshold would mislabel a
+        // well-boosted lexical hit as exact and a down-weighted exact match
+        // as merely strong. The score decides only strong versus fts-only —
+        // boosted negated-BM25 hits land in the ~5–30 band, so a strong
+        // match clears STRONG_MATCH_SCORE while weak lexical matches fall
+        // below it.
+        let best: Option<(&str, f64)> = candidates
+            .iter()
+            .map(|candidate| (candidate.node.id.as_str(), candidate.score))
+            .fold(None, |acc: Option<(&str, f64)>, (id, score)| match acc {
+                Some((_, top)) if top >= score => acc,
+                _ => Some((id, score)),
+            });
+        let best_score = best.map(|(_, score)| score);
+        let match_quality = best.map(|(id, score)| {
+            if exact_ids.contains(id) {
+                "exact".to_string()
+            } else if score >= STRONG_MATCH_SCORE {
+                "strong".to_string()
+            } else {
+                "fts-only".to_string()
+            }
+        });
+        let diagnostics = RetrievalDiagnostics {
+            term_hits,
+            best_score,
+            match_quality,
+        };
         let max_per_file = options.max_per_file.unwrap_or(options.max_nodes);
         // `search_limit` and per-file diversity bound ranked semantic BFS roots
         // (#120), but exact source hits are correctness-sensitive seeds rather
@@ -499,7 +549,7 @@ impl<'a> ContextBuilder<'a> {
             entry_points.len() <= options.max_nodes,
             "entry_points exceeds max_nodes"
         );
-        Ok(entry_points)
+        Ok((entry_points, diagnostics))
     }
 
     /// Finds the innermost indexed symbol enclosing each exact qualified
