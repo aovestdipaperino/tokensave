@@ -1,5 +1,5 @@
 #!/bin/bash
-# Git post-checkout hook that initializes tokensave after a fresh clone.
+# Git post-checkout hook that keeps a tokensave index in step with git.
 #
 # Install globally:
 #   git config --global core.hooksPath ~/.git-hooks
@@ -11,7 +11,23 @@
 #   chmod +x .git/hooks/post-checkout
 
 PREV_HEAD="$1"
+IS_BRANCH_CHECKOUT="$3"
 
-if [ "$PREV_HEAD" = "0000000000000000000000000000000000000000" ] && command -v tokensave &>/dev/null; then
-    tokensave init &>/dev/null &
+command -v tokensave &>/dev/null || exit 0
+
+if [ "$PREV_HEAD" = "0000000000000000000000000000000000000000" ]; then
+    # A fresh clone, or a new `git worktree add`. git reports both with the
+    # all-zeros previous HEAD, and both are also branch checkouts that can land
+    # on a non-default branch (`git clone -b`, `git worktree add -b`). Index
+    # first, then track the branch: sequentially, because `branch add` copies
+    # the index `init` creates, and in one background job, because two
+    # independent jobs would race (#391).
+    (
+        tokensave init &>/dev/null || exit 0
+        tokensave branch add &>/dev/null
+    ) &
+elif [ "$IS_BRANCH_CHECKOUT" = "1" ]; then
+    # An ordinary branch checkout: track the branch, don't re-index. A no-op
+    # when the branch is already tracked or is the default branch.
+    tokensave branch add &>/dev/null &
 fi
