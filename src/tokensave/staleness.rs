@@ -1,6 +1,41 @@
 //! Staleness detection for incremental sync.
 use super::*;
 
+/// Default ceiling on how many files one *automatic* sync will take on.
+///
+/// A catch-up sync exists to absorb a `git pull`, an IDE save, or a rebase —
+/// hundreds of files at the high end. Anything an order of magnitude past
+/// that is not a catch-up, it is an index build, and an index build should be
+/// something the user asked for. See [`AutoSyncScope`].
+pub const DEFAULT_MAX_AUTO_SYNC_FILES: usize = 2_000;
+
+/// What an access-triggered sync should do, given how much work it would be.
+///
+/// Both automatic entry points — the MCP server's startup catch-up sync and
+/// the staleness check at the top of every `tools/call` — fed
+/// [`TokenSave::find_stale_files`] straight into a sync with no bound on the
+/// result. That is safe only while the index is populated: an empty `files`
+/// table makes *every* file on disk stale, so an automatic background task
+/// silently became a full initial index. On a 2.5 TiB home directory that
+/// reached ~95 GiB of RSS+swap (#396); on a project that had never been
+/// `init`ed it burned 24 minutes of CPU (#393).
+///
+/// Deciding is separated from syncing so the refusal can be logged with a
+/// reason and asserted in tests, rather than inferred from wall-clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoSyncScope {
+    /// Proceed: these files are stale and within budget.
+    Sync(Vec<String>),
+    /// The index records no files at all. Building the first index is
+    /// `init`'s job — it is explicit, it reports progress, and the user
+    /// chose the directory. A background task must not do it by inference.
+    Uninitialized,
+    /// More files are stale than an automatic sync is willing to take on.
+    /// An explicit `tokensave sync` is unbounded and remains the way to do
+    /// this deliberately.
+    TooManyStale { count: usize, limit: usize },
+}
+
 // ---------------------------------------------------------------------------
 // Staleness detection
 // ---------------------------------------------------------------------------
@@ -105,6 +140,46 @@ impl TokenSave {
         stale.sort();
         stale.dedup();
         stale
+    }
+
+    /// [`Self::find_stale_files`] with the bounds an *automatic* sync must
+    /// respect. Callers that sync without the user asking — the MCP server's
+    /// startup catch-up and its per-`tools/call` staleness check — must use
+    /// this; explicit `tokensave sync` deliberately stays unbounded.
+    ///
+    /// Two guards, in order (see [`AutoSyncScope`] for why):
+    ///
+    /// 1. An index with no files recorded yields
+    ///    [`AutoSyncScope::Uninitialized`]. Every file on disk is stale in
+    ///    that state, so proceeding turns a background task into a full
+    ///    initial index of whatever directory we happen to be pointed at
+    ///    (#396, #393).
+    /// 2. A stale set larger than `max_auto_sync_files` yields
+    ///    [`AutoSyncScope::TooManyStale`]. The 30 s cooldown bounds how
+    ///    *often* a sync runs, never what one costs, and while resolution
+    ///    materialises the whole node graph at once (#306) that cost is
+    ///    graph-proportional. A limit of `0` disables this second guard.
+    pub async fn find_stale_files_bounded(&self) -> AutoSyncScope {
+        // Checked before the walk: when the index is empty there is nothing
+        // a catch-up could be catching up *to*, and scanning a 2.5 TiB tree
+        // to discover that is itself part of the problem being fixed.
+        match self.get_all_files().await {
+            Ok(indexed) if indexed.is_empty() => return AutoSyncScope::Uninitialized,
+            // A failed read is not evidence the index is empty, so fall
+            // through: `find_stale_files` treats that case conservatively
+            // and guard 2 still bounds the result.
+            _ => {}
+        }
+
+        let stale = self.find_stale_files().await;
+        let limit = self.max_auto_sync_files;
+        if limit > 0 && stale.len() > limit {
+            return AutoSyncScope::TooManyStale {
+                count: stale.len(),
+                limit,
+            };
+        }
+        AutoSyncScope::Sync(stale)
     }
 
     /// Returns the most recent `indexed_at` timestamp across all indexed files.
