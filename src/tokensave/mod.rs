@@ -33,7 +33,7 @@ pub(crate) use extract::*;
 pub(crate) use guard::*;
 pub use guard::{try_acquire_sync_lock, SyncLockGuard};
 pub use indexing::detect_skipped_hidden_dirs;
-pub use staleness::{AutoSyncScope, DEFAULT_MAX_AUTO_SYNC_FILES};
+pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
 

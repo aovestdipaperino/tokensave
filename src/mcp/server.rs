@@ -387,6 +387,12 @@ fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
              not index a project from scratch (#396)."
                 .to_string()
         }
+        crate::tokensave::AutoSyncScope::BranchDrifted(drift) => format!(
+            "skipping automatic sync: this server is serving branch '{}' but the \
+             working tree is now on '{}'. Syncing would write '{}' files into \
+             '{}'s index. Restart the MCP server to pick up the branch (#400).",
+            drift.serving, drift.working_tree, drift.working_tree, drift.serving
+        ),
         crate::tokensave::AutoSyncScope::TooManyStale { count, limit } => format!(
             "skipping automatic sync: {count} files are stale, over the \
              {limit}-file limit for a background sync. Run `tokensave sync` to \
@@ -1887,6 +1893,29 @@ impl McpServer {
                 // surface to the agent.
                 if let Some(ref m) = self.worktree_mismatch {
                     let notice = crate::worktree::worktree_mismatch_notice(m);
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": notice}));
+                    }
+                }
+
+                // Branch drift (#400). Unlike the worktree mismatch above,
+                // this is re-checked per call rather than cached at startup:
+                // it is caused by a `git checkout` *during* the session, so a
+                // value computed once would always say "no drift". Same
+                // failure shape though — answers about a tree the user is not
+                // in — so it rides the same channel.
+                if let Some(drift) = self.cg.branch_drift() {
+                    let notice = format!(
+                        "WARNING: tokensave results below come from branch '{}', but your \
+                         working tree is on '{}' — symbols that exist only on '{}' are \
+                         missing, and symbols shown may not exist on it. Restart the MCP \
+                         server to serve this branch.",
+                        drift.serving, drift.working_tree, drift.working_tree
+                    );
                     if let Some(content) = result
                         .value
                         .get_mut("content")

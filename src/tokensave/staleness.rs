@@ -34,6 +34,32 @@ pub enum AutoSyncScope {
     /// An explicit `tokensave sync` is unbounded and remains the way to do
     /// this deliberately.
     TooManyStale { count: usize, limit: usize },
+    /// The working tree has been checked out onto a different branch than
+    /// the one this handle resolved. Syncing would write the new branch's
+    /// files into the old branch's database. See [`BranchDrift`].
+    BranchDrifted(BranchDrift),
+}
+
+/// A handle resolved to one branch while the working tree sits on another.
+///
+/// [`TokenSave::open`] resolves the active branch once, and the MCP server
+/// holds that handle for its whole life. A `git checkout` underneath it is
+/// invisible: the handle keeps serving — and *writing to* — the branch it
+/// started on. The reported consequence is `main`'s index gaining a file that
+/// exists only on `feature`, so the index is not merely stale but describes a
+/// tree that never existed, with no warning on the tool response or on
+/// stderr (#400).
+///
+/// Only meaningful in multi-branch mode. A project with no per-branch
+/// databases has a single index by design, and switching branches there is
+/// ordinary — guarding on the branch name alone would break every project
+/// that never opted in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchDrift {
+    /// The branch whose database this handle reads and writes.
+    pub serving: String,
+    /// The branch the working tree is actually on now.
+    pub working_tree: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,24 +168,72 @@ impl TokenSave {
         stale
     }
 
+    /// Detects a working tree that has moved to a different branch than this
+    /// handle resolved, which makes every write cross-branch (#400).
+    ///
+    /// Returns `None` in single-DB mode (no branch metadata), on a detached
+    /// HEAD or outside a git repo (no branch to compare), and — the common
+    /// case — when the tree is still on the branch being served.
+    ///
+    /// Cheap enough for the per-`tools/call` path: one `current_branch`
+    /// lookup, which prefers `gix` over spawning git, and one small JSON
+    /// read that only happens for projects in multi-branch mode.
+    pub fn branch_drift(&self) -> Option<BranchDrift> {
+        let meta = branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root))?;
+
+        let serving = self
+            .serving_branch
+            .as_ref()
+            .or(self.active_branch.as_ref())?;
+        let working_tree = branch::current_branch(&self.project_root)?;
+        if working_tree == *serving {
+            return None;
+        }
+
+        // A differing name is not yet a problem: what matters is whether the
+        // working tree's branch has a database of its own. `init` writes
+        // branch metadata for the default branch alone, so metadata exists
+        // even in single-DB mode — an untracked branch there is served by the
+        // same top-level `tokensave.db` and syncing it is correct. Mirrors
+        // the ownership rule in `branch::track_branch_copy`: the default
+        // branch is the top-level DB, tracked branches get their own.
+        let working_tree_has_own_db =
+            meta.is_tracked(&working_tree) || working_tree == meta.default_branch;
+        if !working_tree_has_own_db {
+            return None;
+        }
+        Some(BranchDrift {
+            serving: serving.clone(),
+            working_tree,
+        })
+    }
+
     /// [`Self::find_stale_files`] with the bounds an *automatic* sync must
     /// respect. Callers that sync without the user asking — the MCP server's
     /// startup catch-up and its per-`tools/call` staleness check — must use
     /// this; explicit `tokensave sync` deliberately stays unbounded.
     ///
-    /// Two guards, in order (see [`AutoSyncScope`] for why):
+    /// Three guards, in order (see [`AutoSyncScope`] for why):
     ///
-    /// 1. An index with no files recorded yields
+    /// 1. A working tree checked out onto a different branch than this handle
+    ///    serves yields [`AutoSyncScope::BranchDrifted`]. Syncing would write
+    ///    one branch's files into another's index (#400). Checked first,
+    ///    because under drift every other answer is about the wrong database.
+    /// 2. An index with no files recorded yields
     ///    [`AutoSyncScope::Uninitialized`]. Every file on disk is stale in
     ///    that state, so proceeding turns a background task into a full
     ///    initial index of whatever directory we happen to be pointed at
     ///    (#396, #393).
-    /// 2. A stale set larger than `max_auto_sync_files` yields
+    /// 3. A stale set larger than `max_auto_sync_files` yields
     ///    [`AutoSyncScope::TooManyStale`]. The 30 s cooldown bounds how
     ///    *often* a sync runs, never what one costs, and while resolution
     ///    materialises the whole node graph at once (#306) that cost is
-    ///    graph-proportional. A limit of `0` disables this second guard.
+    ///    graph-proportional. A limit of `0` disables this third guard.
     pub async fn find_stale_files_bounded(&self) -> AutoSyncScope {
+        if let Some(drift) = self.branch_drift() {
+            return AutoSyncScope::BranchDrifted(drift);
+        }
+
         // Checked before the walk: when the index is empty there is nothing
         // a catch-up could be catching up *to*, and scanning a 2.5 TiB tree
         // to discover that is itself part of the problem being fixed.
