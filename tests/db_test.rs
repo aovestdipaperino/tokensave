@@ -731,3 +731,30 @@ async fn test_search_nodes_bounded_returns_real_descending_scores() {
         "name match should outrank docstring"
     );
 }
+
+#[tokio::test]
+async fn test_search_nodes_bounded_excludes_file_and_doc_nodes() {
+    let (_dir, db) = setup_db().await;
+    // A code symbol and two non-symbol rows matching the same term: the
+    // bounded fetch feeds the context builder's symbol pool, where file and
+    // doc nodes only displace code candidates (#323 artifact indexing).
+    let symbol = sample_node("s", "search_engine", "src/search.rs");
+    let mut file = sample_node("f", "search-notes.txt", "search-notes.txt");
+    file.kind = NodeKind::File;
+    let mut doc = sample_node("d", "search-guide", "docs/search-guide.md");
+    doc.kind = NodeKind::Doc;
+    db.insert_node(&symbol).await.expect("insert symbol");
+    db.insert_node(&file).await.expect("insert file");
+    db.insert_node(&doc).await.expect("insert doc");
+
+    let results = db
+        .search_nodes_bounded("search", 10)
+        .await
+        .expect("bounded search");
+    let ids: Vec<&str> = results.iter().map(|r| r.node.id.as_str()).collect();
+    assert!(ids.contains(&"s"), "code symbol must be fetched: {ids:?}");
+    assert!(
+        !ids.contains(&"f") && !ids.contains(&"d"),
+        "file/doc nodes must not consume symbol-fetch slots: {ids:?}"
+    );
+}
