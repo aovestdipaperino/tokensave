@@ -6,6 +6,16 @@
 CFLAGS = { value = "-DNDEBUG", force = false }
 CXXFLAGS = { value = "-DNDEBUG", force = false }
 
+# Test fixtures create real Git repositories and must not inherit developer
+# hooks such as the global hooks installed by `tokensave install` (#381).
+# This command-scope Git setting is inherited by every Git child process while
+# preserving an explicitly supplied GIT_CONFIG_* environment (`force = false`).
+# A caller-provided indexed Git config can occupy slot 0 and disable this
+# isolation; the regression test then exposes the inherited hook.
+GIT_CONFIG_COUNT = { value = "1", force = false }
+GIT_CONFIG_KEY_0 = { value = "core.hooksPath", force = false }
+GIT_CONFIG_VALUE_0 = { value = "", force = false }
+
 # Raise the main-thread stack reserve to 8 MB on Windows MSVC.  RUST_MIN_STACK
 # (set in CI) only resizes threads Rust spawns; the main thread's stack is fixed
 # at link time and defaults to ~1 MB on MSVC, versus ~8 MB on Linux/macOS.  A
