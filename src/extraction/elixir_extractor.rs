@@ -9,6 +9,18 @@ use crate::types::{
 
 pub struct ElixirExtractor;
 
+/// `ExUnit` block macros whose bodies contain real calls worth graphing.
+///
+/// These are macro invocations, not language constructs, so tree-sitter sees
+/// ordinary `call` nodes with a `do_block`. Deliberately excludes `doctest`:
+/// it generates tests from `@doc` examples at compile time, so there is no
+/// call expression in the source to attribute. Linking `doctest Foo` to every
+/// function in `Foo` would fabricate coverage, and parsing free-form `iex>`
+/// prose to find the real calls is a separate problem. Doctests are therefore
+/// not modelled, and `test_risk` will report a doctest-only function as
+/// untested — wrong, but honestly wrong rather than silently overstated (#387).
+const EXUNIT_BLOCK_MACROS: &[&str] = &["test", "describe", "setup", "setup_all"];
+
 impl ElixirExtractor {
     pub fn extract_elixir(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
@@ -105,7 +117,40 @@ impl ElixirExtractor {
             Some("import" | "require" | "use" | "alias") => {
                 Self::visit_use(state, node);
             }
+            Some(head) if EXUNIT_BLOCK_MACROS.contains(&head) => {
+                Self::visit_exunit_block(state, node);
+            }
             _ => Self::visit_children(state, node),
+        }
+    }
+
+    /// Attributes the calls inside an `ExUnit` block to the enclosing binding.
+    ///
+    /// `test "..." do ... end` and friends are macro invocations, so the block
+    /// has no named symbol of its own to own its calls. `extract_calls` is
+    /// otherwise only ever reached with a `def`'s id, which is why every call
+    /// in every `ExUnit` test was previously attributed to nothing and never
+    /// became an edge — leaving `tokensave_affected` empty and
+    /// `tokensave_test_risk` reporting `coverage_pct: 0.0` for functions that
+    /// were plainly tested (#387).
+    ///
+    /// The enclosing `defmodule` owns them, matching how #346 attributed calls
+    /// inside a TypeScript arrow passed as an argument to its enclosing
+    /// binding. The alternative — synthesising a node per test from the string
+    /// literal — would give `affected` the ability to name *which* test, at the
+    /// cost of inventing graph nodes with no declaration behind them.
+    ///
+    /// `extract_calls` recurses, so a `describe` block covers the `test` blocks
+    /// nested inside it. This returns without visiting children for that
+    /// reason: descending as well would record every nested call twice.
+    fn visit_exunit_block(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(owner) = state.parent_node_id().map(String::from) else {
+            // Outside any module (a bare script). Nothing to attribute to, and
+            // inventing an owner would be worse than recording nothing.
+            return;
+        };
+        if let Some(body) = Self::find_do_block(node) {
+            Self::extract_calls(state, body, &owner);
         }
     }
 
