@@ -184,6 +184,21 @@ rules, set `exclude` globs in `.tokensave/config.json`:
 
 `tokensave init --skip-folder <dir>` writes to that same list.
 
+#### Indexing hidden directories
+
+By default, tokensave prunes all hidden directories (dot-prefixed) during the file walk to avoid indexing massive dependency and config folders (like `.venv`, `.cargo`, or `.next`).
+
+If your project contains code in hidden directories (e.g., `.github/scripts/`), you must explicitly opt-in via the `include` array in `.tokensave/config.json`. **Crucially, you must include both the directory and its contents**, because the walker prunes at the directory level before glob matching happens:
+
+```json
+{
+  "include": [
+    ".github",
+    ".github/**"
+  ]
+}
+```
+
 ---
 
 ## Connecting to Your Agent

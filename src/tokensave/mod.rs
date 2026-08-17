@@ -32,6 +32,7 @@ mod util;
 pub(crate) use extract::*;
 pub(crate) use guard::*;
 pub use guard::{try_acquire_sync_lock, SyncLockGuard};
+pub use indexing::detect_skipped_hidden_dirs;
 pub use util::is_test_file;
 pub(crate) use util::*;
 

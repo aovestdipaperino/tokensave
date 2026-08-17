@@ -584,6 +584,9 @@ pub(crate) async fn init_and_index(
         // compact headline (and its "rerun with --verbose" hint) would repeat it.
         print_skipped_extension_summary(&result.skipped_extensions);
     }
+    if let Some(warning) = cg.warn_skipped_hidden_dirs() {
+        eprintln!("{warning}");
+    }
     global::update_global_db(&cg).await;
     Ok(cg)
 }
