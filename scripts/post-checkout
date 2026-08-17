@@ -24,10 +24,10 @@ if [ "$PREV_HEAD" = "0000000000000000000000000000000000000000" ]; then
     # independent jobs would race (#391).
     (
         tokensave init &>/dev/null || exit 0
-        tokensave branch add &>/dev/null
+        tokensave branch add --if-enabled &>/dev/null
     ) &
 elif [ "$IS_BRANCH_CHECKOUT" = "1" ]; then
     # An ordinary branch checkout: track the branch, don't re-index. A no-op
     # when the branch is already tracked or is the default branch.
-    tokensave branch add &>/dev/null &
+    tokensave branch add --if-enabled &>/dev/null &
 fi

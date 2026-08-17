@@ -341,6 +341,16 @@ pub enum BranchAction {
         /// Project path (default: current directory)
         #[arg(short, long)]
         path: Option<String>,
+        /// Only track when auto-tracking is enabled, otherwise exit
+        /// successfully without doing anything (#397).
+        ///
+        /// For automated callers — the `post-checkout` hook passes this — so
+        /// the `auto_track` config field (or `TOKENSAVE_AUTO_TRACK`) governs
+        /// auto-tracking on every entry point rather than only inside
+        /// `TokenSave::open`. A human typing `branch add` has asked for it, so
+        /// the flag is opt-in rather than the default.
+        #[arg(long)]
+        if_enabled: bool,
     },
     /// Remove a tracked branch and delete its DB
     Remove {

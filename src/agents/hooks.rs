@@ -155,15 +155,18 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
 /// HEAD. That checkout is **also** a branch checkout (git passes flag
 /// `$3 == 1`) and it can land on a branch that is not the default one:
 /// `git worktree add -b feature` and `git clone -b feature` both do. So the
-/// sentinel arm runs `tokensave init` **and then** `tokensave branch add`:
+/// sentinel arm runs `tokensave init` **and then**
+/// `tokensave branch add --if-enabled`:
 /// sequentially, because `branch add` copies the index that `init` creates,
 /// and inside a single background job, because two independent background
 /// jobs would race (#391).
 ///
 /// Any other branch checkout (`$3 == 1` with a real previous HEAD) runs
-/// `tokensave branch add` alone to transparently track the just-checked-out
-/// branch; that is a no-op when the branch is already tracked or is the
-/// default branch. File checkouts (`$3 == 0`) trigger nothing.
+/// `tokensave branch add --if-enabled` alone to transparently track the
+/// just-checked-out branch; that is a no-op when the branch is already
+/// tracked, is the default branch, or when `auto_track` is off (#397 — the
+/// flag is what makes that knob authoritative on the hook path rather than
+/// only inside `TokenSave::open`). File checkouts (`$3 == 0`) trigger nothing.
 ///
 /// The section is fenced by [`HOOK_MARKER_CHECKOUT`] and
 /// [`HOOK_MARKER_CHECKOUT_END`]. Changing this body does not reach an install
@@ -178,10 +181,10 @@ fn post_checkout_snippet(tokensave_bin: &str) -> String {
          if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
          \t(\n\
          \t\t{bin} init >/dev/null 2>&1 || exit 0\n\
-         \t\t{bin} branch add >/dev/null 2>&1\n\
+         \t\t{bin} branch add --if-enabled >/dev/null 2>&1\n\
          \t) &\n\
          elif [ \"$3\" = \"1\" ]; then\n\
-         \t{bin} branch add >/dev/null 2>&1 &\n\
+         \t{bin} branch add --if-enabled >/dev/null 2>&1 &\n\
          fi\n\
          {HOOK_MARKER_CHECKOUT_END}\n"
     )
@@ -743,7 +746,7 @@ mod git_hook_tests {
         );
         assert!(
             s.contains("elif [ \"$3\" = \"1\" ]")
-                && s.contains("/usr/local/bin/tokensave branch add"),
+                && s.contains("/usr/local/bin/tokensave branch add --if-enabled"),
             "must transparently track the branch on a branch checkout (flag $3==1), got: {s}"
         );
         assert!(
@@ -814,7 +817,7 @@ mod git_hook_tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             run_post_checkout_snippet(dir.path(), &[ZERO, SHA, "1"]),
-            vec!["init".to_string(), "branch add".to_string()],
+            vec!["init".to_string(), "branch add --if-enabled".to_string()],
             "a fresh worktree/clone must be indexed AND have its branch tracked"
         );
 
@@ -822,7 +825,7 @@ mod git_hook_tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             run_post_checkout_snippet(dir.path(), &[SHA, SHA, "1"]),
-            vec!["branch add".to_string()],
+            vec!["branch add --if-enabled".to_string()],
             "a branch switch must not re-run init"
         );
 

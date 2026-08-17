@@ -44,9 +44,30 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 eprintln!("  {name}{marker} — {size}{parent}, synced {synced}");
             }
         }
-        BranchAction::Add { name, path } => {
+        BranchAction::Add {
+            name,
+            path,
+            if_enabled,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
+
+            // #397: an automated caller (the `post-checkout` hook) passes
+            // `--if-enabled` so the `auto_track` knob governs this path too.
+            // Before this, `auto_track` was read only inside `TokenSave::open`
+            // and the hook tracked unconditionally, so the knob was not
+            // authoritative — on fresh installs as much as old ones. Checked
+            // before anything is read or written, so a declined auto-track
+            // costs nothing. Silent by design: a hook runs on every checkout
+            // and must not narrate.
+            if if_enabled {
+                let config = tokensave::config::load_config(&project_path).unwrap_or_default();
+                let enabled =
+                    tokensave::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
+                if !enabled {
+                    return Ok(());
+                }
+            }
 
             let branch_name = match name {
                 Some(n) => n,
