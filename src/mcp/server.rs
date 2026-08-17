@@ -373,6 +373,31 @@ pub struct McpServer {
     accounting_tasks_pending: Arc<AtomicUsize>,
 }
 
+/// Explains why an automatic sync declined to run, for the server's stderr.
+///
+/// Automatic syncs are the ones the user did not ask for, so a refusal has to
+/// say what was skipped and how to do it deliberately — silently serving a
+/// stale (or empty) index is the failure mode that made #396 and #393 hard to
+/// diagnose from the outside.
+fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
+    match scope {
+        crate::tokensave::AutoSyncScope::Uninitialized => {
+            "skipping automatic sync: this project has no indexed files yet. \
+             Run `tokensave init` to build the index — a background sync will \
+             not index a project from scratch (#396)."
+                .to_string()
+        }
+        crate::tokensave::AutoSyncScope::TooManyStale { count, limit } => format!(
+            "skipping automatic sync: {count} files are stale, over the \
+             {limit}-file limit for a background sync. Run `tokensave sync` to \
+             index them, or raise `max_auto_sync_files` in .tokensave/config.json."
+        ),
+        // Not a refusal; kept total so a new variant cannot silently become
+        // an empty message.
+        crate::tokensave::AutoSyncScope::Sync(_) => "automatic sync proceeding".to_string(),
+    }
+}
+
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
     ///
@@ -489,9 +514,15 @@ impl McpServer {
 
         // Catch-up sync (#414): pick up changes made while the server
         // was down — terminal `git pull`, IDE edits before the agent
-        // launched, files touched by another tool. Detached + weak so
-        // it never extends the server's lifetime; non-blocking so MCP
-        // `initialize` doesn't wait on the walk.
+        // launched, files touched by another tool. Detached and holding
+        // only a `Weak`, so a server dropped before the task starts is
+        // not resurrected by it; non-blocking so MCP `initialize` doesn't
+        // wait on the walk. Note the upgrade below does hold a strong
+        // reference for the duration of the sync — the server cannot drop
+        // mid-sync — and nothing cancels an in-flight sync when the read
+        // loop exits (#396). The scope bound in `find_stale_files_bounded`
+        // caps how long that window can be; cooperative cancellation is
+        // tracked separately.
         {
             let weak = Arc::downgrade(&server);
             tokio::spawn(async move {
@@ -619,7 +650,14 @@ impl McpServer {
     /// The completion flag is flipped on every exit path (including
     /// errors) so [`Self::wait_for_startup_catch_up`] never hangs.
     pub async fn run_startup_catch_up_sync(&self) {
-        let stale = self.cg.find_stale_files().await;
+        let stale = match self.cg.find_stale_files_bounded().await {
+            crate::tokensave::AutoSyncScope::Sync(stale) => stale,
+            scope => {
+                eprintln!("[tokensave] {}", auto_sync_refusal(&scope));
+                self.startup_catch_up_done.store(true, Ordering::Release);
+                return;
+            }
+        };
         if !stale.is_empty() {
             if let Err(e) = self.cg.sync_if_stale_silent(&stale).await {
                 eprintln!("[tokensave] startup catch-up sync failed: {e}");
@@ -694,7 +732,13 @@ impl McpServer {
             return;
         }
 
-        let stale = self.cg.find_stale_files().await;
+        let stale = match self.cg.find_stale_files_bounded().await {
+            crate::tokensave::AutoSyncScope::Sync(stale) => stale,
+            scope => {
+                eprintln!("[tokensave] {}", auto_sync_refusal(&scope));
+                return;
+            }
+        };
         if !stale.is_empty() {
             if let Err(e) = self.cg.sync_if_stale_silent(&stale).await {
                 eprintln!("[tokensave] lazy sync failed: {e}");
