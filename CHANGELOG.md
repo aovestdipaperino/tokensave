@@ -8,6 +8,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Fixed
+- **Stale `node_fingerprints` rows could produce phantom 1.0-similarity results in `tokensave_redundancy` (#380).** Cache validation now hashes the exact indexed node range, cache misses resolve the same line-and-column range in the tree-sitter AST, and cached rows whose stored token count differs from the live body are recomputed.
 - **Cargo-driven tests no longer inherit developer-level Git hooks (#381).** A developer who had run `tokensave install` also had a global `core.hooksPath`, so real Git operations inside temporary test repositories executed TokenSave's background `post-commit` and `post-checkout` hooks. Those hooks raced the fixture itself, intermittently taking its sync lock or modifying `.tokensave/` while assertions were running. Cargo now supplies an empty command-scope `core.hooksPath` to the processes Cargo launches, while leaving the developer's global Git configuration unchanged.
 
 ### Documentation
