@@ -547,6 +547,46 @@ impl Database {
         collect_rows(&mut rows, row_to_node, "get_all_nodes").await
     }
 
+    /// Every node, without the two columns resolution never reads (#306).
+    ///
+    /// `docstring` and `signature` are unbounded TEXT — an extractor stores a
+    /// `const`'s whole initializer in `signature`, which #362 found reaching
+    /// roughly 43 KB for one node — and they dominate a `Node`'s heap
+    /// footprint. `ReferenceResolver` reads only `id`, `kind`, `name`,
+    /// `qualified_name`, `file_path`, `start_line`, `visibility` and
+    /// `parent_id`, yet the whole `Vec<Node>` stays resident for the entire
+    /// resolution pass, so those two columns were pure peak.
+    ///
+    /// The resolver borrows from that slice for its lifetime and needs a
+    /// global name index to resolve cross-file references, so the pass cannot
+    /// be chunked or streamed without a redesign. Narrowing what each node
+    /// carries is the part that can be done without changing behaviour.
+    ///
+    /// `NULL` placeholders keep the column *positions* identical so
+    /// [`row_to_node`] is shared rather than duplicated; the two fields come
+    /// back as `None`. Use [`Self::get_all_nodes`] anywhere the text is
+    /// actually needed — `tests/resolution_slim_nodes_test.rs` asserts the two
+    /// loads resolve identically, so a future resolver change that starts
+    /// reading either field fails loudly instead of silently seeing `None`.
+    pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT id, kind, name, qualified_name, file_path,
+                    start_line, end_line, start_column, end_column,
+                    NULL AS docstring, NULL AS signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
+                 FROM nodes",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query all nodes for resolution: {e}"),
+                operation: "get_all_nodes_for_resolution".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_node, "get_all_nodes_for_resolution").await
+    }
+
     /// Deletes all nodes (and cascading edges, unresolved refs, vectors) for a file.
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
         debug_assert!(
