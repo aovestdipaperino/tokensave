@@ -4,7 +4,8 @@
 
 Tokensave maintains a code graph in a single SQLite database per project. When you switch
 git branches, the files on disk change but the graph still reflects the old branch. The
-embedded MCP watcher eventually catches up by re-indexing changed files, but there are two costs:
+MCP server eventually catches up by re-indexing changed files on its next tool call, but there
+are two costs:
 
 1. **Stale window.** Between the checkout and the next sync, every MCP query returns results
    from the old branch. A symbol search might surface a function that doesn't exist on the
@@ -15,13 +16,13 @@ embedded MCP watcher eventually catches up by re-indexing changed files, but the
    On large projects this adds up to minutes of wasted CPU and disk I/O per day.
 
 Multi-branch indexing solves both problems by keeping a separate database per branch. Each
-branch's graph is always accurate, switching is instant, and the watcher syncs only the branch
-you're actually working on.
+branch's graph is always accurate, switching is instant, and only the branch you're actually
+working on gets re-indexed.
 
 ## How it works
 
 Multi-branch is fully opt-in. Without it, tokensave behaves exactly as before: one database,
-one graph, the watcher re-indexes whatever is on disk.
+one graph, re-indexed from whatever is on disk.
 
 When you opt in, tokensave creates a `branch-meta.json` file inside `.tokensave/` that tracks
 which branches have their own database. The storage layout looks like this:
@@ -99,37 +100,67 @@ tokensave branch gc
 This checks each tracked branch against `.git/refs/heads/` and `packed-refs`, and deletes
 databases for branches that are gone.
 
-## How the watcher handles branches
+## How syncing interacts with branches
 
-The embedded MCP watcher's behavior depends on whether multi-branch is active:
+There is no watcher. `tokensave serve` embedded an OS-level file watcher from 6.0.0 until
+`f7f7c9b` removed it in 6.1.1 (#80); the MCP server now refreshes the index on demand — a
+catch-up sync when it connects, plus a staleness check at the top of every tool call behind a
+30-second cooldown. See [USER-GUIDE.md](USER-GUIDE.md#how-the-mcp-server-refreshes-the-index).
 
-**Without multi-branch (default):** The watcher monitors for file changes and syncs the single
-`tokensave.db`. Switching branches triggers a sync of all changed files.
+**The database a server writes to is chosen once, at startup.** The server resolves the current
+branch when it opens the project and holds that database for its whole life. Nothing re-checks
+the branch per sync.
 
-**With multi-branch:** Before each sync, the watcher checks the current branch. If that branch
-is tracked, it syncs that branch's database. If it's not tracked, it syncs the default
-branch's database. After syncing, it updates the `last_synced_at` timestamp in the metadata.
+**Without multi-branch (default):** there is one `tokensave.db`, so this never matters. Changed
+files are re-indexed into it whatever branch you are on, which is correct — a single-index
+project has one graph by design.
 
-You don't need to restart the MCP server after adding a branch. The watcher picks up metadata
-changes on the next sync cycle.
+**With multi-branch:** the branch you were on when the server started is the branch it serves.
+Its `last_synced_at` timestamp advances on every sync; other branches' timestamps do not.
+
+**You do need to restart the MCP server after a `git checkout`.** Adding a branch with
+`tokensave branch add` while a server is running does not make that server switch to it, and
+neither does checking it out — the server keeps reading and writing the database it opened
+with. Until #400 that happened silently, and one branch's files could end up indexed into
+another branch's database. Now the drift is detected: automatic syncs stop rather than write
+across branches, and every tool response carries a warning naming both the served branch and
+your working tree's branch.
+
+```
+WARNING: tokensave results below come from branch 'main', but your working tree is on
+'feature' — symbols that exist only on 'feature' are missing, and symbols shown may not
+exist on it. Restart the MCP server to serve this branch.
+```
+
+Restarting is the fix, and it repairs two different things depending on where you restart.
+Started while the new branch is checked out, the fresh process resolves that branch and its
+index is correct. Started back on the original branch, the sync notices the other branch's
+files are absent from disk and prunes those rows.
 
 ## How the MCP server selects a database
 
-When the MCP server starts (via `tokensave mcp` or `tokensave serve`), it reads `.git/HEAD`
-to determine the current branch and opens the corresponding database.
+When the MCP server starts (`tokensave serve`), it determines the current branch and opens the
+corresponding database. This happens **once**, at startup — see the section above for what that
+means after a `git checkout`.
 
 If the current branch is tracked, queries run against its own database with full accuracy.
 
 If the current branch is not tracked, the server falls back to the nearest tracked ancestor
-(determined by `git merge-base`). Every tool response is prepended with a warning:
+(determined by `git merge-base`), or to the default branch's database if no tracked ancestor
+has one. Every tool response is prepended with a warning:
 
 ```
-WARNING: branch 'experiment-x' is not tracked — serving from 'main'.
+branch 'experiment-x' is not tracked — serving from 'main'.
 Run `tokensave branch add experiment-x` to track it.
 ```
 
 This means queries still work, but results may be stale for files that differ between the
 branches.
+
+Note that the fallback is also chosen at startup. If you check out an untracked branch under a
+running server, files you change land in whichever database that server opened with — the
+outcome the warning describes, but reached because of the startup choice rather than because
+anything re-checked the branch.
 
 ## Cross-branch queries
 
@@ -222,8 +253,8 @@ Yes, using `tokensave_branch_search` and `tokensave_branch_diff`. These open the
 branch's database directly without requiring a checkout.
 
 **What happens on detached HEAD?**
-The MCP server falls back to the default branch's database with a warning. The watcher syncs
-the default branch's database.
+The MCP server falls back to the default branch's database with a warning, and syncs into it.
+As everywhere else, that choice is made when the server starts.
 
 **Does this work with worktrees?**
 Each worktree has its own `.git/HEAD` pointing to a different branch. As long as each worktree
