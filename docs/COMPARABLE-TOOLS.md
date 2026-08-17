@@ -263,7 +263,7 @@ tokensave takes a different path: the `keywords` parameter on `tokensave_context
 
 #### Native file watcher in the MCP server
 
-CodeGraph embeds a native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW) inside its MCP server, debounced to a 2-second quiet window. tokensave shipped an equivalent watcher in 6.0.0 but **removed it in 6.1.0** after it caused runaway CPU and memory on large monorepos (deep `node_modules`/`target` trees defeated the top-level ignore filter). tokensave now refreshes the index on demand — a staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. The trade-off: tokensave reacts on the next tool call rather than instantly on save, in exchange for bounded resource use; CodeGraph reacts immediately but carries the watcher's overhead.
+CodeGraph embeds a native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW) inside its MCP server, debounced to a 2-second quiet window. tokensave shipped an equivalent watcher in 6.0.0 but **removed it in 6.1.1** after it caused runaway CPU and memory on large monorepos (deep `node_modules`/`target` trees defeated the top-level ignore filter). tokensave now refreshes the index on demand — a staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. The trade-off: tokensave reacts on the next tool call rather than instantly on save, in exchange for bounded resource use; CodeGraph reacts immediately but carries the watcher's overhead.
 
 #### `codegraph uninit` command
 
@@ -593,9 +593,9 @@ Shipped. tokensave now extracts both `.svelte` and `.astro` files by locating th
 
 Dual-Graph's `DG_HARD_MAX_READ_CHARS` and `DG_TURN_READ_BUDGET_CHARS` environment variables cap how much context is injected per turn. tokensave trusts the AI to self-regulate, which works well with capable models but offers no hard guardrail. A per-project config option (e.g. `max_context_tokens_per_call`) could cap the output size of tools like `tokensave_context` and `tokensave_explore`, giving users a safety valve for cost control.
 
-### 6. Embedded file watcher in `tokensave serve` -- shipped in 6.0.0, removed in 6.1.0
+### 6. Embedded file watcher in `tokensave serve` -- shipped in 6.0.0, removed in 6.1.1
 
-CodeGraph's MCP server watches for file changes using native OS events, debounced to a 2-second quiet window. tokensave shipped the same model in 6.0.0 (an embedded `ProjectWatcher` bound to the MCP process) but **removed it in 6.1.0**: on large monorepos the watcher registered OS-level watches on nested `node_modules`/`target`/`dist` trees that the top-level ignore filter missed, producing event storms and unbounded memory growth (one report reached 19 GB). The replacement is an on-demand staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. This trades instant-on-save reaction for bounded resource use and removes the `notify-debouncer-full` dependency entirely. Multi-agent work is expected to use git worktrees rather than a shared watched directory.
+CodeGraph's MCP server watches for file changes using native OS events, debounced to a 2-second quiet window. tokensave shipped the same model in 6.0.0 (an embedded `ProjectWatcher` bound to the MCP process) but **removed it in 6.1.1**: on large monorepos the watcher registered OS-level watches on nested `node_modules`/`target`/`dist` trees that the top-level ignore filter missed, producing event storms and unbounded memory growth (one report reached 19 GB). The replacement is an on-demand staleness check at the top of every MCP tool call (30 s cooldown) plus a catch-up sync when the server connects. This trades instant-on-save reaction for bounded resource use and removes the `notify-debouncer-full` dependency entirely. Multi-agent work is expected to use git worktrees rather than a shared watched directory.
 
 ### 7. Redundant-read detection in hooks -- from OpenWolf (medium value)
 

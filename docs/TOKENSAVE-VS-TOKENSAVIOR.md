@@ -110,7 +110,7 @@ staleness check (gated by a 30 s cooldown) and re-syncs any touched files
 before answering; the server also runs a catch-up sync when it connects.
 The agent's query always sees fresh data without a long-lived watcher
 process. (An embedded `ProjectWatcher` shipped in 6.0.0 but was removed in
-6.1.0 after it caused runaway CPU/memory on large monorepos.) Token-
+6.1.1 after it caused runaway CPU/memory on large monorepos.) Token-
 savior's cache is invalidated on a per-tool basis and re-built lazily.
 
 ### 1.5 Rust + SQLite: durable and fast

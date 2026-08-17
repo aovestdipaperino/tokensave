@@ -15,7 +15,7 @@ Everything runs locally. Your code never leaves your machine.
 3. [Connecting to Your Agent](#connecting-to-your-agent)
 4. [Exploring Your Codebase from the CLI](#exploring-your-codebase-from-the-cli)
 5. [Keeping the Index Fresh](#keeping-the-index-fresh)
-6. [The Embedded File Watcher](#the-embedded-file-watcher)
+6. [How the MCP Server Refreshes the Index](#how-the-mcp-server-refreshes-the-index)
 7. [Checking Your Setup with Doctor](#checking-your-setup-with-doctor)
 8. [Finding Affected Tests](#finding-affected-tests)
 9. [MCP Tools for AI Agents](#mcp-tools-for-ai-agents)
@@ -183,6 +183,21 @@ rules, set `exclude` globs in `.tokensave/config.json`:
 ```
 
 `tokensave init --skip-folder <dir>` writes to that same list.
+
+#### Indexing hidden directories
+
+By default, tokensave prunes all hidden directories (dot-prefixed) during the file walk to avoid indexing massive dependency and config folders (like `.venv`, `.cargo`, or `.next`).
+
+If your project contains code in hidden directories (e.g., `.github/scripts/`), you must explicitly opt-in via the `include` array in `.tokensave/config.json`. **Crucially, you must include both the directory and its contents**, because the walker prunes at the directory level before glob matching happens:
+
+```json
+{
+  "include": [
+    ".github",
+    ".github/**"
+  ]
+}
+```
 
 ---
 
@@ -371,32 +386,46 @@ cp scripts/post-commit .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 ```
 
-### Embedded file watcher
+### The MCP server
 
-When you start the tokensave MCP server (e.g. via your agent), it watches the project directory and syncs automatically. See the next section.
+When you start the tokensave MCP server (e.g. via your agent), it refreshes the index on demand as you use it. See the next section.
 
 ---
 
-## The Embedded File Watcher
+## How the MCP Server Refreshes the Index
 
-When you start the tokensave MCP server (e.g. via your agent), it watches
-the project directory for file changes and automatically runs incremental
-syncs in the background. The watcher's lifetime is bound to the MCP
-process — when the agent exits, the watcher exits.
+The server keeps the index fresh on demand rather than by watching the
+filesystem, in two places:
+
+- **When the server connects**, a catch-up sync reconciles changes made
+  while no server was running.
+- **At the start of every MCP tool call**, a staleness check walks the
+  project tree — the same gitignore-aware walk `tokensave sync` uses — and
+  re-indexes what changed. That check is gated by a 30-second cooldown, so
+  calls inside the same window cost at most one walk.
+
+So an edit is picked up by the next tool call once the cooldown has
+elapsed, not the moment you save. If you need the index current sooner,
+run `tokensave sync`.
+
+There is no background watcher and no daemon. `tokensave serve` embedded an
+OS-level watcher from 6.0.0, when daemon mode was removed, until `f7f7c9b`
+removed it in 6.1.1 (#80); the CHANGELOG entry for that release attributes the
+removal to CPU and memory pressure on large monorepos. The watcher is older
+than the embedding: `ProjectWatcher` arrived in 3.5.0, driven then by the
+daemon and the CLI. The on-demand model is its replacement.
 
 Multiple MCP servers on the same project (e.g. two agents) coordinate via
 a per-project sync lock: only one sync runs at a time.
 
-Configure the debounce interval in `~/.tokensave/config.toml`:
-
-```toml
-watcher_debounce = "15s"
-```
+The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
+from that watcher. It is still accepted, but nothing reads it, and the
+30-second cooldown is not configurable.
 
 ### CLI-Only Workflows
 
-If you don't keep an agent attached, the watcher is not running. Use a
-git post-commit hook to refresh the index on commit:
+If you don't keep an agent attached, no MCP server is running to refresh the
+index. Use a git post-commit hook to refresh it on commit:
 
 ```bash
 cp scripts/post-commit .git/hooks/post-commit
@@ -423,7 +452,7 @@ Then remove the entry matching your install:
 - Linux: `systemctl --user disable --now tokensave-daemon && rm ~/.config/systemd/user/tokensave-daemon.service`
 - Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
 
-Once your agent is attached, the embedded watcher takes over automatically.
+Once your agent is attached, the MCP server keeps the index fresh on its own.
 
 ---
 
@@ -826,7 +855,7 @@ The `config.toml` is plain TOML and fully transparent:
 
 ```toml
 upload_enabled = true        # set to false to stop uploading
-watcher_debounce = "2s"      # debounce for the embedded MCP file watcher
+watcher_debounce = "2s"      # inert; left over from the watcher removed in 6.1.1
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 ```
@@ -871,7 +900,7 @@ The initial full index of a large project can take a few seconds. This is normal
 
 - Subsequent syncs are incremental and much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
-- The post-commit hook and the embedded MCP watcher run in the background so they never block you
+- The post-commit hook syncs in the background so it never blocks you; the MCP server's staleness walk runs inline on a tool call, at most once every 30 seconds
 
 ### Stale install warning
 

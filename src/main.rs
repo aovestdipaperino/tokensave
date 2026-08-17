@@ -418,6 +418,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.files_removed,
                     result.duration_ms
                 ));
+                if let Some(warning) = cg.warn_skipped_hidden_dirs() {
+                    eprintln!("{warning}");
+                }
                 if !result.skipped_paths.is_empty() {
                     eprintln!();
                     eprintln!(
