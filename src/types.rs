@@ -739,6 +739,31 @@ pub struct ResolutionResult {
     pub unresolved: Vec<UnresolvedRef>,
     pub total: usize,
     pub resolved_count: usize,
+    /// Calls that had several equally-plausible targets (#412). Not resolved,
+    /// but not silently dropped either.
+    #[serde(default)]
+    pub ambiguous: Vec<AmbiguousCall>,
+}
+
+/// A call the resolver could not disambiguate, kept instead of discarded.
+///
+/// When several candidates tie on every scoring dimension, no edge is created
+/// — an edge is an assertion, and "one of these" is not one. The alternatives
+/// are still worth having: a model reading the source can pick the intended
+/// target, which a scoring heuristic that cannot see the receiver's type
+/// cannot (#412).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmbiguousCall {
+    /// The node containing the call site.
+    pub from_node_id: String,
+    /// The reference as written, e.g. `thing.dispose`.
+    pub reference_name: String,
+    /// File containing the call site.
+    pub file_path: String,
+    /// Line of the call site.
+    pub line: u32,
+    /// The candidates that could not be separated.
+    pub candidate_node_ids: Vec<String>,
 }
 
 /// A reference that has been resolved to a target node.

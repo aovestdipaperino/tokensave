@@ -1,5 +1,6 @@
 //! Node CRUD queries.
 use super::*;
+use std::fmt::Write as _;
 
 // ---------------------------------------------------------------------------
 // Node operations
@@ -690,6 +691,143 @@ impl Database {
             })?;
 
         collect_rows(&mut rows, row_to_node, "get_all_nodes").await
+    }
+
+    /// Replaces the recorded ambiguities for a set of files (#412).
+    ///
+    /// Scoped by file so an incremental sync refreshes only what it re-resolved
+    /// rather than clearing the whole table, matching how nodes and edges are
+    /// replaced per file.
+    pub async fn replace_ambiguous_calls(
+        &self,
+        files: &[String],
+        calls: &[AmbiguousCall],
+    ) -> Result<()> {
+        for file in files {
+            self.conn()
+                .execute(
+                    "DELETE FROM ambiguous_calls WHERE file_path = ?1",
+                    params![file.as_str()],
+                )
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to clear ambiguous calls: {e}"),
+                    operation: "replace_ambiguous_calls".to_string(),
+                })?;
+        }
+        for call in calls {
+            let encoded = serde_json::to_string(&call.candidate_node_ids).map_err(|e| {
+                TokenSaveError::Database {
+                    message: format!("failed to encode ambiguity candidates: {e}"),
+                    operation: "replace_ambiguous_calls".to_string(),
+                }
+            })?;
+            self.conn()
+                .execute(
+                    "INSERT OR REPLACE INTO ambiguous_calls
+                     (from_node_id, reference_name, file_path, line, candidate_node_ids)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        call.from_node_id.as_str(),
+                        call.reference_name.as_str(),
+                        call.file_path.as_str(),
+                        i64::from(call.line),
+                        encoded.as_str()
+                    ],
+                )
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to record ambiguous call: {e}"),
+                    operation: "replace_ambiguous_calls".to_string(),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Recorded ambiguous calls, optionally scoped to a path prefix.
+    ///
+    /// `limit` is a hard cap rather than a page: a large codebase can carry
+    /// thousands of ambiguous sites, and handing all of them back would swamp
+    /// the caller this feature exists to help.
+    pub async fn get_ambiguous_calls(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<AmbiguousCall>> {
+        let mut sql = String::from(
+            "SELECT from_node_id, reference_name, file_path, line, candidate_node_ids
+             FROM ambiguous_calls",
+        );
+        if let Some(prefix) = path_prefix {
+            let exact = prefix.trim_end_matches('/');
+            sql.push_str(" WHERE (file_path = ");
+            push_quoted(&mut sql, exact);
+            sql.push_str(" OR file_path LIKE ");
+            push_quoted(
+                &mut sql,
+                &format!(
+                    "{}/%",
+                    exact
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                ),
+            );
+            sql.push_str(" ESCAPE '\\')");
+        }
+        let _ = write!(sql, " ORDER BY file_path, line LIMIT {limit}");
+
+        let mut rows = self
+            .conn()
+            .query(&sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query ambiguous calls: {e}"),
+                operation: "get_ambiguous_calls".to_string(),
+            })?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read ambiguous call row: {e}"),
+            operation: "get_ambiguous_calls".to_string(),
+        })? {
+            let encoded = get_string_lossy(&row, 4).unwrap_or_default();
+            out.push(AmbiguousCall {
+                from_node_id: get_string_lossy(&row, 0).unwrap_or_default(),
+                reference_name: get_string_lossy(&row, 1).unwrap_or_default(),
+                file_path: get_string_lossy(&row, 2).unwrap_or_default(),
+                line: row.get::<i64>(3).unwrap_or(0) as u32,
+                candidate_node_ids: serde_json::from_str(&encoded).unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Node ids named as a candidate by any recorded ambiguity (#412).
+    ///
+    /// `dead_code` uses this: having refused to fabricate an edge for an
+    /// ambiguous call, reporting its candidates as uncalled would trade a
+    /// fabricated edge for a fabricated finding — and a finding reads as more
+    /// actionable than an edge. "Referenced, target unknown" is not "dead".
+    pub async fn ambiguous_candidate_ids(&self) -> Result<HashSet<String>> {
+        let mut rows = self
+            .conn()
+            .query("SELECT candidate_node_ids FROM ambiguous_calls", ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query ambiguity candidates: {e}"),
+                operation: "ambiguous_candidate_ids".to_string(),
+            })?;
+        let mut out = HashSet::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read ambiguity candidate row: {e}"),
+            operation: "ambiguous_candidate_ids".to_string(),
+        })? {
+            let encoded = get_string_lossy(&row, 0).unwrap_or_default();
+            let ids: Vec<String> = serde_json::from_str(&encoded).unwrap_or_default();
+            out.extend(ids);
+        }
+        Ok(out)
     }
 
     /// Every node's id paired with its file path, without building a `Node`.

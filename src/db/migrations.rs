@@ -15,7 +15,19 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 16;
+const LATEST_VERSION: u32 = 17;
+
+/// Schema for the ambiguity record added in v17 (#412). Used by both
+/// `migrate_v17` and the fresh-schema path, which never replays migrations.
+const AMBIGUOUS_CALLS_SQL: &str = "CREATE TABLE IF NOT EXISTS ambiguous_calls (
+    from_node_id TEXT NOT NULL,
+    reference_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    candidate_node_ids TEXT NOT NULL,
+    PRIMARY KEY (from_node_id, reference_name, line)
+);
+CREATE INDEX IF NOT EXISTS idx_ambiguous_calls_file ON ambiguous_calls(file_path);";
 
 pub(crate) const TRAIT_DISPATCH_TRIGGERS_SQL: &str = r"
 CREATE TRIGGER IF NOT EXISTS trait_dispatch_call_insert
@@ -350,6 +362,16 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             operation: "create_schema".to_string(),
         })?;
 
+    // A fresh database is stamped at LATEST_VERSION and never replays
+    // migrations, so anything a migration adds has to be created here too.
+    // Sharing one statement keeps the two definitions from drifting.
+    conn.execute_batch(AMBIGUOUS_CALLS_SQL)
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to create ambiguous_calls: {e}"),
+            operation: "create_schema".to_string(),
+        })?;
+
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
@@ -437,6 +459,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         14 => migrate_v14(conn).await,
         15 => migrate_v15(conn).await,
         16 => migrate_v16(conn).await,
+        17 => migrate_v17(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1541,6 +1564,28 @@ async fn migrate_v16(conn: &Connection) -> Result<()> {
         .map_err(|e| TokenSaveError::Database {
             message: format!("v16: failed to add files.kind: {e}"),
             operation: "migrate_v16".to_string(),
+        })?;
+    Ok(())
+}
+
+/// v17: records calls the resolver could not disambiguate (#412).
+///
+/// When several candidates tie, no edge is created — an edge is an assertion
+/// and "one of these" is not one — but the alternatives are worth keeping. A
+/// model reading the source can pick the right one; a scoring heuristic that
+/// cannot see the receiver's type cannot.
+///
+/// Keyed by call site rather than by target, because the ambiguity belongs to
+/// the call: the same method name called from two places may be resolvable at
+/// one and not the other. `candidate_node_ids` is a JSON array; the set is
+/// small by construction (a handful of same-named methods) and is never
+/// joined against, only read back whole.
+async fn migrate_v17(conn: &Connection) -> Result<()> {
+    conn.execute_batch(AMBIGUOUS_CALLS_SQL)
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v17: failed to create ambiguous_calls: {e}"),
+            operation: "migrate_v17".to_string(),
         })?;
     Ok(())
 }

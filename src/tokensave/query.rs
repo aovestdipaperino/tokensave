@@ -215,8 +215,25 @@ impl TokenSave {
         include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
         let qm = GraphQueryManager::new(&self.db);
-        qm.find_dead_code(kinds, include_public, include_trait_impls)
-            .await
+        let dead = qm
+            .find_dead_code(kinds, include_public, include_trait_impls)
+            .await?;
+
+        // A symbol named as a candidate by an unresolved ambiguity is
+        // *referenced* — the resolver simply could not tell which of several
+        // same-named targets was meant, so it refused to fabricate an edge
+        // (#378). Reporting it as dead would trade a fabricated edge for a
+        // fabricated finding, and a finding reads as more actionable than an
+        // edge. #346 measured a 97% false-positive rate from over-linking; the
+        // same mistake in the other direction is no better (#412).
+        let ambiguous = self.db.ambiguous_candidate_ids().await.unwrap_or_default();
+        if ambiguous.is_empty() {
+            return Ok(dead);
+        }
+        Ok(dead
+            .into_iter()
+            .filter(|node| !ambiguous.contains(&node.id))
+            .collect())
     }
 
     /// Returns all nodes for a given file, ordered by start line.

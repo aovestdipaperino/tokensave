@@ -356,6 +356,9 @@ pub async fn handle_tool_call(
         "tokensave_files" => info::handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => git::handle_affected(cg, args).await,
         "tokensave_dead_code" => analysis::handle_dead_code(cg, args, scope_prefix).await,
+        "tokensave_ambiguous_calls" => {
+            analysis::handle_ambiguous_calls(cg, args, scope_prefix).await
+        }
         "tokensave_diff" => git::handle_diff(cg, args).await,
         "tokensave_diff_context" => git::handle_diff_context(cg, args).await,
         "tokensave_module_api" => analysis::handle_module_api(cg, args, scope_prefix).await,
@@ -502,9 +505,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            84
+            85
         } else {
-            83
+            84
         };
         assert_eq!(tools.len(), expected_total);
 

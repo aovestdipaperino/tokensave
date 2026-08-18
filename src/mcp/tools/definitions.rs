@@ -157,6 +157,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_files()),
         def_affected(),
         graph_scoped(def_dead_code()),
+        graph_scoped(def_ambiguous_calls()),
         def_diff_context(),
         graph_scoped(def_module_api()),
         graph_scoped(def_circular()),
@@ -678,6 +679,37 @@ fn def_affected() -> ToolDefinition {
                 }
             },
             "required": ["files"]
+        }),
+    )
+}
+
+fn def_ambiguous_calls() -> ToolDefinition {
+    def(
+        "tokensave_ambiguous_calls",
+        "Ambiguous Calls",
+        "List call sites the resolver could not pin to a single target, with the \
+         candidates it could not separate. These produce no `calls` edge, because \
+         an edge asserts a specific target and \"one of these\" is not one — so \
+         they are invisible to `callers`, `callees` and `impact`. \
+         \n\nUse this when a call you expect is missing from the graph, or when \
+         `dead_code` seems to have skipped something: a symbol named here is \
+         referenced, just not attributably. You have the source and can usually \
+         tell which candidate was meant from the receiver's type, which the \
+         resolver cannot see. Typically arises where several classes define the \
+         same method name and the receiver's type is unknowable — an untyped \
+         parameter, or a value from an unindexed package.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Restrict to call sites in this file or directory."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum call sites to return (default 25, max 200). A hard cap, not a page: a large codebase can hold thousands."
+                }
+            }
         }),
     )
 }
@@ -2637,6 +2669,7 @@ mod tests {
             "tokensave_node",
             "tokensave_files",
             "tokensave_dead_code",
+            "tokensave_ambiguous_calls",
             "tokensave_module_api",
             "tokensave_circular",
             "tokensave_hotspots",
@@ -2775,7 +2808,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 51);
+        assert_eq!(actual.len(), 52);
         assert_eq!(actual, canonical);
     }
 
