@@ -1537,6 +1537,53 @@ impl TypeScriptExtractor {
         map
     }
 
+    /// Records the enclosing class's field types under `this.<field>` keys.
+    ///
+    /// Without this, `this.statusBar.dispose()` had no type to resolve against:
+    /// `collect_var_types` tracked bare `this`, typed parameters and typed
+    /// bindings, but never a field. The call fell through to the bare-name
+    /// fallback, where two classes both defining `dispose` are indistinguishable
+    /// and the winner was whichever the file scan reached first (#378, #412).
+    ///
+    /// The type is right there in the source. Both shapes are read: an
+    /// annotation (`private worker: Beta`, the constructor-injection shape) and
+    /// an initializer (`private statusBar = new StatusBar()`). An annotation
+    /// wins when both are present, since it is the declared intent.
+    fn collect_field_types(
+        state: &ExtractionState,
+        class_body: TsNode<'_>,
+        map: &mut std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = class_body.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let member = cursor.node();
+            if matches!(
+                member.kind(),
+                "public_field_definition" | "property_signature" | "field_definition"
+            ) {
+                if let Some(name) = member.child_by_field_name("name") {
+                    let ty = member
+                        .child_by_field_name("type")
+                        .and_then(|t| Self::normalize_type_name(&state.node_text(t)))
+                        .or_else(|| {
+                            member
+                                .child_by_field_name("value")
+                                .and_then(|v| Self::infer_value_type(state, v))
+                        });
+                    if let Some(ty) = ty {
+                        map.insert(format!("this.{}", state.node_text(name)), ty);
+                    }
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+
     /// Recursively records `variable_declarator` types, skipping nested
     /// function scopes.
     fn collect_let_types(
@@ -1599,6 +1646,19 @@ impl TypeScriptExtractor {
                                 let ty = match obj.kind() {
                                     "this" => var_types.get("this").cloned(),
                                     "identifier" => var_types.get(&state.node_text(obj)).cloned(),
+                                    // `this.<field>.method()` — the object is
+                                    // itself a member expression. Looked up
+                                    // under the `this.<field>` key recorded by
+                                    // `collect_field_types` (#412).
+                                    "member_expression" => obj
+                                        .child_by_field_name("object")
+                                        .filter(|inner| inner.kind() == "this")
+                                        .and_then(|_| obj.child_by_field_name("property"))
+                                        .and_then(|field| {
+                                            var_types
+                                                .get(&format!("this.{}", state.node_text(field)))
+                                                .cloned()
+                                        }),
                                     _ => None,
                                 };
                                 if let Some(ty) = ty {
@@ -1637,7 +1697,14 @@ impl TypeScriptExtractor {
         fn_node_id: &str,
     ) {
         let self_type = Self::enclosing_class_type(state);
-        let var_types = Self::collect_var_types(state, fn_node, self_type.as_deref());
+        let mut var_types = Self::collect_var_types(state, fn_node, self_type.as_deref());
+        // Field types of the class this method belongs to, so a call through
+        // `this.<field>` resolves precisely instead of falling through to the
+        // bare-name fallback (#412). The method's parent in the tree is the
+        // class body when there is one; a free function has none.
+        if let Some(class_body) = fn_node.parent().filter(|p| p.kind() == "class_body") {
+            Self::collect_field_types(state, class_body, &mut var_types);
+        }
         Self::emit_typed_method_calls(state, body, fn_node_id, &var_types);
     }
 
