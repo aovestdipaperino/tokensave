@@ -117,22 +117,59 @@ async fn call_edges_do_not_depend_on_file_enumeration_order() {
     let (_a, cg_a) = project_with_two_dispose("a.ts", "b.ts").await;
     let (_b, cg_b) = project_with_two_dispose("z_a.ts", "b.ts").await;
 
-    let edges_a = named_call_edges(&cg_a).await;
-    let edges_b = named_call_edges(&cg_b).await;
+    // Compare which *class* absorbed each call, not the fully qualified name:
+    // renaming a file legitimately changes the path inside the qualified name,
+    // so comparing those would fail for a reason that has nothing to do with
+    // resolution order.
+    let classes = |named: Vec<(String, String)>| -> Vec<String> {
+        let mut v: Vec<String> = named
+            .into_iter()
+            .map(|(_, target)| target.rsplit("::").take(2).collect::<Vec<_>>().join("::"))
+            .collect();
+        v.sort();
+        v
+    };
 
     assert_eq!(
-        edges_a, edges_b,
-        "renaming a file must not change which calls resolve"
+        classes(named_call_edges(&cg_a).await),
+        classes(named_call_edges(&cg_b).await),
+        "renaming a file must not change which class a call resolves to"
     );
 }
 
-/// An ambiguous receiver call must produce no edge rather than an arbitrary
-/// one. Binding `this.statusBar.dispose()` to whichever `dispose` the scan
-/// reached first is a coin flip, and a wrong edge both fabricates a caller for
-/// dead code and hides the real one.
+/// Where the receiver's type genuinely cannot be known — an untyped parameter,
+/// so there is no annotation and no initializer to read — the call must produce
+/// no edge rather than an arbitrary one. Picking whichever `dispose` the scan
+/// reached first is a coin flip that both fabricates a caller for dead code and
+/// hides the real one.
+///
+/// Note this fixture deliberately does *not* use a typed field: since #412
+/// those resolve precisely, so they are no longer ambiguous and would not
+/// exercise the refusal.
 #[tokio::test]
-async fn an_ambiguous_bare_name_call_resolves_to_nothing() {
-    let (_tmp, cg) = project_with_two_dispose("a.ts", "b.ts").await;
+async fn a_call_on_an_untypeable_receiver_resolves_to_nothing() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+
+    std::fs::write(
+        root.join("src/a.ts"),
+        "export class StatusBar {\n    dispose(): void {\n        console.log('bar');\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.ts"),
+        "export class ProviderManager {\n    dispose(): void {\n        console.log('mgr');\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/extension.ts"),
+        "export class Extension {\n    deactivate(thing): void {\n        thing.dispose();\n    }\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(root).await.unwrap();
+    cg.sync().await.unwrap();
 
     let dispose_targets: Vec<String> = named_call_edges(&cg)
         .await
@@ -143,7 +180,7 @@ async fn an_ambiguous_bare_name_call_resolves_to_nothing() {
 
     assert!(
         dispose_targets.is_empty(),
-        "two equally-plausible `dispose` candidates must yield no edge, got {dispose_targets:?}"
+        "an untypeable receiver with two candidates must yield no edge, got {dispose_targets:?}"
     );
 }
 
@@ -194,4 +231,85 @@ async fn reindexing_the_same_tree_produces_the_same_edges() {
     cg.sync().await.unwrap();
 
     assert_eq!(first, call_edges(&cg).await, "reindexing must be stable");
+}
+
+/// Option (C) from #412: separate the candidates on evidence instead of
+/// guessing or refusing.
+///
+/// `this.statusBar.dispose()` is only ambiguous because the extractor did not
+/// track the *field's* type. `collect_var_types` recorded bare `this`, typed
+/// parameters and typed bindings — never `this.<field>` — so a field call fell
+/// through to the bare-name fallback with nothing to distinguish two classes
+/// that both define `dispose`.
+///
+/// The field's type is right there in the source, from `= new StatusBar()`.
+/// With it, the reference becomes `StatusBar::dispose` and resolves precisely,
+/// which recovers the edge #378's refusal had to give up.
+#[tokio::test]
+async fn a_field_initialised_with_new_resolves_to_that_class() {
+    let (_tmp, cg) = project_with_two_dispose("a.ts", "b.ts").await;
+
+    let named = named_call_edges(&cg).await;
+    let dispose: Vec<&(String, String)> = named
+        .iter()
+        .filter(|(_, target)| target.ends_with("dispose"))
+        .collect();
+
+    assert_eq!(
+        dispose.len(),
+        1,
+        "the field's type should resolve the call precisely, got {dispose:?}"
+    );
+    assert!(
+        dispose[0].1.contains("StatusBar"),
+        "`this.statusBar.dispose()` must bind to StatusBar, not the other class \
+         that happens to define `dispose`. Got {dispose:?}"
+    );
+}
+
+/// The same, via an explicit type annotation rather than an initializer —
+/// the shape that appears with constructor injection.
+#[tokio::test]
+async fn a_field_with_a_type_annotation_resolves_to_that_class() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+
+    std::fs::write(
+        root.join("src/a.ts"),
+        "export class Alpha {\n    run(): void {\n        console.log('a');\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.ts"),
+        "export class Beta {\n    run(): void {\n        console.log('b');\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/app.ts"),
+        "import { Alpha } from './a';\nimport { Beta } from './b';\n\
+         export class App {\n    private worker: Beta;\n\
+         \n    constructor(w: Beta) {\n        this.worker = w;\n    }\n\
+         \n    go(): void {\n        this.worker.run();\n    }\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(root).await.unwrap();
+    cg.sync().await.unwrap();
+
+    let run: Vec<(String, String)> = named_call_edges(&cg)
+        .await
+        .into_iter()
+        .filter(|(_, target)| target.ends_with("run"))
+        .collect();
+
+    assert_eq!(
+        run.len(),
+        1,
+        "the annotation should disambiguate, got {run:?}"
+    );
+    assert!(
+        run[0].1.contains("Beta"),
+        "an annotated field must bind to its declared type, got {run:?}"
+    );
 }
