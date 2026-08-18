@@ -371,6 +371,15 @@ end
             .find(|n| n.name == "visible")
             .expect("expected visible method");
         assert_eq!(visible.visibility, Visibility::Pub);
+        // `private attr_reader :foo` applies the directive to its argument
+        // (recursing into visit_attribute_directive), so foo itself is
+        // Private even though the default mode doesn't switch.
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo reader method from private attr_reader :foo");
+        assert_eq!(foo.visibility, Visibility::Private);
     }
 
     #[test]
@@ -3869,5 +3878,426 @@ end
             .expect("expected m method defined inside install's each block");
         assert_eq!(m.kind, NodeKind::Method);
         assert!(m.qualified_name.ends_with("C::m"));
+    }
+
+    // --- attr_reader / attr_writer / attr_accessor -------------------------
+
+    #[test]
+    fn test_ruby_attr_reader_defines_reader_only() {
+        let source = r#"
+class Widget
+  attr_reader :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x reader method");
+        assert_eq!(x.kind, NodeKind::Method);
+        assert!(x.qualified_name.ends_with("Widget::x"));
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x="),
+            "attr_reader must not define a writer"
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_writer_defines_writer_only() {
+        let source = r#"
+class Widget
+  attr_writer :y
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let y = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "y=")
+            .expect("expected y= writer method");
+        assert_eq!(y.kind, NodeKind::Method);
+        assert!(y.qualified_name.ends_with("Widget::y="));
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "y"),
+            "attr_writer must not define a reader"
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_defines_reader_and_writer() {
+        let source = r#"
+class Widget
+  attr_accessor :z
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "z"));
+        assert!(result.nodes.iter().any(|n| n.name == "z="));
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_multiple_symbols() {
+        let source = r#"
+class Widget
+  attr_accessor :a, :b
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["a", "a=", "b", "b="] {
+            assert!(
+                result.nodes.iter().any(|n| n.name == name),
+                "expected {name} from attr_accessor :a, :b"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_attr_reader_delimited_symbol_extracted() {
+        let source = r#"
+class Widget
+  attr_reader :"total"
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "total"));
+    }
+
+    #[test]
+    fn test_ruby_attr_reader_interpolated_symbol_not_extracted() {
+        let source = r##"
+class Widget
+  attr_reader :"#{name}"
+end
+"##;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result
+                .nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Method)
+                .count(),
+            0,
+            "an interpolated symbol name can't be resolved statically"
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_splat_not_extracted() {
+        let source = r#"
+class Widget
+  syms = [:a, :b]
+  attr_accessor(*syms)
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "a splat argument's names aren't known at extraction time: {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_dynamic_identifier_not_extracted() {
+        let source = r#"
+class Widget
+  h = :h
+  attr_accessor h
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "a variable argument's value isn't known at extraction time: {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_string_argument_not_extracted() {
+        // `attr_accessor "c"` is valid Ruby, but string-literal arguments are
+        // deliberately out of this PR's scope (see visit_attribute_directive).
+        let source = r#"
+class Widget
+  attr_accessor "c"
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "string-literal arguments are out of scope: {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_explicit_receiver_not_extracted() {
+        let source = r#"
+class Widget
+  def install(obj)
+    obj.attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "obj.attr_accessor is an ordinary call on obj, not the DSL"
+        );
+    }
+
+    #[test]
+    fn test_ruby_top_level_attr_accessor_not_extracted() {
+        let source = r#"
+attr_accessor :x
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "a top-level attr_accessor defines on Object, which has no node"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_attr_accessor_defines_method() {
+        let source = r#"
+module Trackable
+  attr_accessor :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside module body");
+        assert!(x.qualified_name.ends_with("Trackable::x"));
+    }
+
+    #[test]
+    fn test_ruby_bare_private_then_attr_reader_is_private() {
+        let source = r#"
+class Widget
+  private
+
+  attr_reader :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x reader method");
+        assert_eq!(x.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_attr_accessor_is_singleton_method() {
+        let source = r#"
+class Report
+  class << self
+    attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside class << self");
+        assert_eq!(x.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_attr_accessor_privatized_by_private_class_method() {
+        let source = r#"
+class Report
+  class << self
+    attr_accessor :x
+  end
+
+  private_class_method :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x singleton method");
+        assert_eq!(x.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_attr_accessor_contains_edge_from_enclosing_class() {
+        let source = r#"
+class Widget
+  attr_accessor :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "Widget")
+            .expect("expected Widget class");
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method");
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == x.id),
+            "expected Contains edge from Widget directly to x"
+        );
+    }
+
+    #[test]
+    fn test_ruby_attr_reader_docstring_attaches() {
+        // attr_reader :other comes first so the comment is a body_statement
+        // sibling of the call it documents, not (per a tree-sitter-ruby
+        // quirk affecting the first statement of any kind) a sibling of the
+        // class's body field instead.
+        let source = r#"
+class Widget
+  attr_reader :other
+
+  # The running total.
+  attr_reader :total
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let total = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "total")
+            .expect("expected total reader method");
+        assert_eq!(total.docstring.as_deref(), Some("The running total."));
+    }
+
+    #[test]
+    fn test_ruby_included_do_block_attr_accessor_defines_instance_method() {
+        let source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  included do
+    attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside included do block");
+        assert_eq!(x.kind, NodeKind::Method);
+        assert!(x.qualified_name.ends_with("Trackable::x"));
+    }
+
+    #[test]
+    fn test_ruby_class_methods_do_block_attr_accessor_is_singleton_method() {
+        let source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  class_methods do
+    attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method inside class_methods do block");
+        assert_eq!(x.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_class_new_do_block_attr_accessor_not_extracted() {
+        let source = r#"
+class C
+  K = Class.new do
+    attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "x"),
+            "Class.new's block must not leak x to the enclosing class C either"
+        );
+    }
+
+    // Known, accepted limitation (mirrors visit_mixin_directive's identical
+    // gap for include/extend/prepend): an attr_* call written directly inside
+    // a `def` body is unconditionally extracted here, even though in Ruby it
+    // only actually defines the accessor if that method runs, and only then
+    // because `self` inside it happens to be a module (a plain instance
+    // method's `self` is an instance and raises `NoMethodError` on
+    // `attr_accessor`, confirmed against Ruby 3.4.7). Fixing this needs a
+    // shared self_is_instance gate across every DSL directive handler, out
+    // of scope for this PR.
+    #[test]
+    fn test_ruby_attr_accessor_in_method_body_is_extracted_unconditionally() {
+        let source = r#"
+class Widget
+  def install
+    attr_accessor :x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "x"));
     }
 } // mod ruby_tests
