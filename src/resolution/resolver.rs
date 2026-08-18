@@ -445,7 +445,7 @@ impl<'a> ReferenceResolver<'a> {
     ///    matching against qualified names of known nodes (confidence 0.95).
     /// 2. **Exact name match** -- look up the reference name in the name cache.
     ///    A single match yields confidence 0.9; multiple matches are scored via
-    ///    `find_best_match` and the winner gets confidence 0.7.
+    ///    `find_best_matches`; a lone winner gets confidence 0.7, a tie none.
     ///
     /// Returns `None` if no strategy can resolve the reference.
     pub fn resolve_one(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
@@ -700,7 +700,13 @@ impl<'a> ReferenceResolver<'a> {
         // but only among the package-restricted set so a same-named function in
         // a *different* package can never win.
         if matched.len() > 1 {
-            let best = Self::find_best_match(uref, &matched, &self.import_index)?;
+            // A tie inside one package directory is still a tie: two files in
+            // the same package defining the same name are indistinguishable
+            // here, so no edge rather than an arbitrary one (#412).
+            let winners = Self::find_best_matches(uref, &matched, &self.import_index);
+            let [best] = winners.as_slice() else {
+                return None;
+            };
             return Some(ResolvedRef {
                 original: uref.clone(),
                 target_node_id: best.id.clone(),
@@ -880,8 +886,12 @@ impl<'a> ReferenceResolver<'a> {
             });
         }
 
-        // Multiple candidates -- score them and pick the best.
-        let best = Self::find_best_match(uref, candidates, &self.import_index)?;
+        // Multiple candidates -- score them. A single winner is the answer; a
+        // tie is recorded as an ambiguity instead of resolved arbitrarily.
+        let winners = Self::find_best_matches(uref, candidates, &self.import_index);
+        let [best] = winners.as_slice() else {
+            return None;
+        };
 
         Some(ResolvedRef {
             original: uref.clone(),
@@ -951,7 +961,10 @@ impl<'a> ReferenceResolver<'a> {
             });
         }
 
-        let best = Self::find_best_match_unambiguous(uref, candidates, &self.import_index)?;
+        let winners = Self::find_best_matches(uref, candidates, &self.import_index);
+        let [best] = winners.as_slice() else {
+            return None;
+        };
 
         Some(ResolvedRef {
             original: uref.clone(),
@@ -963,8 +976,17 @@ impl<'a> ReferenceResolver<'a> {
 
     /// Scores one candidate against a reference.
     ///
-    /// Extracted from [`Self::find_best_match`] so ambiguity can be detected
-    /// by comparing scores rather than re-deriving them (#378).
+    /// Scoring heuristics:
+    /// - Same file as reference: +100
+    /// - Directory proximity (shared path segments): +5 per segment, capped at +40
+    /// - Same language: +50, cross-language: -80
+    /// - Exported / pub visibility: +10
+    /// - Callable kind (function/method) when the ref kind is `Calls`: +25
+    /// - Line proximity (same file only): +20 - (`line_distance` / 10)
+    /// - Import match (caller imports this name): +30
+    ///
+    /// Extracted from the match search so ambiguity can be detected by
+    /// comparing scores rather than re-deriving them (#378).
     fn score_candidate(
         uref: &UnresolvedRef,
         node: &Node,
@@ -1026,60 +1048,16 @@ impl<'a> ReferenceResolver<'a> {
         score
     }
 
-    /// Scores candidate nodes for a reference and returns the best match.
-    ///
-    /// Scoring heuristics:
-    /// - Same file as reference: +100
-    /// - Directory proximity (shared path segments): +5 per segment, capped at +40
-    /// - Same language: +50, cross-language: -80
-    /// - Exported / pub visibility: +10
-    /// - Callable kind (function/method) when the ref kind is `Calls`: +25
-    /// - Line proximity (same file only): +20 - (`line_distance` / 10)
-    /// - Import match (caller imports this name): +30
-    fn find_best_match(
-        uref: &UnresolvedRef,
-        candidates: &[&Node],
-        import_index: &HashMap<String, HashSet<String>>,
-    ) -> Option<Node> {
-        if candidates.is_empty() {
-            return None;
-        }
-
-        let mut best_score = i64::MIN;
-        let mut best_node: Option<&Node> = None;
-
-        for node in candidates {
-            let score = Self::score_candidate(uref, node, import_index);
-
-            // NOTE: `>` means the first candidate the scan reaches wins a tie,
-            // and "first" is file enumeration order — so a tied resolution is
-            // not a function of the source (#378). Measured on this repository,
-            // ~2,834 call edges (12.7%) are decided by this tie, so making the
-            // tie deterministic re-points that many edges in one go. That is a
-            // large enough change to be decided deliberately rather than folded
-            // into a bug fix; the ambiguity refusal below removes the phantom
-            // edges #378 reported without touching it.
-            if score > best_score {
-                best_score = score;
-                best_node = Some(node);
-            }
-        }
-
-        best_node.cloned()
-    }
-
     /// Reports the candidates behind an unresolved reference, when the reason
     /// it went unresolved was a tie rather than an absence.
     ///
     /// Run only over refs that already failed, so it costs one name lookup and
     /// a rescore for a minority of references rather than threading state
-    /// through the parallel resolution pass. The alternative — plumbing a
-    /// second output up through every strategy — would touch code that has
-    /// nothing to do with ambiguity.
+    /// through the parallel resolution pass.
     ///
-    /// Returns `None` when the name is simply unknown, when only one candidate
-    /// exists (which would have resolved), or when a candidate wins outright,
-    /// so the record stays limited to genuine ties (#412).
+    /// Returns `None` when the name is simply unknown, or when a candidate won
+    /// outright (in which case the ref failed for some other reason), so the
+    /// record stays limited to genuine ties (#412).
     fn explain_ambiguity(&self, uref: &UnresolvedRef) -> Option<AmbiguousCall> {
         if uref.reference_kind != EdgeKind::Calls {
             return None;
@@ -1091,67 +1069,62 @@ impl<'a> ReferenceResolver<'a> {
             .copied()
             .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
-        if candidates.len() < 2 {
+
+        let winners = Self::find_best_matches(uref, &candidates, &self.import_index);
+        if winners.len() < 2 {
             return None;
         }
-
-        let best_score = candidates
-            .iter()
-            .map(|n| Self::score_candidate(uref, n, &self.import_index))
-            .max()?;
-        let tied: Vec<&&Node> = candidates
-            .iter()
-            .filter(|n| Self::score_candidate(uref, n, &self.import_index) == best_score)
-            .collect();
-        if tied.len() < 2 {
-            return None;
-        }
-
-        let mut candidate_node_ids: Vec<String> = tied.iter().map(|n| n.id.clone()).collect();
-        // Sorted so the record is stable across runs; the set is what matters,
-        // not the order the scan happened to produce it in.
-        candidate_node_ids.sort();
 
         Some(AmbiguousCall {
             from_node_id: uref.from_node_id.clone(),
             reference_name: uref.reference_name.clone(),
             file_path: uref.file_path.clone(),
             line: uref.line,
-            candidate_node_ids,
+            // `find_best_matches` already orders by id, so the record is
+            // stable across runs.
+            candidate_node_ids: winners.into_iter().map(|n| n.id).collect(),
         })
     }
 
-    /// [`Self::find_best_match`], but refusing to guess when the evidence
-    /// cannot separate the top candidates.
+    /// Every candidate tied for the best score.
     ///
-    /// Used only by the bare-name fallback, which is reached when a
-    /// `Type::method` or `recv.method` reference failed to match precisely and
-    /// all that is left is the trailing segment. There, two candidates tied on
-    /// every scoring dimension are genuinely indistinguishable, and picking one
-    /// is a coin flip that does damage in both directions: it fabricates a
-    /// caller for code that has none, and it attributes a real call to the
-    /// wrong target — which is how a live `StatusBar.dispose` ended up reported
-    /// as dead while `ProviderManager.dispose` absorbed its call (#378).
+    /// Returns the winners rather than *a* winner, because when several
+    /// candidates score identically the evidence genuinely does not separate
+    /// them and choosing one is a coin flip. Before this the comparison was
+    /// `if score > best_score`, so the first candidate the scan reached won —
+    /// and "first" is file enumeration order, which made the graph a function
+    /// of the filesystem rather than of the source (#378, #412).
     ///
-    /// No edge is the honest answer. A missing edge degrades an answer; a
-    /// fabricated one corrupts it, and #346 showed fabricated edges going on to
-    /// invent cross-language cycles and inflate `dead_code` false positives.
-    fn find_best_match_unambiguous(
+    /// Callers decide what a tie means for them. A single winner resolves
+    /// normally; several are recorded as an ambiguity with their candidates,
+    /// so the information reaches a reader who can judge it from the source
+    /// instead of being discarded or guessed at.
+    ///
+    /// Ordered by node id so the candidate list itself is stable across runs.
+    fn find_best_matches(
         uref: &UnresolvedRef,
         candidates: &[&Node],
         import_index: &HashMap<String, HashSet<String>>,
-    ) -> Option<Node> {
-        let best = Self::find_best_match(uref, candidates, import_index)?;
-        let best_score = Self::score_candidate(uref, &best, import_index);
-        let tied = candidates
-            .iter()
-            .filter(|n| n.id != best.id)
-            .filter(|n| Self::score_candidate(uref, n, import_index) == best_score)
-            .count();
-        if tied > 0 {
-            return None;
+    ) -> Vec<Node> {
+        if candidates.is_empty() {
+            return Vec::new();
         }
-        Some(best)
+
+        let scored: Vec<(i64, &&Node)> = candidates
+            .iter()
+            .map(|node| (Self::score_candidate(uref, node, import_index), node))
+            .collect();
+        let Some(best_score) = scored.iter().map(|(score, _)| *score).max() else {
+            return Vec::new();
+        };
+
+        let mut winners: Vec<Node> = scored
+            .into_iter()
+            .filter(|(score, _)| *score == best_score)
+            .map(|(_, node)| (*node).clone())
+            .collect();
+        winners.sort_by(|a, b| a.id.cmp(&b.id));
+        winners
     }
 }
 
@@ -1264,7 +1237,7 @@ fn resolve_from_filtered_named(
     }
     // Multiple kind-compatible candidates: pick the first one in the
     // same file as the reference if possible, otherwise the first
-    // overall. Real scoring (`find_best_match`) wants `&[Node]` and
+    // overall. Real scoring (`find_best_matches`) wants `&[Node]` and
     // these are `&[&Node]`; rather than re-allocate to satisfy it we
     // accept this coarser heuristic, which still beats the previous
     // behaviour of picking whatever node happened to match by name.
