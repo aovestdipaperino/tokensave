@@ -20,7 +20,8 @@ use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
 
 use super::graph_scope::{
-    decode_selected_inputs, qualify_result, select_graph, validate_local_inputs, GraphSelector,
+    collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
+    select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
@@ -613,6 +614,97 @@ impl McpServer {
         }
 
         None
+    }
+
+    /// Answers one query across several `graph_root`s (#376).
+    ///
+    /// Runs the ordinary selected-graph pipeline once per root — open, decode
+    /// inputs, dispatch, qualify — then interleaves the per-root payloads
+    /// round-robin by rank. Scores are BM25-derived per database and are not
+    /// calibrated between them, so sorting them together would compare numbers
+    /// that do not share a scale; rank is the only ordering both roots agree on.
+    ///
+    /// Roots that are worktrees of a repository already named are collapsed
+    /// first, and the response says which and why. Without that, a caller with
+    /// a repo and its worktrees among their roots gets a result set full of the
+    /// same symbol at slightly different line numbers, and a per-root cap does
+    /// not help because each worktree is its own root.
+    ///
+    /// A root that fails to open is reported inline rather than failing the
+    /// whole call: with several roots named, one unreadable index should not
+    /// cost the caller the answers from the others.
+    async fn handle_federated_call(
+        self: &Arc<Self>,
+        id: Value,
+        tool_name: &str,
+        arguments: &Value,
+        selection: &super::graph_scope::GraphSelection,
+    ) -> JsonRpcResponse {
+        let (kept, collapsed) = collapse_worktree_roots(selection.roots.clone());
+        let branch = selection.branch.clone();
+
+        let mut parts: Vec<(String, crate::mcp::tools::ToolResult)> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for root in kept {
+            let selector = GraphSelector {
+                root: root.clone(),
+                branch: branch.clone(),
+            };
+            let selected = match select_graph(selector, self.cg.project_root()).await {
+                Ok(selected) => selected,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", root.display()));
+                    continue;
+                }
+            };
+            let mut root_args = arguments.clone();
+            if let Err(error) = decode_selected_inputs(&selected, &mut root_args) {
+                failures.push(format!("{}: {error}", root.display()));
+                continue;
+            }
+            let outcome = handle_tool_call(&selected.cg, tool_name, root_args, None, None).await;
+            let mut result = match outcome {
+                Ok(result) => result,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", root.display()));
+                    continue;
+                }
+            };
+            if let Err(error) = qualify_result(&selected, &mut result).await {
+                failures.push(format!("{}: {error}", root.display()));
+                continue;
+            }
+            parts.push((selected.provenance_root.clone(), result));
+        }
+
+        if parts.is_empty() {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                format!("no graph_root could be queried: {}", failures.join("; ")),
+            );
+        }
+
+        let mut merged = merge_federated_results(parts, &collapsed);
+        if !failures.is_empty() {
+            if let Some(content) = merged
+                .value
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+            {
+                content.push(json!({
+                    "type": "text",
+                    "text": format!(
+                        "WARNING: {} root(s) could not be queried and are absent from these \
+                         results: {}",
+                        failures.len(),
+                        failures.join("; ")
+                    )
+                }));
+            }
+        }
+        JsonRpcResponse::success(id, merged.value)
     }
 
     /// Returns the active scope prefix, if the server was launched from a subdirectory.
@@ -1687,9 +1779,9 @@ impl McpServer {
             );
         }
 
-        let selected = if has_selector {
-            let selector = match GraphSelector::take(&mut arguments) {
-                Ok(Some(selector)) => selector,
+        let selection = if has_selector {
+            match GraphSelector::take(&mut arguments) {
+                Ok(Some(selection)) => Some(selection),
                 Ok(None) => unreachable!("has_selector guarantees a selector field"),
                 Err(error) => {
                     return JsonRpcResponse::error(
@@ -1698,7 +1790,41 @@ impl McpServer {
                         format!("invalid graph selector: {error}"),
                     );
                 }
-            };
+            }
+        } else {
+            None
+        };
+
+        // Federation (#376). Handled before the single-graph pipeline because
+        // it runs that pipeline once per root and merges. Selected calls are
+        // already outside savings accounting (#363), so an early return here
+        // loses nothing a single-root selected call would have recorded.
+        if let Some(selection) = selection.as_ref() {
+            if selection.is_federated() {
+                if !FEDERATABLE_TOOLS.contains(&tool_name) {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!(
+                            "tool '{tool_name}' answers about a single graph, so it accepts one \
+                             graph_root rather than an array; a union of two graphs is not a \
+                             larger answer. Federation is available for: {}",
+                            FEDERATABLE_TOOLS.join(", ")
+                        ),
+                    );
+                }
+                return self
+                    .handle_federated_call(id, tool_name, &arguments, selection)
+                    .await;
+            }
+        }
+
+        let selected = if let Some(selection) = selection {
+            let selector = selection
+                .selectors()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!("a selection always names at least one root"));
             let selected = match select_graph(selector, self.cg.project_root()).await {
                 Ok(selected) => selected,
                 Err(TokenSaveError::Config { message }) => {

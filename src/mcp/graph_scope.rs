@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -14,8 +15,38 @@ pub(crate) struct GraphSelector {
     pub(crate) branch: Option<String>,
 }
 
+/// One or more roots named by a single call.
+///
+/// `graph_root` accepts a string (one root, the #363 behaviour) or an array
+/// (federate across several, #376). The array form is only meaningful for
+/// tools whose answer is a list that can be merged; a whole-graph analysis
+/// describes the shape of one graph, and a union of two is not a bigger
+/// answer but a meaningless one, so those reject it.
+pub(crate) struct GraphSelection {
+    pub(crate) roots: Vec<PathBuf>,
+    pub(crate) branch: Option<String>,
+}
+
+impl GraphSelection {
+    /// True when the caller named more than one root, before collapsing.
+    pub(crate) fn is_federated(&self) -> bool {
+        self.roots.len() > 1
+    }
+
+    /// One selector per root, carrying the shared branch.
+    pub(crate) fn selectors(&self) -> Vec<GraphSelector> {
+        self.roots
+            .iter()
+            .map(|root| GraphSelector {
+                root: root.clone(),
+                branch: self.branch.clone(),
+            })
+            .collect()
+    }
+}
+
 impl GraphSelector {
-    pub(crate) fn take(arguments: &mut Value) -> Result<Option<Self>> {
+    pub(crate) fn take(arguments: &mut Value) -> Result<Option<GraphSelection>> {
         let object = arguments
             .as_object_mut()
             .ok_or_else(|| config_error("tool arguments must be a JSON object"))?;
@@ -36,11 +67,84 @@ impl GraphSelector {
             return Ok(None);
         };
 
-        Ok(Some(Self {
-            root: PathBuf::from(required_string(&root, "graph_root")?),
-            branch,
-        }))
+        let roots: Vec<PathBuf> = match &root {
+            Value::Array(items) => {
+                if items.is_empty() {
+                    return Err(config_error(
+                        "graph_root array must name at least one root; omit graph_root to query \
+                         the currently served graph",
+                    ));
+                }
+                items
+                    .iter()
+                    .map(|item| required_string(item, "graph_root").map(PathBuf::from))
+                    .collect::<Result<Vec<_>>>()?
+            }
+            _ => vec![PathBuf::from(required_string(&root, "graph_root")?)],
+        };
+
+        Ok(Some(GraphSelection { roots, branch }))
     }
+}
+
+/// Drops roots that are worktrees of a repository already named.
+///
+/// Worktrees of one repo share a `git rev-parse --git-common-dir`, and each
+/// carries its own `.tokensave/`, so they register as independent projects.
+/// Federating across them fills the result set with copies of the same symbol
+/// at slightly different line numbers, and a per-root cap does not help
+/// because each worktree *is* a root and sits under the cap — the failure
+/// @bobbypierce42 predicted from a machine with a dozen worktrees of one repo
+/// among 100+ tracked projects.
+///
+/// The first root named for a given common dir wins, so the caller's ordering
+/// decides which checkout represents the repo. Returns the kept roots and the
+/// paths that were collapsed away, which the response reports rather than
+/// discarding silently — a caller who named a root and never sees it again
+/// deserves to know why.
+///
+/// A root that is not a git repository, or where git is unavailable, is never
+/// collapsed: without the signal there is no evidence they are the same
+/// source, and guessing would drop a genuinely distinct project.
+pub(crate) fn collapse_worktree_roots(roots: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut seen_common_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut kept = Vec::new();
+    let mut collapsed = Vec::new();
+
+    for root in roots {
+        match git_common_dir(&root) {
+            Some(common) => {
+                if seen_common_dirs.insert(common) {
+                    kept.push(root);
+                } else {
+                    collapsed.push(root);
+                }
+            }
+            None => kept.push(root),
+        }
+    }
+    (kept, collapsed)
+}
+
+/// The repository a checkout belongs to, as an absolute path, or `None` when
+/// the path is not in a git repository or git cannot be run.
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let path = PathBuf::from(raw.trim());
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    absolute.canonicalize().ok()
 }
 
 pub(crate) struct GraphIdentity {
@@ -72,6 +176,121 @@ pub(crate) struct SelectedGraph {
     pub(crate) cg: TokenSave,
     pub(crate) identity: GraphIdentity,
     pub(crate) provenance_root: String,
+}
+
+/// Tools whose selected answer is a mergeable list, and may therefore be
+/// federated across several roots (#376).
+///
+/// Deliberately narrow. `tokensave_context` is excluded despite being named in
+/// the issue: it returns formatted prose sections rather than a ranked array,
+/// so "interleave by score with a per-root cap" has no meaning for it and
+/// concatenating per root is a different feature. Whole-graph analyses
+/// (`circular`, `hotspots`, `dsm`) are excluded because their answer is a
+/// property of one graph.
+pub(crate) const FEDERATABLE_TOOLS: &[&str] = &["tokensave_search", "tokensave_files"];
+
+/// How many entries each root may contribute to a federated answer.
+///
+/// A cap rather than a global sort because scores are BM25-derived per
+/// database and are not calibrated between them: sorting two roots' scores
+/// together compares numbers that do not share a scale. Round-robin by rank
+/// is the honest ordering, and the cap stops one large repository crowding
+/// out the others before the interleave even starts.
+const PER_ROOT_CAP: usize = 25;
+
+/// Merges per-root results into one response.
+///
+/// Each root's payload is parsed as a JSON array and the arrays are
+/// interleaved round-robin by rank: first result from every root, then second
+/// from every root, and so on. Entries keep the qualified node IDs and
+/// provenance that [`qualify_result`] already attached, so a caller can tell
+/// which graph any entry came from and can replay its ID safely.
+///
+/// A root whose payload is not an array is passed through as its own content
+/// block rather than dropped — better to hand back something the caller can
+/// read than to silently lose a root's answer to a shape assumption.
+pub(crate) fn merge_federated_results(
+    parts: Vec<(String, ToolResult)>,
+    collapsed: &[PathBuf],
+) -> ToolResult {
+    let mut touched_files: Vec<String> = Vec::new();
+    let mut roots: Vec<String> = Vec::new();
+    let mut arrays: Vec<Vec<Value>> = Vec::new();
+    let mut passthrough: Vec<Value> = Vec::new();
+
+    for (root, result) in parts {
+        roots.push(root);
+        touched_files.extend(result.touched_files.iter().cloned());
+        let blocks = result
+            .value
+            .get("content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut entries: Option<Vec<Value>> = None;
+        for block in blocks {
+            let Some(text) = block.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            // Skip the per-root provenance banner: the merged response carries
+            // one banner naming every root instead.
+            if text.starts_with("tokensave_graph: root=") {
+                continue;
+            }
+            match serde_json::from_str::<Value>(text) {
+                Ok(Value::Array(items)) => entries = Some(items),
+                _ => passthrough.push(block),
+            }
+        }
+        arrays.push(entries.unwrap_or_default());
+    }
+
+    // Round-robin by rank, capped per root.
+    let mut merged: Vec<Value> = Vec::new();
+    for position in 0..PER_ROOT_CAP {
+        let mut produced = false;
+        for entries in &arrays {
+            if let Some(entry) = entries.get(position) {
+                merged.push(entry.clone());
+                produced = true;
+            }
+        }
+        if !produced {
+            break;
+        }
+    }
+
+    let mut banner = format!(
+        "tokensave_graph: federated across {} root(s): {}",
+        roots.len(),
+        roots.join(", ")
+    );
+    if !collapsed.is_empty() {
+        let names: Vec<String> = collapsed.iter().map(|p| p.display().to_string()).collect();
+        // Reported rather than dropped silently: a caller who named a root and
+        // never sees it again is owed the reason.
+        let _ = write!(
+            banner,
+            "; collapsed {} worktree(s) sharing a repository with a root above: {}",
+            names.len(),
+            names.join(", ")
+        );
+    }
+
+    let mut content = vec![json!({"type": "text", "text": banner})];
+    content.push(json!({
+        "type": "text",
+        "text": serde_json::to_string_pretty(&Value::Array(merged))
+            .unwrap_or_else(|_| "[]".to_string())
+    }));
+    content.extend(passthrough);
+
+    touched_files.sort();
+    touched_files.dedup();
+    ToolResult {
+        value: json!({ "content": content }),
+        touched_files,
+    }
 }
 
 pub(crate) async fn select_graph(
@@ -695,7 +914,7 @@ mod tests {
 
         let selector = GraphSelector::take(&mut arguments).unwrap().unwrap();
 
-        assert_eq!(selector.root, Path::new("/tmp/other"));
+        assert_eq!(selector.roots, vec![PathBuf::from("/tmp/other")]);
         assert_eq!(selector.branch.as_deref(), Some("feature"));
         assert_eq!(arguments, json!({ "query": "sample" }));
     }
