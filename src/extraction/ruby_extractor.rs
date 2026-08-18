@@ -196,11 +196,14 @@ impl RubyExtractor {
             }
             // Bare `private`/`protected`/`public` mode switches parse as a plain
             // identifier statement; defensively also handle a no-arg call.
-            // A receiverless include/prepend/extend is a mixin directive; the two
-            // handlers are gated on disjoint method names, so both run.
+            // A receiverless include/prepend/extend is a mixin directive, and a
+            // receiverless attr_reader/attr_writer/attr_accessor is an attribute
+            // directive; all three handlers are gated on disjoint method names,
+            // so all three run.
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
                 Self::visit_mixin_directive(state, node);
+                Self::visit_attribute_directive(state, node);
                 Self::visit_expression_blocks(state, node);
             }
             // Statement containers: they wrap statements without opening a new
@@ -966,9 +969,21 @@ impl RubyExtractor {
                                     }
                                 }
                             }
+                            "call" | "method_call" => {
+                                // `private attr_reader :foo`: the arg is a nested
+                                // attribute-directive call. Ruby applies the directive to
+                                // it and returns without switching the default visibility
+                                // mode, so re-dispatch it here with `visibility_mode`
+                                // temporarily set, the same way the `"method"` arm above
+                                // does for `private def foo; end`.
+                                saw_arg = true;
+                                let saved_visibility_mode = state.visibility_mode.clone();
+                                state.visibility_mode = visibility.clone();
+                                Self::visit_attribute_directive(state, arg);
+                                state.visibility_mode = saved_visibility_mode;
+                            }
                             _ => {
-                                // Any other named argument (e.g. `private attr_reader :foo`,
-                                // whose arg is a nested `call`) is still an argument: Ruby
+                                // Any other named argument is still an argument: Ruby
                                 // applies the directive to it and returns without switching
                                 // the default visibility. Unnamed nodes (punctuation like
                                 // `(`, `)`, `,`) don't count, so `private()` still switches
@@ -1092,6 +1107,190 @@ impl RubyExtractor {
                 });
             }
         }
+    }
+
+    /// Extract `attr_reader`/`attr_writer`/`attr_accessor` declarations as
+    /// method nodes, the same shape `visit_method` would produce for the
+    /// equivalent `def` — `attr_reader :x` yields `x`, `attr_writer :x`
+    /// yields `x=`, `attr_accessor :x` yields both (confirmed against Ruby
+    /// 3.4.7's `Module#attr_*` return value and `instance_methods`).
+    ///
+    /// Guard sequence mirrors `visit_mixin_directive`: a call with an
+    /// explicit receiver is an ordinary method call that merely shares the
+    /// name, not the DSL (`obj.attr_accessor :x` raises `NoMethodError` on
+    /// any receiver but a `Module`, confirmed against Ruby 3.4.7); a
+    /// top-level directive (`class_depth == 0`) attaches to `Object`, which
+    /// has no node to hang it on, same reasoning as a top-level `include`.
+    /// `class_depth > 0` also covers `class << self`/`class << other` bodies
+    /// (they don't touch `class_depth`, but can't be reached with it at 0
+    /// either — same as `visit_method`'s `in_class` check), so the
+    /// `Function`-kind case `visit_method` has to handle never arises here.
+    ///
+    /// Only `simple_symbol` and `delimited_symbol` (static form) arguments
+    /// are resolvable at extraction time, reusing
+    /// `visit_visibility_directive`'s symbol handling; a string literal (also
+    /// valid Ruby here, but out of this PR's scope), a splat, or a plain
+    /// identifier (dynamic) argument emits nothing rather than fabricating a
+    /// node.
+    ///
+    /// Not guarded against firing from inside a `def` body (`def install;
+    /// attr_accessor :x; end`, which only actually defines `x`/`x=` if
+    /// `install` runs, and only on `A.new.install` — `x` is fabricated
+    /// unconditionally here regardless). This mirrors an identical
+    /// pre-existing gap in `visit_mixin_directive` (confirmed:
+    /// `include`/`attr_accessor` alike raise `NoMethodError` when the
+    /// ambient `self` inside the body is an instance rather than a module,
+    /// but neither handler checks `self_is_instance`); closing it for every
+    /// DSL directive handler at once is a separate improvement, not specific
+    /// to `attr_*`.
+    fn visit_attribute_directive(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let Some(method_node) = node.child_by_field_name("method") else {
+            return;
+        };
+        let method_name = state.node_text(method_node);
+        let (readable, writable) = match method_name.as_str() {
+            "attr_reader" => (true, false),
+            "attr_writer" => (false, true),
+            "attr_accessor" => (true, true),
+            _ => return,
+        };
+        if state.class_depth == 0 {
+            return;
+        }
+        let Some(parent_id) = state.parent_node_id().map(str::to_string) else {
+            return;
+        };
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+
+        let docstring = Self::extract_docstring(state, node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let kind = if state.singleton_scope == SingletonScope::Enclosing {
+            NodeKind::SingletonMethod
+        } else {
+            NodeKind::Method
+        };
+        let visibility = state.visibility_mode.clone();
+
+        let mut cursor = arguments.walk();
+        for arg in arguments.named_children(&mut cursor) {
+            let attr_name = match arg.kind() {
+                "simple_symbol" => Some(state.node_text(arg).trim_start_matches(':').to_string()),
+                "delimited_symbol" => Self::static_delimited_symbol_name(state, arg),
+                _ => None,
+            };
+            let Some(attr_name) = attr_name else {
+                continue;
+            };
+            if readable {
+                Self::emit_attribute_method(
+                    state,
+                    &attr_name,
+                    false,
+                    kind.clone(),
+                    visibility.clone(),
+                    &parent_id,
+                    docstring.clone(),
+                    (start_line, end_line, start_column, end_column),
+                );
+            }
+            if writable {
+                Self::emit_attribute_method(
+                    state,
+                    &attr_name,
+                    true,
+                    kind.clone(),
+                    visibility.clone(),
+                    &parent_id,
+                    docstring.clone(),
+                    (start_line, end_line, start_column, end_column),
+                );
+            }
+        }
+    }
+
+    /// Build and register one method node for one generated accessor
+    /// (`attr_name` for a reader, `attr_name=` for a writer), attached to
+    /// `parent_id`. Shares `visit_method`'s node shape (zeroed complexity
+    /// metrics — there's no body to measure), `Contains` edge, and
+    /// singleton-method-id bookkeeping so a later `private_class_method` can
+    /// retroactively find it.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_attribute_method(
+        state: &mut ExtractionState,
+        attr_name: &str,
+        is_writer: bool,
+        kind: NodeKind,
+        visibility: Visibility,
+        parent_id: &str,
+        docstring: Option<String>,
+        (start_line, end_line, start_column, end_column): (u32, u32, u32, u32),
+    ) {
+        let name = if is_writer {
+            format!("{attr_name}=")
+        } else {
+            attr_name.to_string()
+        };
+        // Synthetic signature matching what extract_method_signature would
+        // produce for the equivalent `def name` / `def name=(value)`.
+        let signature = Some(if is_writer {
+            format!("def {name}(value)")
+        } else {
+            format!("def {name}")
+        });
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature,
+            docstring,
+            visibility,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+        match state.singleton_scope {
+            SingletonScope::Enclosing => state.singleton_method_ids.push(id.clone()),
+            SingletonScope::Foreign => state.foreign_singleton_method_ids.push(id.clone()),
+            SingletonScope::Outside => {}
+        }
+
+        state.edges.push(Edge {
+            source: parent_id.to_string(),
+            target: id,
+            kind: EdgeKind::Contains,
+            line: Some(start_line),
+        });
     }
 
     /// Classify a call's block by the default-definee rule documented on
