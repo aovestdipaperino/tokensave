@@ -864,7 +864,7 @@ impl<'a> ReferenceResolver<'a> {
             // Cache the filtered subset in a local Vec so the downstream
             // helpers see the same shape. Allocating here only on the
             // shrunk path keeps the happy path zero-copy.
-            return resolve_from_filtered(uref, &kind_filtered);
+            return resolve_from_filtered(uref, &kind_filtered, &self.import_index);
         };
 
         if candidates.len() == 1 {
@@ -939,7 +939,12 @@ impl<'a> ReferenceResolver<'a> {
         let candidates: &[&Node] = if kind_filtered.len() == raw_candidates.len() {
             raw_candidates
         } else {
-            return resolve_from_filtered_named(uref, &kind_filtered, "simple-name-match");
+            return resolve_from_filtered_named(
+                uref,
+                &kind_filtered,
+                "simple-name-match",
+                &self.import_index,
+            );
         };
 
         if candidates.len() == 1 {
@@ -1218,14 +1223,19 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
 /// candidate list to a strict subset of `name_cache`. Mirrors the
 /// single-candidate / multi-candidate branches of
 /// `try_exact_name_match` but operates on the borrowed slice.
-fn resolve_from_filtered(uref: &UnresolvedRef, kind_filtered: &[&Node]) -> Option<ResolvedRef> {
-    resolve_from_filtered_named(uref, kind_filtered, "exact-match")
+fn resolve_from_filtered(
+    uref: &UnresolvedRef,
+    kind_filtered: &[&Node],
+    import_index: &HashMap<String, HashSet<String>>,
+) -> Option<ResolvedRef> {
+    resolve_from_filtered_named(uref, kind_filtered, "exact-match", import_index)
 }
 
 fn resolve_from_filtered_named(
     uref: &UnresolvedRef,
     kind_filtered: &[&Node],
     resolved_by: &str,
+    import_index: &HashMap<String, HashSet<String>>,
 ) -> Option<ResolvedRef> {
     if kind_filtered.len() == 1 {
         return Some(ResolvedRef {
@@ -1235,20 +1245,20 @@ fn resolve_from_filtered_named(
             resolved_by: resolved_by.to_string(),
         });
     }
-    // Multiple kind-compatible candidates: pick the first one in the
-    // same file as the reference if possible, otherwise the first
-    // overall. Real scoring (`find_best_matches`) wants `&[Node]` and
-    // these are `&[&Node]`; rather than re-allocate to satisfy it we
-    // accept this coarser heuristic, which still beats the previous
-    // behaviour of picking whatever node happened to match by name.
-    let pick = kind_filtered
-        .iter()
-        .find(|n| n.file_path == uref.file_path)
-        .copied()
-        .or_else(|| kind_filtered.first().copied())?;
+    // Multiple kind-compatible candidates: score them like every other
+    // multi-candidate path. This used to pick the first candidate in the
+    // reference's own file, else the first overall — and "first" is file
+    // enumeration order, the last place in the resolver where the graph
+    // was a function of the filesystem rather than of the source (#412).
+    // A lone winner resolves; a tie resolves to nothing and is reported
+    // by `explain_ambiguity` with its candidates.
+    let winners = ReferenceResolver::find_best_matches(uref, kind_filtered, import_index);
+    let [best] = winners.as_slice() else {
+        return None;
+    };
     Some(ResolvedRef {
         original: uref.clone(),
-        target_node_id: pick.id.clone(),
+        target_node_id: best.id.clone(),
         confidence: 0.65,
         resolved_by: resolved_by.to_string(),
     })
