@@ -1445,12 +1445,13 @@ fn dfs_cycle_path<'a>(
 /// score reported by `tokensave_complexity`.
 async fn test_reached_node_ids(cg: &TokenSave) -> Result<HashSet<String>> {
     use crate::types::EdgeKind;
-    let all_nodes = cg.get_all_nodes().await?;
     let all_edges = cg.get_all_edges().await?;
-    let node_to_file: HashMap<String, String> = all_nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.file_path.clone()))
-        .collect();
+    // Graph-wide id -> file_path, projected in SQL (#411). Every node is
+    // needed, because a `Calls` edge can originate anywhere and the question
+    // is whether its *source* lives in a test file — but the other twenty-six
+    // columns never are. This was the last `get_all_nodes()` call site in the
+    // handlers whose load was pure overhead.
+    let node_to_file: HashMap<String, String> = cg.db().get_node_paths().await?;
     let call_source_ids: Vec<String> = all_edges
         .iter()
         .filter(|e| e.kind == EdgeKind::Calls)
