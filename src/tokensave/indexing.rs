@@ -400,6 +400,14 @@ impl TokenSave {
             crate::memstats::record("index:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
+            // Ties are recorded rather than dropped, so a caller can pick the
+            // intended target and `dead_code` can tell "referenced, target
+            // unknown" from "uncalled" (#412).
+            let ambiguity_files: Vec<String> = self.scan_files();
+            let _ = self
+                .db
+                .replace_ambiguous_calls(&ambiguity_files, &resolution.ambiguous)
+                .await;
             all_edges.extend(resolver.create_edges(&resolution.resolved));
             // Propagate call edges across build-config variants (Rust `#[cfg]`
             // twins, Go platform files) so an inactive-platform definition is
@@ -749,6 +757,12 @@ impl TokenSave {
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolution = resolver.resolve_all(&unresolved);
+                // See the full-index site: ambiguities are kept, not dropped.
+                let ambiguity_files: Vec<String> = self.scan_files();
+                let _ = self
+                    .db
+                    .replace_ambiguous_calls(&ambiguity_files, &resolution.ambiguous)
+                    .await;
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
@@ -1095,6 +1109,12 @@ impl TokenSave {
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
                 crate::memstats::record("sync:resolve:done");
                 let resolution = resolver.resolve_all(&unresolved);
+                // See the full-index site: ambiguities are kept, not dropped.
+                let ambiguity_files: Vec<String> = self.scan_files();
+                let _ = self
+                    .db
+                    .replace_ambiguous_calls(&ambiguity_files, &resolution.ambiguous)
+                    .await;
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;

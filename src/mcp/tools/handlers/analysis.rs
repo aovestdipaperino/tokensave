@@ -419,6 +419,88 @@ pub(super) async fn handle_dead_code(
     })
 }
 
+/// Handles `tokensave_ambiguous_calls` tool calls (#412).
+///
+/// Surfaces the ties the resolver refused to guess at. Each candidate is
+/// returned with the detail needed to choose between them — name, kind, file
+/// and line — because the caller is a model with the source in front of it and
+/// can read the receiver's type, which the resolver cannot.
+pub(super) async fn handle_ambiguous_calls(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let path_prefix = effective_path(&args, scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(25, |v| v.min(200) as usize);
+
+    let ambiguous = cg.db().get_ambiguous_calls(path_prefix, limit).await?;
+
+    // One batched lookup for every candidate across every site, rather than a
+    // query per site.
+    let candidate_ids: Vec<String> = ambiguous
+        .iter()
+        .flat_map(|a| a.candidate_node_ids.iter().cloned())
+        .collect();
+    let candidates = cg.db().get_nodes_by_ids(&candidate_ids).await?;
+    let by_id: HashMap<&str, &crate::types::Node> =
+        candidates.iter().map(|n| (n.id.as_str(), n)).collect();
+
+    let mut touched_files: Vec<String> = Vec::new();
+    let items: Vec<Value> = ambiguous
+        .iter()
+        .map(|a| {
+            touched_files.push(a.file_path.clone());
+            let options: Vec<Value> = a
+                .candidate_node_ids
+                .iter()
+                .filter_map(|id| by_id.get(id.as_str()))
+                .map(|n| {
+                    touched_files.push(n.file_path.clone());
+                    json!({
+                        "id": n.id,
+                        "name": n.name,
+                        "kind": n.kind.as_str(),
+                        "file": n.file_path,
+                        "line": super::display_line(n.start_line),
+                        "qualified_name": n.qualified_name,
+                    })
+                })
+                .collect();
+            json!({
+                "call_site": {
+                    "from_node_id": a.from_node_id,
+                    "file": a.file_path,
+                    "line": super::display_line(a.line),
+                },
+                "reference": a.reference_name,
+                "candidates": options,
+            })
+        })
+        .collect();
+
+    touched_files.sort();
+    touched_files.dedup();
+
+    let output = json!({
+        "ambiguous_call_count": items.len(),
+        "note": "These call sites produce no `calls` edge, so they are absent from \
+                 callers/callees/impact, and their candidates are excluded from \
+                 dead_code. Pick the intended target from the receiver's type.",
+        "ambiguous_calls": items,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
 /// Handles `tokensave_module_api` tool calls.
 pub(super) async fn handle_module_api(
     cg: &TokenSave,

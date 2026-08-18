@@ -591,11 +591,18 @@ impl<'a> ReferenceResolver<'a> {
 
         let resolved_count = resolved.len();
 
+        // Why each remaining ref failed, where the reason was a tie (#412).
+        let ambiguous: Vec<AmbiguousCall> = unresolved
+            .iter()
+            .filter_map(|uref| self.explain_ambiguity(uref))
+            .collect();
+
         ResolutionResult {
             resolved,
             unresolved,
             total,
             resolved_count,
+            ambiguous,
         }
     }
 
@@ -1059,6 +1066,59 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         best_node.cloned()
+    }
+
+    /// Reports the candidates behind an unresolved reference, when the reason
+    /// it went unresolved was a tie rather than an absence.
+    ///
+    /// Run only over refs that already failed, so it costs one name lookup and
+    /// a rescore for a minority of references rather than threading state
+    /// through the parallel resolution pass. The alternative — plumbing a
+    /// second output up through every strategy — would touch code that has
+    /// nothing to do with ambiguity.
+    ///
+    /// Returns `None` when the name is simply unknown, when only one candidate
+    /// exists (which would have resolved), or when a candidate wins outright,
+    /// so the record stays limited to genuine ties (#412).
+    fn explain_ambiguity(&self, uref: &UnresolvedRef) -> Option<AmbiguousCall> {
+        if uref.reference_kind != EdgeKind::Calls {
+            return None;
+        }
+        let simple_name = simple_ref_name(&uref.reference_name);
+        let raw = self.name_cache.get(simple_name)?;
+        let candidates: Vec<&Node> = raw
+            .iter()
+            .copied()
+            .filter(|n| kind_compatible(uref, &n.kind))
+            .collect();
+        if candidates.len() < 2 {
+            return None;
+        }
+
+        let best_score = candidates
+            .iter()
+            .map(|n| Self::score_candidate(uref, n, &self.import_index))
+            .max()?;
+        let tied: Vec<&&Node> = candidates
+            .iter()
+            .filter(|n| Self::score_candidate(uref, n, &self.import_index) == best_score)
+            .collect();
+        if tied.len() < 2 {
+            return None;
+        }
+
+        let mut candidate_node_ids: Vec<String> = tied.iter().map(|n| n.id.clone()).collect();
+        // Sorted so the record is stable across runs; the set is what matters,
+        // not the order the scan happened to produce it in.
+        candidate_node_ids.sort();
+
+        Some(AmbiguousCall {
+            from_node_id: uref.from_node_id.clone(),
+            reference_name: uref.reference_name.clone(),
+            file_path: uref.file_path.clone(),
+            line: uref.line,
+            candidate_node_ids,
+        })
     }
 
     /// [`Self::find_best_match`], but refusing to guess when the evidence
