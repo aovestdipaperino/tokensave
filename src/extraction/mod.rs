@@ -1,5 +1,6 @@
 // Lite — always available (no cfg needed)
 mod astro_extractor;
+pub(crate) mod c_api_macro;
 mod c_extractor;
 mod cpp_extractor;
 mod csharp_extractor;
@@ -375,6 +376,26 @@ impl LanguageRegistry {
             .map(std::convert::AsRef::as_ref)
     }
 
+    /// `.h` is the one extension naming no single language .: its text settles it, C++ parsed as C
+    /// yielding no class node at all. Everything else routes by extension.
+    pub fn extractor_for_source(&self, path: &str, source: &str) -> Option<&dyn LanguageExtractor> {
+        if path
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("h"))
+        {
+            if let Some(extractor) = header_dialect(source).and_then(|lang| {
+                self.extractors
+                    .iter()
+                    .find(|e| e.language_name() == lang)
+                    .map(std::convert::AsRef::as_ref)
+            }) {
+                return Some(extractor);
+            }
+        }
+        self.extractor_for_file(path)
+    }
+
     /// Returns the extractor matching a language name (case-insensitive).
     /// A registered extension (e.g. `"py"`) is accepted as an alias.
     pub fn extractor_for_language(&self, language: &str) -> Option<&dyn LanguageExtractor> {
@@ -405,5 +426,342 @@ impl LanguageRegistry {
 impl Default for LanguageRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A signature lifted from source carries its line breaks, indentation and blanked-macro runs.
+pub(crate) fn collapse_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `None` = plain C. Comments are skipped .: prose naming a class stays C, and an `extern "C"`
+/// guard is deliberately no marker - such a header IS C to a C++ reader too.
+pub(crate) fn header_dialect(source: &str) -> Option<&'static str> {
+    const OBJC: [&str; 4] = ["@interface", "@protocol", "@implementation", "@property"];
+    const CPP_PUNCTUATED: [&str; 5] = ["::", "public:", "private:", "protected:", "extern \"C++\""];
+    const CPP_KEYWORDS: [&str; 17] = [
+        "class",
+        "namespace",
+        "template",
+        "virtual",
+        "operator",
+        "nullptr",
+        "constexpr",
+        "explicit",
+        "friend",
+        "override",
+        "noexcept",
+        "decltype",
+        "typename",
+        "mutable",
+        "using",
+        "static_cast",
+        "reinterpret_cast",
+    ];
+
+    let mut in_block_comment = false;
+    let mut cpp_seen = false;
+    let mut record_bodies = RecordBodyDepth::default();
+    for line in source.lines() {
+        let code = strip_comments(line, &mut in_block_comment);
+        if OBJC.iter().any(|m| code.contains(m)) {
+            return Some("Objective-C");
+        }
+        cpp_seen = cpp_seen
+            || CPP_PUNCTUATED.iter().any(|m| code.contains(m))
+            || CPP_KEYWORDS.iter().any(|w| contains_word(&code, w))
+            || (record_bodies.inside() && is_default_member_initializer(&code));
+        record_bodies.consume(&code);
+    }
+    cpp_seen.then_some("C++")
+}
+
+/// A `class` body settles the dialect itself; in these two only a member init gives C++ away.
+#[derive(Default)]
+struct RecordBodyDepth {
+    open: Vec<bool>,
+    keyword_pending: bool,
+    last_significant: Option<char>,
+}
+
+impl RecordBodyDepth {
+    fn inside(&self) -> bool {
+        self.open.last().copied().unwrap_or(false)
+    }
+
+    fn consume(&mut self, code: &str) {
+        let mut word = String::new();
+        for c in code.chars() {
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+                continue;
+            }
+            self.take_word(&word);
+            word.clear();
+            match c {
+                // `int f(struct Row* r) {` names a struct and opens a
+                // function body .: the `)` decides, not the keyword.
+                '{' => {
+                    let record = self.keyword_pending && self.last_significant != Some(')');
+                    self.open.push(record);
+                    self.keyword_pending = false;
+                }
+                '}' | ';' => {
+                    if c == '}' {
+                        self.open.pop();
+                    }
+                    self.keyword_pending = false;
+                }
+                _ => {}
+            }
+            if !c.is_whitespace() {
+                self.last_significant = Some(c);
+            }
+        }
+        self.take_word(&word);
+    }
+
+    fn take_word(&mut self, word: &str) {
+        if word.is_empty() {
+            return;
+        }
+        if word == "struct" || word == "union" {
+            self.keyword_pending = true;
+        }
+        self.last_significant = word.chars().next_back();
+    }
+}
+
+/// A member with a default value, which no C struct may carry; a `(` first means a default arg.
+fn is_default_member_initializer(code: &str) -> bool {
+    let Some((declaration, _)) = code.split_once('=') else {
+        return false;
+    };
+    if declaration.contains('(') || declaration.contains('[') {
+        return false;
+    }
+    let words = declaration
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .count();
+    words >= 2
+        && declaration
+            .trim_end()
+            .ends_with(|c: char| c.is_alphanumeric() || c == '_')
+}
+
+/// String literals are untracked - a `//` inside one costs a marker at worst, never invents one.
+fn strip_comments(line: &str, in_block_comment: &mut bool) -> String {
+    let mut code = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if *in_block_comment {
+            if c == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                *in_block_comment = false;
+            }
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => break,
+                Some('*') => {
+                    chars.next();
+                    *in_block_comment = true;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        code.push(c);
+    }
+    code
+}
+
+/// Whole identifier, never a substring of one.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    let mut rest = haystack;
+    while let Some(idx) = rest.find(word) {
+        let tail = &rest[idx + word.len()..];
+        let is_edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        if is_edge(rest[..idx].chars().next_back()) && is_edge(tail.chars().next()) {
+            return true;
+        }
+        rest = tail;
+    }
+    false
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::types::NodeKind;
+
+    fn language_of(path: &str, source: &str) -> Option<String> {
+        let registry = LanguageRegistry::new();
+        registry
+            .extractor_for_source(path, source)
+            .map(|e| e.language_name().to_string())
+    }
+
+    const CPP_HEADER: &str = r"
+#pragma once
+
+class Widget
+{
+public:
+    void Start();
+private:
+    int Total;
+};
+";
+
+    #[test]
+    fn cpp_header_routes_to_cpp_not_c() {
+        assert_eq!(language_of("widget.h", CPP_HEADER).as_deref(), Some("C++"));
+        assert_eq!(language_of("widget.H", CPP_HEADER).as_deref(), Some("C++"));
+    }
+
+    #[test]
+    fn cpp_header_yields_class_members_once_routed() {
+        let registry = LanguageRegistry::new();
+        let extractor = registry
+            .extractor_for_source("widget.h", CPP_HEADER)
+            .expect("an extractor for a .h");
+        let result = extractor.extract("widget.h", CPP_HEADER);
+        let kinds: Vec<_> = result
+            .nodes
+            .iter()
+            .map(|n| (n.kind.clone(), n.name.as_str()))
+            .collect();
+        assert!(
+            kinds.contains(&(NodeKind::Class, "Widget")),
+            "nodes: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&(NodeKind::Method, "Start")),
+            "nodes: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&(NodeKind::Field, "Total")),
+            "nodes: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn plain_c_header_stays_c() {
+        let source = r"
+#ifndef LIST_H
+#define LIST_H
+struct List { int len; };
+int list_len(struct List* l);
+#endif
+";
+        assert_eq!(language_of("list.h", source).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn c_header_naming_a_class_in_prose_stays_c() {
+        let source = r"
+/* Allocates one node per class of error; see the template in docs. */
+// A namespace is not a thing here.
+int alloc_node(int kind);
+";
+        assert_eq!(language_of("alloc.h", source).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn extern_c_guard_alone_stays_c() {
+        let source = r#"
+#ifdef __cplusplus
+extern "C" {
+#endif
+int api_call(int x);
+#ifdef __cplusplus
+}
+#endif
+"#;
+        assert_eq!(language_of("api.h", source).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn objc_header_routes_to_objc() {
+        let source = r"
+@interface Widget : NSObject
+- (void)start;
+@end
+";
+        assert_eq!(
+            language_of("Widget.h", source).as_deref(),
+            Some("Objective-C")
+        );
+    }
+
+    #[test]
+    fn other_extensions_ignore_the_source() {
+        assert_eq!(language_of("widget.c", CPP_HEADER).as_deref(), Some("C"));
+        assert_eq!(
+            language_of("widget.hpp", CPP_HEADER).as_deref(),
+            Some("C++")
+        );
+        assert_eq!(
+            language_of("widget.rs", CPP_HEADER).as_deref(),
+            Some("Rust")
+        );
+    }
+
+    #[test]
+    fn a_struct_with_default_member_values_is_cpp() {
+        let source = r"
+struct FCameraTunables
+{
+  float HalflifePos = 0.4f;
+  int32 Steps = 3;
+};
+";
+        assert_eq!(language_of("tunables.h", source).as_deref(), Some("C++"));
+    }
+
+    #[test]
+    fn a_scope_operator_is_cpp() {
+        let source = r"
+struct FPose { FVector2D Offset; };
+void reset(struct FPose* p);
+static const int Limit = Limits::Max;
+";
+        assert_eq!(language_of("pose.h", source).as_deref(), Some("C++"));
+    }
+
+    #[test]
+    fn a_c_initializer_outside_a_record_stays_c() {
+        let source = r"
+static const int kLimit = 4;
+struct Row { int a; };
+static struct Row rows[2] = { { 1 }, { 2 } };
+int row_count(void);
+";
+        assert_eq!(language_of("rows.h", source).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn a_c_function_body_initializer_stays_c() {
+        let source = r"
+struct Row { int a; };
+static int row_first(struct Row* r) {
+  int value = r->a;
+  return value;
+}
+";
+        assert_eq!(language_of("rows.h", source).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn a_word_marker_needs_whole_identifier_boundaries() {
+        let source = r"
+int classify(int x);
+struct namespaced { int templates; };
+";
+        assert_eq!(language_of("words.h", source).as_deref(), Some("C"));
     }
 }

@@ -587,3 +587,89 @@ int list_len(struct List* l);
     let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"List"), "nodes: {:?}", names);
 }
+
+#[test]
+fn test_c_array_declarator_globals() {
+    let source = r#"
+static const char* const CNameTable[] = {"a", "b"};
+const int CNumberTable[] = {1, 2, 3};
+char CBuffer[64];
+static const int CScalar = 3;
+"#;
+    let result = CExtractor.extract("tables.c", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(statics.contains(&"CNameTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"CNumberTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"CBuffer"), "statics: {statics:?}");
+    assert!(statics.contains(&"CScalar"), "statics: {statics:?}");
+}
+
+#[test]
+fn test_c_export_macro_struct_and_function() {
+    let source = r#"
+struct LIBFOO_API foo_state
+{
+    int count;
+};
+
+LIBFOO_API int foo_reset(struct foo_state* s);
+"#;
+    let result = CExtractor.extract("foo.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    assert!(
+        nodes.contains(&(NodeKind::Struct, "foo_state")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Function, "foo_reset")),
+        "nodes: {nodes:?}"
+    );
+}
+
+#[test]
+fn test_c_struct_fields_inside_a_preprocessor_guard() {
+    let source = r#"
+struct Row {
+    int a;
+#if !SHIPPING
+    int debug_id;
+#endif
+    int b;
+};
+"#;
+    let result = CExtractor.extract("row.h", source);
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .map(|n| n.name.as_str())
+        .collect();
+    for expected in ["a", "debug_id", "b"] {
+        assert!(fields.contains(&expected), "fields: {fields:?}");
+    }
+}
+
+#[test]
+fn test_c_caps_named_type_keeps_its_declaration() {
+    let source = r#"
+HANDLE const g_handle = 0;
+HANDLE g_plain = 0;
+MYLIB_API const int k_limit = 4;
+"#;
+    let result = CExtractor.extract("globals.c", source);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    for expected in ["g_handle", "g_plain", "k_limit"] {
+        assert!(names.contains(&expected), "names: {names:?}");
+    }
+}

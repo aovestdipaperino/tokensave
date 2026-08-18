@@ -135,9 +135,12 @@ fn process_request(registry: &LanguageRegistry, req: &ExtractRequest) -> Extract
             data: None,
         };
     };
-    let Some(extractor) =
-        crate::project_manifest::resolve_extractor(registry, &req.project_root, &req.file_path)
-    else {
+    let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
+        registry,
+        &req.project_root,
+        &req.file_path,
+        &source,
+    ) else {
         return ExtractResponse {
             file_path: req.file_path.clone(),
             data: None,

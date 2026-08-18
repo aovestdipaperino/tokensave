@@ -82,6 +82,9 @@ impl CppExtractor {
     /// Extract code graph nodes and edges from a C++ source file.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+        // Space-for-byte .: every offset below still addresses the real file.
+        let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
+        let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
 
         let tree = match Self::parse_source(source) {
@@ -175,6 +178,7 @@ impl CppExtractor {
             "namespace_definition" => Self::visit_namespace(state, node),
             "template_declaration" => Self::visit_template(state, node),
             "using_declaration" => Self::visit_using_declaration(state, node),
+            "alias_declaration" => Self::visit_alias_declaration(state, node),
             "preproc_def" => Self::visit_preproc_def(state, node),
             "preproc_include" => Self::visit_preproc_include(state, node),
             "access_specifier" => Self::visit_access_specifier(state, node),
@@ -506,9 +510,9 @@ impl CppExtractor {
     fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            text[..brace_pos].trim().to_string()
+            crate::extraction::collapse_ws(text[..brace_pos].trim())
         } else {
-            text.trim().trim_end_matches(';').trim().to_string()
+            crate::extraction::collapse_ws(text.trim().trim_end_matches(';').trim())
         }
     }
 
@@ -561,7 +565,9 @@ impl CppExtractor {
         if let Some((class_name, _)) = state.node_stack.last() {
             if name == *class_name {
                 let text = state.node_text(node);
-                let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+                let signature = Some(crate::extraction::collapse_ws(
+                    text.trim().trim_end_matches(';').trim(),
+                ));
                 let docstring = Self::extract_docstring(state, node);
                 let start_line = node.start_position().row as u32;
                 let end_line = node.end_position().row as u32;
@@ -617,7 +623,9 @@ impl CppExtractor {
         }
 
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -702,7 +710,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
@@ -745,7 +755,9 @@ impl CppExtractor {
         let name =
             Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -812,7 +824,9 @@ impl CppExtractor {
         };
 
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -865,21 +879,35 @@ impl CppExtractor {
     /// Extract a variable name from a declaration node.
     fn extract_variable_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(init_decl) = find_child_by_kind(node, "init_declarator") {
-            if let Some(ident) = find_child_by_kind(init_decl, "identifier") {
-                return Some(state.node_text(ident));
+            if let Some(name) = Self::declarator_identifier(state, init_decl) {
+                return Some(name);
             }
-            if let Some(ptr_decl) = find_child_by_kind(init_decl, "pointer_declarator") {
-                if let Some(ident) = find_child_by_kind(ptr_decl, "identifier") {
-                    return Some(state.node_text(ident));
+        }
+        Self::declarator_identifier(state, node)
+    }
+
+    /// Declarators nest .: `const char* const T[]` wraps the identifier twice. `function_declarator`
+    /// is deliberately absent - `visit_declaration` routes a prototype before the name is asked.
+    fn declarator_identifier(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "identifier" => return Some(state.node_text(child)),
+                    "pointer_declarator"
+                    | "array_declarator"
+                    | "reference_declarator"
+                    | "parenthesized_declarator" => {
+                        if let Some(name) = Self::declarator_identifier(state, child) {
+                            return Some(name);
+                        }
+                    }
+                    _ => {}
                 }
-            }
-        }
-        if let Some(ident) = find_child_by_kind(node, "identifier") {
-            return Some(state.node_text(ident));
-        }
-        if let Some(ptr_decl) = find_child_by_kind(node, "pointer_declarator") {
-            if let Some(ident) = find_child_by_kind(ptr_decl, "identifier") {
-                return Some(state.node_text(ident));
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
             }
         }
         None
@@ -936,7 +964,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1023,7 +1053,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Struct, name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1105,7 +1137,19 @@ impl CppExtractor {
                     "declaration" => Self::visit_declaration(state, child),
                     "class_specifier" => Self::visit_class_specifier(state, child),
                     "struct_specifier" => Self::visit_struct_specifier(state, child),
+                    "union_specifier" => Self::visit_standalone_union(state, child),
+                    "enum_specifier" => Self::visit_standalone_enum(state, child),
+                    "type_definition" => Self::visit_type_definition(state, child),
+                    "alias_declaration" => Self::visit_alias_declaration(state, child),
+                    "using_declaration" => Self::visit_using_declaration(state, child),
                     "template_declaration" => Self::visit_template(state, child),
+                    // Members of every branch are extracted, as at file scope: deciding which one
+                    // compiles needs a preprocessor, and dropping all of them is strictly worse.
+                    // A `friend` definition is a member the class body is the only place to find.
+                    "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+                    | "preproc_elifdef" | "friend_declaration" => {
+                        Self::visit_class_body(state, child);
+                    }
                     _ => {}
                 }
                 if !cursor.goto_next_sibling() {
@@ -1117,10 +1161,29 @@ impl CppExtractor {
 
     /// Visit a `field_declaration` inside a class/struct body.
     fn visit_field_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        // Check if this is actually a method declaration (has a function_declarator)
-        if Self::find_descendant_by_kind(node, "function_declarator").is_some() {
-            Self::visit_class_method_declaration(state, node);
-            return;
+        // A nested type arrives wrapped in the field_declaration that declares it, with or without
+        // a member of it .: extract the type first, then fall through for the member.
+        if let Some(specifier) = find_child_by_kind(node, "enum_specifier") {
+            Self::visit_standalone_enum(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "class_specifier") {
+            Self::visit_class_specifier(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "struct_specifier") {
+            Self::visit_struct_specifier(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "union_specifier") {
+            Self::visit_standalone_union(state, specifier);
+        }
+
+        // Check if this is actually a method declaration (has a function_declarator).
+        // `int (*Resolve)(const char*)` wraps its name in a parenthesized_declarator instead: a
+        // function POINTER member, whose name a method visit never finds.
+        if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
+            if find_child_by_kind(declarator, "parenthesized_declarator").is_none() {
+                Self::visit_class_method_declaration(state, node);
+                return;
+            }
         }
 
         // It's a field
@@ -1150,7 +1213,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
@@ -1222,7 +1287,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Namespace, &name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1292,8 +1359,12 @@ impl CppExtractor {
         let text = state.node_text(node);
         let signature = text
             .find('{')
-            .map(|pos| text[..pos].trim().to_string())
-            .or_else(|| Some(text.trim().trim_end_matches(';').trim().to_string()));
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()))
+            .or_else(|| {
+                Some(crate::extraction::collapse_ws(
+                    text.trim().trim_end_matches(';').trim(),
+                ))
+            });
 
         let graph_node = Node {
             id: id.clone(),
@@ -1420,7 +1491,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1491,7 +1564,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1562,7 +1637,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1625,7 +1702,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1699,7 +1778,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1789,6 +1870,65 @@ impl CppExtractor {
     // -------------------------------------------------------
 
     /// Visit a using declaration.
+    /// `using Name = T;` names a type; `using_declaration` is the `using ns::Name;` form and does
+    /// not.
+    fn visit_alias_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(name_node) = find_child_by_kind(node, "type_identifier") else {
+            return;
+        };
+        let name = state.node_text(name_node);
+        let text = state.node_text(node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::TypeAlias, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::TypeAlias,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
+            docstring: None,
+            visibility: state.access_specifier.clone(),
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id,
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+            });
+        }
+    }
+
     fn visit_using_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let text = state.node_text(node);
         let name = text
@@ -1819,7 +1959,9 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1868,7 +2010,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Union, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1926,7 +2070,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Enum, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -2007,7 +2153,7 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -2070,7 +2216,7 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -2147,7 +2293,7 @@ impl CppExtractor {
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,

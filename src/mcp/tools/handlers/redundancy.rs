@@ -137,23 +137,28 @@ async fn ensure_fingerprints(
     let mut out: HashMap<String, Fingerprint> = HashMap::new();
 
     for (file_path, file_nodes) in by_file {
+        // Deleted between sync and this call -> skip. Read first: the source, not the extension,
+        // names a `.h`'s language.
+        let abs = project_root.join(&file_path);
+        let Ok(source) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+
         // Figure out which tree-sitter language this file maps to.
-        let Some(extractor) =
-            crate::project_manifest::resolve_extractor(&registry, &project_root, &file_path)
-        else {
+        let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
+            &registry,
+            &project_root,
+            &file_path,
+            &source,
+        ) else {
             continue;
         };
         let lang_key = extractor_to_language_key(extractor.language_name());
         let Some(lang_key) = lang_key else {
             continue;
         };
-
-        // Read the file contents. Silently skip on read failure (the file
-        // may have been deleted between sync and this call).
-        let abs = project_root.join(&file_path);
-        let Ok(source) = std::fs::read_to_string(&abs) else {
-            continue;
-        };
+        // Same bytes the extractor parsed, or a stored coordinate lands in a different tree.
+        let source = crate::extraction::c_api_macro::source_for_parse(lang_key, &source);
 
         // Cheap path: every cached fingerprint whose source_hash matches
         // the current body content is reusable without re-parsing.

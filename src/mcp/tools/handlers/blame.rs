@@ -68,19 +68,19 @@ async fn resolve_target(
         .ok_or_else(|| TokenSaveError::Config {
             message: format!("symbol '{symbol}' not found after filtering"),
         })?;
-    let lang_key = blame_engine::ts_lang_key_from_path(&node.file_path).ok_or_else(|| {
-        TokenSaveError::Config {
-            message: format!(
-                "no tree-sitter grammar for file extension of '{}'",
-                node.file_path
-            ),
-        }
-    })?;
-
     let abs_path = cg.project_root().join(&node.file_path);
     let source = crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
         message: format!("cannot read {}: {e}", node.file_path),
     })?;
+    let lang_key =
+        blame_engine::ts_lang_key_for_source(&node.file_path, &source).ok_or_else(|| {
+            TokenSaveError::Config {
+                message: format!(
+                    "no tree-sitter grammar for file extension of '{}'",
+                    node.file_path
+                ),
+            }
+        })?;
     let fp =
         blame_engine::compute_target_fingerprint(&source, lang_key, node.start_line, node.end_line)
             .ok_or_else(|| TokenSaveError::Config {
