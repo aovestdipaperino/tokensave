@@ -76,10 +76,14 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
     properties.insert(
         "graph_root".to_string(),
         json!({
-            "type": "string",
+            "type": ["string", "array"],
+            "items": { "type": "string" },
             "description": "Exact absolute initialized project root to query. Omit to query \
              the project this server already serves; when present it must name a different \
-             project."
+             project. `tokensave_search` and `tokensave_files` also accept an array of roots \
+             and answer across all of them at once, interleaving results by rank; roots that \
+             are worktrees of a repository already named are collapsed, and the response says \
+             which. Every other tool answers about a single graph and rejects an array."
         }),
     );
     properties.insert(
@@ -2712,12 +2716,32 @@ mod tests {
             );
 
             if expected {
-                assert_eq!(graph_root.unwrap()["type"], "string", "{}", definition.name);
+                // `["string", "array"]`, not `"string"`: a single root is
+                // still a string, and `search`/`files` also accept an array to
+                // federate across roots (#376). The union is asserted rather
+                // than loosened to "any type" so a future edit cannot quietly
+                // widen what callers may pass.
+                assert_eq!(
+                    graph_root.unwrap()["type"],
+                    serde_json::json!(["string", "array"]),
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_root.unwrap()["items"]["type"],
+                    "string",
+                    "{} array form must hold strings",
+                    definition.name
+                );
                 assert_eq!(
                     graph_root.unwrap()["description"],
                     "Exact absolute initialized project root to query. Omit to query the \
                      project this server already serves; when present it must name a different \
-                     project.",
+                     project. `tokensave_search` and `tokensave_files` also accept an array of \
+                     roots and answer across all of them at once, interleaving results by rank; \
+                     roots that are worktrees of a repository already named are collapsed, and \
+                     the response says which. Every other tool answers about a single graph and \
+                     rejects an array.",
                     "{}",
                     definition.name
                 );
