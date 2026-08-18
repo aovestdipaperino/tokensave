@@ -8,6 +8,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Added
+- **Ruby `attr_reader`/`attr_writer`/`attr_accessor` now emit method nodes.** A receiverless `attr_*` call in a class or module body is indexed the same way an equivalent `def` would be — same kind, visibility, parent, and `Contains` edge — including inside `class << self` and Concern `included`/`class_methods` blocks. Previously these accessors were invisible to search, callers, and dead-code analysis.
+
+### Added
 - **`tokensave_ambiguous_calls`: the candidates behind a call the resolver could not pin down (#412).** #378 stopped fabricating an edge when several targets tied, which was right — an edge asserts a specific target and "one of these" is not one — but it discarded what the resolver knew. The candidates are now recorded (schema v17, `ambiguous_calls`) and readable, so the ambiguity becomes data rather than silence. A model has the source in front of it and can usually tell which `dispose` was meant from the receiver's type, which a scoring heuristic cannot see; it can only do that if it is told there was a choice. Each call site is returned with its unresolved reference and every candidate's name, kind, file, line and qualified name, scoped by `path` and capped (default 25, max 200 — a hard cap, not a page, since a large codebase can hold thousands). **`dead_code` now excludes symbols named as an ambiguity candidate**: having refused the edge, reporting the target as uncalled would trade a fabricated edge for a fabricated finding, and a finding reads as more actionable than an edge — the same mistake #346 measured at a 97% false-positive rate, in the other direction. No edges are created, so the refusal's guarantee is intact. Ambiguity is computed only for references that already failed to resolve, so the cost falls on a minority of refs rather than threading state through the parallel resolution pass.
 
 ### Fixed
