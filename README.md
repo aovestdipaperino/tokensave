@@ -500,7 +500,8 @@ is ignored in this list, so it cannot be used to stop a language being parsed.
 | Tool | Purpose |
 |------|---------|
 | `tokensave_complexity` | Rank functions by cyclomatic & cognitive complexity, nesting depth, Halstead metrics, maintainability index, CRAP, and safety metrics |
-| `tokensave_dead_code` | Find unreachable symbols (no incoming edges) |
+| `tokensave_dead_code` | Find unreachable symbols (no incoming edges; symbols named as an ambiguity candidate are excluded) |
+| `tokensave_ambiguous_calls` | Call sites the resolver could not pin to one target, with every tied candidate |
 | `tokensave_god_class` | Find classes with too many members |
 | `tokensave_coupling` | Rank files by fan-in/fan-out |
 | `tokensave_inheritance_depth` | Find the deepest inheritance hierarchies |

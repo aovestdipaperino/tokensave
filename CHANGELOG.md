@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Changed
+- **Documentation caught up with the resolver as it actually behaves.** `docs/INDEX-DESIGN.md` described Phase 3 as "a scoring heuristic picks the best" candidate, which stopped being true in `e8a8a8a`/`ab9ff29`: every candidate tied for the best score is returned, a lone winner resolves and a tie produces no edge and an `ambiguous_calls` record. The scoring table there was also missing three of its seven signals (directory proximity, language match, import match), the `ambiguous_calls` table was undocumented, and the stated schema version was **5** against an actual **17**. `tokensave_ambiguous_calls` is now listed in the tool tables in `README.md` and `docs/USER-GUIDE.md`, where `dead_code`'s description also notes that ambiguity candidates are excluded from it.
+
 ## [7.10.0] - 2026-08-19
 
 ### Changed

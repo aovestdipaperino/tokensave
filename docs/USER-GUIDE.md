@@ -610,7 +610,8 @@ When running as an MCP server, tokensave exposes more than 80 tools that AI agen
 
 | Tool | What it does |
 |------|-------------|
-| `tokensave_dead_code` | Find unreachable symbols — functions with no callers. |
+| `tokensave_dead_code` | Find unreachable symbols — functions with no callers. Symbols that are a candidate for an ambiguous call are excluded, since "maybe called" is not "uncalled". |
+| `tokensave_ambiguous_calls` | List call sites where several targets tied and no edge was created, with each candidate's name, kind, file, and line. |
 | `tokensave_unused_imports` | Find import statements that are never referenced. |
 | `tokensave_circular` | Detect circular file dependencies. |
 | `tokensave_recursion` | Detect recursive and mutually-recursive call cycles. |
