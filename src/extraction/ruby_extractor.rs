@@ -187,6 +187,11 @@ impl RubyExtractor {
             "singleton_class" => Self::visit_singleton_class(state, node),
             "class" => Self::visit_class(state, node),
             "module" => Self::visit_module(state, node),
+            // `alias` is statement-only (`private alias x o` on one line
+            // doesn't even parse as an `alias` node — tree-sitter backs off
+            // to nested bareword calls instead, confirmed against
+            // tree-sitter-ruby 0.23.1), so this is its only dispatch site.
+            "alias" => Self::visit_alias(state, node),
             "assignment" => {
                 Self::visit_assignment_for_const(state, node);
                 // The RHS may hold a block-bearing call outside statement
@@ -196,14 +201,16 @@ impl RubyExtractor {
             }
             // Bare `private`/`protected`/`public` mode switches parse as a plain
             // identifier statement; defensively also handle a no-arg call.
-            // A receiverless include/prepend/extend is a mixin directive, and a
+            // A receiverless include/prepend/extend is a mixin directive, a
             // receiverless attr_reader/attr_writer/attr_accessor is an attribute
-            // directive; all three handlers are gated on disjoint method names,
-            // so all three run.
+            // directive, and a receiverless alias_method is the call form of
+            // `alias`; all four handlers are gated on disjoint method names,
+            // so all four run.
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
                 Self::visit_mixin_directive(state, node);
                 Self::visit_attribute_directive(state, node);
+                Self::visit_alias_method_directive(state, node, None);
                 Self::visit_expression_blocks(state, node);
             }
             // Statement containers: they wrap statements without opening a new
@@ -970,17 +977,38 @@ impl RubyExtractor {
                                 }
                             }
                             "call" | "method_call" => {
-                                // `private attr_reader :foo`: the arg is a nested
-                                // attribute-directive call. Ruby applies the directive to
-                                // it and returns without switching the default visibility
-                                // mode, so re-dispatch it here with `visibility_mode`
-                                // temporarily set, the same way the `"method"` arm above
-                                // does for `private def foo; end`.
+                                // `private attr_reader :foo` / `private alias_method
+                                // :x, :o`: the arg is a nested attribute- or
+                                // alias-directive call. Ruby applies the directive to
+                                // it and returns without switching the default
+                                // visibility mode, so re-dispatch it here — attr_* via
+                                // `visibility_mode` temporarily set, the same way the
+                                // `"method"` arm above does for `private def foo; end`;
+                                // alias_method via an explicit override instead, since
+                                // (unlike attr_*) an aliased method's visibility is by
+                                // default copied from its *source*, not the ambient
+                                // mode, and must not silently fall back to it here.
                                 saw_arg = true;
                                 let saved_visibility_mode = state.visibility_mode.clone();
                                 state.visibility_mode = visibility.clone();
                                 Self::visit_attribute_directive(state, arg);
                                 state.visibility_mode = saved_visibility_mode;
+                                // `alias_method` with no receiver always aliases onto
+                                // the *current* default definee's own method table —
+                                // never the singleton table `private_class_method`/
+                                // `public_class_method` target — so `private_class_method
+                                // alias_method(...)` raises `NameError` at runtime in
+                                // every scope (probed against Ruby 3.4.7, including from
+                                // inside `class << self`, where the mismatch is one level
+                                // further out rather than resolved). Only re-dispatch the
+                                // alias override for the non-class-method directives.
+                                if !is_class_method {
+                                    Self::visit_alias_method_directive(
+                                        state,
+                                        arg,
+                                        Some(visibility.clone()),
+                                    );
+                                }
                             }
                             _ => {
                                 // Any other named argument is still an argument: Ruby
@@ -1031,25 +1059,162 @@ impl RubyExtractor {
         let singleton_ids = &state.singleton_method_ids;
         let foreign_ids = &state.foreign_singleton_method_ids;
         if let Some(node) = state.nodes.iter_mut().rev().find(|n| {
-            if n.qualified_name != target_qn {
-                return false;
-            }
-            let is_singleton = singleton_ids.contains(&n.id);
-            let is_foreign = foreign_ids.contains(&n.id);
-            match target {
-                VisibilityTarget::Instance => {
-                    !is_singleton
-                        && !is_foreign
-                        && (n.kind == NodeKind::Method || n.kind == NodeKind::Function)
-                }
-                VisibilityTarget::EnclosingSingleton => {
-                    is_singleton && n.kind == NodeKind::SingletonMethod
-                }
-                VisibilityTarget::Foreign => is_foreign && n.kind == NodeKind::Method,
-            }
+            Self::matches_visibility_target(n, singleton_ids, foreign_ids, target, &target_qn)
         }) {
             node.visibility = visibility;
         }
+    }
+
+    /// Predicate factored out of `mark_method_visibility`: whether `node` is
+    /// the same-named node a directive targeting `target` (with
+    /// `target_qn` = the directive's qualified name) should act on.
+    /// Instance methods, the enclosing class's singleton methods, and
+    /// methods on an unresolvable receiver can share a `qualified_name`, so
+    /// the id lists disambiguate them.
+    fn matches_visibility_target(
+        node: &Node,
+        singleton_ids: &[String],
+        foreign_ids: &[String],
+        target: VisibilityTarget,
+        target_qn: &str,
+    ) -> bool {
+        node.qualified_name == target_qn
+            && Self::matches_visibility_shape(node, singleton_ids, foreign_ids, target)
+    }
+
+    /// The kind/singleton half of `matches_visibility_target`'s predicate,
+    /// without the `qualified_name` (scope) check — factored out so
+    /// `unambiguous_file_method_visibility` can search by bare name across
+    /// the nodes extracted so far while still respecting
+    /// instance/singleton/foreign shape.
+    fn matches_visibility_shape(
+        node: &Node,
+        singleton_ids: &[String],
+        foreign_ids: &[String],
+        target: VisibilityTarget,
+    ) -> bool {
+        let is_singleton = singleton_ids.contains(&node.id);
+        let is_foreign = foreign_ids.contains(&node.id);
+        match target {
+            VisibilityTarget::Instance => {
+                !is_singleton
+                    && !is_foreign
+                    && (node.kind == NodeKind::Method || node.kind == NodeKind::Function)
+            }
+            VisibilityTarget::EnclosingSingleton => {
+                is_singleton && node.kind == NodeKind::SingletonMethod
+            }
+            VisibilityTarget::Foreign => is_foreign && node.kind == NodeKind::Method,
+        }
+    }
+
+    /// Read-only counterpart to `mark_method_visibility`: the visibility of
+    /// the same-named node `mark_method_visibility` would have retroactively
+    /// marked, without mutating it. Used by the alias handlers to copy the
+    /// source method's visibility (probed against Ruby 3.4.7: an aliased
+    /// method keeps the *source*'s visibility at the time of the `alias`,
+    /// independent of the ambient `private`/`public` mode at the alias
+    /// site).
+    fn scoped_method_visibility(
+        state: &ExtractionState,
+        name: &str,
+        target: VisibilityTarget,
+    ) -> Option<Visibility> {
+        let target_qn = format!("{}::{}", state.qualified_prefix(), name);
+        let singleton_ids = &state.singleton_method_ids;
+        let foreign_ids = &state.foreign_singleton_method_ids;
+        state
+            .nodes
+            .iter()
+            .rev()
+            .find(|n| {
+                Self::matches_visibility_target(n, singleton_ids, foreign_ids, target, &target_qn)
+            })
+            .map(|n| n.visibility.clone())
+    }
+
+    /// Fallback source-visibility lookup for when the source isn't defined
+    /// in the alias's own scope — the common case of a subclass aliasing a
+    /// method it inherits from a superclass defined earlier in the same
+    /// file (`class Base; private; def helper; end; end; class Sub < Base;
+    /// alias h helper; end` makes `Sub#h` private, probed against Ruby
+    /// 3.4.7). Unlike `scoped_method_visibility`, this matches by bare
+    /// `name` rather than the current qualified scope, so it is used only
+    /// when there is exactly one same-shape candidate: with two or more
+    /// same-named methods there is no way to tell which one an
+    /// inherited/mixed-in alias actually reaches without cross-file
+    /// inheritance resolution, which this single-file extraction pass
+    /// cannot do — so it is left unresolved rather than guessing, the same
+    /// tie-refusal #412 already established for call resolution.
+    ///
+    /// Scans `state.nodes` as extracted *so far* (a top-to-bottom prefix of
+    /// the file at the alias's position), not the complete file — this is a
+    /// single forward pass, not two-pass resolution. That is sound rather
+    /// than a forward-reference gap: `alias`/`alias_method` looks up the
+    /// source method by name at the point it runs, and Ruby has no
+    /// hoisting, so the source's defining statement must already have
+    /// executed — and therefore already appear earlier in this same
+    /// top-to-bottom file — for the alias to succeed at all. Confirmed with
+    /// three separate probes that a same-file source appearing *after* the
+    /// alias always raises before the alias line runs: `class Sub < Base`
+    /// where `Base` is defined later (`NameError: uninitialized constant
+    /// Base`), `include Concern` where `Concern` is defined later (same),
+    /// and a forward-declared empty `Base` reopened later to add the
+    /// method (`NameError: undefined method 'helper'`) — so no valid,
+    /// loadable Ruby file can make the source of a working alias appear
+    /// after the alias itself.
+    fn unambiguous_file_method_visibility(
+        state: &ExtractionState,
+        name: &str,
+        target: VisibilityTarget,
+    ) -> Option<Visibility> {
+        let singleton_ids = &state.singleton_method_ids;
+        let foreign_ids = &state.foreign_singleton_method_ids;
+        let mut candidates = state.nodes.iter().filter(|n| {
+            n.name == name && Self::matches_visibility_shape(n, singleton_ids, foreign_ids, target)
+        });
+        let first = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        Some(first.visibility.clone())
+    }
+
+    /// Which same-named node an `alias`/`alias_method` directive at the
+    /// current scope should read the source visibility from, or mark. Same mapping
+    /// `visit_visibility_directive` uses for its non-`_class_method` case.
+    fn alias_visibility_target(singleton_scope: SingletonScope) -> VisibilityTarget {
+        match singleton_scope {
+            SingletonScope::Outside => VisibilityTarget::Instance,
+            SingletonScope::Enclosing => VisibilityTarget::EnclosingSingleton,
+            SingletonScope::Foreign => VisibilityTarget::Foreign,
+        }
+    }
+
+    /// Resolve the visibility to give a newly emitted `alias`/`alias_method`
+    /// method node. Priority: `override_visibility` (only set when
+    /// re-dispatched from `private alias_method …`), then the source
+    /// method's own visibility if it is defined in the alias's own scope,
+    /// then the source's visibility if it has exactly one same-shape match
+    /// anywhere else in the file (`unambiguous_file_method_visibility` —
+    /// covers inherited/mixed-in sources), then `Visibility::Pub` — the
+    /// source is genuinely external (`alias to_path to_s`) or its name is
+    /// ambiguous within the file, where public is the honest default rather
+    /// than a guess.
+    fn resolve_alias_visibility(
+        state: &ExtractionState,
+        source_name: Option<&str>,
+        target: VisibilityTarget,
+        override_visibility: Option<Visibility>,
+    ) -> Visibility {
+        override_visibility.unwrap_or_else(|| {
+            source_name
+                .and_then(|name| {
+                    Self::scoped_method_visibility(state, name, target)
+                        .or_else(|| Self::unambiguous_file_method_visibility(state, name, target))
+                })
+                .unwrap_or(Visibility::Pub)
+        })
     }
 
     /// Extract `include`/`prepend`/`extend` of a named module as an
@@ -1190,10 +1355,10 @@ impl RubyExtractor {
                 continue;
             };
             if readable {
-                Self::emit_attribute_method(
+                Self::emit_synthetic_method(
                     state,
                     &attr_name,
-                    false,
+                    Some(format!("def {attr_name}")),
                     kind.clone(),
                     visibility.clone(),
                     &parent_id,
@@ -1202,10 +1367,12 @@ impl RubyExtractor {
                 );
             }
             if writable {
-                Self::emit_attribute_method(
+                let writer_name = format!("{attr_name}=");
+                let signature = Some(format!("def {writer_name}(value)"));
+                Self::emit_synthetic_method(
                     state,
-                    &attr_name,
-                    true,
+                    &writer_name,
+                    signature,
                     kind.clone(),
                     visibility.clone(),
                     &parent_id,
@@ -1216,42 +1383,31 @@ impl RubyExtractor {
         }
     }
 
-    /// Build and register one method node for one generated accessor
-    /// (`attr_name` for a reader, `attr_name=` for a writer), attached to
-    /// `parent_id`. Shares `visit_method`'s node shape (zeroed complexity
-    /// metrics — there's no body to measure), `Contains` edge, and
+    /// Build and register one method node for a DSL-generated method
+    /// (`attr_reader`/`attr_writer`/`attr_accessor`, `alias`/`alias_method`)
+    /// with `name` and `signature`, attached to `parent_id`. Shares
+    /// `visit_method`'s node shape (zeroed complexity metrics — there's no
+    /// body at this location to measure), `Contains` edge, and
     /// singleton-method-id bookkeeping so a later `private_class_method` can
     /// retroactively find it.
     #[allow(clippy::too_many_arguments)]
-    fn emit_attribute_method(
+    fn emit_synthetic_method(
         state: &mut ExtractionState,
-        attr_name: &str,
-        is_writer: bool,
+        name: &str,
+        signature: Option<String>,
         kind: NodeKind,
         visibility: Visibility,
         parent_id: &str,
         docstring: Option<String>,
         (start_line, end_line, start_column, end_column): (u32, u32, u32, u32),
     ) {
-        let name = if is_writer {
-            format!("{attr_name}=")
-        } else {
-            attr_name.to_string()
-        };
-        // Synthetic signature matching what extract_method_signature would
-        // produce for the equivalent `def name` / `def name=(value)`.
-        let signature = Some(if is_writer {
-            format!("def {name}(value)")
-        } else {
-            format!("def {name}")
-        });
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(&state.file_path, &kind, &name, start_line);
+        let id = generate_node_id(&state.file_path, &kind, name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
             kind,
-            name,
+            name: name.to_string(),
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
@@ -1291,6 +1447,200 @@ impl RubyExtractor {
             kind: EdgeKind::Contains,
             line: Some(start_line),
         });
+    }
+
+    /// Extract `alias new_name old_name` as a method node with the same
+    /// shape `visit_method` would produce for an equivalent `def new_name`.
+    ///
+    /// `alias` is statement-only — a `private alias x o` written on one line
+    /// doesn't even parse as an `alias` node (tree-sitter backs off to
+    /// nested bareword calls instead, confirmed against tree-sitter-ruby
+    /// 0.23.1) — so this is the only guard needed beyond the name resolving:
+    /// there is no receiver to check, unlike the other DSL directives.
+    ///
+    /// Known gaps, shared with the other DSL directive handlers: an `alias`
+    /// written directly inside a `def` body is extracted unconditionally
+    /// even though it only actually defines the method if that method runs
+    /// (matches `visit_attribute_directive`'s identical, pre-existing gap);
+    /// and a later `undef` on the same name still leaves this node in place.
+    fn visit_alias(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(name_field) = node.child_by_field_name("name") else {
+            return;
+        };
+        let Some(alias_field) = node.child_by_field_name("alias") else {
+            return;
+        };
+        let Some(name) = Self::alias_name(state, name_field) else {
+            return;
+        };
+
+        let target = Self::alias_visibility_target(state.singleton_scope);
+        let source_name = Self::alias_name(state, alias_field);
+        let visibility =
+            Self::resolve_alias_visibility(state, source_name.as_deref(), target, None);
+
+        Self::emit_alias_method(state, node, &name, visibility);
+    }
+
+    /// Extract `alias_method(:new, :old)` — the call form of `alias` — as a
+    /// method node with the same shape `visit_alias` produces.
+    ///
+    /// `override_visibility` is `Some` only when re-dispatched from
+    /// `visit_visibility_directive` (`private alias_method :x, :o`): probed
+    /// against Ruby 3.4.7, `alias_method` returns the new method's name as a
+    /// symbol and `private` immediately marks the just-defined method with
+    /// it. `visit_alias` never takes this parameter because `alias` cannot
+    /// appear in that argument position at all (see its doc comment).
+    ///
+    /// Guard sequence mirrors `visit_attribute_directive`: an explicit
+    /// receiver is an ordinary call on another object, not the DSL
+    /// (`obj.alias_method …` raises `NoMethodError` on any receiver but a
+    /// `Module`, confirmed against Ruby 3.4.7); only a `simple_symbol`/
+    /// `delimited_symbol` (static form) pair of arguments is resolvable —
+    /// see `alias_method_arg_name`. Only the first two arguments are read;
+    /// `alias_method` takes exactly two in real Ruby.
+    ///
+    /// Unlike `visit_alias`, a bare top-level call also needs an explicit
+    /// guard: top-level `self` (`main`) is an `Object` instance, not a
+    /// `Module`, so a receiverless `alias_method` there raises
+    /// `NoMethodError` (confirmed against Ruby 3.4.7) — unlike the `alias`
+    /// keyword, which is special syntax rather than a method call and works
+    /// at top level regardless. The condition is `!in_class` rather than
+    /// `visit_attribute_directive`'s plain `class_depth == 0`: a top-level
+    /// `class << self` body doesn't increment `class_depth`, but `self`
+    /// there genuinely is a `Module` (confirmed: `alias_method` and
+    /// `attr_accessor` alike work inside a bare top-level `class << self`),
+    /// so `in_class` — the same `class_depth > 0 || singleton_scope !=
+    /// Outside` test `emit_alias_method` already uses for kind selection —
+    /// is the condition that actually matches Ruby's rule, and
+    /// `visit_attribute_directive`'s narrower guard misses that case too
+    /// (a separate, pre-existing, unfixed gap, not introduced here).
+    fn visit_alias_method_directive(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        override_visibility: Option<Visibility>,
+    ) {
+        if node.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let Some(method_node) = node.child_by_field_name("method") else {
+            return;
+        };
+        if state.node_text(method_node) != "alias_method" {
+            return;
+        }
+        let in_class = state.class_depth > 0 || state.singleton_scope != SingletonScope::Outside;
+        if !in_class {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = arguments.walk();
+        let mut args = arguments.named_children(&mut cursor);
+        let (Some(new_arg), Some(source_arg)) = (args.next(), args.next()) else {
+            return;
+        };
+        let Some(name) = Self::alias_method_arg_name(state, new_arg) else {
+            return;
+        };
+
+        let target = Self::alias_visibility_target(state.singleton_scope);
+        let source_name = Self::alias_method_arg_name(state, source_arg);
+        let visibility = Self::resolve_alias_visibility(
+            state,
+            source_name.as_deref(),
+            target,
+            override_visibility,
+        );
+
+        Self::emit_alias_method(state, node, &name, visibility);
+    }
+
+    /// Resolve the literal method name denoted by one of `alias`'s
+    /// `_method_name` fields (`identifier`, `constant`, `setter`,
+    /// `operator`, `simple_symbol`, `delimited_symbol`, `class_variable`,
+    /// `global_variable`, `instance_variable` — the full node-types.json
+    /// `_method_name` supertype for tree-sitter-ruby 0.23.1). `alias` never
+    /// evaluates these fields, so an `identifier` here is always a literal
+    /// bareword — unlike an `identifier` *argument* to `alias_method`, which
+    /// is an ordinary expression (a variable reference or an implicit
+    /// method call) and must not be resolved this way; see
+    /// `alias_method_arg_name`.
+    ///
+    /// Global/class/instance-variable aliasing (`alias $new $stdout`)
+    /// aliases a variable, not a method, and defines nothing (confirmed
+    /// against Ruby 3.4.7), so those variants return `None`.
+    fn alias_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        match node.kind() {
+            "identifier" | "constant" | "setter" | "operator" => Some(state.node_text(node)),
+            "simple_symbol" => Some(state.node_text(node).trim_start_matches(':').to_string()),
+            "delimited_symbol" => Self::static_delimited_symbol_name(state, node),
+            _ => None,
+        }
+    }
+
+    /// Resolve one `alias_method` call argument, restricted to the
+    /// statically resolvable symbol forms (matches
+    /// `visit_attribute_directive`'s argument handling exactly). A bareword
+    /// `identifier` argument evaluates a local variable or an implicit
+    /// method call at runtime — it parses with the identical `identifier`
+    /// node kind whether or not it happens to be a previously assigned
+    /// local, confirmed against tree-sitter-ruby 0.23.1 — so it is
+    /// deliberately excluded here even though `alias_name`'s `identifier`
+    /// arm would otherwise match it; that arm is only valid for `alias`'s
+    /// unevaluated `_method_name` fields.
+    fn alias_method_arg_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        match node.kind() {
+            "simple_symbol" | "delimited_symbol" => Self::alias_name(state, node),
+            _ => None,
+        }
+    }
+
+    /// Build and register the method node for `visit_alias`/
+    /// `visit_alias_method_directive`.
+    ///
+    /// Kind selection mirrors `visit_method`'s (not
+    /// `visit_attribute_directive`'s `class_depth == 0` skip): a top-level
+    /// `alias bar foo` produces a `Function`, matching what a top-level
+    /// `def bar` would produce. A top-level `attr_accessor` has no `def`
+    /// counterpart to be inconsistent with, but a top-level `alias`/
+    /// `alias_method` does, so skipping it the way `attr_*` does would be a
+    /// new asymmetry, not a preserved one.
+    fn emit_alias_method(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        name: &str,
+        visibility: Visibility,
+    ) {
+        let Some(parent_id) = state.parent_node_id().map(str::to_string) else {
+            return;
+        };
+        let in_class = state.class_depth > 0 || state.singleton_scope != SingletonScope::Outside;
+        let kind = if state.singleton_scope == SingletonScope::Enclosing {
+            NodeKind::SingletonMethod
+        } else if in_class {
+            NodeKind::Method
+        } else {
+            NodeKind::Function
+        };
+        let docstring = Self::extract_docstring(state, node);
+        let signature = Self::extract_method_signature(state, node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+
+        Self::emit_synthetic_method(
+            state,
+            name,
+            signature,
+            kind,
+            visibility,
+            &parent_id,
+            docstring,
+            (start_line, end_line, start_column, end_column),
+        );
     }
 
     /// Classify a call's block by the default-definee rule documented on

@@ -4300,4 +4300,689 @@ end
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(result.nodes.iter().any(|n| n.name == "x"));
     }
+
+    // --- alias / alias_method -----------------------------------------------
+
+    #[test]
+    fn test_ruby_alias_bareword_form_defines_method() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  alias a orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a method from alias a orig");
+        assert_eq!(a.kind, NodeKind::Method);
+        assert!(a.qualified_name.ends_with("Widget::a"));
+    }
+
+    #[test]
+    fn test_ruby_alias_symbol_form_defines_method() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  alias :a :orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "a"));
+    }
+
+    #[test]
+    fn test_ruby_alias_method_call_form_defines_method() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  alias_method :a, :orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "a"));
+    }
+
+    #[test]
+    fn test_ruby_alias_predicate_name_defines_method() {
+        let source = r#"
+class Widget
+  def orig?
+  end
+
+  alias a? orig?
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "a?"));
+    }
+
+    #[test]
+    fn test_ruby_alias_setter_name_defines_method() {
+        let source = r#"
+class Widget
+  def name=(value)
+  end
+
+  alias title= name=
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "title="));
+    }
+
+    #[test]
+    fn test_ruby_alias_operator_name_defines_method() {
+        let source = r#"
+class Widget
+  def [](key)
+  end
+
+  alias at []
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "at"));
+    }
+
+    #[test]
+    fn test_ruby_alias_method_delimited_symbol_defines_method() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  alias_method :"a", :orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "a"));
+    }
+
+    #[test]
+    fn test_ruby_alias_method_interpolated_symbol_not_extracted() {
+        let source = r##"
+class Widget
+  alias_method :"#{x}", :orig
+end
+"##;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "an interpolated symbol name can't be resolved statically"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_global_variable_not_extracted() {
+        let source = r#"
+class Widget
+  alias $new $stdout
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "aliasing a global variable defines no method"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_method_dynamic_identifier_not_extracted() {
+        let source = r#"
+class Widget
+  a = :new_name
+  alias_method a, :orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "a variable argument's value isn't known at extraction time: {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_method_string_arguments_not_extracted() {
+        let source = r#"
+class Widget
+  alias_method "a", "orig"
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "string-literal arguments are out of scope: {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_method_explicit_receiver_not_extracted() {
+        let source = r#"
+class Widget
+  def install(other)
+    other.alias_method :a, :b
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "a"),
+            "other.alias_method is an ordinary call on other, not the DSL"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_method_one_argument_not_extracted() {
+        let source = r#"
+class Widget
+  alias_method :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "a"),
+            "alias_method needs two arguments"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_module_body_defines_method() {
+        let source = r#"
+module Trackable
+  def orig
+  end
+
+  alias a orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a method inside module body");
+        assert!(a.qualified_name.ends_with("Trackable::a"));
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_alias_is_singleton_method() {
+        let source = r#"
+class Report
+  class << self
+    def orig
+    end
+
+    alias a orig
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a method inside class << self");
+        assert_eq!(a.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_top_level_alias_defines_function() {
+        let source = r#"
+def orig
+end
+
+alias a orig
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a top-level function from alias a orig");
+        assert_eq!(
+            a.kind,
+            NodeKind::Function,
+            "a top-level alias defines on Object, same as a top-level def"
+        );
+    }
+
+    #[test]
+    fn test_ruby_top_level_alias_method_not_extracted() {
+        // Unlike the `alias` keyword, top-level `self` (`main`) is an
+        // `Object` instance, not a `Module`, so a receiverless top-level
+        // `alias_method` raises `NoMethodError` (confirmed against Ruby
+        // 3.4.7) and must not be indexed.
+        let source = r#"
+def orig
+end
+
+alias_method :a, :orig
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "a"),
+            "a bare top-level alias_method call raises NoMethodError in real Ruby"
+        );
+    }
+
+    #[test]
+    fn test_ruby_top_level_singleton_class_alias_method_is_extracted() {
+        // Inside a top-level `class << self`, `self` genuinely is a
+        // `Module` (main's singleton class), so `alias_method` works there
+        // even though `class_depth` stays 0 — confirmed against Ruby 3.4.7.
+        let source = r#"
+def orig
+end
+
+class << self
+  alias_method :a, :orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a =
+            result.nodes.iter().find(|n| n.name == "a").expect(
+                "expected a singleton method from alias_method inside top-level class << self",
+            );
+        assert_eq!(a.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_private_class_method_wrapping_alias_method_not_extracted() {
+        // `alias_method` with no receiver always aliases onto the current
+        // default definee's own method table, never the singleton table
+        // `private_class_method` targets, so this construct raises
+        // `NameError` at runtime in every scope (confirmed against Ruby
+        // 3.4.7) and must not be indexed, let alone privatized.
+        let source = r#"
+class Widget
+  def o
+  end
+
+  private_class_method alias_method(:a, :o)
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "a"),
+            "private_class_method alias_method(...) raises NameError in real Ruby"
+        );
+    }
+
+    // Known, accepted limitation (mirrors visit_attribute_directive's identical
+    // gap): an alias written directly inside a def body is unconditionally
+    // extracted here, even though in Ruby it only actually defines the method
+    // if that method runs.
+    #[test]
+    fn test_ruby_alias_in_method_body_is_extracted_unconditionally() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  def install
+    alias new_name orig
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.nodes.iter().any(|n| n.name == "new_name"));
+    }
+
+    #[test]
+    fn test_ruby_included_do_block_alias_defines_instance_method() {
+        let source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  included do
+    alias new_name orig
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let new_name = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "new_name")
+            .expect("expected new_name method inside included do block");
+        assert_eq!(new_name.kind, NodeKind::Method);
+        assert!(new_name.qualified_name.ends_with("Trackable::new_name"));
+    }
+
+    #[test]
+    fn test_ruby_class_methods_do_block_alias_is_singleton_method() {
+        let source = r#"
+module Trackable
+  extend ActiveSupport::Concern
+
+  class_methods do
+    alias new_name orig
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("trackable.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let new_name = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "new_name")
+            .expect("expected new_name method inside class_methods do block");
+        assert_eq!(new_name.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_class_new_do_block_alias_not_extracted() {
+        let source = r#"
+class C
+  K = Class.new do
+    alias new_name orig
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "new_name"),
+            "Class.new's block must not leak new_name to the enclosing class C either"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_source_public_under_ambient_private_stays_public() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  private
+
+  alias new_name orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let new_name = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "new_name")
+            .expect("expected new_name method");
+        assert_eq!(
+            new_name.visibility,
+            Visibility::Pub,
+            "visibility is copied from the source method, not the ambient private mode"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_source_private_stays_private() {
+        let source = r#"
+class Widget
+  private
+
+  def orig
+  end
+
+  alias new_name orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let new_name = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "new_name")
+            .expect("expected new_name method");
+        assert_eq!(new_name.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_alias_inherited_private_source_stays_private() {
+        // Sub has no `helper` of its own, so the source lookup must fall
+        // through to the single unambiguous `helper` defined in Base.
+        let source = r#"
+class Base
+  private
+
+  def helper
+  end
+end
+
+class Sub < Base
+  alias h helper
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let h = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "h")
+            .expect("expected h method");
+        assert_eq!(
+            h.visibility,
+            Visibility::Private,
+            "Sub#h aliases Base's private helper and must stay private, confirmed against Ruby 3.4.7"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_ambiguous_source_name_defaults_public() {
+        // Two unrelated classes each define their own private `helper`, so
+        // Sub's alias cannot tell which one it reaches without inheritance
+        // resolution; it must not guess either one's visibility.
+        let source = r#"
+class Other
+  private
+
+  def helper
+  end
+end
+
+class Base
+  private
+
+  def helper
+  end
+end
+
+class Sub < Base
+  alias h helper
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let h = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "h")
+            .expect("expected h method");
+        assert_eq!(
+            h.visibility,
+            Visibility::Pub,
+            "two same-named candidates must not be guessed between; defaults public"
+        );
+    }
+
+    #[test]
+    fn test_ruby_bare_private_then_alias_method_inline_is_private() {
+        let source = r#"
+class Widget
+  def o
+  end
+
+  private alias_method :x, :o
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x method");
+        assert_eq!(
+            x.visibility,
+            Visibility::Private,
+            "private alias_method :x, :o marks x directly, regardless of o's own visibility"
+        );
+    }
+
+    #[test]
+    fn test_ruby_bare_private_then_alias_is_private() {
+        let source = r#"
+class Widget
+  def orig
+  end
+
+  alias the_alias orig
+
+  private :the_alias
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let the_alias = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "the_alias")
+            .expect("expected the_alias method");
+        assert_eq!(the_alias.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_singleton_class_alias_privatized_by_private_class_method() {
+        let source = r#"
+class Report
+  class << self
+    alias the_alias orig
+  end
+
+  private_class_method :the_alias
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("report.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let the_alias = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "the_alias")
+            .expect("expected the_alias singleton method");
+        assert_eq!(the_alias.kind, NodeKind::SingletonMethod);
+        assert_eq!(the_alias.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_alias_contains_edge_from_enclosing_class() {
+        let source = r#"
+class Widget
+  alias a orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "Widget")
+            .expect("expected Widget class");
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a method");
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == a.id),
+            "expected Contains edge from Widget directly to a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_alias_docstring_attaches() {
+        // alias other orig comes first so the comment is a body_statement
+        // sibling of the statement it documents, not (per a tree-sitter-ruby
+        // quirk affecting the first statement of any kind) a sibling of the
+        // class's body field instead.
+        let source = r#"
+class Widget
+  alias other orig
+
+  # The renamed total.
+  alias total orig
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("widget.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let total = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "total")
+            .expect("expected total method");
+        assert_eq!(total.docstring.as_deref(), Some("The renamed total."));
+    }
 } // mod ruby_tests
