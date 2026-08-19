@@ -182,6 +182,14 @@ pub(super) async fn compute_health_snapshot(
     })
 }
 
+/// The node kinds `tokensave_gini` measures when `scope` is `symbol`.
+fn is_symbol_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+    )
+}
+
 /// Handles `tokensave_gini` tool calls.
 pub(super) async fn handle_gini(
     cg: &TokenSave,
@@ -296,16 +304,50 @@ pub(super) async fn handle_gini(
             }
             per_class.into_values().collect()
         }
-        (_, "symbol") => {
-            // Per-function/method complexity
+        ("lines", "symbol") => nodes
+            .iter()
+            .filter(|n| is_symbol_kind(&n.kind))
+            .map(|n| {
+                let lines = f64::from(n.end_line.saturating_sub(n.start_line) + 1);
+                (format!("{}:{}", n.file_path, n.name), lines)
+            })
+            .collect(),
+        ("fan_in" | "fan_out", "symbol") => {
+            // Mirrors the file-scope arms above: every edge kind counts, and an
+            // edge whose endpoints are the same symbol does not, so a recursive
+            // call is not counted as a dependant of itself.
+            let incoming = metric == "fan_in";
+            let mut per_symbol: HashMap<&str, f64> = nodes
+                .iter()
+                .filter(|n| is_symbol_kind(&n.kind))
+                .map(|n| (n.id.as_str(), 0.0))
+                .collect();
+            for e in &all_edges {
+                if e.source == e.target {
+                    continue;
+                }
+                let endpoint = if incoming { &e.target } else { &e.source };
+                if let Some(count) = per_symbol.get_mut(endpoint.as_str()) {
+                    *count += 1.0;
+                }
+            }
             nodes
                 .iter()
-                .filter(|n| {
-                    matches!(
-                        n.kind,
-                        NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                .filter(|n| is_symbol_kind(&n.kind))
+                .map(|n| {
+                    (
+                        format!("{}:{}", n.file_path, n.name),
+                        per_symbol.get(n.id.as_str()).copied().unwrap_or(0.0),
                     )
                 })
+                .collect()
+        }
+        (_, "symbol") => {
+            // Fallback for a metric outside the declared enum: per-symbol
+            // complexity.
+            nodes
+                .iter()
+                .filter(|n| is_symbol_kind(&n.kind))
                 .map(|n| {
                     let c = f64::from(n.branches + n.loops + n.returns + n.max_nesting);
                     (format!("{}:{}", n.file_path, n.name), c)
