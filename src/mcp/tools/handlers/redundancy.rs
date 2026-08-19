@@ -100,11 +100,15 @@ async fn collect_candidates(
 ) -> Result<Vec<Node>> {
     // Filtered in SQL rather than by loading every node and discarding most
     // of them (#410). All three predicates are the caller's own.
+    // Template carries a C++ `template_declaration`'s whole body, function or class .: without it a
+    // header-only template layer has no candidate at all and the scan answers `scanned: 0`, which
+    // reads exactly like a clean bill of health rather than "nothing was looked at".
     let mut filter = crate::db::NodeFilter::new()
         .kinds(&[
             NodeKind::Function,
             NodeKind::Method,
             NodeKind::SingletonMethod,
+            NodeKind::Template,
         ])
         .min_lines(min_lines);
     if let Some(prefix) = path_prefix {
