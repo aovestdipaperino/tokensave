@@ -175,7 +175,16 @@ pub fn safe_write_json_file(
         });
     }
 
-    // 3. Resolve symlinks. If `path` (e.g. `~/.claude/settings.json`) is a
+    // 3. Skip a write that would not change a byte (#419). Reading `path`
+    //    follows a symlink, so this compares against the same content the
+    //    rename below would replace. Direct callers back up before calling in,
+    //    so their `.bak` is already on disk by now — the two entry points in
+    //    this module guard earlier and avoid it entirely.
+    if std::fs::read_to_string(path).is_ok_and(|on_disk| on_disk == format!("{pretty}\n")) {
+        return Ok(());
+    }
+
+    // 4. Resolve symlinks. If `path` (e.g. `~/.claude/settings.json`) is a
     //    symlink — common for dotfiles setups that track config in a repo and
     //    symlink it into place — `rename()` over `path` would delete the
     //    symlink and drop a plain file in its stead, silently detaching the
@@ -194,16 +203,16 @@ pub fn safe_write_json_file(
         ),
     })?;
 
-    // 4. Ensure parent dir
+    // 5. Ensure parent dir
     if let Some(parent) = real_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
             message: format!("cannot create directory {}: {e}", parent.display()),
         })?;
     }
 
-    // 5. Write to a NEW sibling file — the original is never opened for
+    // 6. Write to a NEW sibling file — the original is never opened for
     //    writing, so an interrupted write or crash only affects the .new file.
-    //    Staged next to `real_path` (not `path`) so the rename in step 6 stays
+    //    Staged next to `real_path` (not `path`) so the rename in step 7 stays
     //    on the same filesystem and remains atomic.
     let content = format!("{pretty}\n");
     let new_path = PathBuf::from(format!("{}.new", real_path.display()));
@@ -217,7 +226,7 @@ pub fn safe_write_json_file(
         });
     }
 
-    // 6. Atomic rename: new → real target.
+    // 7. Atomic rename: new → real target.
     //    On POSIX, rename(2) atomically replaces the target.
     //    If this fails the original file is still intact.
     if let Err(e) = std::fs::rename(&new_path, &real_path) {
@@ -371,9 +380,55 @@ fn walk_dangling_symlink_chain(path: &Path) -> std::result::Result<PathBuf, Stri
     }
 }
 
+/// Render `value` exactly as [`safe_write_json_file`] would write it.
+///
+/// Kept next to the writer because the two must not drift: a mismatch here
+/// makes [`json_file_is_current`] report a difference that does not exist,
+/// and every no-op write comes back.
+fn render_json(value: &serde_json::Value) -> Option<String> {
+    serde_json::to_string_pretty(value)
+        .ok()
+        .map(|pretty| format!("{pretty}\n"))
+}
+
+/// True when `path` already holds byte-for-byte what writing `value` would
+/// produce, so the write can be skipped entirely.
+///
+/// Issue #419: `tokensave gitignore` with no ACTION is documented as a query,
+/// and it rewrote `~/.claude/settings.json` with byte-identical content —
+/// advancing its mtime, dropping a fresh `.bak` beside it, and printing
+/// `✔ Wrote …`. Nothing was lost that time, but rewriting the file that holds
+/// the agent's permissions and hooks is not a neutral act: it races anything
+/// else with the file open, and an interruption mid-write turns a no-op into a
+/// truncated settings file. A user running a query has quiesced nothing,
+/// because they had no reason to expect a write.
+///
+/// Comparison is on the rendered bytes rather than parsed JSON, deliberately.
+/// Writing normalises key order, indentation and the trailing newline, so
+/// re-rendering a semantically equal file can still change it on disk — and a
+/// formatting-only rewrite is a real change to a file the user may track in
+/// git. Only an exact match is a no-op.
+///
+/// Returns `false` when the file is missing or unreadable: the caller should
+/// go ahead and write, and find out from the write itself.
+pub fn json_file_is_current(path: &Path, value: &serde_json::Value) -> bool {
+    let Some(rendered) = render_json(value) else {
+        return false;
+    };
+    std::fs::read_to_string(path).is_ok_and(|on_disk| on_disk == rendered)
+}
+
 /// Write a JSON value to a file with pretty formatting.
 /// Creates a backup, writes atomically, and restores on failure.
+///
+/// A write that would not change a byte is skipped: no backup, no rename, no
+/// `✔ Wrote` line (#419). The guard sits here rather than inside
+/// [`safe_write_json_file`] because the backup is taken first, and a spurious
+/// `.bak` was part of what #419 reported.
 pub fn write_json_file(path: &Path, value: &serde_json::Value) -> crate::errors::Result<()> {
+    if json_file_is_current(path, value) {
+        return Ok(());
+    }
     let backup = backup_config_file(path)?;
     safe_write_json_file(path, value, backup.as_deref())?;
     eprintln!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
@@ -389,6 +444,12 @@ pub fn write_json_file(path: &Path, value: &serde_json::Value) -> crate::errors:
 /// Issue #63: every config rewrite must leave a `.bak` so the user can
 /// recover if anything goes wrong.
 pub fn backup_and_write_json(path: &Path, value: &serde_json::Value) -> bool {
+    // Nothing to write means nothing reached disk, so this returns `false` and
+    // callers keep quiet — every caller already gates its `✔ Wrote` message on
+    // the return value (#419).
+    if json_file_is_current(path, value) {
+        return false;
+    }
     let backup = backup_config_file(path).ok().flatten();
     safe_write_json_file(path, value, backup.as_deref()).is_ok()
 }
@@ -1576,6 +1637,124 @@ mod safe_config_tests {
         assert!(
             !dir.path().join("target.new").exists(),
             "the failed .new staging file must be cleaned up"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #419: a write that would not change a byte is not a write
+    // -----------------------------------------------------------------------
+
+    /// Content already on disk, rendered the way the writer renders it.
+    fn seed_current(dir: &std::path::Path, value: &serde_json::Value) -> std::path::PathBuf {
+        let path = dir.join("settings.json");
+        let pretty = serde_json::to_string_pretty(value).unwrap();
+        fs::write(&path, format!("{pretty}\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn json_file_is_current_matches_only_exact_bytes() {
+        let dir = tmpdir();
+        let value = serde_json::json!({"hooks": {"a": 1}, "permissions": ["x"]});
+        let path = seed_current(dir.path(), &value);
+        assert!(json_file_is_current(&path, &value));
+
+        // Semantically equal but formatted differently is NOT current: writing
+        // would reformat the file, and that is a real change to it.
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(
+            !json_file_is_current(&path, &value),
+            "compact JSON differs from what the writer produces"
+        );
+
+        // Missing trailing newline is the easy regression to ship by accident.
+        let pretty = serde_json::to_string_pretty(&value).unwrap();
+        fs::write(&path, &pretty).unwrap();
+        assert!(
+            !json_file_is_current(&path, &value),
+            "the writer appends a trailing newline"
+        );
+
+        // A missing file is not current, and must not be reported as such.
+        assert!(!json_file_is_current(
+            &dir.path().join("absent.json"),
+            &value
+        ));
+    }
+
+    #[test]
+    fn write_json_file_with_identical_content_touches_nothing() {
+        let dir = tmpdir();
+        let value = serde_json::json!({"hooks": {"PreToolUse": []}});
+        let path = seed_current(dir.path(), &value);
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+
+        write_json_file(&path, &value).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            before,
+            "mtime must not advance when no byte changes"
+        );
+        assert!(
+            !dir.path().join("settings.json.bak").exists(),
+            "#419: a no-op write must not drop a .bak beside the settings file"
+        );
+    }
+
+    #[test]
+    fn backup_and_write_json_reports_false_and_writes_nothing_when_current() {
+        let dir = tmpdir();
+        let value = serde_json::json!({"mcpServers": {"tokensave": {"command": "ts"}}});
+        let path = seed_current(dir.path(), &value);
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+
+        assert!(
+            !backup_and_write_json(&path, &value),
+            "nothing reached disk, so callers must not print '✔ Wrote'"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+        assert!(!dir.path().join("settings.json.bak").exists());
+    }
+
+    #[test]
+    fn a_real_change_still_writes_and_still_backs_up() {
+        // The control. Without this, the three tests above would pass just as
+        // well against a writer that had stopped writing altogether.
+        let dir = tmpdir();
+        let original = serde_json::json!({"hooks": {"a": 1}});
+        let path = seed_current(dir.path(), &original);
+
+        let updated = serde_json::json!({"hooks": {"a": 2}});
+        assert!(backup_and_write_json(&path, &updated));
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["hooks"]["a"], 2);
+
+        let bak = dir.path().join("settings.json.bak");
+        assert!(bak.exists(), "a real write must still leave a .bak (#63)");
+        let backed_up: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&bak).unwrap()).unwrap();
+        assert_eq!(backed_up["hooks"]["a"], 1);
+    }
+
+    #[test]
+    fn safe_write_json_file_skips_the_rename_when_current() {
+        // The inner guard, for the call sites that back up themselves and call
+        // straight through. Their .bak is already written by this point, but
+        // the file itself must be left alone.
+        let dir = tmpdir();
+        let value = serde_json::json!({"x": [1, 2, 3]});
+        let path = seed_current(dir.path(), &value);
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+
+        safe_write_json_file(&path, &value, None).unwrap();
+
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+        assert!(
+            !dir.path().join("settings.json.new").exists(),
+            "the staging file must not be left behind"
         );
     }
 }
