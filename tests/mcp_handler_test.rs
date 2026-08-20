@@ -4,6 +4,7 @@
 //! ensuring that the MCP dispatch layer formats results correctly.
 
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
@@ -2570,6 +2571,102 @@ async fn test_gini_default_metric() {
         parsed.get("gini").is_some(),
         "gini field should exist with default args, got: {}",
         text
+    );
+}
+
+/// Runs `tokensave_gini` at `scope: "symbol"` and returns the outliers as a
+/// name-to-value map. Every metric here is a count, so the values are integral.
+async fn gini_symbol_values(cg: &TokenSave, metric: &str) -> BTreeMap<String, i64> {
+    let result = handle_tool_call(
+        cg,
+        "tokensave_gini",
+        json!({ "metric": metric, "scope": "symbol" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    parsed["outliers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no outliers for metric '{}', got: {}", metric, text))
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["value"].as_f64().unwrap().round() as i64,
+            )
+        })
+        .collect()
+}
+
+/// #417: at `scope: "symbol"` only `members` had an arm of its own, so `lines`,
+/// `fan_in` and `fan_out` fell through to the catch-all and returned per-symbol
+/// complexity under the name of the metric that was asked for.
+#[tokio::test]
+async fn test_gini_symbol_scope_distinguishes_metrics() {
+    let (_dir, cg) = setup_project().await;
+    let complexity = gini_symbol_values(&cg, "complexity").await;
+    for metric in ["lines", "fan_in", "fan_out"] {
+        let values = gini_symbol_values(&cg, metric).await;
+        assert_ne!(
+            values, complexity,
+            "'{}' at symbol scope returned complexity",
+            metric
+        );
+    }
+}
+
+/// The values themselves, on the four functions of the fixture project.
+#[tokio::test]
+async fn test_gini_symbol_scope_values() {
+    let (_dir, cg) = setup_project().await;
+
+    // Line spans, straight from the fixture sources.
+    assert_eq!(
+        gini_symbol_values(&cg, "lines").await,
+        BTreeMap::from([
+            ("src/main.rs:main".to_string(), 4),
+            ("src/utils.rs:helper".to_string(), 3),
+            ("src/utils.rs:format_greeting".to_string(), 3),
+            ("tests/test_utils.rs:test_helper".to_string(), 1),
+        ])
+    );
+
+    // `helper` is reached four times: a `use` and a call from each of main.rs
+    // and tests/test_utils.rs. `main` is never referenced.
+    assert_eq!(
+        gini_symbol_values(&cg, "fan_in").await,
+        BTreeMap::from([
+            ("src/utils.rs:helper".to_string(), 4),
+            ("src/utils.rs:format_greeting".to_string(), 1),
+            ("tests/test_utils.rs:test_helper".to_string(), 1),
+            ("src/main.rs:main".to_string(), 0),
+        ])
+    );
+
+    // `format_greeting` only calls `format!`, which is not a node.
+    assert_eq!(
+        gini_symbol_values(&cg, "fan_out").await,
+        BTreeMap::from([
+            ("src/utils.rs:helper".to_string(), 1),
+            ("src/main.rs:main".to_string(), 1),
+            ("tests/test_utils.rs:test_helper".to_string(), 1),
+            ("src/utils.rs:format_greeting".to_string(), 0),
+        ])
+    );
+
+    // The arms this change did not touch: every fixture function has the same
+    // complexity, and `members` counts struct and class members, not functions.
+    assert_eq!(
+        gini_symbol_values(&cg, "complexity").await,
+        BTreeMap::from([
+            ("src/main.rs:main".to_string(), 1),
+            ("src/utils.rs:helper".to_string(), 1),
+            ("src/utils.rs:format_greeting".to_string(), 1),
+            ("tests/test_utils.rs:test_helper".to_string(), 1),
+        ])
     );
 }
 
