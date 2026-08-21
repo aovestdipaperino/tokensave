@@ -771,7 +771,9 @@ pub(super) async fn handle_test_risk(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let all_edges = cg.get_all_edges().await?;
+    // `calls` only, selected in SQL rather than filtered out of the whole table
+    // on each of the three passes below (#418).
+    let all_edges = cg.db().get_edges_by_kind(EdgeKind::Calls).await?;
 
     // Graph-wide id -> file_path, taken as a two-column projection rather than
     // by materialising every `Node` (#411). The map has to span the whole
