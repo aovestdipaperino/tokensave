@@ -48,6 +48,13 @@ fn parent_dir(path: &str) -> &str {
 /// build-config variant of a symbol to all its sibling variants. Idempotent:
 /// edges that already exist are skipped, and the caller's unique edge index
 /// collapses any that slip through.
+/// `edges` need only contain the `Annotates` and `Calls` edges of the graph.
+///
+/// Those are the only two kinds read: `Annotates` to find the `#[cfg]`-gated
+/// nodes, `Calls` to index what is called and which pairs already exist. The
+/// sync paths rely on this and pass a kind-filtered slice rather than the whole
+/// edge table (#418), so a change here that starts reading a third kind must
+/// widen those queries too — `tests/resolution_test.rs` pins the equivalence.
 pub fn propagate_variant_edges(nodes: &[Node], edges: &[Edge]) -> Vec<Edge> {
     let node_by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
