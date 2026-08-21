@@ -6,6 +6,7 @@
 //! handlers with hook events on stdin and expect blocking decisions through
 //! process exit codes rather than Claude's stdout JSON decision.
 
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -365,7 +366,8 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     }
     // An explicit inline `TOKENSAVE_DISABLE_GREP_HOOK=<truthy>` opts out too, so
     // the deliberate bypass is honored rather than stripped and then blocked.
-    if strip_command_prefixes(command.trim()).disables_hook {
+    let stripped = strip_command_prefixes(command.trim());
+    if stripped.disables_hook {
         return None;
     }
     let inv = extract_grep_invocation(command)?;
@@ -373,7 +375,39 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
         return None;
     }
     let target = inv.targets.first().map_or("", String::as_str);
-    if !target_looks_like_code(target, "", "", env) {
+    let target =
+        if let (Some(cd_path), Some(root)) = (stripped.cd_target, env.project_root.as_deref()) {
+            // The grep runs after a `cd`: resolve the target relative to the
+            // cd'd directory, not the session cwd. If the cd takes us outside
+            // the indexed project, the hook does not apply. An unresolvable cd
+            // path is treated as unknown so the ordinary classification rules can
+            // fall back to the session cwd rather than silently allowing.
+            let cd_path = unquote(cd_path);
+            let cd_path = unescape_shell_backslashes(cd_path);
+            let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
+                .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
+            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root)) {
+                Containment::Outside => return None,
+                Containment::Inside => {
+                    // Canonicalize the cd'd directory so a symlink to a code directory
+                    // is resolved to the real path and classified by its basename.
+                    let cd_base = root
+                        .join(&cd_path)
+                        .canonicalize()
+                        .unwrap_or_else(|_| root.join(&cd_path));
+                    let effective = if target.is_empty() || target == "." || target == "./" {
+                        cd_base
+                    } else {
+                        cd_base.join(target)
+                    };
+                    Cow::Owned(effective.to_string_lossy().into_owned())
+                }
+                Containment::Unknown => Cow::Borrowed(target),
+            }
+        } else {
+            Cow::Borrowed(target)
+        };
+    if !target_looks_like_code(target.as_ref(), "", "", env) {
         return None;
     }
     let shape = classify_symbol_pattern(&inv.pattern)?;
@@ -389,16 +423,52 @@ fn evaluate_find_command(command: &str, env: &HookEnv) -> Option<String> {
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
-    if strip_command_prefixes(command.trim()).disables_hook {
+    let stripped = strip_command_prefixes(command.trim());
+    if stripped.disables_hook {
         return None;
     }
     let inv = extract_find_invocation(command)?;
 
+    // Re-root find roots the same way grep targets are re-rooted after a
+    // leading `cd`. If the cd leaves the project, the hook does not apply.
+    let targets =
+        if let (Some(cd_path), Some(root)) = (stripped.cd_target, env.project_root.as_deref()) {
+            let cd_path = unquote(cd_path);
+            let cd_path = unescape_shell_backslashes(cd_path);
+            let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
+                .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
+            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root)) {
+                Containment::Outside => return None,
+                Containment::Inside => {
+                    let cd_base = root
+                        .join(&cd_path)
+                        .canonicalize()
+                        .unwrap_or_else(|_| root.join(&cd_path));
+                    if inv.targets.is_empty() {
+                        vec![cd_base.to_string_lossy().into_owned()]
+                    } else {
+                        inv.targets
+                            .iter()
+                            .map(|t| {
+                                if t.is_empty() || t == "." || t == "./" {
+                                    cd_base.to_string_lossy().into_owned()
+                                } else {
+                                    cd_base.join(t).to_string_lossy().into_owned()
+                                }
+                            })
+                            .collect()
+                    }
+                }
+                Containment::Unknown => inv.targets,
+            }
+        } else {
+            inv.targets
+        };
+
     // Every root must be code-ish. A search spanning an unindexed tree is one
     // `tokensave_files` cannot answer, and a partial answer is worse than none.
-    if !inv.targets.is_empty()
-        && !inv
-            .targets
+    if !targets.is_empty()
+        && !targets
             .iter()
             .all(|target| target_looks_like_code(target, "", "", env))
     {
@@ -525,6 +595,20 @@ fn is_pure_identifier(s: &str) -> bool {
 /// Conservative: when the answer is ambiguous we return `false` so the call
 /// passes through unchanged.
 fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bool {
+    // When a concrete path is provided, it must resolve inside the indexed
+    // project for the guardrail to apply. Greps targeting other directories
+    // (e.g. /tmp, another repo) are not tokensave's concern.
+    // Skip when project_root is unknown (tests, edge cases): fall through to
+    // the original classification rules.
+    if !path.is_empty() && env.project_root.is_some() {
+        let raw = path.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+        match classify_path_within_project(raw, env.project_root.as_deref()) {
+            Containment::Outside => return false,
+            // Inside or Unknown: keep the existing extension / directory rules.
+            Containment::Inside | Containment::Unknown => {}
+        }
+    }
+
     if !ty.is_empty() {
         return CODE_TYPE_FILTERS.contains(&ty.to_ascii_lowercase().as_str());
     }
@@ -546,8 +630,16 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
     }
 
     // Extension path: only block when the extension is in our supported list.
-    if let Some(idx) = trimmed.rfind('.') {
-        let after_dot = &trimmed[idx + 1..];
+    // Look at the last path component only, otherwise a parent directory with a
+    // dot (e.g. a temporary path like `.tmp123/project/src`) is misread as a
+    // non-code extension and the directory rule never runs.
+    let file_part = trimmed
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(trimmed);
+    if let Some(idx) = file_part.rfind('.') {
+        let after_dot = &file_part[idx + 1..];
         let ext: String = after_dot
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '+')
@@ -566,6 +658,71 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
         .next()
         .unwrap_or("");
     CODE_DIRS.contains(&last)
+}
+
+/// Result of asking whether a path lies inside the indexed project root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Containment {
+    /// The path canonicalizes to a location inside (or equal to) the root.
+    Inside,
+    /// The path canonicalizes to a location outside the root.
+    Outside,
+    /// Cannot be resolved (path does not exist, root unknown, unexpanded home,
+    /// etc.). The caller decides the policy.
+    Unknown,
+}
+
+/// Classify whether `raw` points inside, outside, or somewhere undecidable
+/// relative to `project_root`. Relative paths are resolved against the root.
+/// Symlinks and `..` are followed via `canonicalize`. The only spells treated
+/// as inside without hitting the filesystem are `.`, `./`, and an exact root
+/// spelling; everything unresolvable is `Unknown` so the caller can fall back
+/// to its own conservative rules.
+fn classify_path_containment_with_home(
+    raw: &str,
+    project_root: Option<&Path>,
+    home: Option<&Path>,
+) -> Containment {
+    let Some(root) = project_root else {
+        return Containment::Unknown;
+    };
+    let Some(target) = expand_home_prefix(raw, home) else {
+        return Containment::Unknown;
+    };
+    if target.as_os_str().is_empty() || target == Path::new(".") || target == Path::new("./") {
+        return Containment::Inside;
+    }
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        root.join(target)
+    };
+    match (resolved.canonicalize(), root.canonicalize()) {
+        (Ok(target), Ok(root)) => {
+            if target.starts_with(&root) {
+                Containment::Inside
+            } else {
+                Containment::Outside
+            }
+        }
+        _ => Containment::Unknown,
+    }
+}
+
+fn classify_path_within_project(raw: &str, project_root: Option<&Path>) -> Containment {
+    classify_path_containment_with_home(raw, project_root, crate::agents::home_dir().as_deref())
+}
+
+#[cfg(test)]
+fn path_is_within_project_with_home(
+    raw: &str,
+    project_root: Option<&Path>,
+    home: Option<&Path>,
+) -> bool {
+    matches!(
+        classify_path_containment_with_home(raw, project_root, home),
+        Containment::Inside
+    )
 }
 
 /// Is `raw` an absolute spelling of the indexed project root itself?
@@ -799,6 +956,10 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
 struct StrippedCommand<'a> {
     rest: &'a str,
     disables_hook: bool,
+    /// The effective working directory after a leading `cd` (if any). Only the
+    /// first leading `cd` is tracked; subsequent `cd` prefixes are stripped as
+    /// noise but ignored because the hook does not model the shell's cwd.
+    cd_target: Option<&'a str>,
 }
 
 /// Peel leading noise that hides a code search: the `rtk`/`sudo`/`time`/`nice`
@@ -812,6 +973,7 @@ struct StrippedCommand<'a> {
 fn strip_command_prefixes(command: &str) -> StrippedCommand<'_> {
     let mut rest = command.trim_start();
     let mut disables_hook = false;
+    let mut cd_target: Option<&str> = None;
     loop {
         let mut advanced = false;
 
@@ -832,7 +994,13 @@ fn strip_command_prefixes(command: &str) -> StrippedCommand<'_> {
             advanced = true;
         }
 
-        if let Some(after) = strip_leading_cd(rest) {
+        if let Some((cd_arg, after)) = strip_leading_cd(rest) {
+            // Only the first leading cd is modeled. A later cd is stripped as
+            // prefix noise but ignored, so we do not pretend to know the shell's
+            // effective cwd after a directory change sequence.
+            if cd_target.is_none() {
+                cd_target = Some(cd_arg);
+            }
             rest = after.trim_start();
             advanced = true;
         }
@@ -841,6 +1009,7 @@ fn strip_command_prefixes(command: &str) -> StrippedCommand<'_> {
             return StrippedCommand {
                 rest,
                 disables_hook,
+                cd_target,
             };
         }
     }
@@ -859,6 +1028,33 @@ fn unquote(v: &str) -> &str {
         &v[1..v.len() - 1]
     } else {
         v
+    }
+}
+
+/// Strip backslash escapes used by a shell to protect the following character
+/// (typically a space or glob metacharacter). On Windows a backslash is a path
+/// separator, not an escape, so this is a no-op there.
+fn unescape_shell_backslashes(s: &str) -> Cow<'_, str> {
+    if cfg!(windows) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut changed = false;
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+                changed = true;
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(s)
     }
 }
 
@@ -905,7 +1101,7 @@ fn parse_leading_env_assignment(s: &str) -> Option<(&str, &str, &str)> {
 /// return the remainder after that separator. Returns `None` when the first
 /// top-level separator is a pipe (so `cd x && ls | grep` still passes through)
 /// or when there is no separator at all.
-fn strip_leading_cd(s: &str) -> Option<&str> {
+fn strip_leading_cd(s: &str) -> Option<(&str, &str)> {
     let after = s.strip_prefix("cd")?;
     if !after.starts_with(char::is_whitespace) {
         return None;
@@ -931,10 +1127,14 @@ fn strip_leading_cd(s: &str) -> Option<&str> {
             '\'' => in_single = true,
             '"' => in_double = true,
             '|' => return None,
-            ';' => return Some(&s[idx + c.len_utf8()..]),
+            ';' => {
+                let cd_arg = extract_cd_argument(s)?;
+                return Some((cd_arg, &s[idx + c.len_utf8()..]));
+            }
             '&' => {
                 if let Some(&(idx2, '&')) = iter.peek() {
-                    return Some(&s[idx2 + 1..]);
+                    let cd_arg = extract_cd_argument(s)?;
+                    return Some((cd_arg, &s[idx2 + 1..]));
                 }
                 return None;
             }
@@ -942,6 +1142,54 @@ fn strip_leading_cd(s: &str) -> Option<&str> {
         }
     }
     None
+}
+/// Extract the path argument from a `cd <path>` command string.
+/// Returns the raw (unexpanded) path, or `None` if the cd has no argument.
+fn extract_cd_argument(s: &str) -> Option<&str> {
+    let after = s.strip_prefix("cd")?.trim_start();
+    if after.is_empty() {
+        return None;
+    }
+    // Find the end of the path: up to the first unquoted `&&` or `;`.
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut iter = after.char_indices().peekable();
+    let mut last_end = after.len();
+    while let Some((idx, c)) = iter.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            if c == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            ';' | '|' => {
+                last_end = idx;
+                break;
+            }
+            '&' => {
+                if let Some(&(_, '&')) = iter.peek() {
+                    last_end = idx;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let path = after[..last_end].trim_end();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 /// Minimal shell tokenizer covering single/double quotes and backslash
@@ -1364,7 +1612,7 @@ mod cursor_decision_tests {
 #[cfg(test)]
 mod project_root_target_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::path_is_project_root_with_home;
+    use super::{path_is_project_root_with_home, path_is_within_project_with_home};
 
     fn indexed_project() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1436,6 +1684,105 @@ mod project_root_target_tests {
         let (tmp, root) = indexed_project();
         assert!(!path_is_project_root_with_home(
             "project",
+            Some(&root),
+            Some(tmp.path())
+        ));
+    }
+
+    // --- #435: path_is_within_project tests ---
+
+    #[test]
+    fn within_project_absolute_root_matches() {
+        let (_tmp, root) = indexed_project();
+        assert!(path_is_within_project_with_home(
+            root.to_str().unwrap(),
+            Some(&root),
+            None
+        ));
+    }
+
+    #[test]
+    fn within_project_absolute_subdir_matches() {
+        let (_tmp, root) = indexed_project();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let subdir = root.join("src");
+        assert!(path_is_within_project_with_home(
+            subdir.to_str().unwrap(),
+            Some(&root),
+            None
+        ));
+    }
+
+    #[test]
+    fn within_project_absolute_outside_does_not_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!path_is_within_project_with_home(
+            other.to_str().unwrap(),
+            Some(&root),
+            None
+        ));
+    }
+
+    #[test]
+    fn within_project_relative_subdir_resolves_against_root() {
+        let (_tmp, root) = indexed_project();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        assert!(path_is_within_project_with_home("src", Some(&root), None));
+    }
+
+    #[test]
+    fn within_project_relative_outside_does_not_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        // "../other" resolves outside the project root
+        assert!(!path_is_within_project_with_home(
+            "../other",
+            Some(&root),
+            None
+        ));
+    }
+
+    #[test]
+    fn within_project_tilde_resolves_to_project() {
+        let (tmp, root) = indexed_project();
+        assert!(path_is_within_project_with_home(
+            "~/project",
+            Some(&root),
+            Some(tmp.path())
+        ));
+    }
+
+    #[test]
+    fn within_project_unresolvable_path_returns_false() {
+        let (_tmp, root) = indexed_project();
+        // A path that doesn't exist and cannot be canonicalized
+        assert!(!path_is_within_project_with_home(
+            "/nonexistent/path/that/does/not/exist",
+            Some(&root),
+            None
+        ));
+    }
+
+    #[test]
+    fn within_project_no_root_returns_false() {
+        let (_tmp, _root) = indexed_project();
+        assert!(!path_is_within_project_with_home("/anywhere", None, None));
+    }
+
+    #[test]
+    fn within_project_other_users_home_is_not_expanded() {
+        let (tmp, root) = indexed_project();
+        // `~someone` is not expanded; it is treated as a literal path relative
+        // to the root, which does not exist and therefore cannot be inside.
+        assert!(!path_is_within_project_with_home(
+            "~someone/project",
             Some(&root),
             Some(tmp.path())
         ));
