@@ -1695,3 +1695,133 @@ fn test_no_fanout_without_cfg() {
         "non-cfg same-qualified-name nodes must not fan out, got: {extra:?}"
     );
 }
+
+/// #418: the sync paths pass `propagate_variant_edges` only the `Annotates` and
+/// `Calls` edges, because those are the only kinds it reads. This pins that
+/// equivalence, so a change that starts reading a third kind fails here rather
+/// than silently losing variant edges during an incremental sync.
+///
+/// The noise edges are shaped so that reading any one of them *would* change
+/// the result: each runs from a `cfg` annotation node to a third same-named
+/// function, so a kind treated as gating would pull `fn:third` into the variant
+/// group and produce an extra propagated edge. Noise that could not matter
+/// would make this test pass against a function reading anything at all.
+#[test]
+fn propagate_variant_edges_ignores_every_kind_but_annotates_and_calls() {
+    let nodes = vec![
+        variant_node(
+            "fn:caller",
+            NodeKind::Function,
+            "main",
+            "src/main.rs::main",
+            "src/main.rs",
+        ),
+        variant_node(
+            "fn:macos",
+            NodeKind::Function,
+            "copy",
+            "src/c.rs::copy",
+            "src/c.rs",
+        ),
+        variant_node(
+            "fn:other",
+            NodeKind::Function,
+            "copy",
+            "src/c.rs::copy",
+            "src/c.rs",
+        ),
+        // Same qualified_name as the two variants, but gated by nothing.
+        variant_node(
+            "fn:third",
+            NodeKind::Function,
+            "copy",
+            "src/c.rs::copy",
+            "src/c.rs",
+        ),
+        variant_node(
+            "au:1",
+            NodeKind::AnnotationUsage,
+            "cfg",
+            "src/c.rs::cfg",
+            "src/c.rs",
+        ),
+        variant_node(
+            "au:2",
+            NodeKind::AnnotationUsage,
+            "cfg",
+            "src/c.rs::cfg",
+            "src/c.rs",
+        ),
+    ];
+    let needed = vec![
+        Edge {
+            source: "au:1".into(),
+            target: "fn:macos".into(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        Edge {
+            source: "au:2".into(),
+            target: "fn:other".into(),
+            kind: EdgeKind::Annotates,
+            line: Some(1),
+        },
+        calls_edge("fn:caller", "fn:macos"),
+    ];
+
+    // Every other kind the graph can hold, each from a `cfg` node to `fn:third`
+    // so that reading it as gating would visibly change the output.
+    let noise: Vec<Edge> = [
+        EdgeKind::Contains,
+        EdgeKind::Uses,
+        EdgeKind::Implements,
+        EdgeKind::TypeOf,
+        EdgeKind::Returns,
+        EdgeKind::DerivesMacro,
+        EdgeKind::Extends,
+        EdgeKind::Receives,
+        EdgeKind::Documents,
+        EdgeKind::Instantiates,
+    ]
+    .into_iter()
+    .map(|kind| Edge {
+        source: "au:1".into(),
+        target: "fn:third".into(),
+        kind,
+        line: Some(7),
+    })
+    .collect();
+
+    let mut with_noise = needed.clone();
+    with_noise.extend(noise);
+
+    let key = |v: &[Edge]| {
+        let mut k: Vec<(String, String)> = v
+            .iter()
+            .map(|e| (e.source.clone(), e.target.clone()))
+            .collect();
+        k.sort_unstable();
+        k
+    };
+    let filtered = tokensave::resolution::propagate_variant_edges(&nodes, &needed);
+    let whole_table = tokensave::resolution::propagate_variant_edges(&nodes, &with_noise);
+    assert_eq!(
+        key(&filtered),
+        key(&whole_table),
+        "the kind-filtered slice must give the same result as the whole table"
+    );
+
+    // Controls. The fixture must actually propagate, or the comparison above is
+    // between two empty vectors; and `fn:third` must stay out of it, or the
+    // noise was never capable of changing anything.
+    assert!(
+        filtered
+            .iter()
+            .any(|e| e.source == "fn:caller" && e.target == "fn:other"),
+        "fixture must propagate to the cfg sibling, got: {filtered:?}"
+    );
+    assert!(
+        !filtered.iter().any(|e| e.target == "fn:third"),
+        "an ungated same-named function must not join the variant group"
+    );
+}
