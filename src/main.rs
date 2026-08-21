@@ -232,6 +232,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // install: keep the per-agent setup banners off stderr so they
             // don't appear on every `init`/`sync` (#255).
             tokensave::agents::set_quiet_install(true);
+            // Captured before the resync, which advances both markers.
+            let resynced_from = if user_config.last_installed_version.is_empty() {
+                user_config.previous_version.clone()
+            } else {
+                user_config.last_installed_version.clone()
+            };
+            let agent_count = user_config.installed_agents.len();
             let outcome =
                 tokensave::agents::resync_installed_agents(&mut user_config, running, |id| {
                     let Ok(ag) = tokensave::agents::get_integration(id) else {
@@ -251,6 +258,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 });
             tokensave::agents::set_quiet_install(false);
             if outcome.ran {
+                // Say what this was and why (#419). The user did not ask for an
+                // install — they may well have run a read-only query — so a
+                // write to their agent config has to name itself. Before this,
+                // the only output was a bare `✔ Wrote <path>` escaping from the
+                // file layer, which read as though the query had done it.
+                eprintln!(
+                    "\x1b[32m✔\x1b[0m {}",
+                    resync_summary(running, &resynced_from, agent_count)
+                );
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&bin) {
                     eprintln!("{warning}");
                 }
@@ -1503,6 +1519,28 @@ fn report_hook_removal(r: &tokensave::agents::HookRemoval) {
     }
 }
 
+/// The one line the silent upgrade resync prints when it has written agent
+/// config (#419).
+///
+/// The user did not ask for an install — they may have run a read-only query
+/// like `tokensave gitignore` — so a write to their agent config has to name
+/// itself and say why. Before this, the only output was a bare `✔ Wrote
+/// <path>` escaping from the file layer, which read as though the query had
+/// done it.
+fn resync_summary(running: &str, previous: &str, agent_count: usize) -> String {
+    let from = if previous.is_empty() {
+        "version not recorded"
+    } else {
+        previous
+    };
+    let agents = if agent_count == 1 {
+        "1 agent".to_string()
+    } else {
+        format!("{agent_count} agents")
+    };
+    format!("Refreshed agent config for tokensave {running} (was {from}) — {agents}")
+}
+
 fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bool {
     match canonical {
         Some("true") => true,
@@ -1514,6 +1552,34 @@ fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bo
 #[cfg(test)]
 mod startup_tests {
     use super::{server_disabled_from_env, should_skip_agent_install_maintenance, Commands};
+
+    /// #419: the resync used to announce itself only as `✔ Wrote <path>` from
+    /// the file layer, under a command the user had run as a query.
+    #[test]
+    fn resync_summary_names_the_versions_and_the_scale() {
+        let s = super::resync_summary("7.10.0", "7.9.0", 3);
+        assert_eq!(
+            s,
+            "Refreshed agent config for tokensave 7.10.0 (was 7.9.0) — 3 agents"
+        );
+        // A path, which is what the old message consisted of, must not be the
+        // whole story any more.
+        assert!(!s.contains(".claude"));
+    }
+
+    #[test]
+    fn resync_summary_handles_one_agent_and_an_unrecorded_previous_version() {
+        assert_eq!(
+            super::resync_summary("7.10.0", "7.9.0", 1),
+            "Refreshed agent config for tokensave 7.10.0 (was 7.9.0) — 1 agent"
+        );
+        // `last_installed_version` and `previous_version` are both empty on an
+        // install that predates the markers, and the line still has to read.
+        assert_eq!(
+            super::resync_summary("7.10.0", "", 2),
+            "Refreshed agent config for tokensave 7.10.0 (was version not recorded) — 2 agents"
+        );
+    }
 
     #[test]
     fn canonical_server_disable_env_controls_serve() {
