@@ -1461,6 +1461,88 @@ impl Database {
         collect_rows(&mut rows, row_to_edge, "get_all_edges").await
     }
 
+    /// Returns every edge of one kind.
+    ///
+    /// The predicate belongs in SQL: `calls` is 19,282 of this repository's
+    /// 25,580 edges, so a consumer that filters on kind after the fact carries
+    /// a quarter of the table for nothing (#418).
+    pub async fn get_edges_by_kind(&self, kind: EdgeKind) -> Result<Vec<Edge>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT source, target, kind, line FROM edges WHERE kind = ?1",
+                params![kind.as_str()],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query edges by kind: {e}"),
+                operation: "get_edges_by_kind".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_edge, "get_edges_by_kind").await
+    }
+
+    /// Returns `(node_id, in_degree, out_degree)` for the `limit` nodes with the
+    /// highest combined degree, computed in SQL.
+    ///
+    /// The caller wants at most `limit` rows — `tokensave_hotspots` defaults to
+    /// 10 and caps at 100 — so materialising every edge to tally degrees in
+    /// memory carries the whole table to emit a hundred rows at most (#418).
+    ///
+    /// Deliberately identical to the in-memory tally it replaces, including a
+    /// self-edge counting toward both degrees. Excluding self-edges would be
+    /// defensible — the `gini` fan arms do exclude them, since a recursive call
+    /// is not a dependant of itself — but this is a performance change and
+    /// silently reordering a ranking inside one is not on. That inconsistency
+    /// is worth its own issue.
+    ///
+    /// One behavioural difference, and it is an improvement: ties are broken by
+    /// `id`. The tally it replaces sorted a `HashMap`'s iteration order, so
+    /// equal-degree nodes came back in an order that could vary between runs on
+    /// the same index.
+    pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
+        let sql = "SELECT id, \
+                          SUM(inc) AS in_degree, \
+                          SUM(outg) AS out_degree \
+                   FROM ( \
+                     SELECT target AS id, 1 AS inc, 0 AS outg FROM edges \
+                     UNION ALL \
+                     SELECT source AS id, 0 AS inc, 1 AS outg FROM edges \
+                   ) \
+                   GROUP BY id \
+                   ORDER BY (in_degree + out_degree) DESC, id ASC \
+                   LIMIT ?1";
+        let mut rows = self
+            .conn()
+            .query(sql, params![limit as i64])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query top-degree nodes: {e}"),
+                operation: "get_top_degree_nodes".to_string(),
+            })?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read top-degree row: {e}"),
+            operation: "get_top_degree_nodes".to_string(),
+        })? {
+            let read = |i: i32, what: &str| -> Result<i64> {
+                row.get::<i64>(i).map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to read {what}: {e}"),
+                    operation: "get_top_degree_nodes".to_string(),
+                })
+            };
+            let id = row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read id: {e}"),
+                operation: "get_top_degree_nodes".to_string(),
+            })?;
+            let in_degree = u32::try_from(read(1, "in_degree")?).unwrap_or(u32::MAX);
+            let out_degree = u32::try_from(read(2, "out_degree")?).unwrap_or(u32::MAX);
+            out.push((id, in_degree, out_degree));
+        }
+        Ok(out)
+    }
+
     /// Deletes all edges originating from a given source node.
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
         self.conn()
