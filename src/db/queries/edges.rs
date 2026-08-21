@@ -1482,6 +1482,36 @@ impl Database {
         collect_rows(&mut rows, row_to_edge, "get_edges_by_kind").await
     }
 
+    /// Returns every edge whose kind is in `kinds`.
+    ///
+    /// Empty `kinds` returns nothing, not everything: a caller asking for no
+    /// kinds wants no rows, and silently widening that to the whole table is
+    /// how #418's loads got there.
+    pub async fn get_edges_by_kinds(&self, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT source, target, kind, line FROM edges WHERE kind IN ({})",
+            placeholders.join(", ")
+        );
+        let param_values: Vec<libsql::Value> = kinds
+            .iter()
+            .map(|k| libsql::Value::Text(k.as_str().to_string()))
+            .collect();
+        let mut rows = self
+            .conn()
+            .query(&sql, libsql::params_from_iter(param_values))
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query edges by kinds: {e}"),
+                operation: "get_edges_by_kinds".to_string(),
+            })?;
+
+        collect_rows(&mut rows, row_to_edge, "get_edges_by_kinds").await
+    }
+
     /// Returns `(node_id, in_degree, out_degree)` for the `limit` nodes with the
     /// highest combined degree, computed in SQL.
     ///

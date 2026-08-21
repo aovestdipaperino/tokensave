@@ -768,7 +768,16 @@ impl TokenSave {
                     self.db.insert_edges(&edges).await?;
                     // Re-propagate build-variant call edges over the full graph
                     // now that new call edges exist (#141).
-                    let all_db_edges = self.db.get_all_edges().await.unwrap_or_default();
+                    // Only the two kinds `propagate_variant_edges` reads, not
+                    // the whole table (#418). The `calls` half is irreducible
+                    // for this algorithm — any call into a variant member
+                    // matters — but type_of, returns, uses, implements, extends
+                    // and receives were all carried and never looked at.
+                    let all_db_edges = self
+                        .db
+                        .get_edges_by_kinds(&[EdgeKind::Annotates, EdgeKind::Calls])
+                        .await
+                        .unwrap_or_default();
                     let variant_edges =
                         crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
                     if !variant_edges.is_empty() {
@@ -1119,7 +1128,16 @@ impl TokenSave {
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
                     // Propagate call edges across build-config variants (#141).
-                    let all_db_edges = self.db.get_all_edges().await.unwrap_or_default();
+                    // Only the two kinds `propagate_variant_edges` reads, not
+                    // the whole table (#418). The `calls` half is irreducible
+                    // for this algorithm — any call into a variant member
+                    // matters — but type_of, returns, uses, implements, extends
+                    // and receives were all carried and never looked at.
+                    let all_db_edges = self
+                        .db
+                        .get_edges_by_kinds(&[EdgeKind::Annotates, EdgeKind::Calls])
+                        .await
+                        .unwrap_or_default();
                     let variant_edges =
                         crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
                     if !variant_edges.is_empty() {
