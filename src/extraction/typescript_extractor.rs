@@ -681,6 +681,14 @@ impl TypeScriptExtractor {
                             Self::emit_decorator(state, dec, &id);
                         }
                     }
+                    // `abstract foo(): void;` is its own node kind, and it used
+                    // to fall through the arm below and reach nothing (#424).
+                    "abstract_method_signature" => {
+                        let id = Self::visit_abstract_method(state, child);
+                        for dec in pending_decorators.drain(..) {
+                            Self::emit_decorator(state, dec, &id);
+                        }
+                    }
                     _ => {}
                 }
                 if !cursor.goto_next_sibling() {
@@ -688,6 +696,74 @@ impl TypeScriptExtractor {
                 }
             }
         }
+    }
+
+    /// Extract an `abstract_method_signature` from a class body. A declaration
+    /// with no body still names a callable, and the resolver already accepts
+    /// `AbstractMethod` as a `Calls` target, so it becomes a node of that kind
+    /// rather than being dropped (#424). Returns the node ID so sibling
+    /// decorators can attach to it.
+    fn visit_abstract_method(state: &mut ExtractionState, node: TsNode<'_>) -> String {
+        let name = find_child_by_kind(node, "property_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
+        let text = state.node_text(node);
+        let visibility = Self::extract_ts_accessibility(state, node);
+        let docstring = Self::extract_jsdoc(state, node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::AbstractMethod,
+            &name,
+            start_line,
+        );
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::AbstractMethod,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature: Some(text.trim().to_string()),
+            docstring,
+            visibility,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        // Contains edge from parent (the abstract class).
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+            });
+        }
+
+        id
     }
 
     /// Extract a `method_definition` from a class body. Returns the method's
