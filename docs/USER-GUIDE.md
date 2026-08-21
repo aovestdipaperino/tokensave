@@ -251,6 +251,8 @@ tokensave install --git-hook no    # skip the hook without asking
 tokensave install --git-hook default  # preserve the interactive prompt (default when flag is omitted)
 ```
 
+To remove the hooks again, see [Removing the git hooks](#removing-the-git-hooks).
+
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
 
 Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, writes steering to
@@ -367,6 +369,25 @@ Run `tokensave sync` whenever you want. It's incremental and fast.
 During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. The hook is a no-op in repos that don't have a `.tokensave/` directory.
 
 If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
+
+#### Removing the git hooks
+
+The hooks are global and outlive every agent integration, so removing tokensave from your agents does not stop them on its own (#420). Two ways to remove them:
+
+```bash
+tokensave githooks              # show what is installed, and where
+tokensave githooks off          # remove tokensave's hooks
+tokensave uninstall             # removes the hooks along with all agent integrations
+tokensave uninstall --keep-git-hooks   # ...or keep them
+```
+
+Removal is deliberately conservative:
+
+- A hook file that contains anything you wrote keeps that content, and loses only tokensave's marked section.
+- A hook file that is nothing but tokensave's own content is deleted.
+- `core.hooksPath` is unset, and the hooks directory removed, only when it is tokensave's own default (`~/.config/git/hooks`), it is left empty, and this run actually removed a tokensave hook. A path you configured yourself is never touched.
+
+If the directory still holds hooks tokensave did not write, it is left in place and the command says so.
 
 You can also set it up manually:
 

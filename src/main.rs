@@ -859,7 +859,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Uninstall { agent, local } => {
+        Commands::Uninstall {
+            agent,
+            local,
+            keep_git_hooks,
+        } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
                     message: "could not determine home directory".to_string(),
@@ -920,6 +924,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     user_cfg.installed_agents.clear();
                     user_cfg.save();
                     eprintln!("All agent integrations removed.");
+                    // #420: the global post-commit hook outlives every agent
+                    // integration, so without this a commit in any repo
+                    // recreates the index the user just deleted. --local never
+                    // touches it: the hooks are global, not project-scoped.
+                    if keep_git_hooks {
+                        eprintln!(
+                            "  Global git hooks left in place (--keep-git-hooks). \
+                             Remove them later with `tokensave githooks off`."
+                        );
+                    } else {
+                        report_hook_removal(&tokensave::agents::remove_git_hooks());
+                    }
                 }
             }
         }
@@ -1066,6 +1082,30 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.save();
             eprintln!("Worldwide counter upload enabled.");
         }
+        Commands::Githooks { action } => match action.as_deref() {
+            Some("off") => {
+                report_hook_removal(&tokensave::agents::remove_git_hooks());
+            }
+            Some("on") => {
+                let bin = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "tokensave".to_string());
+                tokensave::agents::offer_git_post_commit_hook(
+                    &bin,
+                    tokensave::agents::GitHookMode::Yes,
+                );
+            }
+            Some(other) => {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!("unknown action '{other}': expected 'on' or 'off'"),
+                });
+            }
+            None => {
+                for line in tokensave::agents::describe_git_hooks() {
+                    eprintln!("{line}");
+                }
+            }
+        },
         Commands::Gitignore { path, action } => {
             let project_path = tokensave::config::resolve_path(path);
             let mut config = tokensave::config::load_config(&project_path)?;
@@ -1433,6 +1473,36 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
     )
 }
 
+/// Print what `remove_git_hooks` did. Says so explicitly when it found
+/// nothing, so `githooks off` never exits silently on a machine that has no
+/// tokensave hooks installed.
+fn report_hook_removal(r: &tokensave::agents::HookRemoval) {
+    if r.found_nothing() {
+        eprintln!(
+            "  No tokensave git hooks found in {}",
+            r.hooks_dir.display()
+        );
+        return;
+    }
+    for p in &r.deleted {
+        eprintln!("\x1b[32m✔\x1b[0m Removed git hook {}", p.display());
+    }
+    for p in &r.cleaned {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave section from {} (your own hook content kept)",
+            p.display()
+        );
+    }
+    if r.hooks_path_unset {
+        eprintln!("\x1b[32m✔\x1b[0m Unset git core.hooksPath");
+    } else if r.dir_kept_for_foreign_files {
+        eprintln!(
+            "  Left {} and core.hooksPath in place — the directory still holds hooks tokensave did not write",
+            r.hooks_dir.display()
+        );
+    }
+}
+
 fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bool {
     match canonical {
         Some("true") => true,
@@ -1495,6 +1565,7 @@ mod startup_tests {
             &Commands::Uninstall {
                 agent: Some("kiro".to_string()),
                 local: false,
+                keep_git_hooks: false,
             }
         ));
     }
