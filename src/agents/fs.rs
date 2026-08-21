@@ -431,7 +431,11 @@ pub fn write_json_file(path: &Path, value: &serde_json::Value) -> crate::errors:
     }
     let backup = backup_config_file(path)?;
     safe_write_json_file(path, value, backup.as_deref())?;
-    eprintln!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
+    // Agent-install progress, so it honours quiet mode like every other line
+    // the silent upgrade resync suppresses. A raw `eprintln!` here is what let
+    // that resync print a bare `✔ Wrote ~/.claude/settings.json` from under a
+    // command the user had run as a query (#419).
+    crate::agent_note!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
     Ok(())
 }
 
@@ -758,7 +762,7 @@ pub fn write_toml_file(path: &Path, value: &toml::Value) -> crate::errors::Resul
     std::fs::write(path, contents).map_err(|e| TokenSaveError::Config {
         message: format!("failed to write {}: {e}", path.display()),
     })?;
-    eprintln!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
+    crate::agent_note!("\x1b[32m✔\x1b[0m Wrote {}", path.display());
     Ok(())
 }
 
