@@ -78,6 +78,17 @@ pub(super) async fn compute_health_snapshot(
 
     let mut per_file_complexity: HashMap<String, f64> = HashMap::new();
     for n in &nodes {
+        // The `file` node spans the whole file and carries no branches, loops
+        // or nesting, so summing it in added each file's length a second time
+        // on top of the spans of the symbols inside it (#422). Every file gets
+        // a zero entry below, so a file with no extracted symbols still ranks
+        // — at 0, which is what "no measured complexity" should look like.
+        if n.kind == NodeKind::File {
+            per_file_complexity
+                .entry(n.file_path.clone())
+                .or_insert(0.0);
+            continue;
+        }
         let c = f64::from(n.branches) * 2.0
             + f64::from(n.loops) * 2.0
             + f64::from(n.max_nesting) * 3.0
@@ -213,14 +224,41 @@ pub(super) async fn handle_gini(
     if let Some(prefix) = path_prefix {
         node_filter = node_filter.path_prefix(prefix);
     }
-    let all_nodes = cg.db().get_nodes_filtered(&node_filter).await?;
-    let all_edges = if metric == "fan_in" || metric == "fan_out" {
+    let nodes = cg.db().get_nodes_filtered(&node_filter).await?;
+    let fan = metric == "fan_in" || metric == "fan_out";
+    let all_edges = if fan {
         cg.get_all_edges().await?
     } else {
         vec![]
     };
 
-    let nodes = all_nodes;
+    // The file-scope fan arms map each edge endpoint to its file. That map has
+    // to span the graph: built from the filtered nodes, an edge whose other end
+    // lives outside the prefix resolves to nothing and is dropped, so a scoped
+    // file's fan-in counted only its intra-prefix callers — and the whole-graph
+    // `all_edges` load above it was then wasted (#423, #422). The comment there
+    // states the intent: fan-in of a scoped node counts edges from outside it.
+    //
+    // Only needed when a prefix is set and only for the two fan metrics; the
+    // unfiltered case already has every node in `nodes`.
+    let outside_nodes = if fan && path_prefix.is_some() {
+        cg.db()
+            .get_nodes_filtered(&crate::db::NodeFilter::new())
+            .await?
+    } else {
+        vec![]
+    };
+    let node_to_file: HashMap<&str, &str> = if outside_nodes.is_empty() {
+        nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.file_path.as_str()))
+            .collect()
+    } else {
+        outside_nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.file_path.as_str()))
+            .collect()
+    };
 
     // Build named_values per metric+scope
     let named_values: Vec<(String, f64)> = match (metric, scope) {
@@ -233,49 +271,72 @@ pub(super) async fn handle_gini(
             per_file.into_iter().collect()
         }
         ("lines", "file") => {
-            let mut per_file: HashMap<String, f64> = HashMap::new();
+            // A file's length is the span of its own `file` node, which matches
+            // `wc -l`. Summing every node's span instead counted one physical
+            // line once per enclosing node — struct, impl, method, field, enum
+            // variant — on top of the file node's full span, so `src/types.rs`
+            // reported 2,104 lines against an actual 849, and the inflation
+            // ran from 1.00x to 3.45x across this repository, reordering the
+            // ranking the metric exists to produce (#422).
+            //
+            // The fallback is `max(end_line)` for a file with no `file` node,
+            // which is the best available answer for one; it is not reached by
+            // any language indexed today.
+            let mut own_span: HashMap<&str, f64> = HashMap::new();
+            let mut max_end: HashMap<&str, u32> = HashMap::new();
             for n in &nodes {
-                let lines = f64::from(n.end_line.saturating_sub(n.start_line) + 1);
-                *per_file.entry(n.file_path.clone()).or_insert(0.0) += lines;
+                if n.kind == NodeKind::File {
+                    own_span.insert(
+                        n.file_path.as_str(),
+                        f64::from(n.end_line.saturating_sub(n.start_line) + 1),
+                    );
+                }
+                let seen = max_end.entry(n.file_path.as_str()).or_insert(0);
+                *seen = (*seen).max(n.end_line);
             }
-            per_file.into_iter().collect()
+            max_end
+                .into_iter()
+                .map(|(f, end)| {
+                    let lines = own_span.get(f).copied().unwrap_or_else(|| f64::from(end));
+                    (f.to_string(), lines)
+                })
+                .collect()
         }
         ("fan_in", "file") => {
-            let node_to_file: HashMap<String, String> = nodes
-                .iter()
-                .map(|n| (n.id.clone(), n.file_path.clone()))
-                .collect();
+            // Only files inside the scope are ranked; their callers may be
+            // anywhere, which is what `node_to_file` spanning the graph buys.
             let mut per_file: HashMap<String, f64> = HashMap::new();
-            // Initialize all files
             for n in &nodes {
                 per_file.entry(n.file_path.clone()).or_insert(0.0);
             }
             for e in &all_edges {
-                if let (Some(src_file), Some(tgt_file)) =
-                    (node_to_file.get(&e.source), node_to_file.get(&e.target))
-                {
+                if let (Some(src_file), Some(tgt_file)) = (
+                    node_to_file.get(e.source.as_str()),
+                    node_to_file.get(e.target.as_str()),
+                ) {
                     if src_file != tgt_file {
-                        *per_file.entry(tgt_file.clone()).or_insert(0.0) += 1.0;
+                        if let Some(count) = per_file.get_mut(*tgt_file) {
+                            *count += 1.0;
+                        }
                     }
                 }
             }
             per_file.into_iter().collect()
         }
         ("fan_out", "file") => {
-            let node_to_file: HashMap<String, String> = nodes
-                .iter()
-                .map(|n| (n.id.clone(), n.file_path.clone()))
-                .collect();
             let mut per_file: HashMap<String, f64> = HashMap::new();
             for n in &nodes {
                 per_file.entry(n.file_path.clone()).or_insert(0.0);
             }
             for e in &all_edges {
-                if let (Some(src_file), Some(tgt_file)) =
-                    (node_to_file.get(&e.source), node_to_file.get(&e.target))
-                {
+                if let (Some(src_file), Some(tgt_file)) = (
+                    node_to_file.get(e.source.as_str()),
+                    node_to_file.get(e.target.as_str()),
+                ) {
                     if src_file != tgt_file {
-                        *per_file.entry(src_file.clone()).or_insert(0.0) += 1.0;
+                        if let Some(count) = per_file.get_mut(*src_file) {
+                            *count += 1.0;
+                        }
                     }
                 }
             }
