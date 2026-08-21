@@ -260,3 +260,59 @@ async fn an_annotated_body_field_still_resolves() {
         "the annotated field form must keep resolving, got {named:?}"
     );
 }
+
+/// #424: a method declared without a body inside an `abstract class` parses as
+/// `abstract_method_signature`, a kind `visit_class_body` did not match, so the
+/// declaration never became a node at all. With a single subclass the call
+/// still landed on that one implementation by name, which is why the shape hid
+/// behind the fixtures above; with two, the resolver could not separate them
+/// and the call produced no edge at all.
+///
+/// The assertion is on the edge rather than on the node. Kind filtering runs
+/// ahead of scoring, so a node of a newly emitted kind reaching the graph does
+/// not by itself mean a call can resolve to it.
+#[tokio::test]
+async fn a_call_into_an_abstract_declaration_resolves_past_two_implementations() {
+    let (_tmp, cg) = indexed(&[(
+        "hierarchy.ts",
+        r#"
+export abstract class Base {
+  abstract shared(): string;
+}
+
+export class First extends Base {
+  shared(): string {
+    return "first";
+  }
+}
+
+export class Second extends Base {
+  shared(): string {
+    return "second";
+  }
+}
+
+export class Caller {
+  constructor(private readonly base: Base) {}
+  run(): string {
+    return this.base.shared();
+  }
+}
+"#,
+    )])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let declaration = nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::AbstractMethod && n.name == "shared")
+        .expect("the abstract declaration must reach the graph as an AbstractMethod node");
+
+    let named = named_call_edges(&cg).await;
+    assert!(
+        named.iter().any(
+            |(source, target)| source.ends_with("run") && *target == declaration.qualified_name
+        ),
+        "the call must resolve to the declaration on the base, got {named:?}"
+    );
+}
