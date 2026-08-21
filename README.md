@@ -148,11 +148,13 @@ tokensave install --agent zed             # Zed
 tokensave install --agent grok            # Grok Build (xAI)
 tokensave install --git-hook yes           # auto-install the global post-commit and post-checkout hooks (no prompt)
 tokensave install --git-hook no            # skip the post-commit and post-checkout hooks (no prompt)
+tokensave githooks                         # show which global git hooks tokensave owns
+tokensave githooks off                     # remove them, leaving any hook content you wrote
 ```
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
-All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks.
+All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
 ### Project-local install
 
