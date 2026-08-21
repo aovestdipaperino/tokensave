@@ -1489,25 +1489,27 @@ impl Database {
     /// 10 and caps at 100 — so materialising every edge to tally degrees in
     /// memory carries the whole table to emit a hundred rows at most (#418).
     ///
-    /// Deliberately identical to the in-memory tally it replaces, including a
-    /// self-edge counting toward both degrees. Excluding self-edges would be
-    /// defensible — the `gini` fan arms do exclude them, since a recursive call
-    /// is not a dependant of itself — but this is a performance change and
-    /// silently reordering a ranking inside one is not on. That inconsistency
-    /// is worth its own issue.
+    /// A self-edge counts toward neither degree, so a recursive call does not
+    /// make a symbol look more connected to the rest of the graph than it is.
+    /// This matches the `gini` fan arms, which have always excluded them on the
+    /// same reasoning — a recursive call is not a dependant of itself — and
+    /// #431 settled the disagreement in their favour. The 405 self-edges in
+    /// this repository are all `calls`, 1.6% of 25,636, and excluding them left
+    /// the top twelve in identical order.
     ///
-    /// One behavioural difference, and it is an improvement: ties are broken by
-    /// `id`. The tally it replaces sorted a `HashMap`'s iteration order, so
-    /// equal-degree nodes came back in an order that could vary between runs on
-    /// the same index.
+    /// Ties are broken by `id`, so equal-degree nodes come back in a fixed
+    /// order. The in-memory tally this replaced sorted a `HashMap`'s iteration
+    /// order and varied between runs on an unchanged index (#418).
     pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
         let sql = "SELECT id, \
                           SUM(inc) AS in_degree, \
                           SUM(outg) AS out_degree \
                    FROM ( \
                      SELECT target AS id, 1 AS inc, 0 AS outg FROM edges \
+                       WHERE source <> target \
                      UNION ALL \
                      SELECT source AS id, 0 AS inc, 1 AS outg FROM edges \
+                       WHERE source <> target \
                    ) \
                    GROUP BY id \
                    ORDER BY (in_degree + out_degree) DESC, id ASC \
