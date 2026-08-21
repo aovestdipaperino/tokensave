@@ -2667,3 +2667,150 @@ async fn test_get_annotation_sites_no_name_returns_all() {
         .expect("sites failed");
     assert_eq!(sites.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// #418: predicates and aggregation pushed into SQL
+// ---------------------------------------------------------------------------
+
+/// The tally `handle_hotspots` used to do in memory, kept here as the oracle
+/// the SQL aggregate is checked against.
+fn degrees_in_memory(edges: &[Edge], limit: usize) -> Vec<(String, u32, u32)> {
+    use std::collections::HashMap;
+    let mut acc: HashMap<String, (u32, u32)> = HashMap::new();
+    for e in edges {
+        acc.entry(e.source.clone()).or_insert((0, 0)).1 += 1;
+        acc.entry(e.target.clone()).or_insert((0, 0)).0 += 1;
+    }
+    let mut v: Vec<(String, u32, u32)> = acc.into_iter().map(|(k, (i, o))| (k, i, o)).collect();
+    // The tie-break the SQL adds; the original sorted a HashMap's order.
+    v.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
+    v.truncate(limit);
+    v
+}
+
+#[tokio::test]
+async fn test_get_edges_by_kind_pushes_the_predicate_down() {
+    let (_dir, db) = setup_db().await;
+    for n in ["a", "b", "c"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    let edges = vec![
+        sample_edge("a", "b", EdgeKind::Calls),
+        sample_edge("b", "c", EdgeKind::Calls),
+        sample_edge("a", "c", EdgeKind::Uses),
+        sample_edge("c", "a", EdgeKind::Implements),
+    ];
+    db.insert_edges(&edges).await.unwrap();
+
+    let calls = db.get_edges_by_kind(EdgeKind::Calls).await.unwrap();
+    assert_eq!(calls.len(), 2, "got {calls:?}");
+    assert!(calls.iter().all(|e| e.kind == EdgeKind::Calls));
+
+    // The filtered query and a post-hoc filter over everything must agree.
+    let filtered_in_memory: Vec<_> = db
+        .get_all_edges()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .collect();
+    let mut a: Vec<_> = calls.iter().map(|e| (&e.source, &e.target)).collect();
+    let mut b: Vec<_> = filtered_in_memory
+        .iter()
+        .map(|e| (&e.source, &e.target))
+        .collect();
+    a.sort_unstable();
+    b.sort_unstable();
+    assert_eq!(a, b);
+
+    assert!(db
+        .get_edges_by_kind(EdgeKind::Extends)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_get_top_degree_nodes_matches_the_in_memory_tally() {
+    let (_dir, db) = setup_db().await;
+    for n in ["hub", "x", "y", "z", "lonely"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    let edges = vec![
+        // hub: 3 in, 1 out = 4
+        sample_edge("x", "hub", EdgeKind::Calls),
+        sample_edge("y", "hub", EdgeKind::Calls),
+        sample_edge("z", "hub", EdgeKind::Uses),
+        sample_edge("hub", "x", EdgeKind::Calls),
+        // a self-edge, which the in-memory tally counted toward both degrees
+        sample_edge("y", "y", EdgeKind::Calls),
+    ];
+    db.insert_edges(&edges).await.unwrap();
+
+    let all = db.get_all_edges().await.unwrap();
+    for limit in [1usize, 3, 10] {
+        let sql = db.get_top_degree_nodes(limit).await.unwrap();
+        assert_eq!(
+            sql,
+            degrees_in_memory(&all, limit),
+            "SQL aggregate disagreed with the in-memory tally at limit {limit}"
+        );
+        assert!(sql.len() <= limit, "limit not applied: {sql:?}");
+    }
+
+    let top = db.get_top_degree_nodes(1).await.unwrap();
+    assert_eq!(top, vec![("hub".to_string(), 3, 1)]);
+
+    // A node with no edges at all does not appear: it has no row to group.
+    let all_rows = db.get_top_degree_nodes(100).await.unwrap();
+    assert!(!all_rows.iter().any(|(id, _, _)| id == "lonely"));
+
+    // The self-edge counts once toward each direction, as it did before.
+    let y = all_rows.iter().find(|(id, _, _)| id == "y").unwrap();
+    assert_eq!(
+        (y.1, y.2),
+        (1, 2),
+        "y: 1 in from itself, 2 out (hub + itself)"
+    );
+}
+
+#[tokio::test]
+async fn test_get_top_degree_nodes_breaks_ties_deterministically() {
+    let (_dir, db) = setup_db().await;
+    for n in ["caller", "aaa", "bbb", "ccc"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    // Three targets with one incoming edge each: an exact three-way tie.
+    db.insert_edges(&[
+        sample_edge("caller", "ccc", EdgeKind::Calls),
+        sample_edge("caller", "aaa", EdgeKind::Calls),
+        sample_edge("caller", "bbb", EdgeKind::Calls),
+    ])
+    .await
+    .unwrap();
+
+    let first = db.get_top_degree_nodes(10).await.unwrap();
+    for _ in 0..5 {
+        assert_eq!(
+            db.get_top_degree_nodes(10).await.unwrap(),
+            first,
+            "repeated queries over an unchanged index must agree"
+        );
+    }
+    let tied: Vec<&str> = first
+        .iter()
+        .filter(|(_, i, o)| i + o == 1)
+        .map(|(id, _, _)| id.as_str())
+        .collect();
+    assert_eq!(
+        tied,
+        vec!["aaa", "bbb", "ccc"],
+        "equal degrees must come back in id order, not in an arbitrary one"
+    );
+}

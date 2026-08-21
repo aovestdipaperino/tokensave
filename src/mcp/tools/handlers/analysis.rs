@@ -657,22 +657,11 @@ pub(super) async fn handle_hotspots(
         .map_or(10, |v| v.min(100) as usize);
     debug_assert!(limit > 0, "handle_hotspots limit must be positive");
 
-    let all_edges = cg.get_all_edges().await?;
-
-    // Count incoming + outgoing edges per node
-    let mut connectivity: HashMap<String, (usize, usize)> = HashMap::new();
-    for edge in &all_edges {
-        connectivity.entry(edge.source.clone()).or_insert((0, 0)).1 += 1; // outgoing
-        connectivity.entry(edge.target.clone()).or_insert((0, 0)).0 += 1; // incoming
-    }
-
-    // Sort by total connectivity descending
-    let mut sorted: Vec<(String, usize, usize)> = connectivity
-        .into_iter()
-        .map(|(id, (inc, out))| (id, inc, out))
-        .collect();
-    sorted.sort_by_key(|x| std::cmp::Reverse(x.1 + x.2));
-    sorted.truncate(limit);
+    // Degrees are tallied, sorted and truncated in SQL. Loading all 25,580
+    // edges here to emit at most `limit` rows — 10 by default, 100 at most —
+    // was #418's clearest case. The path filters below still run afterwards on
+    // the same rows they always did, so the result set is unchanged.
+    let sorted: Vec<(String, u32, u32)> = cg.db().get_top_degree_nodes(limit).await?;
 
     // Resolve node details
     let mut items: Vec<Value> = Vec::new();
@@ -1527,7 +1516,10 @@ fn dfs_cycle_path<'a>(
 /// score reported by `tokensave_complexity`.
 async fn test_reached_node_ids(cg: &TokenSave) -> Result<HashSet<String>> {
     use crate::types::EdgeKind;
-    let all_edges = cg.get_all_edges().await?;
+    // `calls` only, selected in SQL: every use below filters on the kind, and
+    // `calls` is 19,282 of this repository's 25,580 edges, so the rest was a
+    // quarter of the load carried and discarded (#418).
+    let all_edges = cg.db().get_edges_by_kind(EdgeKind::Calls).await?;
     // Graph-wide id -> file_path, projected in SQL (#411). Every node is
     // needed, because a `Calls` edge can originate anywhere and the question
     // is whether its *source* lives in a test file — but the other twenty-six
