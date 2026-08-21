@@ -2672,12 +2672,21 @@ async fn test_get_annotation_sites_no_name_returns_all() {
 // #418: predicates and aggregation pushed into SQL
 // ---------------------------------------------------------------------------
 
-/// The tally `handle_hotspots` used to do in memory, kept here as the oracle
-/// the SQL aggregate is checked against.
+/// An independent tally of the intended semantics, as the oracle the SQL
+/// aggregate is checked against.
+///
+/// Derived from the in-memory tally `handle_hotspots` used to do, with one
+/// deliberate difference: a self-edge counts toward neither degree (#431). The
+/// old tally counted it toward both, which #418/#430 preserved so a performance
+/// change would not reorder a ranking; this is the change that is about the
+/// question.
 fn degrees_in_memory(edges: &[Edge], limit: usize) -> Vec<(String, u32, u32)> {
     use std::collections::HashMap;
     let mut acc: HashMap<String, (u32, u32)> = HashMap::new();
     for e in edges {
+        if e.source == e.target {
+            continue;
+        }
         acc.entry(e.source.clone()).or_insert((0, 0)).1 += 1;
         acc.entry(e.target.clone()).or_insert((0, 0)).0 += 1;
     }
@@ -2769,12 +2778,14 @@ async fn test_get_top_degree_nodes_matches_the_in_memory_tally() {
     let all_rows = db.get_top_degree_nodes(100).await.unwrap();
     assert!(!all_rows.iter().any(|(id, _, _)| id == "lonely"));
 
-    // The self-edge counts once toward each direction, as it did before.
+    // #431: the self-edge on `y` counts toward neither degree, so `y` keeps
+    // only its outgoing call to `hub`. A recursive call does not make a symbol
+    // look more connected to the rest of the graph than it is.
     let y = all_rows.iter().find(|(id, _, _)| id == "y").unwrap();
     assert_eq!(
         (y.1, y.2),
-        (1, 2),
-        "y: 1 in from itself, 2 out (hub + itself)"
+        (0, 1),
+        "y calls hub and itself; only the call to hub is a connection"
     );
 }
 
