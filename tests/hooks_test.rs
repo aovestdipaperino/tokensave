@@ -1893,6 +1893,7 @@ fn test_bash_blocks_find_after_cd_to_inside_project() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn test_bash_allows_grep_after_cd_to_escaped_outside_directory() {
     let (tmp, root) = indexed_project();

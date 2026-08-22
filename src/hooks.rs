@@ -634,8 +634,8 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
     // dot (e.g. a temporary path like `.tmp123/project/src`) is misread as a
     // non-code extension and the directory rule never runs.
     let file_part = trimmed
-        .trim_end_matches('/')
-        .rsplit('/')
+        .trim_end_matches(std::path::is_separator)
+        .rsplit(std::path::is_separator)
         .next()
         .unwrap_or(trimmed);
     if let Some(idx) = file_part.rfind('.') {
@@ -653,8 +653,8 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
     // No extension — treat as a directory. Block only when the last path
     // component is a recognized code root.
     let last = trimmed
-        .trim_end_matches('/')
-        .rsplit('/')
+        .trim_end_matches(std::path::is_separator)
+        .rsplit(std::path::is_separator)
         .next()
         .unwrap_or("");
     CODE_DIRS.contains(&last)
