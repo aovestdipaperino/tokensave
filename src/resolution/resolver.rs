@@ -225,7 +225,7 @@ fn lang_from_path(path: &str) -> &'static str {
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
         "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "cpp",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" => "cpp",
         "cs" => "csharp",
         "rb" => "ruby",
         "php" => "php",
@@ -241,7 +241,7 @@ fn lang_from_path(path: &str) -> &'static str {
     }
 }
 
-/// A `.cpp` calling into its own `.h` tags differently .: without this the match takes 0.5, under
+/// A `.cpp` calling into its own `.h` tags differently, and without this the match takes 0.5, under
 /// the 0.6 floor in [`Resolver::resolve_all`], and the edge is dropped.
 fn same_language_family(a: &str, b: &str) -> bool {
     a == b || matches!((a, b), ("c", "cpp") | ("cpp", "c"))
