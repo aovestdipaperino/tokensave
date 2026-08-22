@@ -265,3 +265,141 @@ def schedule(callback):
         "a.py::Daemon::_flush_loop is not referenced and must stay dead: {dead:?}"
     );
 }
+
+#[tokio::test]
+async fn nested_class_self_assignment_does_not_shadow_outer_class_method() {
+    let dead = dead_names(
+        r#"class Outer:
+    class Inner:
+        def __init__(self):
+            self.worker = 1
+
+    def run(self):
+        return self.worker
+
+    def worker(self):
+        pass
+"#,
+    )
+    .await;
+
+    assert!(
+        !dead.contains(&"worker".to_string()),
+        "Inner's `self.worker` is a different receiver: {dead:?}"
+    );
+}
+
+#[tokio::test]
+async fn annotated_self_assignment_shadows_a_method() {
+    let dead = dead_names(
+        r#"class Job:
+    def __init__(self):
+        self.status: int = 1
+
+    def read(self):
+        return self.status
+
+    def status(self):
+        pass
+"#,
+    )
+    .await;
+
+    assert!(
+        dead.contains(&"status".to_string()),
+        "`self.status: int = 1` binds an attribute: {dead:?}"
+    );
+}
+
+#[tokio::test]
+async fn class_body_binding_that_overwrites_a_method_shadows_it() {
+    let dead = dead_names(
+        r#"class C:
+    def hook(self):
+        pass
+
+    hook = None
+
+    def run(self):
+        return self.hook
+"#,
+    )
+    .await;
+
+    assert!(
+        dead.contains(&"hook".to_string()),
+        "`hook = None` in the class body overwrites the method: {dead:?}"
+    );
+}
+
+#[tokio::test]
+async fn property_setter_assignment_does_not_hide_the_accessors() {
+    let dead = dead_names(
+        r#"class Job:
+    def __init__(self):
+        self.status = 1
+
+    @property
+    def status(self):
+        return self._status
+
+    @status.setter
+    def status(self, value):
+        self._status = value
+
+    def read(self):
+        return self.status
+"#,
+    )
+    .await;
+
+    // The getter and the setter share one qualified name
+    // (`repro.py::Job::status`), so the resolver binds the read to one of
+    // them. Before this fix `self.status = 1` suppressed the ref and both
+    // were reported dead.
+    let dead_status = dead.iter().filter(|n| *n == "status").count();
+    assert!(
+        dead_status < 2,
+        "`self.status` reads the property, so at least one accessor is live: {dead:?}"
+    );
+}
+
+#[tokio::test]
+async fn module_scope_parameter_default_call_and_decorator_are_references() {
+    let dead = dead_names(
+        r#"def _build():
+    return 1
+
+
+def _register(fn):
+    return fn
+
+
+def _truly_dead():
+    return 1
+
+
+def f(x=_build()):
+    return x
+
+
+@_register
+def g():
+    pass
+"#,
+    )
+    .await;
+
+    assert!(
+        !dead.contains(&"_build".to_string()),
+        "called in a parameter default: {dead:?}"
+    );
+    assert!(
+        !dead.contains(&"_register".to_string()),
+        "applied as a decorator: {dead:?}"
+    );
+    assert!(
+        dead.contains(&"_truly_dead".to_string()),
+        "control: {dead:?}"
+    );
+}

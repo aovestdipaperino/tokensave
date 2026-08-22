@@ -246,6 +246,10 @@ impl PythonExtractor {
                     }
                 }
             }
+            // A default that is itself a call (`def f(x=_build())`) runs at
+            // definition time. The value scan above covers its arguments;
+            // this covers the callee.
+            Self::extract_call_sites(state, params, &id);
         }
 
         // Extract call sites from the function body.
@@ -501,6 +505,22 @@ impl PythonExtractor {
                         parent_id: None,
                     };
                     state.nodes.push(graph_node);
+
+                    // Applying a decorator calls it. A bare name (`@_register`,
+                    // `@_make()`) is a project-level reference worth an edge;
+                    // a dotted one (`@app.route`, `@status.setter`) names a
+                    // member of some object and is left alone, since its
+                    // trailing segment would bind to any same-named symbol.
+                    if !name.contains('.') {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: dec_id.clone(),
+                            reference_name: name.clone(),
+                            reference_kind: EdgeKind::Calls,
+                            line: start_line,
+                            column: start_column,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
 
                     // Annotates edge from decorator to the decorated item.
                     if let Some((ref kind, ref inner_name, inner_line)) = inner_kind_and_name {
@@ -937,7 +957,7 @@ impl PythonExtractor {
     }
 
     /// Recursively find call nodes inside a given node and create unresolved Calls references.
-    /// Full qualified name of the nearest enclosing class
+    /// Fully qualified name of the nearest enclosing class
     /// (`file.py::Outer::Inner`), or None outside a class.
     fn enclosing_class_qualified_name(state: &ExtractionState) -> Option<String> {
         let idx = state
@@ -979,15 +999,36 @@ impl PythonExtractor {
         if cursor.goto_first_child() {
             loop {
                 let mut child = cursor.node();
+                let mut is_descriptor = false;
                 if child.kind() == "decorated_definition" {
+                    is_descriptor = Self::has_descriptor_decorator(state, child);
                     if let Some(def) = child.child_by_field_name("definition") {
                         child = def;
                     }
                 }
-                if child.kind() == "function_definition" {
-                    if let Some(name) = child.child_by_field_name("name") {
-                        attrs.methods.insert(state.node_text(name));
+                match child.kind() {
+                    "function_definition" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            let name = state.node_text(name);
+                            if is_descriptor {
+                                attrs.descriptors.insert(name.clone());
+                            }
+                            attrs.methods.insert(name);
+                        }
                     }
+                    // A class-body binding (`hook = None`) overwrites a
+                    // same-named method defined before it.
+                    "expression_statement" => {
+                        if let Some(name) = child
+                            .named_child(0)
+                            .filter(|n| n.kind() == "assignment")
+                            .and_then(|a| a.child_by_field_name("left"))
+                            .filter(|left| left.kind() == "identifier")
+                        {
+                            attrs.assigned.insert(state.node_text(name));
+                        }
+                    }
+                    _ => {}
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -998,11 +1039,46 @@ impl PythonExtractor {
         attrs
     }
 
+    /// True if any decorator on `node` marks the method as a descriptor:
+    /// `@property`, `@cached_property`, `@functools.cached_property`, or
+    /// `@<name>.setter` / `.getter` / `.deleter`.
+    fn has_descriptor_decorator(state: &ExtractionState, node: TsNode<'_>) -> bool {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return false;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "decorator" {
+                let text = state.node_text(child);
+                let name = text.trim_start_matches('@').trim();
+                let name = name.split('(').next().unwrap_or(name);
+                if matches!(
+                    name,
+                    "property" | "cached_property" | "functools.cached_property"
+                ) || name.ends_with(".setter")
+                    || name.ends_with(".getter")
+                    || name.ends_with(".deleter")
+                {
+                    return true;
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                return false;
+            }
+        }
+    }
+
+    /// Walk a class body for `self.<name> =` / `cls.<name> =` bindings.
+    /// Stops at a nested class: its `self` is a different receiver.
     fn collect_self_assignments(
         state: &ExtractionState,
         node: TsNode<'_>,
         out: &mut std::collections::HashSet<String>,
     ) {
+        if node.kind() == "class_definition" {
+            return;
+        }
         if matches!(node.kind(), "assignment" | "augmented_assignment") {
             if let Some(name) = node
                 .child_by_field_name("left")
@@ -1322,6 +1398,8 @@ impl PythonExtractor {
             // is a use of that method. Only a name the enclosing class
             // defines as a method, and never binds as an attribute
             // (`self.status = 1`), counts: otherwise the read is a field.
+            // An assignment to a descriptor (`@property` + `.setter`)
+            // invokes it and does not shadow it.
             // The ref carries the class's full qualified name
             // (`a.py::Daemon::_flush_loop`), so it resolves to this class's
             // method and not to a same-named class in another file. Any
@@ -1334,7 +1412,9 @@ impl PythonExtractor {
                 let Some(attrs) = state.python_class_attrs.last() else {
                     return;
                 };
-                if !attrs.methods.contains(&name) || attrs.assigned.contains(&name) {
+                if !attrs.methods.contains(&name)
+                    || (attrs.assigned.contains(&name) && !attrs.descriptors.contains(&name))
+                {
                     return;
                 }
                 let Some(class_qn) = Self::enclosing_class_qualified_name(state) else {

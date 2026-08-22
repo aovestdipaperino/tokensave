@@ -22,9 +22,13 @@ use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef, Visibility};
 pub(crate) struct PythonClassAttrs {
     /// Methods defined directly in the class body.
     pub(crate) methods: HashSet<String>,
-    /// Names bound through `self.<name> = ...` or `cls.<name> = ...`
-    /// anywhere in the class body.
+    /// Names bound as attributes: `self.<name> = ...` or `cls.<name> = ...`
+    /// in the class's own methods, or `<name> = ...` in the class body.
     pub(crate) assigned: HashSet<String>,
+    /// Methods that are descriptors (`@property`, `@cached_property`,
+    /// `@<name>.setter` and friends). An assignment to one invokes it, so
+    /// it does not shadow the method.
+    pub(crate) descriptors: HashSet<String>,
 }
 
 /// Internal state used during AST traversal.
