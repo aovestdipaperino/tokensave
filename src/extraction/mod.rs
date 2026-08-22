@@ -376,8 +376,8 @@ impl LanguageRegistry {
             .map(std::convert::AsRef::as_ref)
     }
 
-    /// `.h` is the one extension naming no single language .: its text settles it, C++ parsed as C
-    /// yielding no class node at all. Everything else routes by extension.
+    /// `.h` is the one extension naming no single language, so its text settles it: C++ parsed as C
+    /// yields no class node at all. Everything else routes by extension.
     pub fn extractor_for_source(&self, path: &str, source: &str) -> Option<&dyn LanguageExtractor> {
         if path
             .rsplit('.')
@@ -434,7 +434,7 @@ pub(crate) fn collapse_ws(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// `None` = plain C. Comments are skipped .: prose naming a class stays C, and an `extern "C"`
+/// `None` = plain C. Comments are skipped, so prose naming a class stays C, and an `extern "C"`
 /// guard is deliberately no marker - such a header IS C to a C++ reader too.
 pub(crate) fn header_dialect(source: &str) -> Option<&'static str> {
     const OBJC: [&str; 4] = ["@interface", "@protocol", "@implementation", "@property"];
@@ -500,7 +500,7 @@ impl RecordBodyDepth {
             word.clear();
             match c {
                 // `int f(struct Row* r) {` names a struct and opens a
-                // function body .: the `)` decides, not the keyword.
+                // function body, so the `)` decides, not the keyword.
                 '{' => {
                     let record = self.keyword_pending && self.last_significant != Some(')');
                     self.open.push(record);

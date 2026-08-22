@@ -1,4 +1,4 @@
-//! `class MYLIB_API AFoo` reparses as a `function_definition` .: class, methods and fields vanish.
+//! `class MYLIB_API AFoo` reparses as a `function_definition`, so class, methods and fields vanish.
 //! A body or brace initializer is left alone - a `MACRO(...)` there is a call carrying edges.
 
 use std::borrow::Cow;
@@ -11,13 +11,16 @@ pub(crate) fn source_for_parse<'a>(language_key: &str, source: &'a str) -> Cow<'
     }
 }
 
-/// Blanks space-for-byte .: every offset, line and column still addresses the real file.
+/// Blanks space-for-byte, so every offset, line and column still addresses the real file.
 pub(crate) fn blank_declaration_macros(source: &str) -> Option<String> {
     let bytes = source.as_bytes();
     let mut blanked: Option<Vec<u8>> = None;
     // One entry per open brace, `true` where a macro invocation is a call.
     let mut in_body = vec![false];
+    // A record, namespace or `extern` keyword seen since the last `{`, `}` or `;`.
+    let mut record_pending = false;
     let mut prev_significant: Option<u8> = None;
+    let mut after_access_specifier = false;
     let mut i = 0;
     while i < bytes.len() {
         if let Some(next) = skip_non_code(bytes, i) {
@@ -31,16 +34,22 @@ pub(crate) fn blank_declaration_macros(source: &str) -> Option<String> {
         }
         match byte {
             b'{' => {
-                let nested = in_body.last().copied().unwrap_or(false)
-                    || matches!(prev_significant, Some(b')' | b'=' | b',' | b'{'));
-                in_body.push(nested);
+                let record =
+                    record_pending && !matches!(prev_significant, Some(b')' | b'=' | b',' | b'{'));
+                in_body.push(in_body.last().copied().unwrap_or(false) || !record);
+                record_pending = false;
             }
-            b'}' if in_body.len() > 1 => {
-                in_body.pop();
+            b'}' => {
+                if in_body.len() > 1 {
+                    in_body.pop();
+                }
+                record_pending = false;
             }
+            b';' => record_pending = false,
             _ => {}
         }
         if let Some(after_keyword) = record_keyword(bytes, i) {
+            record_pending = true;
             if let Some(span) = api_macro_span(bytes, after_keyword) {
                 blank(bytes, &mut blanked, span);
             }
@@ -58,7 +67,18 @@ pub(crate) fn blank_declaration_macros(source: &str) -> Option<String> {
             }
         }
         let end = ident_end(bytes, i).unwrap_or(i + 1);
-        prev_significant = Some(bytes[end - 1]);
+        let word = &bytes[i..end];
+        if SCOPE_KEYWORDS.contains(&word) {
+            record_pending = true;
+        }
+        // Only an access label ends a declaration; `: MD(MD)` and `Foo::Bar` do not, and reading
+        // either as one blanks a member initializer or a qualified call.
+        prev_significant = if word == b":" && !after_access_specifier {
+            Some(NOT_A_BOUNDARY)
+        } else {
+            Some(bytes[end - 1])
+        };
+        after_access_specifier = ACCESS_SPECIFIERS.contains(&word);
         i = end;
     }
     blanked.map(|out| String::from_utf8(out).unwrap_or_else(|_| source.to_string()))
@@ -73,7 +93,7 @@ fn blank(bytes: &[u8], blanked: &mut Option<Vec<u8>>, (start, end): (usize, usiz
     }
 }
 
-/// A directive spells its own macros .: `#define UPROPERTY(...)` must survive.
+/// A directive spells its own macros, so `#define UPROPERTY(...)` must survive.
 fn skip_non_code(bytes: &[u8], i: usize) -> Option<usize> {
     match (bytes[i], bytes.get(i + 1)) {
         (b'/', Some(b'/')) => {
@@ -142,7 +162,7 @@ fn is_digit_separator(bytes: &[u8], quote: usize) -> bool {
     bytes[start].is_ascii_digit()
 }
 
-/// `R"tag(...)tag"` holds unescaped quotes .: the plain scan ends the literal early and every
+/// `R"tag(...)tag"` holds unescaped quotes, so the plain scan ends the literal early and every
 /// macro after it in the file goes unblanked.
 fn opens_raw_string(bytes: &[u8], quote: usize) -> bool {
     if quote == 0 || bytes[quote - 1] != b'R' {
@@ -181,6 +201,15 @@ fn skip_raw_string(bytes: &[u8], quote: usize) -> usize {
     }
     bytes.len()
 }
+
+/// A `{` after one of these opens a scope holding declarations, not code. `class`, `struct` and
+/// `union` reach `record_pending` through [`record_keyword`] instead.
+const SCOPE_KEYWORDS: [&[u8]; 3] = [b"namespace", b"enum", b"extern"];
+
+const ACCESS_SPECIFIERS: [&[u8]; 3] = [b"public", b"private", b"protected"];
+
+/// Stands in for punctuation that ends no declaration, so the boundary test below refuses it.
+const NOT_A_BOUNDARY: u8 = b'^';
 
 fn record_keyword(bytes: &[u8], i: usize) -> Option<usize> {
     if i > 0 && is_ident_byte(bytes[i - 1]) {
@@ -229,8 +258,9 @@ const SPECIFIERS: [&str; 10] = [
     "thread_local",
 ];
 
-/// A `{` after it means the macro IS the declaration - gtest `TEST(S, C) {}` keeps its body.
-/// Paren-less needs a type after it, since `HANDLE h;` wears the same shape.
+/// A `{` or a second `(` after it means the macro IS the declaration - gtest `TEST(S, C) {}` and
+/// COM `STDMETHOD(Read)(args) {}` both keep theirs. Paren-less needs a type after it, since
+/// `HANDLE h;` wears the same shape.
 fn attribute_macro_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     let name_end = ident_end(bytes, i)?;
     if !is_macro_name(&bytes[i..name_end]) {
@@ -249,7 +279,27 @@ fn attribute_macro_span(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
         return names_a_type(bytes, keyword_end).then_some((i, name_end));
     }
     let end = closing_paren(bytes, after_name)?;
-    (bytes.get(skip_space(bytes, end)) != Some(&b'{')).then_some((i, end))
+    if paren_group_holds_a_body(bytes, after_name, end) {
+        return None;
+    }
+    (!matches!(bytes.get(skip_space(bytes, end)), Some(b'{' | b'('))).then_some((i, end))
+}
+
+/// A brace inside the argument list is a lambda or an initializer list - real code, and blanking it
+/// deletes the calls in it.
+fn paren_group_holds_a_body(bytes: &[u8], open: usize, close: usize) -> bool {
+    let mut i = open;
+    while i < close {
+        if let Some(next) = skip_non_code(bytes, i) {
+            i = next;
+            continue;
+        }
+        if bytes[i] == b'{' {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// `MYLIB_API const int x` still names a type past the specifier; `HANDLE const h` has only the
@@ -281,7 +331,7 @@ fn names_a_type(bytes: &[u8], from: usize) -> bool {
     identifiers >= 2
 }
 
-/// Two bytes up .: `template <class T>` keeps its letter; lowercase `__declspec` parses already.
+/// Two bytes minimum, so `template <class T>` keeps its letter; lowercase `__declspec` parses already.
 fn is_macro_name(name: &[u8]) -> bool {
     name.len() >= 2
         && name[0].is_ascii_uppercase()
@@ -422,6 +472,71 @@ class AFoo {
     fn leaves_a_macro_that_owns_its_body_alone() {
         let source = "TEST(Suite, Case) {\n  int n = 0;\n}";
         assert!(blank_declaration_macros(source).is_none(), "{source}");
+    }
+
+    #[test]
+    fn leaves_a_call_in_a_body_opened_past_a_trailing_specifier_alone() {
+        for source in [
+            "void TearDown() override {\n  EXPECT_EQ(1, n_);\n}",
+            "int Size() const {\n  return COUNT_OF(items_);\n}",
+            "void Run() noexcept {\n  CHECK(ok_);\n}",
+            "auto Get() -> int {\n  return VALUE_OF(x_);\n}",
+            "class Fixture {\n  void SetUp() override {\n    EXPECT_EQ(1, n_);\n  }\n};",
+        ] {
+            assert!(
+                blank_declaration_macros(source).is_none(),
+                "rewrote: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_a_member_initializer_alone() {
+        for source in [
+            "Trace::Trace(Dispatcher& md) : MD(md), n_(0) {}",
+            "class Trace {\n  Trace(Dispatcher& md) : MD(md) {}\n};",
+        ] {
+            assert!(
+                blank_declaration_macros(source).is_none(),
+                "rewrote: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_a_macro_that_declares_the_method_alone() {
+        let source = "class Stream : public IStream {\n  STDMETHOD(Read)(void* p) override { return S_OK; }\n};";
+        assert!(blank_declaration_macros(source).is_none(), "{source}");
+    }
+
+    #[test]
+    fn leaves_a_lambda_argument_alone() {
+        let source = "WI_HEADER_INITIALIZATION_FUNCTION(Init, [] { Reset(); return 1; });";
+        assert!(blank_declaration_macros(source).is_none(), "{source}");
+    }
+
+    #[test]
+    fn blanks_a_member_attribute_after_an_access_label() {
+        let source = "class AFoo {\npublic:\n  UPROPERTY(Replicated)\n  int N;\n};";
+        let out = blanked(source);
+        assert!(!out.contains("UPROPERTY"), "{out}");
+        assert_eq!(out.len(), source.len());
+    }
+
+    #[test]
+    fn blanks_an_export_macro_inside_a_namespace_or_extern_block() {
+        for (source, expected) in [
+            (
+                "namespace ns {\nMYLIB_API void Reset(int n);\n}",
+                "namespace ns {\n          void Reset(int n);\n}",
+            ),
+            (
+                "extern \"C\" {\nMYLIB_API void Reset(int n);\n}",
+                "extern \"C\" {\n          void Reset(int n);\n}",
+            ),
+        ] {
+            assert_eq!(blanked(source), expected);
+        }
     }
 
     #[test]

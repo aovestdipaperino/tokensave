@@ -670,7 +670,7 @@ fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
 /// Returns `None` if the extension isn't recognised by any tree-sitter
 /// grammar bundled with `tokensave-large-treesitters`. Keys must match
 /// those accepted by `crate::extraction::ts_provider::language`.
-/// `.h` is C, C++ and Objective-C at once .: a wrong grammar parses shapes no stored node matches.
+/// `.h` is C, C++ and Objective-C at once, and a wrong grammar parses shapes no stored node matches.
 pub fn ts_lang_key_for_source(path: &str, source: &str) -> Option<&'static str> {
     let key = ts_lang_key_from_path(path)?;
     let is_h = path

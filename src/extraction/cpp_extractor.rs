@@ -82,7 +82,7 @@ impl CppExtractor {
     /// Extract code graph nodes and edges from a C++ source file.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
-        // Space-for-byte .: every offset below still addresses the real file.
+        // Space-for-byte, so every offset below still addresses the real file.
         let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
         let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
@@ -886,7 +886,7 @@ impl CppExtractor {
         Self::declarator_identifier(state, node)
     }
 
-    /// Declarators nest .: `const char* const T[]` wraps the identifier twice. `function_declarator`
+    /// Declarators nest, so `const char* const T[]` wraps the identifier twice. `function_declarator`
     /// is deliberately absent - `visit_declaration` routes a prototype before the name is asked.
     fn declarator_identifier(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut cursor = node.walk();
@@ -1162,7 +1162,7 @@ impl CppExtractor {
     /// Visit a `field_declaration` inside a class/struct body.
     fn visit_field_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // A nested type arrives wrapped in the field_declaration that declares it, with or without
-        // a member of it .: extract the type first, then fall through for the member.
+        // a member of it, so extract the type first, then fall through for the member.
         if let Some(specifier) = find_child_by_kind(node, "enum_specifier") {
             Self::visit_standalone_enum(state, specifier);
         }

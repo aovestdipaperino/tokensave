@@ -22,7 +22,7 @@ impl CExtractor {
     /// `source` is the C source code to parse.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
-        // Space-for-byte .: every offset below still addresses the real file.
+        // Space-for-byte, so every offset below still addresses the real file.
         let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
         let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
@@ -410,7 +410,7 @@ impl CExtractor {
         Self::declarator_identifier(state, node)
     }
 
-    /// Declarators nest .: `const char* const T[]` wraps the identifier twice. `function_declarator`
+    /// Declarators nest, so `const char* const T[]` wraps the identifier twice. `function_declarator`
     /// is deliberately absent - `visit_declaration` routes a prototype before the name is asked.
     fn declarator_identifier(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut cursor = node.walk();
@@ -1256,7 +1256,7 @@ impl CExtractor {
         }
     }
 
-    /// A guarded member is extracted from every branch, as at file scope .: deciding which one
+    /// A guarded member is extracted from every branch, as at file scope, since deciding which one
     /// compiles needs a preprocessor.
     fn extract_fields_in(state: &mut ExtractionState, list: TsNode<'_>) {
         let mut cursor = list.walk();
