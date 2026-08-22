@@ -45,7 +45,7 @@ impl AgentIntegration for OpenCodeIntegration {
         // than be swallowed — silently succeeding here would report install
         // as complete while stale rules text stays stuck in AGENTS.md.
         uninstall_prompt_rules(&opencode_prompt_path_for(ctx))?;
-        write_managed_rules_file(&rules_path, &managed_rules_markdown(RulesVariant::Generic))?;
+        write_managed_rules_file(&rules_path, &rules_for_agent("opencode")?).map(|_| ())?;
 
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
@@ -363,26 +363,13 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check the managed tokensave rules file exists and is wired into
+/// Check the managed tokensave rules file is up to date and wired into
 /// opencode.json's `"instructions"` array (issue #256: rules live in a
 /// tokensave-owned `tokensave.md`, not appended to the user's AGENTS.md).
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     let config_path = opencode_config_path(home);
     let rules_path = opencode_rules_path(&config_path);
-    if rules_path.exists() {
-        let has_rules = std::fs::read_to_string(&rules_path)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass("tokensave.md contains tokensave rules");
-        } else {
-            dc.fail(
-                "tokensave.md missing tokensave rules — run `tokensave install --agent opencode`",
-            );
-        }
-    } else {
-        dc.fail("tokensave.md does not exist — run `tokensave install --agent opencode`");
-    }
+    check_managed_rules_file(dc, &rules_path, "opencode");
 
     let config = load_json_file(&config_path);
     let expected_entry = instructions_entry_for(&InstallScope::Global, &rules_path);

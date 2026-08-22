@@ -138,6 +138,7 @@ impl AgentIntegration for CopilotIntegration {
         );
         doctor_check_cli_settings(dc, &ctx.home);
         doctor_check_jetbrains_settings(dc, &ctx.home);
+        doctor_check_prompts(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -522,95 +523,17 @@ fn uninstall_jetbrains_mcp_server(settings_path: &Path) {
 // Prompt rules helpers
 // ---------------------------------------------------------------------------
 
-/// Append prompt rules to a copilot-instructions.md file (idempotent).
+/// Write or refresh the tokensave rules block in a copilot-instructions.md file.
 fn install_prompt_rules(instructions_path: &Path) -> Result<()> {
-    use std::io::Write;
-    let marker = "## Prefer tokensave MCP tools";
-    let existing = if instructions_path.exists() {
-        std::fs::read_to_string(instructions_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    if existing.contains(marker) {
-        crate::agent_note!(
-            "  {} already contains tokensave rules, skipping",
-            instructions_path.display()
-        );
-        return Ok(());
-    }
-    if let Some(parent) = instructions_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(instructions_path)
-        .map_err(|e| crate::errors::TokenSaveError::Config {
-            message: format!("failed to open {}: {e}", instructions_path.display()),
-        })?;
-    write!(
-        f,
-        "\n{marker}\n\n\
-        Before reading source files or scanning the codebase, use the tokensave MCP tools \
-        (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-        `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
-        They provide instant semantic results from a pre-built knowledge graph and are \
-        faster than file reads.\n\n\
-        If a code analysis question cannot be fully answered by tokensave MCP tools, \
-        try querying the SQLite database directly at `.tokensave/tokensave.db` \
-        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-        that go beyond what the built-in tools expose.\n"
-    )
-    .map_err(|e| crate::errors::TokenSaveError::Config {
-        message: format!("failed to write {}: {e}", instructions_path.display()),
-    })?;
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Added tokensave rules to {}",
-        instructions_path.display()
-    );
-    Ok(())
+    let body = rules_for_agent("copilot")?;
+    write_rules_block(instructions_path, "copilot", &body).map(|_| ())
 }
 
-/// Remove tokensave rules from a copilot-instructions.md file.
+/// Remove tokensave rules from a copilot-instructions.md file (both
+/// managed-block and legacy heading-guarded forms).
 fn uninstall_prompt_rules(instructions_path: &Path) {
-    if !instructions_path.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(instructions_path) else {
-        return;
-    };
-    if !contents.contains("tokensave") {
-        return;
-    }
-    let marker = "## Prefer tokensave MCP tools";
-    let Some(start) = contents.find(marker) else {
-        return;
-    };
-    let after_marker = start + marker.len();
-    let end = contents[after_marker..]
-        .find("\n## ")
-        .map_or(contents.len(), |pos| after_marker + pos);
-    let mut new_contents = String::new();
-    new_contents.push_str(contents[..start].trim_end());
-    let remainder = &contents[end..];
-    if !remainder.is_empty() {
-        new_contents.push_str("\n\n");
-        new_contents.push_str(remainder.trim_start());
-    }
-    let new_contents = new_contents.trim().to_string();
-    if new_contents.is_empty() {
-        std::fs::remove_file(instructions_path).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
-            instructions_path.display()
-        );
-    } else {
-        std::fs::write(instructions_path, format!("{new_contents}\n")).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            instructions_path.display()
-        );
-    }
+    remove_rules_block(instructions_path).ok();
+    remove_legacy_rules_block(instructions_path, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -771,4 +694,20 @@ fn doctor_check_cli_settings(dc: &mut DoctorCounters, home: &Path) {
     } else {
         dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent copilot`");
     }
+}
+
+/// Check all Copilot instruction files for the up-to-date tokensave rules block.
+fn doctor_check_prompts(dc: &mut DoctorCounters, home: &Path) {
+    let vscode = super::vscode_data_dir(home).join("User/prompts/copilot-instructions.md");
+    check_shared_rules_block(dc, &vscode, "copilot");
+
+    let insiders =
+        super::vscode_insiders_data_dir(home).join("User/prompts/copilot-instructions.md");
+    check_shared_rules_block(dc, &insiders, "copilot");
+
+    let cli = super::copilot_cli_dir(home).join("copilot-instructions.md");
+    check_shared_rules_block(dc, &cli, "copilot");
+
+    let jetbrains = super::copilot_jetbrains_dir(home).join("global-copilot-instructions.md");
+    check_shared_rules_block(dc, &jetbrains, "copilot");
 }
