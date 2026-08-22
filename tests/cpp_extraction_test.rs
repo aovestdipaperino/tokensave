@@ -1,5 +1,6 @@
 use tokensave::extraction::CppExtractor;
 use tokensave::extraction::LanguageExtractor;
+use tokensave::extraction::LanguageRegistry;
 use tokensave::types::*;
 
 #[test]
@@ -1204,4 +1205,41 @@ public:
     ] {
         assert!(nodes.contains(&expected), "nodes: {nodes:?}");
     }
+}
+
+/// `.inl`, `.ipp` and `.tcc` hold a template layer's definitions. Unregistered they were never
+/// indexed at all, so `is_header_path` and `lang_from_path` named extensions the walker skipped.
+#[test]
+fn test_template_implementation_headers_route_to_cpp() {
+    let registry = LanguageRegistry::new();
+    for path in ["grid.inl", "asio/impl/write.ipp", "bits/stl_map.tcc"] {
+        let extractor = registry
+            .extractor_for_file(path)
+            .unwrap_or_else(|| panic!("no extractor for {path}"));
+        assert_eq!(extractor.language_name(), "C++", "{path}");
+    }
+    for ext in ["inl", "ipp", "tcc"] {
+        assert!(
+            registry.supported_extensions().contains(&ext),
+            "{ext} must be walked"
+        );
+    }
+}
+
+#[test]
+fn test_inl_file_yields_its_members() {
+    let source = r#"
+template <typename T>
+void Grid<T>::Reset(int n) {
+    count_ = n;
+}
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("grid.inl", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(
+        result.nodes.iter().any(|n| n.name == "Reset"),
+        "nodes: {:?}",
+        result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
 }

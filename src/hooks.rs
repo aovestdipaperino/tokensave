@@ -27,8 +27,8 @@ const MAX_PATTERN_LEN: usize = 200;
 const CODE_EXTENSIONS: &[&str] = &[
     // Lite tier
     "rs", "go", "java", "scala", "sc", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py",
-    "pyi", "pyw", "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "tcc",
-    "kt", "kts", "cs", "csx", "swift", // Medium tier
+    "pyi", "pyw", "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
+    "tcc", "kt", "kts", "cs", "csx", "swift", // Medium tier
     "dart", "pas", "pp", "dpr", "php", "phtml", "rb", "rake", "gemspec", "sh", "bash", "zsh",
     "proto", "ps1", "psm1", "psd1", "nix", "vb", "vbs", // Full tier
     "lua", "zig", "m", "mm", "pl", "pm", "bat", "cmd", "f", "f90", "f95", "f03", "for", "ftn",

@@ -700,7 +700,7 @@ pub fn ts_lang_key_from_path(path: &str) -> Option<&'static str> {
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
         "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "metal" => "cpp",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" | "metal" => "cpp",
         "cs" => "c_sharp",
         "rb" => "ruby",
         "php" => "php",

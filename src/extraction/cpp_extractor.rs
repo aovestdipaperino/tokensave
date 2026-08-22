@@ -1,7 +1,7 @@
 /// Tree-sitter based C++ source code extractor.
 ///
 /// Parses C++ source files and emits nodes and edges for the code graph.
-/// Handles `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` files.
+/// Handles `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh`, `.inl`, `.ipp`, `.tcc` files.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -2713,7 +2713,9 @@ impl CppExtractor {
 
 impl crate::extraction::LanguageExtractor for CppExtractor {
     fn extensions(&self) -> &[&str] {
-        &["cpp", "cc", "cxx", "hpp", "hxx", "hh"]
+        // `.inl`, `.ipp` and `.tcc` carry a template layer's definitions and are C++
+        // by construction, so no dialect sniff is needed the way a `.h` needs one.
+        &["cpp", "cc", "cxx", "hpp", "hxx", "hh", "inl", "ipp", "tcc"]
     }
 
     fn language_name(&self) -> &'static str {
