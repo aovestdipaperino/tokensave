@@ -4985,4 +4985,1270 @@ end
             .expect("expected total method");
         assert_eq!(total.docstring.as_deref(), Some("The renamed total."));
     }
+
+    // ------------------------------------------------------------------
+    // module_function
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_ruby_module_function_bare_mode_switch() {
+        let source = r#"
+module M
+  module_function
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module && n.name == "M")
+            .expect("expected M module");
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected public singleton method a");
+        assert_eq!(singleton.visibility, Visibility::Pub);
+        for target in [&instance.id, &singleton.id] {
+            assert!(
+                result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                    && e.source == module_node.id
+                    && &e.target == target),
+                "expected Contains edge from M to {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_module_function_empty_parens_mode_switch() {
+        // `module_function()` behaves exactly like the bare mode switch,
+        // confirmed against Ruby 3.4.7 -- an empty argument list still
+        // takes the "has arguments" code path, unlike a bare identifier or
+        // a call with no argument list at all.
+        let source = r#"
+module M
+  module_function()
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_symbol_list_marks_existing_def() {
+        let source = r#"
+module M
+  def a; end
+  def b; end
+  module_function :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(a.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a"
+        );
+        let b = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "b")
+            .expect("expected b");
+        assert_eq!(b.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "b" && n.kind == NodeKind::SingletonMethod),
+            "b was not named by module_function, so it must not get a singleton copy"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_inline_def() {
+        let source = r#"
+module M
+  module_function def foo; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::Method)
+            .expect("expected private instance method foo");
+        assert_eq!(instance.visibility, Visibility::Private);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected public singleton method foo");
+        assert_eq!(singleton.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_module_function_string_arg_is_skipped_symbol_arg_extracted() {
+        // `module_function "a", :b` is valid Ruby (P12) — only the symbol
+        // argument is statically resolvable, matching attr_*'s scope.
+        let source = r#"
+module M
+  def a; end
+  def b; end
+  module_function "a", :b
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a");
+        assert_eq!(
+            a.visibility,
+            Visibility::Pub,
+            "string argument is not resolved, so a must be left untouched"
+        );
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "no singleton should be fabricated for the unresolved string argument"
+        );
+        let b = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "b" && n.kind == NodeKind::Method)
+            .expect("expected private instance method b");
+        assert_eq!(b.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "b" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method b"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_multiple_symbols() {
+        let source = r#"
+module M
+  def a; end
+  def b; end
+  module_function :a, :b
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["a", "b"] {
+            let instance = result
+                .nodes
+                .iter()
+                .find(|n| n.name == name && n.kind == NodeKind::Method)
+                .unwrap_or_else(|| panic!("expected private instance method {name}"));
+            assert_eq!(instance.visibility, Visibility::Private);
+            assert!(
+                result
+                    .nodes
+                    .iter()
+                    .any(|n| n.name == name && n.kind == NodeKind::SingletonMethod),
+                "expected singleton method {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_module_function_nested_in_conditional() {
+        let source = r#"
+module M
+  if true
+    module_function
+  end
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_leaks_out_of_inherit_block() {
+        // P13: module_function inside an ordinary (BlockScope::Inherit)
+        // block still affects a later def in the module body.
+        let source = r#"
+module M
+  [1].each do
+    module_function
+  end
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_private_class_method_privatizes_singleton_only() {
+        // P20: private_class_method after module_function privatizes the
+        // singleton, not the instance (which module_function already made
+        // private on its own).
+        let source = r#"
+module M
+  module_function
+  def a; end
+  private_class_method :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert_eq!(
+            singleton.visibility,
+            Visibility::Private,
+            "private_class_method must privatize the singleton copy"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_symbol_targets_attr_accessor_reader_only() {
+        // P21: module_function :x where x came from attr_accessor only
+        // affects the reader x, not the writer x=.
+        let source = r#"
+module M
+  attr_accessor :x
+  module_function :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let reader = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x" && n.kind == NodeKind::Method)
+            .expect("expected private instance reader x");
+        assert_eq!(reader.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "x" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method x"
+        );
+        let writer = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x=")
+            .expect("expected writer x=");
+        assert_eq!(
+            writer.visibility,
+            Visibility::Pub,
+            "module_function :x must not touch the unrelated writer x="
+        );
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "x=" && n.kind == NodeKind::SingletonMethod),
+            "no singleton should be fabricated for x="
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_docstring_and_contains_edge_attach_to_singleton() {
+        let source = r#"
+module M
+  module_function
+
+  # The answer.
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Module && n.name == "M")
+            .expect("expected M module");
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert_eq!(singleton.docstring.as_deref(), Some("The answer."));
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == module_node.id
+                && e.target == singleton.id),
+            "expected Contains edge from M directly to singleton a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_bare_singleton_inherits_outgoing_calls() {
+        // The singleton copy must carry the same outgoing call graph as the
+        // private instance method it mirrors, not just its own empty one —
+        // otherwise tokensave_callees/impact/call_chain on M.a would show no
+        // outgoing calls while the private instance copy silently owns them.
+        let source = r#"
+module M
+  module_function
+  def a
+    helper()
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == instance.id && r.reference_name == "helper"),
+            "expected the instance copy to keep its call to helper"
+        );
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == singleton.id && r.reference_name == "helper"),
+            "expected the singleton copy to also carry the call to helper"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_inline_def_singleton_inherits_outgoing_calls() {
+        let source = r#"
+module M
+  module_function def a
+    helper()
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == singleton.id && r.reference_name == "helper"),
+            "expected the singleton copy to carry the call to helper"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_symbol_list_singleton_inherits_outgoing_calls() {
+        let source = r#"
+module M
+  def a
+    helper()
+  end
+  module_function :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == singleton.id && r.reference_name == "helper"),
+            "expected the singleton copy to carry the call to helper"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_singleton_inherits_complexity_metrics() {
+        // The singleton copy must reflect the mirrored def's real complexity
+        // rather than the zeroed values attr_*/alias synthetic methods use —
+        // otherwise a complex module function looks trivial to
+        // tokensave_complexity/hotspots under its singleton name.
+        let source = r#"
+module M
+  module_function
+  def a
+    if x
+      1
+    else
+      2
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected singleton method a");
+        assert!(
+            instance.branches > 0,
+            "expected the instance copy to record the if/else branch"
+        );
+        assert_eq!(
+            singleton.branches, instance.branches,
+            "expected the singleton copy to mirror the instance copy's complexity"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_in_class_body_is_noop() {
+        // P4: module_function is undefined in a class body.
+        let source = r#"
+class C
+  module_function
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let matches: Vec<_> = result.nodes.iter().filter(|n| n.name == "a").collect();
+        assert_eq!(matches.len(), 1, "expected exactly one node named a");
+        assert_eq!(matches[0].kind, NodeKind::Method);
+        assert_eq!(matches[0].visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_module_function_at_top_level_is_noop() {
+        // P5: module_function is undefined at the top level (main).
+        let source = r#"
+module_function
+def a; end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let matches: Vec<_> = result.nodes.iter().filter(|n| n.name == "a").collect();
+        assert_eq!(matches.len(), 1, "expected exactly one node named a");
+        assert_eq!(matches[0].kind, NodeKind::Function);
+        assert_eq!(matches[0].visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_module_function_inside_singleton_class_is_noop() {
+        // P6: `class << self` reopens a Class, where module_function is
+        // undefined.
+        let source = r#"
+module M
+  class << self
+    module_function
+    def a; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let matches: Vec<_> = result.nodes.iter().filter(|n| n.name == "a").collect();
+        assert_eq!(matches.len(), 1, "expected exactly one node named a");
+        assert_eq!(matches[0].kind, NodeKind::SingletonMethod);
+        assert_eq!(matches[0].visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_module_function_inside_instance_method_body_is_noop() {
+        // P17/P18: module_function raises inside an instance-method body.
+        // `def install` has no definition scope of its own (cref stays M,
+        // per visit_method's own doc comment), so a nested `def in_body`
+        // still attaches to M the same way `def a` after `install` does —
+        // this checks that neither incorrectly becomes a module function.
+        let source = r#"
+module M
+  def install
+    module_function
+    def in_body; end
+  end
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["in_body", "a"] {
+            let node = result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("expected {name}"));
+            assert_eq!(node.visibility, Visibility::Pub);
+            assert!(
+                !result
+                    .nodes
+                    .iter()
+                    .any(|n| n.name == name && n.kind == NodeKind::SingletonMethod),
+                "no singleton should be fabricated for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_module_function_explicit_receiver_is_ordinary_call() {
+        let source = r#"
+module M
+  obj.module_function :foo
+  def foo; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo");
+        assert_eq!(foo.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::SingletonMethod),
+            "no singleton should be fabricated"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_does_not_leak_into_nested_module() {
+        // P7
+        let source = r#"
+module A
+  module_function
+  module B
+    def x; end
+  end
+  def y; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("a.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let x = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "x")
+            .expect("expected x");
+        assert_eq!(x.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "x" && n.kind == NodeKind::SingletonMethod),
+            "B must not inherit A's module_function mode"
+        );
+        let y = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "y" && n.kind == NodeKind::Method)
+            .expect("expected private instance method y");
+        assert_eq!(y.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "y" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method y"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_does_not_leak_into_nested_class() {
+        // P8
+        let source = r#"
+module M
+  module_function
+  class C
+    def z; end
+  end
+  def y; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let z = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "z")
+            .expect("expected z");
+        assert_eq!(z.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "z" && n.kind == NodeKind::SingletonMethod),
+            "C must not inherit M's module_function mode"
+        );
+        let y = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "y" && n.kind == NodeKind::Method)
+            .expect("expected private instance method y");
+        assert_eq!(y.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_module_function_then_bare_private_cancels_mode() {
+        // P10b
+        let source = r#"
+module M
+  module_function
+  private
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a");
+        assert_eq!(a.visibility, Visibility::Private);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "bare private after module_function must cancel the mode"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_then_bare_public_cancels_mode() {
+        // P10c
+        let source = r#"
+module M
+  module_function
+  public
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a")
+            .expect("expected a");
+        assert_eq!(a.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "bare public after module_function must cancel the mode"
+        );
+    }
+
+    #[test]
+    fn test_ruby_bare_private_then_module_function_wins() {
+        // P10a: module_function overrides a preceding bare private.
+        let source = r#"
+module M
+  private
+  module_function
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_inline_visibility_override_does_not_cancel_mode() {
+        // Unlike the bare private/public mode-switch form (P10b/P10c), the
+        // inline-def-argument form (`private def a; end`) is a one-off
+        // visibility override on a single def, not a mode switch — it must
+        // not cancel module_function_mode. Confirmed against Ruby 3.4.7:
+        // `b`, defined after `private def a; end`, still gets a singleton.
+        let source = r#"
+module M
+  module_function
+  private def a; end
+  def b; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let a = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected instance method a");
+        assert_eq!(a.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a from the inline def itself"
+        );
+        let b = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "b" && n.kind == NodeKind::Method)
+            .expect("expected private instance method b");
+        assert_eq!(
+            b.visibility,
+            Visibility::Private,
+            "module_function mode must still be active for b"
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "b" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method b: an inline visibility override must not cancel module_function mode"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_attr_accessor_gets_no_singleton() {
+        // P14: attr_accessor under module_function mode gets private
+        // instance accessors via the ambient visibility_mode, but no
+        // singleton copy — only visit_method emits one.
+        let source = r#"
+module M
+  module_function
+  attr_accessor :x
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["x", "x="] {
+            let node = result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("expected {name}"));
+            assert_eq!(node.visibility, Visibility::Private);
+            assert!(
+                !result
+                    .nodes
+                    .iter()
+                    .any(|n| n.name == name && n.kind == NodeKind::SingletonMethod),
+                "attr_accessor under module_function must not get a singleton copy"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_module_function_alias_gets_no_singleton() {
+        // P15: alias under module_function mode gets the private instance
+        // copy via the ambient visibility_mode, but no singleton copy.
+        let source = r#"
+module M
+  module_function
+  def a; end
+  alias b a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let b = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "b")
+            .expect("expected b");
+        assert_eq!(b.visibility, Visibility::Private);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "b" && n.kind == NodeKind::SingletonMethod),
+            "alias under module_function must not get a singleton copy"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_class_shovel_self_is_normal_and_mode_restored() {
+        // P16: a `class << self` inside a module_function-mode module still
+        // defines a normal singleton (not doubled, not privatized), and the
+        // mode is restored for defs after the block.
+        let source = r#"
+module M
+  module_function
+  class << self
+    def s; end
+  end
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let s_matches: Vec<_> = result.nodes.iter().filter(|n| n.name == "s").collect();
+        assert_eq!(s_matches.len(), 1, "expected exactly one node named s");
+        assert_eq!(s_matches[0].kind, NodeKind::SingletonMethod);
+        assert_eq!(s_matches[0].visibility, Visibility::Pub);
+
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a after the class << self block");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a: module_function mode must be restored after class << self"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_does_not_leak_into_singleton_method_body() {
+        // A `def self.foo` body gets its own fresh default-visibility frame,
+        // like any method body (confirmed against Ruby 3.4.7: `bar`, nested
+        // inside, comes out a plain public instance method, not a module
+        // function), so module_function_mode must not survive into it.
+        let source = r#"
+module M
+  module_function
+  def self.foo
+    def bar; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar");
+        assert_eq!(bar.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "bar" && n.kind == NodeKind::SingletonMethod),
+            "def self.foo's body must not inherit module_function mode"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_concern_included_block_does_not_inherit_mode() {
+        // P19: `included do … end` retargets the definee to the includer,
+        // which module_function's guard treats as opaque — the mode must
+        // not apply inside, and must be restored after.
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+  module_function
+  included do
+    def secret; end
+  end
+  def a; end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let secret = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "secret")
+            .expect("expected secret");
+        assert_eq!(secret.visibility, Visibility::Pub);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "secret" && n.kind == NodeKind::SingletonMethod),
+            "included do block must not inherit module_function mode"
+        );
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a after the included do block");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod),
+            "expected singleton method a: module_function mode must be restored after included do"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_repeated_declaration_emits_one_singleton() {
+        // Review fix #3: `module_function` (bare) followed by `module_function
+        // :a` for a def in the same body is valid Ruby and names the same
+        // def twice. apply_module_function_symbol must not emit a second
+        // singleton under the identical id, or double-clone its refs.
+        let source = r#"
+module M
+  module_function
+  def a
+    helper()
+  end
+  module_function :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singletons: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .collect();
+        assert_eq!(
+            singletons.len(),
+            1,
+            "expected exactly one singleton method a, got {singletons:?}"
+        );
+        let mut ids: Vec<&str> = result.nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            result.nodes.len(),
+            "expected no duplicate node ids"
+        );
+        let singleton = singletons[0];
+        let helper_refs: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.from_node_id == singleton.id && r.reference_name == "helper")
+            .collect();
+        assert_eq!(
+            helper_refs.len(),
+            1,
+            "expected exactly one cloned helper ref on the singleton, got {helper_refs:?}"
+        );
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "a" && n.kind == NodeKind::Method)
+            .expect("expected private instance method a");
+        assert_eq!(instance.visibility, Visibility::Private);
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == instance.id && r.reference_name == "helper"),
+            "expected the instance copy to keep its own call to helper"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_repeated_symbol_list_emits_one_singleton() {
+        // `module_function :a` named twice for the same def.
+        let source = r#"
+module M
+  def a
+    helper()
+  end
+  module_function :a
+  module_function :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singletons: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .collect();
+        assert_eq!(
+            singletons.len(),
+            1,
+            "expected exactly one singleton method a, got {singletons:?}"
+        );
+        let singleton = singletons[0];
+        let helper_refs: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.from_node_id == singleton.id && r.reference_name == "helper")
+            .collect();
+        assert_eq!(
+            helper_refs.len(),
+            1,
+            "expected exactly one cloned helper ref on the singleton, got {helper_refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_inline_then_symbol_emits_one_singleton() {
+        // An inline module_function def, then a redundant symbol-list
+        // reference to the same name.
+        let source = r#"
+module M
+  module_function def a
+    helper()
+  end
+  module_function :a
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singletons: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .collect();
+        assert_eq!(
+            singletons.len(),
+            1,
+            "expected exactly one singleton method a, got {singletons:?}"
+        );
+        let singleton = singletons[0];
+        let helper_refs: Vec<_> = result
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.from_node_id == singleton.id && r.reference_name == "helper")
+            .collect();
+        assert_eq!(
+            helper_refs.len(),
+            1,
+            "expected exactly one cloned helper ref on the singleton, got {helper_refs:?}"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_symbol_before_def_emits_one_singleton() {
+        // Ruby itself rejects naming a def before it exists
+        // (module_function :a; def a; end raises NameError), but it parses,
+        // so a partially-edited file can still reach this ordering. With the
+        // bare mode switch also active, module_function :a's fallback-span
+        // singleton and visit_method's own singleton land on the identical
+        // id when both sit on the same source line — this guards the
+        // visit_method emission site, not just apply_module_function_symbol.
+        let source = "module M\n  module_function; module_function :a; def a; helper(); end\nend\n";
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let singletons: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "a" && n.kind == NodeKind::SingletonMethod)
+            .collect();
+        assert_eq!(
+            singletons.len(),
+            1,
+            "expected exactly one singleton method a, got {singletons:?}"
+        );
+        let mut ids: Vec<&str> = result.nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            result.nodes.len(),
+            "expected no duplicate node ids"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_directly_inside_concern_included_block_is_noop() {
+        // Review fix #4: module_function written *directly inside* an
+        // included do ... end block (not just switched on before it, which
+        // the earlier test above already covers) must not fabricate a
+        // private instance method + public singleton. Confirmed against
+        // Ruby 3.4.7 and activesupport 8.1.3.1: `self` inside the block is
+        // the includer, and `included do; module_function; def a; end; end`
+        // raises NameError once a Class actually includes the concern.
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+  included do
+    module_function
+    def secret; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "secret" && n.kind == NodeKind::SingletonMethod),
+            "module_function inside included do must not fabricate a singleton"
+        );
+        let secret = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "secret")
+            .expect("expected secret to still be extracted as an ordinary method");
+        assert_eq!(secret.kind, NodeKind::Method);
+        assert_eq!(
+            secret.visibility,
+            Visibility::Pub,
+            "module_function must not privatize secret here"
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_function_symbol_list_inside_concern_prepended_block_is_noop() {
+        // Same guard, symbol-list form, inside prepended do ... end.
+        let source = r#"
+module M
+  extend ActiveSupport::Concern
+  prepended do
+    def secret; end
+    module_function :secret
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "secret" && n.kind == NodeKind::SingletonMethod),
+            "module_function :secret inside prepended do must not fabricate a singleton"
+        );
+        let secret = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "secret")
+            .expect("expected secret to still be extracted as an ordinary method");
+        assert_eq!(
+            secret.visibility,
+            Visibility::Pub,
+            "module_function :secret must not privatize secret here"
+        );
+    }
 } // mod ruby_tests
