@@ -6,7 +6,7 @@ use std::time::Instant;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PYTHON_COMPLEXITY};
-use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, PythonClassAttrs};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -146,18 +146,17 @@ impl PythonExtractor {
                     Self::extract_call_sites(state, node, &scope_id);
                 }
             }
-            // A compound statement at module or class scope (`if __name__ ==
-            // "__main__":`, `try:`, `with:`, `for`, `while`) holds call sites
-            // too. Extract them the same way; `extract_call_sites` stops at a
-            // nested def, so a function defined inside the block is not
-            // indexed here and its body is not attributed to this scope.
-            "if_statement" | "try_statement" | "with_statement" | "for_statement"
-            | "while_statement" => {
+            // Any other statement at module or class scope (`if __name__ ==
+            // "__main__":`, `try`, `with`, `for`, `while`, `match`, `assert`,
+            // `raise`, ...) can hold call sites too. Extract them the same
+            // way; `extract_call_sites` stops at a nested def, so a function
+            // defined inside the block is not indexed here and its body is
+            // not attributed to this scope.
+            _ => {
                 if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
                     Self::extract_call_sites(state, node, &scope_id);
                 }
             }
-            _ => {}
         }
     }
 
@@ -411,6 +410,8 @@ impl PythonExtractor {
         Self::extract_base_classes(state, node, &id);
 
         // Visit class body.
+        let attrs = Self::collect_class_attrs(state, node);
+        state.python_class_attrs.push(attrs);
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
         if let Some(body) = find_child_by_kind(node, "block") {
@@ -418,6 +419,7 @@ impl PythonExtractor {
         }
         state.class_depth -= 1;
         state.node_stack.pop();
+        state.python_class_attrs.pop();
     }
 
     /// Extract a decorated definition (decorator + function or class).
@@ -935,6 +937,91 @@ impl PythonExtractor {
     }
 
     /// Recursively find call nodes inside a given node and create unresolved Calls references.
+    /// Full qualified name of the nearest enclosing class
+    /// (`file.py::Outer::Inner`), or None outside a class.
+    fn enclosing_class_qualified_name(state: &ExtractionState) -> Option<String> {
+        let idx = state
+            .node_stack
+            .iter()
+            .rposition(|(_, id)| id.starts_with("class:"))?;
+        let mut parts = vec![state.file_path.as_str()];
+        parts.extend(
+            state.node_stack[..=idx]
+                .iter()
+                .map(|(name, _)| name.as_str()),
+        );
+        Some(parts.join("::"))
+    }
+
+    /// `self.name` or `cls.name` -> `name`. Any other node -> None.
+    fn self_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        if node.kind() != "attribute" {
+            return None;
+        }
+        let object = node.child_by_field_name("object")?;
+        if object.kind() != "identifier"
+            || !matches!(state.node_text(object).as_str(), "self" | "cls")
+        {
+            return None;
+        }
+        Some(state.node_text(node.child_by_field_name("attribute")?))
+    }
+
+    /// Collect what a class body declares: the methods defined directly in
+    /// it (decorated or not), and every name bound through `self.<name> =`
+    /// or `cls.<name> =` anywhere inside it.
+    fn collect_class_attrs(state: &ExtractionState, class_node: TsNode<'_>) -> PythonClassAttrs {
+        let mut attrs = PythonClassAttrs::default();
+        let Some(body) = find_child_by_kind(class_node, "block") else {
+            return attrs;
+        };
+        let mut cursor = body.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let mut child = cursor.node();
+                if child.kind() == "decorated_definition" {
+                    if let Some(def) = child.child_by_field_name("definition") {
+                        child = def;
+                    }
+                }
+                if child.kind() == "function_definition" {
+                    if let Some(name) = child.child_by_field_name("name") {
+                        attrs.methods.insert(state.node_text(name));
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        Self::collect_self_assignments(state, body, &mut attrs.assigned);
+        attrs
+    }
+
+    fn collect_self_assignments(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        if matches!(node.kind(), "assignment" | "augmented_assignment") {
+            if let Some(name) = node
+                .child_by_field_name("left")
+                .and_then(|left| Self::self_attribute_name(state, left))
+            {
+                out.insert(name);
+            }
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_self_assignments(state, cursor.node(), out);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Type name of the nearest enclosing class (for `self` receivers).
     fn enclosing_class_type(state: &ExtractionState) -> Option<String> {
         state
@@ -1232,28 +1319,30 @@ impl PythonExtractor {
             }
             // A method passed by reference through `self`/`cls`
             // (`Thread(target=self._flush_loop)`, `schedule(self._tick, 1.0)`)
-            // is a use of that method. Emit it qualified with the enclosing
-            // class (`Daemon::_flush_loop`) so the resolver matches the
-            // method on this class and not a same-named method elsewhere.
-            // Any other attribute (`obj.attr`) is still skipped: its
-            // sub-name is not a standalone reference.
+            // is a use of that method. Only a name the enclosing class
+            // defines as a method, and never binds as an attribute
+            // (`self.status = 1`), counts: otherwise the read is a field.
+            // The ref carries the class's full qualified name
+            // (`a.py::Daemon::_flush_loop`), so it resolves to this class's
+            // method and not to a same-named class in another file. Any
+            // other attribute (`obj.attr`) is still skipped: its sub-name is
+            // not a standalone reference.
             "attribute" => {
-                let receiver = node
-                    .child_by_field_name("object")
-                    .filter(|obj| obj.kind() == "identifier")
-                    .map(|obj| state.node_text(obj));
-                if !matches!(receiver.as_deref(), Some("self" | "cls")) {
+                let Some(name) = Self::self_attribute_name(state, node) else {
+                    return;
+                };
+                let Some(attrs) = state.python_class_attrs.last() else {
+                    return;
+                };
+                if !attrs.methods.contains(&name) || attrs.assigned.contains(&name) {
                     return;
                 }
-                let (Some(attr), Some(class)) = (
-                    node.child_by_field_name("attribute"),
-                    Self::enclosing_class_type(state),
-                ) else {
+                let Some(class_qn) = Self::enclosing_class_qualified_name(state) else {
                     return;
                 };
                 state.unresolved_refs.push(UnresolvedRef {
                     from_node_id: source_id.to_string(),
-                    reference_name: format!("{class}::{}", state.node_text(attr)),
+                    reference_name: format!("{class_qn}::{name}"),
                     reference_kind: EdgeKind::Uses,
                     line: node.start_position().row as u32,
                     column: node.start_position().column as u32,

@@ -6,11 +6,26 @@
 //! per-language state (e.g. C++ access specifiers) keep their own state
 //! structs; everything else shares this one.
 
+use std::collections::HashSet;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::Node as TsNode;
 
 use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef, Visibility};
+
+/// What a Python class body declares. The Python extractor keeps one per
+/// enclosing class so a `self.<name>` read in a value position can be told
+/// apart: a method reference when `name` is a method the class defines and
+/// never binds as an attribute, a field read otherwise. Other extractors
+/// leave the stack empty.
+#[derive(Default)]
+pub(crate) struct PythonClassAttrs {
+    /// Methods defined directly in the class body.
+    pub(crate) methods: HashSet<String>,
+    /// Names bound through `self.<name> = ...` or `cls.<name> = ...`
+    /// anywhere in the class body.
+    pub(crate) assigned: HashSet<String>,
+}
 
 /// Internal state used during AST traversal.
 pub(crate) struct ExtractionState {
@@ -26,6 +41,9 @@ pub(crate) struct ExtractionState {
     /// Nesting depth of enclosing class-like scopes (used by extractors that
     /// treat top-level and member functions differently; others leave it 0).
     pub(crate) class_depth: usize,
+    /// One entry per enclosing Python class, innermost last. See
+    /// [`PythonClassAttrs`]. Other extractors leave it empty.
+    pub(crate) python_class_attrs: Vec<PythonClassAttrs>,
     /// Current Ruby visibility mode inside a class/module body (private/protected/
     /// public switches). Other extractors leave it at the default Pub.
     pub(crate) visibility_mode: Visibility,
@@ -103,6 +121,7 @@ impl ExtractionState {
             source: source.as_bytes().to_vec(),
             timestamp,
             class_depth: 0,
+            python_class_attrs: Vec::new(),
             visibility_mode: Visibility::Pub,
             singleton_method_ids: Vec::new(),
             foreign_singleton_method_ids: Vec::new(),
