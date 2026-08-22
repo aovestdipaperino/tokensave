@@ -56,9 +56,10 @@ For non-code tasks or searching outside an indexed project, use normal filesyste
 and shell tools instead of tokensave MCP tools.\n\n\
 ### SQL fallback\n\n\
 If the graph tools cannot answer a question, find the active database in \
-`.tokensave/branch-meta.json` (`db_file`) before querying it directly with SQL \
-(tables: `nodes`, `edges`, `files`). Only fall back to raw file reads when the \
-graph is unavailable or the task is genuinely non-code.\n\n\
+`.tokensave/branch-meta.json` (`db_file`) (or `.tokensave/tokensave.db` if \
+branch-meta.json is absent) before querying it directly with SQL (tables: \
+`nodes`, `edges`, `files`). Only fall back to raw file reads when the graph is \
+unavailable or the task is genuinely non-code.\n\n\
 ### Tool gaps\n\n\
 If you discover a gap where an extractor, schema, or tokensave tool could be \
 improved to answer a question natively, propose that the user open an issue at \
@@ -86,7 +87,8 @@ for exploration. No exceptions. No rationalizing.\n\n\
   User instructions take precedence over skills.\n\
 - If a code analysis question cannot be fully answered by tokensave MCP tools, \
   try querying the SQLite database directly at the active database recorded in \
-  `.tokensave/branch-meta.json` (`db_file`) (tables: `nodes`, `edges`, `files`). \
+  `.tokensave/branch-meta.json` (`db_file`) (or `.tokensave/tokensave.db` if \
+  branch-meta.json is absent) (tables: `nodes`, `edges`, `files`). \
   Use SQL to answer complex structural queries that go beyond what the built-in \
   tools expose.\n\
 - If you discover a gap where an extractor, schema, or tokensave tool could be \
@@ -374,22 +376,25 @@ pub fn remove_rules_block(path: &Path) -> Result<bool> {
 }
 
 /// Remove a tokensave rules block from `contents` in memory, returning the
-/// content outside the markers with surrounding whitespace normalized.
+/// content outside the markers with surrounding whitespace normalized. All
+/// marker-delimited blocks are removed, so a file that ever accumulated
+/// duplicates is collapsed to a single block on the next install.
 fn remove_rules_block_from_contents(contents: &str) -> String {
-    let Some((_, start, end)) = find_rules_block(contents) else {
-        return contents.to_string();
-    };
-    let prefix = contents[..start].trim_end();
-    let suffix = contents[end..].trim_start();
-    if prefix.is_empty() && suffix.is_empty() {
-        String::new()
-    } else if prefix.is_empty() {
-        suffix.to_string()
-    } else if suffix.is_empty() {
-        prefix.to_string()
-    } else {
-        format!("{prefix}\n\n{suffix}")
+    let mut contents = contents.to_string();
+    while let Some((_, start, end)) = find_rules_block(&contents) {
+        let prefix = contents[..start].trim_end();
+        let suffix = contents[end..].trim_start();
+        contents = if prefix.is_empty() && suffix.is_empty() {
+            String::new()
+        } else if prefix.is_empty() {
+            suffix.to_string()
+        } else if suffix.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}\n\n{suffix}")
+        };
     }
+    contents
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +576,14 @@ pub fn check_shared_rules_block(dc: &mut DoctorCounters, path: &Path, agent_id: 
 
     let contents = std::fs::read_to_string(path).unwrap_or_default();
 
+    let block_count = contents.matches(BLOCK_START_PREFIX).count();
+    if block_count > 1 {
+        dc.warn(&format!(
+            "found {block_count} tokensave rules blocks in {} — run `tokensave install --agent {agent_id}` to collapse duplicates",
+            path.display()
+        ));
+    }
+
     if let Some((installed_body, _, _)) = find_rules_block(&contents) {
         if installed_body.trim_end() == expected.trim_end() {
             dc.pass(&format!(
@@ -593,9 +606,7 @@ pub fn check_shared_rules_block(dc: &mut DoctorCounters, path: &Path, agent_id: 
     }
 
     // No managed block, but a legacy heading-guarded block is still there.
-    if contents.contains(LEGACY_RULES_MARKER)
-        || contents.contains("## MANDATORY: No Explore Agents")
-    {
+    if contents.contains(LEGACY_RULES_MARKER) {
         dc.warn(&format!(
             "legacy rules block found in {} — run `tokensave install --agent {agent_id}` to migrate to the refreshed block",
             path.display()
@@ -769,13 +780,80 @@ mod tests {
     }
 
     #[test]
-    fn doctor_detects_shared_block_drift() {
+    fn doctor_detects_missing_shared_block() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("AGENTS.md");
         std::fs::write(&path, "# Mine\n\nstale\n").unwrap();
         let mut dc = DoctorCounters::new();
         check_shared_rules_block(&mut dc, &path, "droid");
         assert_eq!(dc.issues, 1, "missing block should be an issue");
+    }
+
+    #[test]
+    fn doctor_detects_shared_block_drift_with_stale_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        let body = expected_rules_markdown("droid").unwrap();
+        assert!(write_rules_block(&path, "droid", &body).unwrap());
+        let mut contents = std::fs::read_to_string(&path).unwrap();
+        contents = contents.replace(
+            "## Prefer tokensave MCP tools",
+            "## Prefer tokensave MCP tools (STALE)",
+        );
+        std::fs::write(&path, contents).unwrap();
+        let mut dc = DoctorCounters::new();
+        check_shared_rules_block(&mut dc, &path, "droid");
+        assert_eq!(dc.issues, 1, "stale body should be reported as drift");
+        assert_eq!(dc.warnings, 0);
+    }
+
+    #[test]
+    fn doctor_warns_on_duplicate_blocks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        let body = expected_rules_markdown("droid").unwrap();
+        write_rules_block(&path, "droid", &body).unwrap();
+        let mut contents = std::fs::read_to_string(&path).unwrap();
+        contents.push_str("\n\n");
+        contents.push_str(&contents.clone());
+        std::fs::write(&path, contents).unwrap();
+        let mut dc = DoctorCounters::new();
+        check_shared_rules_block(&mut dc, &path, "droid");
+        assert_eq!(dc.issues, 0);
+        assert_eq!(dc.warnings, 1, "duplicate blocks should be a warning");
+    }
+
+    #[test]
+    fn remove_managed_rules_file_removes_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("rules").join("tokensave.md");
+        let body = expected_rules_markdown("claude").unwrap();
+        assert!(write_managed_rules_file(&path, &body).unwrap());
+        assert!(path.exists());
+        remove_managed_rules_file(&path);
+        assert!(!path.exists(), "managed rules file should be removed");
+        assert!(
+            !path.parent().unwrap().exists(),
+            "empty parent directory should be pruned"
+        );
+    }
+
+    #[test]
+    fn write_rules_block_removes_all_existing_blocks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        let body = expected_rules_markdown("droid").unwrap();
+        let stale_marker = block_start_marker("droid", "stale");
+        let stale_block = format!("{stale_marker}\n\nstale\n\n{BLOCK_END_MARKER}\n");
+        std::fs::write(&path, format!("{stale_block}\n{stale_block}")).unwrap();
+        assert!(write_rules_block(&path, "droid", &body).unwrap());
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents.matches(BLOCK_START_PREFIX).count(),
+            1,
+            "only one block should remain after collapsing duplicates"
+        );
+        assert!(contents.contains(BLOCK_END_MARKER));
     }
 
     #[test]

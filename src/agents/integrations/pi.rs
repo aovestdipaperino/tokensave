@@ -74,11 +74,11 @@ impl AgentIntegration for PiIntegration {
             mcp_path.display()
         );
 
+        install_prompt_rules(&ctx.home)?;
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
         crate::agent_note!("  2. Restart Pi — tokensave tools are now available");
-        install_prompt_rules(&ctx.home)?;
         Ok(())
     }
 
