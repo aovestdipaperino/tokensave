@@ -412,6 +412,12 @@ impl PythonExtractor {
 
         // Extract base classes (inheritance).
         Self::extract_base_classes(state, node, &id);
+        // A call in the class header (`class C(_make_base()):`) runs at
+        // definition time. `extract_base_classes` records the bases by name;
+        // this records the call.
+        if let Some(args) = find_child_by_kind(node, "argument_list") {
+            Self::extract_call_sites(state, args, &id);
+        }
 
         // Visit class body.
         let attrs = Self::collect_class_attrs(state, node);
@@ -520,6 +526,16 @@ impl PythonExtractor {
                             column: start_column,
                             file_path: state.file_path.clone(),
                         });
+                    }
+                    // The arguments of a decorator call (`@_register(_build())`)
+                    // run at definition time too, whatever the callee is.
+                    if let Some(args) = child
+                        .named_child(0)
+                        .filter(|n| n.kind() == "call")
+                        .and_then(|call| call.child_by_field_name("arguments"))
+                    {
+                        Self::extract_call_sites(state, args, &dec_id);
+                        Self::scan_value_positions(state, args, &dec_id);
                     }
 
                     // Annotates edge from decorator to the decorated item.
@@ -956,7 +972,6 @@ impl PythonExtractor {
         false
     }
 
-    /// Recursively find call nodes inside a given node and create unresolved Calls references.
     /// Fully qualified name of the nearest enclosing class
     /// (`file.py::Outer::Inner`), or None outside a class.
     fn enclosing_class_qualified_name(state: &ExtractionState) -> Option<String> {

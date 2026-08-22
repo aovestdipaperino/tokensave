@@ -403,3 +403,47 @@ def g():
         "control: {dead:?}"
     );
 }
+
+#[tokio::test]
+async fn class_header_and_decorator_argument_calls_are_references() {
+    let dead = dead_names(
+        r#"def _make_base():
+    return object
+
+
+def _register(tag):
+    return lambda fn: fn
+
+
+def _build():
+    return "tag"
+
+
+def _truly_dead():
+    return 1
+
+
+class C(_make_base()):
+    pass
+
+
+@_register(_build())
+def g():
+    pass
+"#,
+    )
+    .await;
+
+    assert!(
+        !dead.contains(&"_make_base".to_string()),
+        "called in a class header: {dead:?}"
+    );
+    assert!(
+        !dead.contains(&"_build".to_string()),
+        "called in a decorator argument: {dead:?}"
+    );
+    assert!(
+        dead.contains(&"_truly_dead".to_string()),
+        "control: {dead:?}"
+    );
+}
