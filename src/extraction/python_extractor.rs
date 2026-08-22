@@ -135,6 +135,27 @@ impl PythonExtractor {
                         }
                     }
                 }
+                // A call in a module- or class-scope statement (`_KEYMAP =
+                // _build_keymap()`, or a bare `_setup()`) is a real call
+                // site. Call sites were only extracted from function bodies,
+                // so the callee had no incoming `calls` edge and
+                // `tokensave_dead_code` reported it dead. Attribute the call
+                // to the enclosing scope: the File node at module level, the
+                // class node in a class body.
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
+            }
+            // A compound statement at module or class scope (`if __name__ ==
+            // "__main__":`, `try:`, `with:`, `for`, `while`) holds call sites
+            // too. Extract them the same way; `extract_call_sites` stops at a
+            // nested def, so a function defined inside the block is not
+            // indexed here and its body is not attributed to this scope.
+            "if_statement" | "try_statement" | "with_statement" | "for_statement"
+            | "while_statement" => {
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
             }
             _ => {}
         }
@@ -1209,7 +1230,37 @@ impl PythonExtractor {
                     file_path: state.file_path.clone(),
                 });
             }
-            "attribute" | "subscript" | "lambda" | "function_definition" | "class_definition" => {}
+            // A method passed by reference through `self`/`cls`
+            // (`Thread(target=self._flush_loop)`, `schedule(self._tick, 1.0)`)
+            // is a use of that method. Emit it qualified with the enclosing
+            // class (`Daemon::_flush_loop`) so the resolver matches the
+            // method on this class and not a same-named method elsewhere.
+            // Any other attribute (`obj.attr`) is still skipped: its
+            // sub-name is not a standalone reference.
+            "attribute" => {
+                let receiver = node
+                    .child_by_field_name("object")
+                    .filter(|obj| obj.kind() == "identifier")
+                    .map(|obj| state.node_text(obj));
+                if !matches!(receiver.as_deref(), Some("self" | "cls")) {
+                    return;
+                }
+                let (Some(attr), Some(class)) = (
+                    node.child_by_field_name("attribute"),
+                    Self::enclosing_class_type(state),
+                ) else {
+                    return;
+                };
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: source_id.to_string(),
+                    reference_name: format!("{class}::{}", state.node_text(attr)),
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            "subscript" | "lambda" | "function_definition" | "class_definition" => {}
             "call" => {
                 if let Some(args) = node.child_by_field_name("arguments") {
                     Self::scan_value_positions(state, args, source_id);
