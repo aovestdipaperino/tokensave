@@ -1787,3 +1787,166 @@ fn test_absolute_ancestor_root_target_redirects_from_a_subdirectory() {
         "the discovered ancestor root is the whole-project target"
     );
 }
+
+// ============================================================================
+// #435: grep / find targets outside the indexed project must pass through.
+// These tests require a real project root on disk because containment is
+// checked by canonicalizing the resolved path.
+// ============================================================================
+
+#[test]
+fn test_bash_allows_grep_after_cd_to_outside_project() {
+    let (tmp, root) = indexed_project();
+    let outside = tmp.path().join("other");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let input = serde_json::json!({
+        "command": format!("cd {} && grep -rn Foo --include=*.cs .", outside.display()),
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        result.is_empty(),
+        "grep after cd outside the project should pass through: {result}"
+    );
+}
+
+#[test]
+fn test_bash_allows_grep_on_absolute_outside_path() {
+    let (tmp, root) = indexed_project();
+    let outside = tmp.path().join("other");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let file = outside.join("file.cs");
+    std::fs::write(&file, "class Foo {}\n").expect("write file");
+    let input = serde_json::json!({
+        "command": format!("grep -rn Foo {}", file.display()),
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        result.is_empty(),
+        "absolute outside path should pass through: {result}"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_to_inside_project_with_existing_file() {
+    let (_tmp, root) = indexed_project();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create src dir");
+    std::fs::write(src.join("lib.rs"), "pub fn Foo() {}\n").expect("write file");
+    let input = serde_json::json!({
+        "command": "cd src && grep -rn Foo lib.rs",
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        is_blocked(&result),
+        "grep after cd inside the project should still redirect: {result}"
+    );
+}
+
+#[test]
+fn test_bash_blocks_grep_after_cd_to_inside_project_with_missing_file() {
+    let (_tmp, root) = indexed_project();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create src dir");
+    let input = serde_json::json!({
+        "command": "cd src && grep -rn Foo missing.rs",
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        is_blocked(&result),
+        "grep after cd inside the project should still redirect even when the file is missing: {result}"
+    );
+}
+
+#[test]
+fn test_bash_allows_find_after_cd_to_outside_project() {
+    let (tmp, root) = indexed_project();
+    let outside = tmp.path().join("other");
+    std::fs::create_dir_all(&outside).expect("create outside dir");
+    let input = serde_json::json!({
+        "command": format!("cd {} && find . -name '*.rs'", outside.display()),
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        result.is_empty(),
+        "find after cd outside the project should pass through: {result}"
+    );
+}
+
+#[test]
+fn test_bash_blocks_find_after_cd_to_inside_project() {
+    let (_tmp, root) = indexed_project();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create src dir");
+    let input = serde_json::json!({
+        "command": "cd src && find . -name '*.rs'",
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        is_blocked(&result),
+        "find after cd inside the project should still redirect: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_bash_allows_grep_after_cd_to_escaped_outside_directory() {
+    let (tmp, root) = indexed_project();
+    let outside = tmp.path().join("dir with spaces");
+    std::fs::create_dir_all(&outside).expect("create outside dir with spaces");
+    let input = serde_json::json!({
+        "command": format!("cd {}\\ with\\ spaces && grep -rn Foo --include=*.cs .", tmp.path().join("dir").display()),
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        result.is_empty(),
+        "backslash-escaped cd to an outside directory should pass through: {result}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_bash_blocks_grep_after_cd_to_symlink_to_code_directory() {
+    use std::os::unix::fs::symlink;
+
+    let (_tmp, root) = indexed_project();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("create src dir");
+    std::fs::write(src.join("lib.rs"), "pub fn Foo() {}\n").expect("write file");
+    let sym = root.join("sym-src");
+    symlink(&src, &sym).expect("create symlink to src");
+    let input = serde_json::json!({
+        "command": "cd sym-src && grep -rn Foo .",
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        is_blocked(&result),
+        "cd into a symlink that points to a code directory should still redirect: {result}"
+    );
+}
+
+#[test]
+fn test_bash_allows_grep_after_chained_cd_uses_first_directory() {
+    let (tmp, root) = indexed_project();
+    let outside = tmp.path().join("src");
+    std::fs::create_dir_all(&outside).expect("create outside src dir");
+    let input = serde_json::json!({
+        "command": format!(
+            "cd {} && cd src && grep -rn Foo lib.rs",
+            tmp.path().display()
+        ),
+    })
+    .to_string();
+    let result = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+    assert!(
+        result.is_empty(),
+        "only the first leading cd is modeled; a second cd must not override it: {result}"
+    );
+}
