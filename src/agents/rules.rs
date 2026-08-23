@@ -36,9 +36,10 @@ pub(crate) const LEGACY_RULES_MARKER: &str = "## Prefer tokensave MCP tools";
 
 /// The single canonical rules body shared by all harnesses.
 const CANONICAL_RULES_MARKDOWN: &str = "## Prefer tokensave MCP tools\n\n\
-Before reading source files or scanning a codebase, use the tokensave MCP tools \
-(`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-`tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`).\n\n\
+Before reading source files or scanning a codebase, use the tokensave MCP tools: \
+`tokensave_context` for exploration, `tokensave_search` for a known symbol, plus \
+`tokensave_callers`, `tokensave_callees`, `tokensave_impact`, `tokensave_node`, \
+`tokensave_files`, and `tokensave_affected`.\n\n\
 ### Check freshness before relying on the graph\n\n\
 Run `tokensave_status` to see when the index was last synced. Run \
 `tokensave sync` or `tokensave branch add` only when the user has asked for an \
