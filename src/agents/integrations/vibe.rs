@@ -9,7 +9,11 @@ use std::path::Path;
 
 use crate::errors::{Result, TokenSaveError};
 
-use super::{AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext};
+use super::{
+    check_shared_rules_block, remove_legacy_rules_block, remove_rules_block, rules_for_agent,
+    write_rules_block, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    LEGACY_RULES_MARKER,
+};
 
 /// Mistral Vibe agent.
 pub struct VibeIntegration;
@@ -144,58 +148,10 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append prompt rules to the Vibe system prompt (idempotent).
+/// Write or refresh the tokensave rules block in cli.md.
 fn install_prompt_rules(prompt_path: &Path) -> Result<()> {
-    let marker = "## Prefer tokensave MCP tools";
-    let existing = if prompt_path.exists() {
-        std::fs::read_to_string(prompt_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    if existing.contains(marker) {
-        crate::agent_note!("  Vibe prompt already contains tokensave rules, skipping");
-        return Ok(());
-    }
-    // The savings-reporting rule is what makes the agent spend output tokens
-    // narrating savings on nearly every turn (#356). Install runs at global
-    // scope with no project config in reach, so the env var is the only signal
-    // available here; omitting the rule bakes the choice into the file, which
-    // is re-generated whenever the user re-runs `tokensave install`.
-    let savings_rule = if crate::config::env_bool_override("TOKENSAVE_REPORT_SAVINGS", true) {
-        "\nWhen a tokensave tool result contains a `tokensave_metrics:` line, report the \
-         savings to the user (e.g. \"TokenSave'd ~N tokens\"). Never silently omit this.\n"
-    } else {
-        ""
-    };
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(prompt_path)
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open {}: {e}", prompt_path.display()),
-        })?;
-    write!(
-        f,
-        "\n{marker}\n\n\
-        Before reading source files or scanning the codebase, use the tokensave MCP tools \
-        (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-        `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
-        They provide instant semantic results from a pre-built knowledge graph and are \
-        faster than file reads.\n\n\
-        If a code analysis question cannot be fully answered by tokensave MCP tools, \
-        try querying the SQLite database directly at `.tokensave/tokensave.db` \
-        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-        that go beyond what the built-in tools expose.\n\
-        {savings_rule}"
-    )
-    .map_err(|e| TokenSaveError::Config {
-        message: format!("failed to write Vibe prompt: {e}"),
-    })?;
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Added tokensave rules to {}",
-        prompt_path.display()
-    );
-    Ok(())
+    let body = rules_for_agent("vibe")?;
+    write_rules_block(prompt_path, "vibe", &body).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -294,37 +250,11 @@ fn uninstall_mcp_server(config_path: &Path) {
     }
 }
 
-/// Remove tokensave rules from the Vibe system prompt.
+/// Remove tokensave rules from cli.md (both managed-block and
+/// legacy heading-guarded forms).
 fn uninstall_prompt_rules(prompt_path: &Path) {
-    if !prompt_path.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(prompt_path) else {
-        return;
-    };
-    if !contents.contains("tokensave") {
-        crate::agent_note!("  Vibe prompt does not contain tokensave rules, skipping");
-        return;
-    }
-    let marker = "## Prefer tokensave MCP tools";
-    let Some(start) = contents.find(marker) else {
-        return;
-    };
-    let before = &contents[..start];
-    let trimmed = before.trim_end().to_string();
-    if trimmed.is_empty() {
-        std::fs::remove_file(prompt_path).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
-            prompt_path.display()
-        );
-    } else {
-        std::fs::write(prompt_path, format!("{trimmed}\n")).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            prompt_path.display()
-        );
-    }
+    remove_rules_block(prompt_path).ok();
+    remove_legacy_rules_block(prompt_path, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -358,16 +288,5 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
 
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     let prompt_path = vibe_prompt_path(home);
-    if prompt_path.exists() {
-        let has_rules = std::fs::read_to_string(&prompt_path)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass("Vibe prompt contains tokensave rules");
-        } else {
-            dc.fail("Vibe prompt missing tokensave rules — run `tokensave install --agent vibe`");
-        }
-    } else {
-        dc.warn("Vibe prompt does not exist");
-    }
+    check_shared_rules_block(dc, &prompt_path, "vibe");
 }

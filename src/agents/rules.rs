@@ -91,6 +91,15 @@ because a sub-task requires it), include the following in the agent prompt:\n\n\
 > the relevant code. Follow the call budget in the tool description. \
 > Pass `seen_node_ids` from each response to the next call's `exclude_node_ids`.\n";
 
+/// The Kiro-specific overlay on top of the canonical body: Kiro's `delegate`
+/// tool must not become a code-research path that bypasses the graph.
+const KIRO_OVERLAY_MARKDOWN: &str = "## No delegate tool for code research\n\n\
+Do not use Kiro's `delegate` tool for codebase exploration, architecture \
+mapping, call graph work, symbol lookup, or other code research until \
+tokensave MCP tools have been tried. Delegation is still appropriate for \
+long-running execution work such as builds, tests, generated reports, or \
+independent implementation tasks.\n";
+
 /// The canonical body that every harness should render.
 pub fn canonical_rules_markdown() -> &'static str {
     CANONICAL_RULES_MARKDOWN
@@ -107,18 +116,27 @@ pub fn claude_rules_markdown() -> String {
 
 /// The full expected rules text for a given agent id, including any
 /// per-harness overlay or frontmatter.
+/// The full rules body for Kiro, including the delegate-tool overlay.
+pub fn kiro_rules_markdown() -> String {
+    format!(
+        "{}\n\n{}",
+        KIRO_OVERLAY_MARKDOWN,
+        canonical_rules_markdown()
+    )
+}
+
 /// The full expected rules text for a given agent id, including any
 /// per-harness overlay or frontmatter.
 pub fn expected_rules_markdown(agent_id: &str) -> Option<String> {
     match agent_id {
         "claude" => Some(claude_rules_markdown()),
+        "kiro" => Some(kiro_rules_markdown()),
         "auggie" => Some(format!(
             "---\ntype: always_apply\n---\n\n{}",
             canonical_rules_markdown()
         )),
-        "codex" | "copilot" | "droid" | "opencode" | "pi" => {
-            Some(canonical_rules_markdown().to_string())
-        }
+        "codex" | "copilot" | "droid" | "opencode" | "pi" | "gemini" | "grok" | "kimi" | "qwen"
+        | "vibe" => Some(canonical_rules_markdown().to_string()),
         _ => None,
     }
 }
@@ -641,7 +659,8 @@ mod tests {
     #[test]
     fn expected_rules_for_known_agents() {
         for id in [
-            "claude", "auggie", "codex", "droid", "copilot", "opencode", "pi",
+            "claude", "auggie", "codex", "droid", "copilot", "opencode", "pi", "gemini", "grok",
+            "kimi", "qwen", "vibe", "kiro",
         ] {
             assert!(
                 expected_rules_markdown(id).is_some(),

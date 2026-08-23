@@ -5,12 +5,11 @@
 //! Gemini CLI has no hook system. Tool auto-approval is handled via the
 //! `trust: true` flag on the MCP server entry.
 
-use std::io::Write;
 use std::path::Path;
 
 use serde_json::json;
 
-use crate::errors::{Result, TokenSaveError};
+use crate::errors::Result;
 
 use super::*;
 
@@ -125,49 +124,10 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append prompt rules to GEMINI.md (idempotent).
+/// Write or refresh the tokensave rules block in GEMINI.md.
 fn install_prompt_rules(gemini_md: &Path) -> Result<()> {
-    let marker = "## Prefer tokensave MCP tools";
-    let existing = if gemini_md.exists() {
-        std::fs::read_to_string(gemini_md).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    if existing.contains(marker) {
-        crate::agent_note!("  GEMINI.md already contains tokensave rules, skipping");
-        return Ok(());
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(gemini_md)
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open GEMINI.md: {e}"),
-        })?;
-    write!(
-        f,
-        "\n{marker}\n\n\
-        Before reading source files or scanning the codebase, use the tokensave MCP tools \
-        (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-        `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
-        They provide instant semantic results from a pre-built knowledge graph and are \
-        faster than file reads.\n\n\
-        If a code analysis question cannot be fully answered by tokensave MCP tools, \
-        try querying the SQLite database directly at `.tokensave/tokensave.db` \
-        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-        that go beyond what the built-in tools expose.\n\n\
-        If you discover a gap where an extractor, schema, or tokensave tool could be \
-        improved to answer a question natively, propose to the user that they open an issue \
-        at https://github.com/aovestdipaperino/tokensave describing the limitation. \
-        **Remind the user to strip any sensitive or proprietary code from the bug description \
-        before submitting.**\n"
-    )
-    .ok();
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
-        gemini_md.display()
-    );
-    Ok(())
+    let body = rules_for_agent("gemini")?;
+    write_rules_block(gemini_md, "gemini", &body).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -216,47 +176,11 @@ fn uninstall_mcp_server(settings_path: &Path) {
     }
 }
 
-/// Remove tokensave rules from GEMINI.md.
+/// Remove tokensave rules from GEMINI.md (both managed-block and
+/// legacy heading-guarded forms).
 fn uninstall_prompt_rules(gemini_md: &Path) {
-    if !gemini_md.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(gemini_md) else {
-        return;
-    };
-    if !contents.contains("tokensave") {
-        crate::agent_note!("  GEMINI.md does not contain tokensave rules, skipping");
-        return;
-    }
-    let marker = "## Prefer tokensave MCP tools";
-    let Some(start) = contents.find(marker) else {
-        return;
-    };
-    let after_marker = start + marker.len();
-    let end = contents[after_marker..]
-        .find("\n## ")
-        .map_or(contents.len(), |pos| after_marker + pos);
-    let mut new_contents = String::new();
-    new_contents.push_str(contents[..start].trim_end());
-    let remainder = &contents[end..];
-    if !remainder.is_empty() {
-        new_contents.push_str("\n\n");
-        new_contents.push_str(remainder.trim_start());
-    }
-    let new_contents = new_contents.trim().to_string();
-    if new_contents.is_empty() {
-        std::fs::remove_file(gemini_md).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
-            gemini_md.display()
-        );
-    } else {
-        std::fs::write(gemini_md, format!("{new_contents}\n")).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            gemini_md.display()
-        );
-    }
+    remove_rules_block(gemini_md).ok();
+    remove_legacy_rules_block(gemini_md, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -312,19 +236,8 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check GEMINI.md contains tokensave rules.
+/// Check GEMINI.md contains the up-to-date tokensave rules block.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     let gemini_md = home.join(".gemini").join("GEMINI.md");
-    if gemini_md.exists() {
-        let has_rules = std::fs::read_to_string(&gemini_md)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass("GEMINI.md contains tokensave rules");
-        } else {
-            dc.fail("GEMINI.md missing tokensave rules — run `tokensave install --agent gemini`");
-        }
-    } else {
-        dc.warn("~/.gemini/GEMINI.md does not exist");
-    }
+    check_shared_rules_block(dc, &gemini_md, "gemini");
 }
