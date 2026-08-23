@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, RUBY_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, RUBY_COMPLEXITY};
 use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, SingletonScope};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
@@ -211,6 +211,7 @@ impl RubyExtractor {
                 Self::visit_mixin_directive(state, node);
                 Self::visit_attribute_directive(state, node);
                 Self::visit_alias_method_directive(state, node, None);
+                Self::visit_module_function_directive(state, node);
                 Self::visit_expression_blocks(state, node);
             }
             // Statement containers: they wrap statements without opening a new
@@ -320,6 +321,41 @@ impl RubyExtractor {
         // Extract call sites from the method body.
         Self::extract_call_sites(state, node, &id);
 
+        // `module_function` mode (read here, before the body traversal below
+        // resets it for nested defs) means this `def` also gets a public
+        // singleton copy — Ruby's `module_function` defines both at once
+        // (probes P1/P2/P3). Read at the same point `visibility` already was
+        // above: `state.visibility_mode` is `Private` by the time we get
+        // here, so the instance node above needed no separate change.
+        if state.module_function_mode
+            // Guards a same-line ordering the parser accepts but Ruby itself
+            // rejects (`module_function :a; def a; end`), where a
+            // fallback-span singleton from apply_module_function_symbol
+            // would already occupy this def's id — see
+            // module_function_singleton_exists's doc comment.
+            && !Self::module_function_singleton_exists(state, &name, start_line)
+        {
+            if let Some(parent_id) = state.parent_node_id().map(str::to_string) {
+                let singleton_signature = Self::extract_method_signature(state, node);
+                let singleton_docstring = Self::extract_docstring(state, node);
+                let singleton_id = Self::emit_synthetic_method(
+                    state,
+                    &name,
+                    singleton_signature,
+                    NodeKind::SingletonMethod,
+                    Visibility::Pub,
+                    &parent_id,
+                    singleton_docstring,
+                    (start_line, end_line, start_column, end_column),
+                    metrics,
+                );
+                state.singleton_method_ids.push(singleton_id.clone());
+                // Give the singleton the same outgoing call graph as the
+                // instance copy — see clone_unresolved_refs's doc comment.
+                Self::clone_unresolved_refs(state, &id, &singleton_id);
+            }
+        }
+
         // Traverse the body for definitions. A method opens no definition scope
         // (no node_stack/class_depth/singleton_scope change above), so a `def`
         // inside it — directly, or inside a block — attaches to the enclosing
@@ -348,9 +384,17 @@ impl RubyExtractor {
         // through this method, so in practice this only ever observes
         // `Outside`/`Foreign`; the `!=` form is defensive parity with the
         // condition's own reasoning rather than a reachable third case.
+        //
+        // `module_function_mode`, like `visibility_mode`, gets a fresh frame
+        // for the body: a nested `def` inside this method's own body is
+        // unreachable Ruby (`SyntaxError`), but `module_function` inside a
+        // block passed to a method call is not, and must not see this def's
+        // own mode.
         if let Some(body) = node.child_by_field_name("body") {
             let saved_visibility_mode = state.visibility_mode.clone();
             state.visibility_mode = Visibility::Pub;
+            let saved_module_function_mode = state.module_function_mode;
+            state.module_function_mode = false;
             let saved_in_concern_scope = state.in_concern_scope;
             state.in_concern_scope = false;
             let saved_self_is_instance = state.self_is_instance;
@@ -360,6 +404,7 @@ impl RubyExtractor {
             state.ruby_body_call_owner_id = saved_body_call_owner_id;
             state.self_is_instance = saved_self_is_instance;
             state.in_concern_scope = saved_in_concern_scope;
+            state.module_function_mode = saved_module_function_mode;
             state.visibility_mode = saved_visibility_mode;
         }
     }
@@ -515,6 +560,8 @@ impl RubyExtractor {
         if let Some(body) = node.child_by_field_name("body") {
             let saved_visibility_mode = state.visibility_mode.clone();
             state.visibility_mode = Visibility::Pub;
+            let saved_module_function_mode = state.module_function_mode;
+            state.module_function_mode = false;
             let saved_in_concern_scope = state.in_concern_scope;
             let saved_self_is_instance = state.self_is_instance;
             state.self_is_instance = false;
@@ -523,6 +570,7 @@ impl RubyExtractor {
             state.ruby_body_call_owner_id = saved_body_call_owner_id;
             state.self_is_instance = saved_self_is_instance;
             state.in_concern_scope = saved_in_concern_scope;
+            state.module_function_mode = saved_module_function_mode;
             state.visibility_mode = saved_visibility_mode;
         }
     }
@@ -565,6 +613,8 @@ impl RubyExtractor {
 
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_module_function_mode = state.module_function_mode;
+        state.module_function_mode = false;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = scope;
         // `self` inside `class << self` is the singleton class, not the
@@ -589,6 +639,7 @@ impl RubyExtractor {
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
+        state.module_function_mode = saved_module_function_mode;
         state.visibility_mode = saved_visibility_mode;
     }
 
@@ -661,6 +712,8 @@ impl RubyExtractor {
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_module_function_mode = state.module_function_mode;
+        state.module_function_mode = false;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = SingletonScope::Outside;
         let saved_in_concern_scope = state.in_concern_scope;
@@ -680,6 +733,7 @@ impl RubyExtractor {
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
+        state.module_function_mode = saved_module_function_mode;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
@@ -757,6 +811,8 @@ impl RubyExtractor {
         state.class_depth += 1;
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_module_function_mode = state.module_function_mode;
+        state.module_function_mode = false;
         let saved_singleton_scope = state.singleton_scope;
         state.singleton_scope = SingletonScope::Outside;
         let saved_in_concern_scope = state.in_concern_scope;
@@ -773,6 +829,7 @@ impl RubyExtractor {
         state.self_is_instance = saved_self_is_instance;
         state.in_concern_scope = saved_in_concern_scope;
         state.singleton_scope = saved_singleton_scope;
+        state.module_function_mode = saved_module_function_mode;
         state.visibility_mode = saved_visibility_mode;
         state.class_depth -= 1;
         state.node_stack.pop();
@@ -874,6 +931,10 @@ impl RubyExtractor {
             "identifier" => {
                 let name = state.node_text(node);
                 if let Some(visibility) = Self::resolve_visibility_keyword(&name) {
+                    // `public`/`private`/`protected` and `module_function` are four
+                    // values of one default-definition-mode frame — each cancels the
+                    // previous (P10b/P10c, confirmed against Ruby 3.4.7).
+                    state.module_function_mode = false;
                     state.visibility_mode = visibility;
                 }
             }
@@ -919,6 +980,8 @@ impl RubyExtractor {
                     // Bare call with no argument list (e.g. `private()`): only a
                     // mode switch makes sense here.
                     if !is_class_method {
+                        // See the "identifier" arm above: cancels module_function.
+                        state.module_function_mode = false;
                         state.visibility_mode = visibility;
                     }
                     return;
@@ -1028,6 +1091,8 @@ impl RubyExtractor {
                 }
 
                 if !saw_arg && !is_class_method {
+                    // See the "identifier" arm above: cancels module_function.
+                    state.module_function_mode = false;
                     state.visibility_mode = visibility;
                 }
             }
@@ -1364,6 +1429,7 @@ impl RubyExtractor {
                     &parent_id,
                     docstring.clone(),
                     (start_line, end_line, start_column, end_column),
+                    ComplexityMetrics::default(),
                 );
             }
             if writable {
@@ -1378,18 +1444,27 @@ impl RubyExtractor {
                     &parent_id,
                     docstring.clone(),
                     (start_line, end_line, start_column, end_column),
+                    ComplexityMetrics::default(),
                 );
             }
         }
     }
 
     /// Build and register one method node for a DSL-generated method
-    /// (`attr_reader`/`attr_writer`/`attr_accessor`, `alias`/`alias_method`)
-    /// with `name` and `signature`, attached to `parent_id`. Shares
-    /// `visit_method`'s node shape (zeroed complexity metrics — there's no
-    /// body at this location to measure), `Contains` edge, and
+    /// (`attr_reader`/`attr_writer`/`attr_accessor`, `alias`/`alias_method`,
+    /// `module_function`) with `name` and `signature`, attached to
+    /// `parent_id`. Shares `visit_method`'s node shape, `Contains` edge, and
     /// singleton-method-id bookkeeping so a later `private_class_method` can
-    /// retroactively find it.
+    /// retroactively find it. `metrics` is `ComplexityMetrics::default()`
+    /// (all zero) for `attr_*`/`alias`, which have no body at this location
+    /// to measure; a `module_function` singleton copy passes the metrics of
+    /// the `def` it mirrors instead, so `tokensave_complexity`/`hotspots`
+    /// don't see a suspiciously trivial duplicate of a complex method.
+    /// Returns the new node's id, so a caller emitting a `module_function`
+    /// singleton copy outside `SingletonScope::Enclosing` (where the
+    /// automatic bookkeeping below doesn't fire) can register it into
+    /// `singleton_method_ids` itself, and clone the mirrored method's
+    /// outgoing call references onto it.
     #[allow(clippy::too_many_arguments)]
     fn emit_synthetic_method(
         state: &mut ExtractionState,
@@ -1400,7 +1475,8 @@ impl RubyExtractor {
         parent_id: &str,
         docstring: Option<String>,
         (start_line, end_line, start_column, end_column): (u32, u32, u32, u32),
-    ) {
+        metrics: ComplexityMetrics,
+    ) -> String {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, name, start_line);
 
@@ -1419,18 +1495,18 @@ impl RubyExtractor {
             docstring,
             visibility,
             is_async: false,
-            branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            cognitive_complexity: 0,
-            distinct_operators: 0,
-            distinct_operands: 0,
-            total_operators: 0,
-            total_operands: 0,
+            branches: metrics.branches,
+            loops: metrics.loops,
+            returns: metrics.returns,
+            max_nesting: metrics.max_nesting,
+            unsafe_blocks: metrics.unsafe_blocks,
+            unchecked_calls: metrics.unchecked_calls,
+            assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
             parent_id: None,
         };
@@ -1443,10 +1519,324 @@ impl RubyExtractor {
 
         state.edges.push(Edge {
             source: parent_id.to_string(),
-            target: id,
+            target: id.clone(),
             kind: EdgeKind::Contains,
             line: Some(start_line),
         });
+        id
+    }
+
+    /// Extract a `Node`'s complexity metrics back into a `ComplexityMetrics`
+    /// (the field sets are identical; `Node` stores them flattened rather
+    /// than nested). Used to mirror an already-extracted `def`'s metrics
+    /// onto its `module_function` singleton copy, which has no body of its
+    /// own for `count_complexity` to measure directly.
+    fn node_metrics(node: &Node) -> ComplexityMetrics {
+        ComplexityMetrics {
+            branches: node.branches,
+            loops: node.loops,
+            returns: node.returns,
+            max_nesting: node.max_nesting,
+            unsafe_blocks: node.unsafe_blocks,
+            unchecked_calls: node.unchecked_calls,
+            assertions: node.assertions,
+            cognitive_complexity: node.cognitive_complexity,
+            distinct_operators: node.distinct_operators,
+            distinct_operands: node.distinct_operands,
+            total_operators: node.total_operators,
+            total_operands: node.total_operands,
+        }
+    }
+
+    /// Clone every unresolved reference recorded with `from_node_id ==
+    /// source_id` so the same references are also attributed to
+    /// `target_id`. Used to give a `module_function` singleton copy the same
+    /// outgoing call graph as the instance method it mirrors, without
+    /// re-walking the body a second time (bare/inline forms, where the
+    /// `TsNode` is at hand) or at all (symbol-list form, where it isn't —
+    /// the `def` was already visited earlier and its calls are already
+    /// sitting in `unresolved_refs` under the instance id). Without this,
+    /// `tokensave_callees`/`impact`/`call_chain` on the singleton would show
+    /// no outgoing calls while the private instance copy silently owns them
+    /// all.
+    fn clone_unresolved_refs(state: &mut ExtractionState, source_id: &str, target_id: &str) {
+        let cloned: Vec<UnresolvedRef> = state
+            .unresolved_refs
+            .iter()
+            .filter(|r| r.from_node_id == source_id)
+            .map(|r| UnresolvedRef {
+                from_node_id: target_id.to_string(),
+                reference_name: r.reference_name.clone(),
+                reference_kind: r.reference_kind,
+                line: r.line,
+                column: r.column,
+                file_path: r.file_path.clone(),
+            })
+            .collect();
+        state.unresolved_refs.extend(cloned);
+    }
+
+    /// True if the innermost `node_stack` entry names a `NodeKind::Module`
+    /// node — i.e. the traversal is directly inside a genuine Ruby module
+    /// body, not a class body or the top level. Resolves by scanning
+    /// `state.nodes` for `state.parent_node_id()`, the same reverse linear
+    /// scan `mark_method_visibility` already uses; this runs once per
+    /// `module_function` directive, so the cost is negligible.
+    fn in_module_body(state: &ExtractionState) -> bool {
+        let Some(parent_id) = state.parent_node_id() else {
+            return false;
+        };
+        state
+            .nodes
+            .iter()
+            .rev()
+            .find(|n| n.id == parent_id)
+            .is_some_and(|n| n.kind == NodeKind::Module)
+    }
+
+    /// Locate the most recently defined instance-shaped node under `name` in
+    /// the current scope — the same lookup `mark_method_visibility` performs,
+    /// but read-only, for mirroring a `module_function :name` singleton
+    /// copy's span/signature/docstring onto the `def` it names.
+    fn find_scoped_instance_method<'a>(state: &'a ExtractionState, name: &str) -> Option<&'a Node> {
+        let target_qn = format!("{}::{}", state.qualified_prefix(), name);
+        let singleton_ids = &state.singleton_method_ids;
+        let foreign_ids = &state.foreign_singleton_method_ids;
+        state.nodes.iter().rev().find(|n| {
+            Self::matches_visibility_target(
+                n,
+                singleton_ids,
+                foreign_ids,
+                VisibilityTarget::Instance,
+                &target_qn,
+            )
+        })
+    }
+
+    /// True if a `module_function` singleton copy of `name` at `start_line`
+    /// was already emitted for this file — i.e. `emit_synthetic_method`
+    /// would generate the same node id a second time. A repeated directive
+    /// naming the same `def` (`module_function; def a; end; module_function
+    /// :a`, or `module_function :a` twice) is valid Ruby, and without this
+    /// guard both `apply_module_function_symbol` and `visit_method` would
+    /// emit a second node under the identical id plus a second copy of its
+    /// cloned outgoing refs — silently doubling `result.nodes`/
+    /// `result.unresolved_refs` and inflating `files.node_count`, which is
+    /// taken from `result.nodes.len()` before any database dedupe. Keyed on
+    /// the generated id, not on `name` alone, so a same-named method
+    /// reopened from another file — landing on its own distinct span —
+    /// still gets its own node, matching how a repeated `attr_accessor :x`
+    /// already behaves.
+    fn module_function_singleton_exists(
+        state: &ExtractionState,
+        name: &str,
+        start_line: u32,
+    ) -> bool {
+        let id = generate_node_id(
+            &state.file_path,
+            &NodeKind::SingletonMethod,
+            name,
+            start_line,
+        );
+        state.nodes.iter().rev().any(|n| n.id == id)
+    }
+
+    /// Apply `module_function :name` (the symbol-list form) for one resolved
+    /// `name`: privatize the existing instance method (P2) and emit a public
+    /// singleton copy of it (P1's instance-vs-singleton split, applied
+    /// retroactively rather than via the mode switch). Mirrors the span,
+    /// signature and docstring of the `def` the lookup finds, so
+    /// `tokensave_body` on the singleton shows the real definition rather
+    /// than the `module_function :name` line — falling back to the
+    /// directive's own `fallback_span` when no instance node is found in
+    /// this body (a method reopened from another file), with no
+    /// signature/docstring, the same fallback shape `attr_*`'s synthetic
+    /// methods use for a name with no `def` counterpart at all.
+    fn apply_module_function_symbol(
+        state: &mut ExtractionState,
+        name: &str,
+        fallback_span: (u32, u32, u32, u32),
+    ) {
+        // Privatizing is idempotent and must still run on a repeat
+        // declaration; only the singleton emission below needs deduping.
+        Self::mark_method_visibility(state, name, VisibilityTarget::Instance, Visibility::Private);
+        let Some(parent_id) = state.parent_node_id().map(str::to_string) else {
+            return;
+        };
+        let (span, signature, docstring, metrics, source_id) =
+            match Self::find_scoped_instance_method(state, name) {
+                Some(source) => (
+                    (
+                        source.start_line,
+                        source.end_line,
+                        source.start_column,
+                        source.end_column,
+                    ),
+                    source.signature.clone(),
+                    source.docstring.clone(),
+                    Self::node_metrics(source),
+                    Some(source.id.clone()),
+                ),
+                None => (
+                    fallback_span,
+                    None,
+                    None,
+                    ComplexityMetrics::default(),
+                    None,
+                ),
+            };
+        if Self::module_function_singleton_exists(state, name, span.0) {
+            return;
+        }
+        let singleton_id = Self::emit_synthetic_method(
+            state,
+            name,
+            signature,
+            NodeKind::SingletonMethod,
+            Visibility::Pub,
+            &parent_id,
+            docstring,
+            span,
+            metrics,
+        );
+        state.singleton_method_ids.push(singleton_id.clone());
+        // Give the singleton the same outgoing call graph as the `def` it
+        // mirrors — see clone_unresolved_refs's doc comment. `source_id` is
+        // `None` only when no `def` was found in this body at all (the
+        // fallback span case), where there's nothing to clone from.
+        if let Some(source_id) = source_id {
+            Self::clone_unresolved_refs(state, &source_id, &singleton_id);
+        }
+    }
+
+    /// Handle `module_function` directives: the bare mode switch
+    /// (`module_function`), symbol-list retroactive marking
+    /// (`module_function :foo, :bar`), and inline `def`
+    /// (`module_function def foo; end`).
+    ///
+    /// `module_function` makes the instance copy of a method private *and*
+    /// defines a public singleton (module) method of the same name —
+    /// confirmed against Ruby 3.4.7 (probes P1-P21 in the commit body).
+    /// Unlike `private`/`public`, it is undefined outside a genuine module
+    /// body, so this guards on positive evidence rather than the looser
+    /// convention `visit_attribute_directive`/`visit_mixin_directive` use:
+    ///
+    /// - an explicit receiver (`obj.module_function`) is an ordinary call
+    ///   sharing the name, matching `visit_attribute_directive`;
+    /// - `self_is_instance` — `module_function` raises inside an
+    ///   instance-method body (P17/P18); this guard is *stricter* than the
+    ///   other DSL directive handlers', which have a known, unfixed gap here
+    ///   (see `visit_attribute_directive`'s doc comment) — not widened for
+    ///   them, just not repeated here;
+    /// - `singleton_scope != Outside` — `class << self` reopens a `Class`,
+    ///   where `module_function` is undefined (P6);
+    /// - the innermost scope must be a `NodeKind::Module` — a class body
+    ///   (P4) or the top level (P5, no enclosing scope at all) both raise.
+    /// - `in_concern_self_retargeting_block` — inside a Concern
+    ///   `included`/`prepended`/`class_methods` block, `self` is the
+    ///   includer, an unresolvable receiver whose actual type decides
+    ///   whether `module_function` even raises; see that flag's doc
+    ///   comment for the full rationale and the confirming probes.
+    ///
+    /// Only `simple_symbol`/`delimited_symbol` (static form) arguments are
+    /// resolved, matching `visit_attribute_directive`'s scope: a string
+    /// literal is also valid Ruby here (P12) but out of this PR's scope,
+    /// same known, unfixed gap.
+    fn visit_module_function_directive(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.child_by_field_name("receiver").is_some() {
+            return;
+        }
+        let name = match node.kind() {
+            "identifier" => state.node_text(node),
+            "call" | "method_call" => {
+                let Some(method_node) = node.child_by_field_name("method") else {
+                    return;
+                };
+                state.node_text(method_node)
+            }
+            _ => return,
+        };
+        if name != "module_function" {
+            return;
+        }
+        if state.self_is_instance {
+            return;
+        }
+        if state.singleton_scope != SingletonScope::Outside {
+            return;
+        }
+        if state.in_concern_self_retargeting_block {
+            return;
+        }
+        if !Self::in_module_body(state) {
+            return;
+        }
+
+        let Some(args) = node.child_by_field_name("arguments") else {
+            // Bare identifier, or a bare call with no argument list: mode switch.
+            state.module_function_mode = true;
+            state.visibility_mode = Visibility::Private;
+            return;
+        };
+
+        let fallback_span = (
+            node.start_position().row as u32,
+            node.end_position().row as u32,
+            node.start_position().column as u32,
+            node.end_position().column as u32,
+        );
+
+        // `module_function()` behaves exactly like the bare mode switch
+        // (confirmed against Ruby 3.4.7) — an empty argument list still
+        // takes the `args` path (unlike a bare identifier/call with no
+        // argument list at all, handled above), so `saw_arg` tracks whether
+        // any named child actually ran the symbol/def arms below.
+        let mut saw_arg = false;
+        let mut cursor = args.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let arg = cursor.node();
+                match arg.kind() {
+                    "simple_symbol" => {
+                        saw_arg = true;
+                        let symbol_name = state.node_text(arg).trim_start_matches(':').to_string();
+                        Self::apply_module_function_symbol(state, &symbol_name, fallback_span);
+                    }
+                    "delimited_symbol" => {
+                        saw_arg = true;
+                        if let Some(symbol_name) = Self::static_delimited_symbol_name(state, arg) {
+                            Self::apply_module_function_symbol(state, &symbol_name, fallback_span);
+                        }
+                    }
+                    "method" => {
+                        saw_arg = true;
+                        // `module_function def foo; end`: the def runs first
+                        // (P3), under the mode switch, then visit_method
+                        // itself emits the singleton copy.
+                        let saved_visibility_mode = state.visibility_mode.clone();
+                        let saved_module_function_mode = state.module_function_mode;
+                        state.visibility_mode = Visibility::Private;
+                        state.module_function_mode = true;
+                        Self::visit_method(state, arg);
+                        state.module_function_mode = saved_module_function_mode;
+                        state.visibility_mode = saved_visibility_mode;
+                    }
+                    _ => {
+                        if arg.is_named() {
+                            saw_arg = true;
+                        }
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+
+        if !saw_arg {
+            state.module_function_mode = true;
+            state.visibility_mode = Visibility::Private;
+        }
     }
 
     /// Extract `alias new_name old_name` as a method node with the same
@@ -1640,6 +2030,7 @@ impl RubyExtractor {
             &parent_id,
             docstring,
             (start_line, end_line, start_column, end_column),
+            ComplexityMetrics::default(),
         );
     }
 
@@ -1902,6 +2293,8 @@ impl RubyExtractor {
         }
         let saved_visibility_mode = state.visibility_mode.clone();
         state.visibility_mode = Visibility::Pub;
+        let saved_module_function_mode = state.module_function_mode;
+        state.module_function_mode = false;
         let concern_dsl_changes_self = matches!(
             method_name.as_deref(),
             Some("included" | "prepended" | "class_methods")
@@ -1909,12 +2302,21 @@ impl RubyExtractor {
         let saved_body_call_owner_id = concern_dsl_changes_self
             .then(|| state.ruby_body_call_owner_id.take())
             .flatten();
+        // `module_function` inside included/prepended/class_methods runs
+        // against the includer, a receiver this extractor cannot resolve —
+        // see `in_concern_self_retargeting_block`'s doc comment.
+        let saved_in_concern_self_retargeting_block = state.in_concern_self_retargeting_block;
+        if concern_dsl_changes_self {
+            state.in_concern_self_retargeting_block = true;
+        }
 
         Self::visit_node(state, block_node);
 
+        state.in_concern_self_retargeting_block = saved_in_concern_self_retargeting_block;
         if concern_dsl_changes_self {
             state.ruby_body_call_owner_id = saved_body_call_owner_id;
         }
+        state.module_function_mode = saved_module_function_mode;
         state.visibility_mode = saved_visibility_mode;
         state.singleton_scope = saved_singleton_scope;
     }
