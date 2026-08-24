@@ -6251,4 +6251,1557 @@ end
             "module_function :secret must not privatize secret here"
         );
     }
+
+    // ------------------------------------------------------------
+    // define_method / define_singleton_method
+    // ------------------------------------------------------------
+
+    #[test]
+    fn test_ruby_define_method_block_form_in_class_body() {
+        let source = r#"
+class C
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted");
+        assert_eq!(foo.kind, NodeKind::Method);
+        assert!(foo.qualified_name.ends_with("::C::foo"));
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_block_form_in_module_body() {
+        let source = r#"
+module M
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted");
+        assert_eq!(foo.kind, NodeKind::Method);
+        assert!(foo.qualified_name.ends_with("::M::foo"));
+    }
+
+    #[test]
+    fn test_ruby_define_method_inside_singleton_class_is_singleton_method() {
+        // P3: define_method inside `class << self` defines a singleton
+        // method of the enclosing class.
+        let source = r#"
+class C
+  class << self
+    define_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("expected C");
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted");
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == foo.id),
+            "expected Contains edge from C to foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_ignores_ambient_private() {
+        // Unlike a plain define_method, a bare define_singleton_method site
+        // is unreachable from the ambient private/protected/public mode
+        // (see visit_visibility_directive's nested arm, P19) — its own
+        // visibility is always Pub regardless.
+        let source = r#"
+class C
+  private
+  define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_in_class_body_is_singleton_method() {
+        // P5.
+        let source = r#"
+class C
+  define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted");
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_do_end_form() {
+        let source = r#"
+class C
+  define_method(:foo) do |x|
+    x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a do...end block"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_no_paren_do_form() {
+        let source = r#"
+class C
+  define_method :foo do |x|
+    x
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a paren-less define_method"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_static_string_name() {
+        // P4.
+        let source = r#"
+class C
+  define_method("foo") { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a static string name"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_static_delimited_symbol_name() {
+        let source = r#"
+class C
+  define_method(:"foo") { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a static delimited symbol name"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_operator_setter_predicate_names() {
+        // P16.
+        let source = r#"
+class C
+  define_method(:"[]=") { }
+  define_method(:"name=") { }
+  define_method(:"valid?") { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["[]=", "name=", "valid?"] {
+            assert!(
+                result
+                    .nodes
+                    .iter()
+                    .any(|n| n.name == name && n.kind == NodeKind::Method),
+                "expected {name} to be extracted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_define_method_top_level_defines_function() {
+        // P7.
+        let source = r#"
+define_method(:foo) { }
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted at top level");
+        assert_eq!(foo.kind, NodeKind::Function);
+    }
+
+    // -- expression position --
+
+    #[test]
+    fn test_ruby_define_method_assignment_rhs_is_extracted() {
+        // `X = def f; end` stays unextracted (out of scope, unchanged), but
+        // `define_method` is a plain method call, not special def syntax,
+        // so its RHS position is an ordinary expression the extractor
+        // already walks for other purposes (block bodies, calls) — it must
+        // reach the directive dispatch too.
+        let source = r#"
+class C
+  X = define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from an assignment RHS"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_call_argument_is_extracted() {
+        let source = r#"
+class C
+  register(define_method(:foo) { })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a call argument"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_receiver_position_is_extracted() {
+        let source = r#"
+class C
+  define_method(:foo) { }.freeze
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from receiver position"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_array_element_is_extracted() {
+        let source = r#"
+class C
+  [define_method(:foo) { }]
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from an array element"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_hash_value_is_extracted() {
+        let source = r#"
+class C
+  { key: define_method(:foo) { } }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "expected foo to be extracted from a hash value"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_statement_position_not_double_emitted() {
+        // An ordinary statement-position site reaches visit_node's directive
+        // dispatch directly, then reaches the same call node again via
+        // visit_expression_blocks (called at the end of that same arm) —
+        // now that expression-position traversal also dispatches, that
+        // second pass must be a no-op rather than a duplicate node.
+        let source = r#"
+class C
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo: Vec<_> = result.nodes.iter().filter(|n| n.name == "foo").collect();
+        assert_eq!(
+            foo.len(),
+            1,
+            "expected exactly one foo node, not a duplicate"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_inline_private_wrapper_not_double_emitted() {
+        // `private define_method(:foo) { }`'s nested call is reached twice
+        // structurally: once via visit_visibility_directive's own explicit
+        // re-dispatch (with the visibility override applied), and once more
+        // via the *same* node being visited generically as an argument of
+        // the outer `private(...)` call. The second path must defer
+        // entirely rather than emit a second node with the wrong (ambient)
+        // visibility.
+        let source = r#"
+class C
+  private define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo: Vec<_> = result.nodes.iter().filter(|n| n.name == "foo").collect();
+        assert_eq!(
+            foo.len(),
+            1,
+            "expected exactly one foo node, not a duplicate"
+        );
+        assert_eq!(foo[0].visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_method_private_class_method_wrapper_still_refused_via_expression_traversal()
+    {
+        // P11: private_class_method define_method(:x) { } raises NameError
+        // and defines nothing. The nested call is also reachable via
+        // expression-position traversal (as private_class_method's own
+        // argument) — that path must not resurrect a node the visibility
+        // directive's own handling deliberately refused to emit.
+        let source = r#"
+class C
+  private_class_method define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "private_class_method define_method(...) must still not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_inside_def_self_macro_body_attaches_to_class() {
+        // P22: the Rails named_base.rb-shaped pattern — a define_method
+        // written inside a `def self.macro` body defines an instance method
+        // of the enclosing class, not a member of the macro itself.
+        let source = r#"
+class C
+  def self.check_class_collision
+    define_method(:generated) do
+      helper()
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("expected C");
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated to be extracted");
+        assert_eq!(generated.kind, NodeKind::Method);
+        assert!(generated.qualified_name.ends_with("::C::generated"));
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == generated.id),
+            "expected Contains edge from C to generated, not from check_class_collision"
+        );
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == generated.id && r.reference_name == "helper"),
+            "expected the call inside the block to be attributed to generated"
+        );
+        let macro_method = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "check_class_collision")
+            .expect("expected check_class_collision to be extracted");
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == macro_method.id && r.reference_name == "helper"),
+            "the call inside generated's block must not also be attributed to check_class_collision"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_concern_included_block() {
+        let source = r#"
+module Concern
+  extend ActiveSupport::Concern
+  included do
+    define_method(:greet) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("concern.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let greet = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "greet")
+            .expect("expected greet to be extracted from included do");
+        assert_eq!(greet.kind, NodeKind::Method);
+    }
+
+    #[test]
+    fn test_ruby_define_method_concern_class_methods_block() {
+        let source = r#"
+module Concern
+  extend ActiveSupport::Concern
+  class_methods do
+    define_method(:greet) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("concern.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let greet = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "greet")
+            .expect("expected greet to be extracted from class_methods do");
+        assert_eq!(greet.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_define_method_contains_edge_from_enclosing_class() {
+        let source = r#"
+class C
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("expected C");
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == foo.id),
+            "expected Contains edge from C to foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_docstring_attaches() {
+        // define_method(:other) comes first so the comment is a
+        // body_statement sibling of the statement it documents, not (per a
+        // tree-sitter-ruby quirk affecting the first statement of any kind)
+        // a sibling of the class's body field instead.
+        let source = r#"
+class C
+  define_method(:other) { }
+
+  # Says hi.
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.docstring.as_deref(), Some("Says hi."));
+    }
+
+    // -- visibility --
+
+    #[test]
+    fn test_ruby_define_method_ambient_private() {
+        // P1.
+        let source = r#"
+class C
+  private
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_method_private_inside_singleton_class() {
+        // P21.
+        let source = r#"
+class C
+  class << self
+    private
+    define_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_method_inline_private_wrapper() {
+        // P10-shape: `private define_method(:x) { }` works.
+        let source = r#"
+class C
+  private define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.kind, NodeKind::Method);
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_method_self_receiver_inline_private_wrapper() {
+        // Same as the receiverless P10-shape above, but with an explicit
+        // self receiver — define_method_directive_kind must recognize this
+        // form too, or visit_visibility_directive's nested-argument arm
+        // falls through and private self.define_method(:foo) { } silently
+        // defines nothing at all.
+        let source = r#"
+class C
+  private self.define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted via private self.define_method");
+        assert_eq!(foo.kind, NodeKind::Method);
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_method_retroactive_private_symbol() {
+        let source = r#"
+class C
+  define_method(:foo) { }
+  private :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_retroactive_private_class_method() {
+        let source = r#"
+class C
+  define_singleton_method(:foo) { }
+  private_class_method :foo
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_private_class_method_inline() {
+        // P20: private_class_method define_singleton_method(:y) { } works,
+        // the mirror image of define_method + private (P10).
+        let source = r#"
+class C
+  private_class_method define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+        assert_eq!(foo.visibility, Visibility::Private);
+    }
+
+    // -- module_function --
+
+    #[test]
+    fn test_ruby_define_method_module_function_both_halves() {
+        // P2.
+        let source = r#"
+module M
+  module_function
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::Method)
+            .expect("expected private instance method foo");
+        assert_eq!(instance.visibility, Visibility::Private);
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::SingletonMethod)
+            .expect("expected public singleton method foo");
+        assert_eq!(singleton.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_module_function_singleton_carries_calls_and_metrics() {
+        let source = r#"
+module M
+  module_function
+  define_method(:foo) do
+    if true
+      helper()
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let instance = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::Method)
+            .unwrap();
+        let singleton = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo" && n.kind == NodeKind::SingletonMethod)
+            .unwrap();
+        assert!(instance.branches > 0, "expected non-trivial complexity");
+        assert_eq!(instance.branches, singleton.branches);
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == singleton.id && r.reference_name == "helper"),
+            "expected the singleton copy to also carry the call to helper"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_module_function_no_instance_copy() {
+        // P17: define_singleton_method under module_function mode gets no
+        // private instance copy.
+        let source = r#"
+module M
+  module_function
+  define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("m.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::Method),
+            "define_singleton_method under module_function must not get an instance copy"
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "foo" && n.kind == NodeKind::SingletonMethod),
+            "expected the singleton method itself"
+        );
+    }
+
+    // -- body attribution --
+
+    #[test]
+    fn test_ruby_define_method_complexity_metrics_from_block() {
+        let source = r#"
+class C
+  define_method(:foo) do
+    if true
+      1
+    else
+      2
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            foo.branches > 0,
+            "expected the block's if/else to be counted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_lambda_arg_carries_body_calls() {
+        // P12: a lambda-literal second argument defines a real method whose
+        // calls are attributed to it.
+        let source = r#"
+class C
+  define_method(:foo, ->() { helper() })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "helper"),
+            "expected the lambda's call to helper to be attributed to foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_block_self_call_not_double_attributed_to_enclosing_class() {
+        // A `self.helper` call inside the block is already attributed to
+        // `foo` by visit_define_method_directive's own extract_call_sites;
+        // visit_block_body's MethodBody arm must take
+        // ruby_body_call_owner_id so the block's own separate traversal
+        // doesn't also attribute it to the enclosing class.
+        let source = r#"
+class C
+  define_method(:foo) do
+    self.helper
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .unwrap();
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "self.helper"),
+            "expected foo to own the self.helper call"
+        );
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == class_node.id && r.reference_name == "self.helper"),
+            "self.helper inside the block must not also be attributed to the enclosing class"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_block_gives_nested_def_a_fresh_visibility_frame() {
+        // visit_block_body's MethodBody arm resets visibility_mode to Pub for
+        // the block, the same fresh frame visit_method gives an ordinary def
+        // body: a nested `def` dynamically defined inside a define_method
+        // block runs (when the outer method is eventually called) with
+        // normal method-body default visibility, not the class body's
+        // ambient `private` at definition time.
+        let source = r#"
+class C
+  private
+  define_method(:foo) do
+    def bar; end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let bar = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bar")
+            .expect("expected bar to be extracted from inside the block");
+        assert_eq!(bar.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_proc_arg_carries_body_calls() {
+        let source = r#"
+class C
+  define_method(:foo, proc { helper() })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "helper"),
+            "expected the proc's call to helper to be attributed to foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_second_arg_wins_over_attached_block() {
+        // Confirmed against Ruby 3.4.7: `define_method(:x, proc { 1 }) { 2 }`
+        // returns 1 — a second positional argument, when present at all,
+        // wins over an attached block, and Ruby never runs the block.
+        let source = r#"
+class C
+  define_method(:foo, proc { from_proc() }) { from_block() }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "from_proc"),
+            "expected the proc's call to be attributed to foo"
+        );
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_name == "from_block"),
+            "the ignored attached block's call must not be extracted at all"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_second_arg_wins_over_attached_block() {
+        let source = r#"
+class C
+  define_singleton_method(:foo, proc { from_proc() }) { from_block() }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "from_proc"),
+            "expected the proc's call to be attributed to foo"
+        );
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.reference_name == "from_block"),
+            "the ignored attached block's call must not be extracted at all"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_second_arg_wins_over_attached_block_complexity() {
+        // The ignored block's branching must not be counted as foo's
+        // complexity — only the proc's (here, trivially empty) body.
+        let source = r#"
+class C
+  define_method(:foo, proc { }) do
+    if true
+      1
+    else
+      2
+    end
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        assert_eq!(
+            foo.branches, 0,
+            "the ignored attached block's if/else must not count toward foo's complexity"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_second_arg_wins_over_attached_block_nested_def() {
+        // A nested def inside the ignored attached block isn't the site's
+        // body, so it doesn't get the MethodBody fresh-visibility frame —
+        // it falls back to ordinary Inherit treatment (ambient `private`
+        // still applies), the same as ordinary code, and attaches to the
+        // enclosing class rather than being treated as part of foo.
+        let source = r#"
+class C
+  private
+  define_method(:foo, proc { }) { def generated; end }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .unwrap();
+        let generated = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "generated")
+            .expect("expected generated to still be extracted, via Inherit");
+        assert_eq!(
+            generated.visibility,
+            Visibility::Private,
+            "Inherit treatment means the ambient private leaks through, unlike MethodBody's fresh Pub frame"
+        );
+        assert!(
+            result.edges.iter().any(|e| e.kind == EdgeKind::Contains
+                && e.source == class_node.id
+                && e.target == generated.id),
+            "expected generated to attach to the enclosing class, not to foo"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_proc_arg_inside_enclosing_method_not_double_attributed() {
+        // A define_method site with a proc/Proc.new second argument, itself
+        // written inside a def self.macro body (the same shape §6 already
+        // covers for the direct-block form): extract_call_sites's walk over
+        // the enclosing method must not also attribute the proc's calls to
+        // the enclosing method, since visit_define_method_directive already
+        // attributes them to foo's own node — the proc call introduces no
+        // site of its own, so the walk must keep threading the ancestor's
+        // skip (the proc's own block field) through it rather than losing
+        // it and re-walking that block from here.
+        let source = r#"
+class C
+  def self.install
+    define_method(:foo, proc { helper() })
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result.nodes.iter().find(|n| n.name == "foo").unwrap();
+        let install = result.nodes.iter().find(|n| n.name == "install").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == foo.id && r.reference_name == "helper"),
+            "expected the proc's call to helper to be attributed to foo"
+        );
+        assert!(
+            !result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == install.id && r.reference_name == "helper"),
+            "the proc's call to helper must not also be attributed to install"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_proc_arg_body_gets_fresh_visibility_frame() {
+        // A proc/Proc.new second-argument body isn't reachable by
+        // visit_block_body's name-based classification (its block is
+        // attached to a call literally named "proc", not "define_method"),
+        // so without explicit handling it would fall back to
+        // BlockScope::Inherit and leak the enclosing class's ambient
+        // `private` into a nested def instead of giving it its own fresh
+        // method-body frame.
+        let source = r#"
+class C
+  private
+  define_method(:foo, proc { def generated; end })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "generated")
+            .collect();
+        assert_eq!(
+            generated.len(),
+            1,
+            "expected exactly one generated node, not a duplicate from a redundant Inherit-style revisit"
+        );
+        assert_eq!(generated[0].visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_lambda_arg_body_gets_fresh_visibility_frame() {
+        // Same as the proc case above, but for a lambda-literal second
+        // argument: its body is reached via generic expression recursion
+        // (a bare lambda's body is otherwise treated as Inherit), never
+        // through visit_block_body's classification at all.
+        let source = r#"
+class C
+  private
+  define_method(:foo, ->() { def generated; end })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let generated: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|n| n.name == "generated")
+            .collect();
+        assert_eq!(generated.len(), 1, "expected exactly one generated node");
+        assert_eq!(generated[0].visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_method_too_many_positional_arguments_not_extracted() {
+        // define_method takes at most two positional arguments; a third
+        // raises ArgumentError, so nothing is defined (confirmed against
+        // Ruby 3.4.7).
+        let source = r#"
+class C
+  define_method(:foo, proc { }, proc { })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_method with three positional arguments must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_too_many_positional_arguments_not_extracted() {
+        let source = r#"
+class C
+  define_singleton_method(:foo, proc { }, proc { })
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_singleton_method with three positional arguments must not be extracted"
+        );
+    }
+
+    // -- negative --
+
+    #[test]
+    fn test_ruby_define_method_interpolated_name_not_extracted() {
+        let source = r#"
+class C
+  x = "bar"
+  define_method("foo_#{x}") { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "an interpolated name must not resolve to any method node"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_dynamic_identifier_name_not_extracted() {
+        let source = r#"
+class C
+  name = :foo
+  define_method(name) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.kind == NodeKind::Method),
+            "a dynamic identifier name must not resolve to any method node"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_explicit_receiver_not_extracted() {
+        let source = r#"
+class C
+  Other.define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "a define_method with an explicit receiver must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_self_receiver_is_extracted() {
+        // Confirmed against Ruby 3.4.7: self.define_method(:foo) { } in a
+        // class body works exactly like the receiverless form — self is
+        // just the other spelling of "no receiver" here, the same
+        // equivalence classify_block_receiver already draws for `Current`.
+        let source = r#"
+class C
+  self.define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted via self.define_method");
+        assert_eq!(foo.kind, NodeKind::Method);
+        assert_eq!(foo.visibility, Visibility::Pub);
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_self_receiver_is_extracted() {
+        // Confirmed against Ruby 3.4.7: self.define_singleton_method(:foo)
+        // { } in a class body works exactly like the receiverless form.
+        let source = r#"
+class C
+  self.define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted via self.define_singleton_method");
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_define_method_self_receiver_inside_singleton_class_is_singleton_method() {
+        // P3 with an explicit self receiver: confirmed against Ruby 3.4.7
+        // that self.define_method(:foo) { } inside class << self still
+        // defines a singleton method of the enclosing class.
+        let source = r#"
+class C
+  class << self
+    self.define_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to be extracted");
+        assert_eq!(foo.kind, NodeKind::SingletonMethod);
+    }
+
+    #[test]
+    fn test_ruby_define_method_self_receiver_inside_instance_method_body_not_extracted() {
+        // P15 with an explicit self receiver: self inside a plain instance
+        // method body is an instance the extractor cannot name, so this
+        // must still be gated off exactly like the receiverless form.
+        let source = r#"
+class C
+  def install
+    self.define_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "self.define_method inside an instance method body must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_no_block_no_second_arg_not_extracted() {
+        // P13: raises ArgumentError, nothing is defined.
+        let source = r#"
+class C
+  define_method(:foo)
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_method with no block and no second argument must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_non_callable_literal_second_arg_not_extracted() {
+        // Confirmed against Ruby 3.4.7: a second argument whose kind alone
+        // rules out Proc/Method/UnboundMethod always raises TypeError
+        // ("wrong argument type ... (expected Proc/Method/UnboundMethod)"),
+        // regardless of value, so nothing is defined — even with an
+        // attached block, since the second argument still wins (and then
+        // itself fails).
+        let source = r#"
+class C
+  define_method(:int_arg, 123) { }
+  define_method(:str_arg, "s") { }
+  define_method(:sym_arg, :s) { }
+  define_method(:nil_arg, nil) { }
+  define_method(:true_arg, true) { }
+  define_method(:array_arg, []) { }
+  define_method(:hash_arg, {}) { }
+  define_method(:range_arg, 1..5) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in [
+            "int_arg",
+            "str_arg",
+            "sym_arg",
+            "nil_arg",
+            "true_arg",
+            "array_arg",
+            "hash_arg",
+            "range_arg",
+        ] {
+            assert!(
+                !result.nodes.iter().any(|n| n.name == name),
+                "{name} must not be extracted: a statically non-callable literal second argument raises TypeError"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_non_callable_literal_second_arg_not_extracted() {
+        let source = r#"
+class C
+  define_singleton_method(:int_arg, 123) { }
+  define_singleton_method(:str_arg, "s") { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["int_arg", "str_arg"] {
+            assert!(
+                !result.nodes.iter().any(|n| n.name == name),
+                "{name} must not be extracted: a statically non-callable literal second argument raises TypeError"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_define_method_unresolvable_second_arg_still_extracted() {
+        // P12: an identifier/call second argument (a variable or a return
+        // value) has no statically-known type, so it stays a candidate —
+        // unlike the literal kinds above, this doesn't raise. No body is
+        // extractable from it (there's nothing syntactic to measure), but
+        // the node itself is still real.
+        let source = r#"
+class C
+  def baz; end
+  define_method(:foo, instance_method(:baz))
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let foo = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "foo")
+            .expect("expected foo to still be extracted with an unresolvable second argument");
+        assert_eq!(foo.branches, 0);
+    }
+
+    #[test]
+    fn test_ruby_define_method_bare_inside_instance_method_body_not_extracted() {
+        // P15: raises NoMethodError inside a plain instance method body.
+        let source = r#"
+class C
+  def install
+    define_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_method inside an instance method body must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_bare_inside_instance_method_body_keeps_enclosing_calls() {
+        // The rejected block's calls fall back to the enclosing method's own
+        // call attribution, same as the pre-existing attr_*-in-a-def-body gap.
+        let source = r#"
+class C
+  def install
+    define_method(:foo) { helper() }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let install = result.nodes.iter().find(|n| n.name == "install").unwrap();
+        assert!(
+            result
+                .unresolved_refs
+                .iter()
+                .any(|r| r.from_node_id == install.id && r.reference_name == "helper"),
+            "expected the call inside the rejected block to still resolve from install"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_inside_singleton_class_not_extracted() {
+        // P18: a second-order singleton, unattributable to the class.
+        let source = r#"
+class C
+  class << self
+    define_singleton_method(:foo) { }
+  end
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_singleton_method inside class << self must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_at_top_level_not_extracted() {
+        // P8: no attributable owner.
+        let source = r#"
+define_singleton_method(:foo) { }
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("top.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "top-level define_singleton_method must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_inside_class_new_block_not_extracted() {
+        // BlockScope::Opaque still wins: Class.new's block defines a
+        // brand-new anonymous class with no node to attach to.
+        let source = r#"
+Klass = Class.new do
+  define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "define_method inside Class.new's block must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_inline_private_wrapper_not_extracted() {
+        // P19: private define_singleton_method(:y) { } raises NameError.
+        let source = r#"
+class C
+  private define_singleton_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "private define_singleton_method(...) must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_method_private_class_method_wrapper_not_extracted() {
+        // P11: private_class_method define_method(:x) { } raises NameError.
+        let source = r#"
+class C
+  private_class_method define_method(:foo) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "foo"),
+            "private_class_method define_method(...) must not be extracted"
+        );
+    }
+
+    #[test]
+    fn test_ruby_define_singleton_method_private_class_method_dynamic_name_does_not_mutate_class() {
+        // A dynamic name means visit_define_method_directive declines to
+        // emit anything at all; the private_class_method wrapper's
+        // afterward-override must not then fall back to mutating whatever
+        // node happens to already be last in the vector (here, C itself).
+        let source = r#"
+class C
+  name = :generated
+  private_class_method define_singleton_method(name) { }
+end
+"#;
+        let extractor = RubyExtractor;
+        let result = extractor.extract("c.rb", source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "generated"),
+            "a dynamic name must not resolve to any method node"
+        );
+        let class_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.name == "C")
+            .expect("expected C");
+        assert_eq!(
+            class_node.visibility,
+            Visibility::Pub,
+            "the failed dispatch must not repoint the wrapper's visibility override onto C"
+        );
+    }
 } // mod ruby_tests
