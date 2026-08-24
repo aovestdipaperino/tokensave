@@ -7,7 +7,6 @@
 //! `.grok/AGENTS.md`). Grok has no hook system; permissions are handled via
 //! its TUI / `permission_mode` settings.
 
-use std::io::Write;
 use std::path::Path;
 
 use crate::errors::{Result, TokenSaveError};
@@ -139,54 +138,10 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
 
 /// Append prompt rules to ~/.grok/AGENTS.md (idempotent).
 /// Grok supports AGENTS.md (global and .grok/AGENTS.md project-scoped) for
-/// instructions that influence the system prompt.
+/// Write or refresh the tokensave rules block in AGENTS.md.
 fn install_prompt_rules(agents_md: &Path) -> Result<()> {
-    let marker = "## Prefer tokensave MCP tools";
-    let existing = if agents_md.exists() {
-        std::fs::read_to_string(agents_md).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    if existing.contains(marker) {
-        crate::agent_note!("  AGENTS.md already contains tokensave rules, skipping");
-        return Ok(());
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(agents_md)
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open AGENTS.md: {e}"),
-        })?;
-    write!(
-        f,
-        "\n{marker}\n\n\
-        Before reading source files or scanning the codebase with file tools or \
-        sub-agents (especially the `explore` sub-agent), use the tokensave MCP tools. \
-        Discover them with the built-in `search_tool` (query for \"tokensave\" or a code \
-        concept) and invoke via `use_tool` with the namespaced name \
-        (e.g. `tokensave__tokensave_context`, `tokensave__tokensave_search`, \
-        `tokensave__tokensave_callers`, `tokensave__tokensave_callees`, \
-        `tokensave__tokensave_impact`, `tokensave__tokensave_node`, \
-        `tokensave__tokensave_files`, `tokensave__tokensave_affected`).\n\n\
-        They provide instant semantic results from a pre-built knowledge graph and are \
-        faster and lower-token than raw file reads or sub-agent exploration.\n\n\
-        If a code analysis question cannot be fully answered by tokensave MCP tools, \
-        try querying the SQLite database directly at `.tokensave/tokensave.db` \
-        (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-        that go beyond what the built-in tools expose.\n\n\
-        If you discover a gap where an extractor, schema, or tokensave tool could be \
-        improved to answer a question natively, propose to the user that they open an issue \
-        at https://github.com/aovestdipaperino/tokensave describing the limitation. \
-        **Remind the user to strip any sensitive or proprietary code from the bug description \
-        before submitting.**\n"
-    )
-    .ok();
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
-        agents_md.display()
-    );
-    Ok(())
+    let body = rules_for_agent("grok")?;
+    write_rules_block(agents_md, "grok", &body).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -231,47 +186,11 @@ fn uninstall_mcp_server(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove tokensave rules from AGENTS.md.
+/// Remove tokensave rules from AGENTS.md (both managed-block and
+/// legacy heading-guarded forms).
 fn uninstall_prompt_rules(agents_md: &Path) {
-    if !agents_md.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(agents_md) else {
-        return;
-    };
-    if !contents.contains("tokensave") {
-        crate::agent_note!("  AGENTS.md does not contain tokensave rules, skipping");
-        return;
-    }
-    let marker = "## Prefer tokensave MCP tools";
-    let Some(start) = contents.find(marker) else {
-        return;
-    };
-    let after_marker = start + marker.len();
-    let end = contents[after_marker..]
-        .find("\n## ")
-        .map_or(contents.len(), |pos| after_marker + pos);
-    let mut new_contents = String::new();
-    new_contents.push_str(contents[..start].trim_end());
-    let remainder = &contents[end..];
-    if !remainder.is_empty() {
-        new_contents.push_str("\n\n");
-        new_contents.push_str(remainder.trim_start());
-    }
-    let new_contents = new_contents.trim().to_string();
-    if new_contents.is_empty() {
-        std::fs::remove_file(agents_md).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
-            agents_md.display()
-        );
-    } else {
-        std::fs::write(agents_md, format!("{new_contents}\n")).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            agents_md.display()
-        );
-    }
+    remove_rules_block(agents_md).ok();
+    remove_legacy_rules_block(agents_md, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -337,19 +256,8 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
     }
 }
 
-/// Check AGENTS.md (in ~/.grok/) contains tokensave rules.
+/// Check AGENTS.md (in ~/.grok/) contains the up-to-date tokensave rules block.
 fn doctor_check_prompt(dc: &mut DoctorCounters, grok_dir: &Path) {
     let agents_md = grok_dir.join("AGENTS.md");
-    if agents_md.exists() {
-        let has_rules = std::fs::read_to_string(&agents_md)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass("AGENTS.md contains tokensave rules");
-        } else {
-            dc.fail("AGENTS.md missing tokensave rules — run `tokensave install --agent grok`");
-        }
-    } else {
-        dc.warn("~/.grok/AGENTS.md does not exist (rules are optional but recommended)");
-    }
+    check_shared_rules_block(dc, &agents_md, "grok");
 }

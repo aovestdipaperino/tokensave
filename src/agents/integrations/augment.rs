@@ -160,43 +160,29 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-/// The tokensave rules file content, written as a dedicated Augment rule.
-fn prompt_rules_content() -> String {
-    "---\ntype: always_apply\n---\n\n\
-     ## Prefer tokensave MCP tools\n\n\
-     Before reading source files or scanning the codebase, use the tokensave MCP tools \
-     (`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-     `tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
-     They provide instant semantic results from a pre-built knowledge graph and are \
-     faster than file reads.\n\n\
-     If a code analysis question cannot be fully answered by tokensave MCP tools, \
-     try querying the SQLite database directly at `.tokensave/tokensave.db` \
-     (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries \
-     that go beyond what the built-in tools expose.\n\n\
-     If you discover a gap where an extractor, schema, or tokensave tool could be \
-     improved to answer a question natively, propose to the user that they open an issue \
-     at https://github.com/aovestdipaperino/tokensave describing the limitation. \
-     **Remind the user to strip any sensitive or proprietary code from the bug description \
-     before submitting.**\n"
-        .to_string()
-}
-
 /// Write the dedicated tokensave rules file (idempotent — overwriting with
 /// the same content is a no-op in effect).
 fn install_prompt_rules(rules_path: &Path) -> Result<()> {
-    if let Some(parent) = rules_path.parent() {
-        std::fs::create_dir_all(parent).ok();
+    write_managed_rules_file(rules_path, &rules_for_agent("auggie")?).map(|_| ())
+}
+
+/// Remove the dedicated tokensave rules file, but only if it still looks
+/// like the file tokensave wrote (guards against deleting a user-authored
+/// `tokensave.md` rule that happens to share the name).
+fn uninstall_prompt_rules(rules_path: &Path) {
+    if !rules_path.exists() {
+        return;
     }
-    std::fs::write(rules_path, prompt_rules_content()).map_err(|e| {
-        crate::errors::TokenSaveError::Config {
-            message: format!("failed to write {}: {e}", rules_path.display()),
+    if let Ok(contents) = std::fs::read_to_string(rules_path) {
+        if !contents.contains("tokensave") {
+            crate::agent_note!(
+                "  {} does not contain tokensave rules, skipping",
+                rules_path.display()
+            );
+            return;
         }
-    })?;
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Wrote tokensave rules to {}",
-        rules_path.display()
-    );
-    Ok(())
+    }
+    remove_managed_rules_file(rules_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,30 +241,6 @@ fn uninstall_mcp_server(settings_path: &Path) {
     }
 }
 
-/// Remove the dedicated tokensave rules file, but only if it still looks
-/// like the file tokensave wrote (guards against deleting a user-authored
-/// `tokensave.md` rule that happens to share the name).
-fn uninstall_prompt_rules(rules_path: &Path) {
-    if !rules_path.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(rules_path) else {
-        return;
-    };
-    if !contents.contains("tokensave") {
-        crate::agent_note!(
-            "  {} does not contain tokensave rules, skipping",
-            rules_path.display()
-        );
-        return;
-    }
-    std::fs::remove_file(rules_path).ok();
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Removed tokensave rules at {}",
-        rules_path.display()
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
@@ -319,25 +281,8 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check the dedicated rules file exists and contains tokensave rules.
+/// Check the dedicated rules file is up to date with the canonical text.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     let rules_path = home.join(".augment/rules/tokensave.md");
-    if rules_path.exists() {
-        let has_rules = std::fs::read_to_string(&rules_path)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass(&format!(
-                "{} contains tokensave rules",
-                rules_path.display()
-            ));
-        } else {
-            dc.fail(&format!(
-                "{} missing tokensave rules — run `tokensave install --agent auggie`",
-                rules_path.display()
-            ));
-        }
-    } else {
-        dc.warn(&format!("{} does not exist", rules_path.display()));
-    }
+    check_managed_rules_file(dc, &rules_path, "auggie");
 }

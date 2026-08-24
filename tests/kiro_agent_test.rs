@@ -367,7 +367,7 @@ fn test_healthcheck_clean_install_has_no_issues_or_warnings() {
 }
 
 #[test]
-fn test_healthcheck_fails_when_steering_lacks_owned_end_marker() {
+fn test_healthcheck_warns_and_install_migrates_legacy_heading_block() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -389,9 +389,26 @@ fn test_healthcheck_fails_when_steering_lacks_owned_end_marker() {
     KiroIntegration.healthcheck(&mut dc, &hctx);
 
     assert!(
-        dc.issues > 0,
-        "Kiro doctor should fail when tokensave.md has tokensave rules that install/uninstall cannot own"
+        dc.warnings > 0,
+        "Kiro doctor should warn about the legacy heading-guarded block"
     );
+
+    // Reinstall migrates the legacy block to the managed marker block.
+    KiroIntegration.install(&ctx).unwrap();
+    let migrated = std::fs::read_to_string(&steering_path).unwrap();
+    assert!(
+        migrated.contains("<!-- tokensave rules begin"),
+        "legacy block should be migrated to the managed marker block"
+    );
+    assert!(
+        !migrated.contains("Edited tokensave guidance without ownership marker."),
+        "stale legacy body should be replaced by the canonical body"
+    );
+
+    let mut dc = DoctorCounters::new();
+    KiroIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.issues, 0, "migrated steering should have no issues");
+    assert_eq!(dc.warnings, 0, "migrated steering should have no warnings");
 }
 
 #[test]

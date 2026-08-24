@@ -10,8 +10,6 @@
 //! already exists and is not the file tokensave writes, install and uninstall
 //! leave it untouched.
 
-use std::io::Write;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -23,8 +21,6 @@ use super::*;
 /// Kiro agent.
 pub struct KiroIntegration;
 
-const PROMPT_MARKER: &str = "## Prefer tokensave MCP tools";
-const PROMPT_END_MARKER: &str = "<!-- tokensave:kiro:end -->";
 const KIRO_AGENT_NAME: &str = "tokensave";
 const OWNED_AGENT_DESCRIPTION: &str =
     "Default Kiro agent with tokensave MCP tools and code-research guardrails.";
@@ -406,76 +402,10 @@ fn ensure_child_object(config: &mut serde_json::Value, key: &str, path: &Path) -
     }
 }
 
-/// Add tokensave's global steering resource for default Kiro sessions.
+/// Write or refresh the tokensave rules block in the global steering file.
 fn install_steering_rules(path: &Path) -> Result<()> {
-    let existing = if path.exists() {
-        std::fs::read_to_string(path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    if existing.contains(PROMPT_MARKER) {
-        if existing.contains(PROMPT_END_MARKER) {
-            crate::agent_note!("  Kiro steering already contains tokensave rules, skipping");
-            return Ok(());
-        }
-        crate::agent_note!(
-            "  Kiro steering contains tokensave rules without an owned end marker, leaving unchanged"
-        );
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to create {}: {e}", parent.display()),
-        })?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| TokenSaveError::Config {
-            message: format!("failed to open {}: {e}", path.display()),
-        })?;
-    let separator = if existing.trim().is_empty() {
-        ""
-    } else {
-        "\n\n"
-    };
-    writeln!(f, "{}{}", separator, prompt_rules_text()).map_err(|e| TokenSaveError::Config {
-        message: format!("failed to write {}: {e}", path.display()),
-    })?;
-    crate::agent_note!(
-        "\x1b[32m✔\x1b[0m Appended tokensave rules to {}",
-        path.display()
-    );
-    Ok(())
-}
-
-fn prompt_rules_text() -> String {
-    format!(
-        "{}\n\n{}",
-        prompt_rules_text_without_end_marker(),
-        PROMPT_END_MARKER
-    )
-}
-
-fn prompt_rules_text_without_end_marker() -> &'static str {
-    "## Prefer tokensave MCP tools\n\n\
-Before reading source files or scanning the codebase, use the tokensave MCP tools \
-(`tokensave_context`, `tokensave_search`, `tokensave_callers`, `tokensave_callees`, \
-`tokensave_impact`, `tokensave_node`, `tokensave_files`, `tokensave_affected`). \
-They provide semantic results from a pre-built local knowledge graph and are faster \
-than broad file reads.\n\n\
-Do not use Kiro's `delegate` tool for codebase exploration, architecture mapping, \
-call graph work, symbol lookup, or other code research until tokensave MCP tools \
-have been tried. Delegation is still appropriate for long-running execution work \
-such as builds, tests, generated reports, or independent implementation tasks.\n\n\
-If a code analysis question cannot be fully answered by tokensave MCP tools, try \
-querying the SQLite database directly at `.tokensave/tokensave.db` (tables: `nodes`, \
-`edges`, `files`). Use SQL for structural queries that go beyond the MCP tools.\n\n\
-If you discover a gap where an extractor, schema, or tokensave tool could answer a \
-question natively, propose opening an issue at \
-https://github.com/aovestdipaperino/tokensave. Remind the user to strip sensitive \
-or proprietary code from the bug description before submitting."
+    let body = rules_for_agent("kiro")?;
+    write_rules_block(path, "kiro", &body).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -517,40 +447,8 @@ fn uninstall_mcp_server(path: &Path) {
 }
 
 fn remove_steering_rules(path: &Path) {
-    if !path.exists() {
-        return;
-    }
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return;
-    };
-    if !contents.contains(PROMPT_MARKER) {
-        crate::agent_note!("  Kiro steering does not contain tokensave rules, skipping");
-        return;
-    }
-    let Some(range) = tokensave_prompt_block_range(&contents) else {
-        crate::agent_note!(
-            "  Kiro steering contains tokensave rules without an owned end marker; leaving unchanged"
-        );
-        return;
-    };
-    let mut new_contents = String::new();
-    new_contents.push_str(contents[..range.start].trim_end());
-    let remainder = &contents[range.end..];
-    if !remainder.is_empty() {
-        new_contents.push_str("\n\n");
-        new_contents.push_str(remainder.trim_start());
-    }
-    let new_contents = new_contents.trim().to_string();
-    if new_contents.is_empty() {
-        std::fs::remove_file(path).ok();
-        crate::agent_note!("\x1b[32m✔\x1b[0m Removed {} (was empty)", path.display());
-    } else {
-        std::fs::write(path, format!("{new_contents}\n")).ok();
-        crate::agent_note!(
-            "\x1b[32m✔\x1b[0m Removed tokensave rules from {}",
-            path.display()
-        );
-    }
+    remove_rules_block(path).ok();
+    remove_legacy_rules_block(path, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 fn uninstall_managed_agent(path: &Path) {
@@ -631,13 +529,6 @@ fn is_owned_agent_config(config: &serde_json::Value) -> bool {
             .get("description")
             .and_then(serde_json::Value::as_str)
             == Some(OWNED_AGENT_DESCRIPTION)
-}
-
-fn tokensave_prompt_block_range(contents: &str) -> Option<Range<usize>> {
-    let start = contents.find(PROMPT_MARKER)?;
-    let end_marker = contents[start..].find(PROMPT_END_MARKER)?;
-    let end = start + end_marker + PROMPT_END_MARKER.len();
-    Some(start..end)
 }
 
 // ---------------------------------------------------------------------------
@@ -772,22 +663,7 @@ fn doctor_check_workspace_mcp_override(
 
 fn doctor_check_steering(dc: &mut DoctorCounters, home: &Path) {
     let path = steering_path(home);
-    if !path.exists() {
-        dc.warn("~/.kiro/steering/tokensave.md does not exist");
-        return;
-    }
-    let contents = std::fs::read_to_string(&path).unwrap_or_default();
-    if !contents.contains(PROMPT_MARKER) {
-        dc.fail(
-            "Kiro global tokensave.md missing tokensave rules -- run `tokensave install --agent kiro`",
-        );
-    } else if tokensave_prompt_block_range(&contents).is_none() {
-        dc.fail(
-            "Kiro global tokensave.md contains tokensave rules without an owned end marker -- remove the stale block and run `tokensave install --agent kiro`",
-        );
-    } else {
-        dc.pass("Kiro global tokensave.md contains tokensave rules");
-    }
+    check_shared_rules_block(dc, &path, "kiro");
 }
 
 fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path) {
