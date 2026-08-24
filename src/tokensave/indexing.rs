@@ -1547,12 +1547,16 @@ impl TokenSave {
 /// `.github` entry) does not re-enable descent, so this check walks each
 /// ancestor prefix the same way the walker does instead of testing the file
 /// path — otherwise the warning would go silent in exactly that trap.
-pub fn detect_skipped_hidden_dirs(
-    project_root: &Path,
-    config: &TokenSaveConfig,
-    manifest: Option<&crate::project_manifest::CompiledManifest>,
-    supported_exts: &[&str],
-) -> Option<String> {
+/// Every path `git ls-files` reports for the project, as forward-slashed
+/// repository-relative strings.
+///
+/// `None` when the project is not a git repository, git is unavailable, or the
+/// command fails — every caller treats that as "cannot tell" and stays silent
+/// rather than reporting an empty answer as a complete one.
+///
+/// Note that these are *index* entries: a path here may not exist on disk
+/// (sparse checkout, a staged deletion), so callers that care check.
+pub(crate) fn list_git_tracked_files(project_root: &Path) -> Option<Vec<String>> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project_root)
@@ -1566,7 +1570,23 @@ pub fn detect_skipped_hidden_dirs(
         return None;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+pub fn detect_skipped_hidden_dirs(
+    project_root: &Path,
+    config: &TokenSaveConfig,
+    manifest: Option<&crate::project_manifest::CompiledManifest>,
+    supported_exts: &[&str],
+) -> Option<String> {
+    let tracked = list_git_tracked_files(project_root)?;
+
     let mut dir_counts: HashMap<String, usize> = HashMap::new();
     // Sibling files share the same verdict, so evaluate the globs once per
     // parent directory instead of once per file. `Some(prefix)` = the hidden
@@ -1574,7 +1594,7 @@ pub fn detect_skipped_hidden_dirs(
     // excluded.
     let mut dir_cache: HashMap<String, Option<String>> = HashMap::new();
 
-    for rel_path in stdout.split('\0') {
+    for rel_path in tracked.iter().map(String::as_str) {
         // Only count files an extractor could actually index; otherwise every
         // repo with a tracked `.github/workflows/*.yml` would warn.
         let ext = Path::new(rel_path)
@@ -1652,6 +1672,45 @@ pub fn detect_skipped_hidden_dirs(
 }
 
 impl TokenSave {
+    /// Tracked files the index holds no `files` row for, in `git ls-files`
+    /// order.
+    ///
+    /// A file gets a row when a language extractor handles its extension, or
+    /// when the extension is listed in `artifact_extensions` (#323) — and a
+    /// row is what makes a file reachable by literal search, which reads bytes
+    /// and needs no parser. Everything else is tracked by git, invisible to
+    /// the index, and therefore silently absent from a literal answer (#442).
+    ///
+    /// Deliberately *not* filtered by extension: `NON_SOURCE_EXTS` exists to
+    /// keep asset noise out of the skipped-*language* diagnostic and contains
+    /// `txt`, `xml`, `ini`, `conf` and `csv`, which are exactly the text
+    /// formats a literal search might be looking in. Reporting every
+    /// unindexed extension and letting the caller decide which are worth
+    /// adding is honest; filtering them here would recreate the same silent
+    /// gap one level down.
+    ///
+    /// Config `exclude` globs are applied, since an excluded file is a
+    /// deliberate opt-out rather than an omission, and index entries with no
+    /// file on disk (sparse checkouts, staged deletions) are dropped: the
+    /// walker would never have seen those either.
+    ///
+    /// `None` when git cannot answer, so a caller can distinguish "nothing is
+    /// missing" from "cannot tell".
+    pub(crate) fn unindexed_tracked_files(
+        &self,
+        indexed: &std::collections::HashSet<&str>,
+    ) -> Option<Vec<String>> {
+        let tracked = list_git_tracked_files(&self.project_root)?;
+        Some(
+            tracked
+                .into_iter()
+                .filter(|path| !indexed.contains(path.as_str()))
+                .filter(|path| !is_excluded(path, &self.config))
+                .filter(|path| self.project_root.join(path).is_file())
+                .collect(),
+        )
+    }
+
     /// Returns the artifact extensions actually in effect for this project.
     ///
     /// An extension a language extractor already handles is dropped: the symbol

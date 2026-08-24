@@ -835,8 +835,15 @@ pub(crate) fn print_skipped_extension_summary(skipped: &[(String, usize)]) {
         eprintln!();
         eprintln!("\x1b[33m{headline}\x1b[0m");
         eprintln!(
-            "\x1b[2m  No extractor is registered for these extensions. \
-             Rerun with --doctor (or --verbose) for the full list.\x1b[0m"
+            // Naming `artifact_extensions` here is the difference between a
+            // dead end and a next step (#442): a text format with no extractor
+            // still gets a `files` row when listed there, and a row is what
+            // makes it reachable by `tokensave_files` and by literal search.
+            "\x1b[2m  No extractor is registered for these extensions, so no symbols were \
+             indexed from them.\n  A text format worth searching by path or content \
+             (templates, stylesheets, configs) can be added to \"artifact_extensions\" in \
+             .tokensave/config.json — tracked by path, never parsed.\n  Rerun with --doctor \
+             (or --verbose) for the full list.\x1b[0m"
         );
     }
 }

@@ -615,13 +615,55 @@ When running as an MCP server, tokensave exposes more than 80 tools that AI agen
 | Tool | What it does |
 |------|-------------|
 | `tokensave_context` | Given a task description, returns relevant symbols, relationships, and code snippets. This is the go-to starting point for any coding task. |
-| `tokensave_search` | Find symbols by name. Supports filtering by kind (function, class, method, etc.). |
+| `tokensave_search` | Find symbols by name. Supports filtering by kind (function, class, method, etc.), or `literal: true` for an exact-substring scan of file contents. |
 | `tokensave_node` | Get full details for a specific symbol: source code, location, complexity metrics, and relationships. |
 | `tokensave_files` | List indexed files, optionally filtered by directory or glob pattern. |
 | `tokensave_status` | Index statistics: file counts, symbol counts, language distribution, and tokens saved. |
 | `tokensave_annotations` | Attribute/annotation/decorator introspection: histogram of all annotations in the project, or per-site listings filtered by name, file, or target kind. |
 | `tokensave_doc` | Companion Markdown documentation for a source file: the doc's content, every file it covers, and whether the code changed after the doc was last touched. Often answers the question without reading the file at all. |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems: workspace summary with license surface and version drift, per-package lookup, and per-member listings. |
+
+#### Literal search: finding strings, not symbols
+
+`tokensave_search` with `literal: true` is a different question from the
+default: an exact-substring, case-sensitive scan of file *contents*, which
+finds text that lives inside function bodies and never appears in a symbol
+name -- a runtime error message, a feature-flag key, a route. Each hit is
+reported as `file` / `line` / `text`, plus the innermost symbol enclosing it
+(`enclosing: null` where there is none).
+
+It reads bytes and needs no parser, but it scans the files the index holds, so
+its reach is the index's reach. A file gets indexed when a language extractor
+handles its extension **or** when the extension is listed in
+`artifact_extensions` (see the artifacts section in `README.md`). A tracked
+`.html` template or `.css` stylesheet is usually neither, and templates and
+stylesheets are exactly where a flag's user-facing label or a CSS class
+actually lives -- so add those extensions to `artifact_extensions` and run
+`tokensave sync -f` if you want "where is this string used" answered across
+them.
+
+When a literal search could not reach every tracked file, the response carries
+an `unscanned` block giving the number of files and a per-extension breakdown,
+so a partial answer is never mistaken for a complete one:
+
+```json
+{
+  "literal": true, "query": "someFlag", "count": 1,
+  "matches": [ { "file": "config/index.js", "line": 1, "text": "..." } ],
+  "unscanned": {
+    "files": 2,
+    "extensions": [ { "extension": "html", "files": 1 },
+                    { "extension": "css", "files": 1 } ],
+    "reason": "The index holds no row for these tracked files, ...",
+    "remedy": "... add its extension to `artifact_extensions` ..."
+  }
+}
+```
+
+Files you excluded yourself are not reported there: config `exclude` globs,
+project query-ignore rules, and the call's own `path_include`/`path_exclude`
+and scope prefix all apply to the report as well as to the scan, so it names
+only files you asked about and the index could not answer for.
 
 ### Navigating relationships
 

@@ -147,6 +147,87 @@ pub(super) async fn handle_search(
     })
 }
 
+/// How many distinct extensions the unscanned report names before rolling the
+/// rest into a `and N more extension(s)` tail, so a repository full of tracked
+/// assets cannot turn one search response into a directory listing.
+const MAX_UNSCANNED_EXTS: usize = 8;
+
+/// Describes the tracked files a literal search could not look inside, or
+/// `None` when there are none (or when git cannot tell us).
+///
+/// Literal search reads bytes rather than symbols, but it iterates the `files`
+/// table, so it can only reach a file the index holds a row for: a file whose
+/// extension has an extractor, or one listed in `artifact_extensions` (#323).
+/// A tracked `.html` template has neither, so its matches were missing from
+/// the response with nothing to say so — `count` read as complete (#442).
+///
+/// The caller's own narrowing (`path_include`/`path_exclude`, the scope
+/// prefix, project query-ignore) is applied here too, so this reports only
+/// files the caller actually asked about; the extension tally is what makes
+/// the remedy actionable, since `artifact_extensions` is configured by
+/// extension.
+fn unscanned_report(
+    cg: &TokenSave,
+    indexed_paths: &HashSet<String>,
+    scope_prefix: Option<&str>,
+    path_include: &[String],
+    path_exclude: &[String],
+) -> Option<Value> {
+    let borrowed: HashSet<&str> = indexed_paths.iter().map(String::as_str).collect();
+    let unindexed = cg.unindexed_tracked_files(&borrowed)?;
+    if unindexed.is_empty() {
+        return None;
+    }
+
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut total = 0usize;
+    for path in filter_by_path_lists(unindexed, path_include, path_exclude, |p| p.as_str()) {
+        if let Some(prefix) = scope_prefix {
+            if !path.starts_with(prefix) {
+                continue;
+            }
+        }
+        if query_ignore.is_ignored(&path) {
+            continue;
+        }
+        total += 1;
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map_or_else(|| "(no extension)".to_string(), str::to_ascii_lowercase);
+        *counts.entry(ext).or_insert(0) += 1;
+    }
+    if total == 0 {
+        return None;
+    }
+
+    let mut by_count: Vec<(String, usize)> = counts.into_iter().collect();
+    by_count.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let listed = by_count.len().min(MAX_UNSCANNED_EXTS);
+    let extensions: Vec<Value> = by_count[..listed]
+        .iter()
+        .map(|(ext, count)| json!({ "extension": ext, "files": count }))
+        .collect();
+    let more = by_count.len().saturating_sub(listed);
+
+    let mut report = json!({
+        "files": total,
+        "extensions": extensions,
+        "reason": "The index holds no row for these tracked files, so their contents were \
+                   not searched and this result may be incomplete.",
+        "remedy": "Literal search covers any file the index tracks, parsed or not. To include \
+                   one of these formats, add its extension to `artifact_extensions` in \
+                   .tokensave/config.json and run `tokensave sync -f`.",
+    });
+    if more > 0 {
+        if let Some(object) = report.as_object_mut() {
+            object.insert("more_extensions".to_string(), json!(more));
+        }
+    }
+    Some(report)
+}
+
 /// Upper bound on the size of a single source file scanned in literal mode.
 /// Files larger than this are skipped defensively — they are almost always
 /// generated/vendored blobs, and reading them would blow the scan's latency
@@ -179,6 +260,11 @@ async fn handle_literal_search(
     let project_root = cg.project_root();
     let mut files = cg.get_all_files().await?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // Every path the index holds a row for, captured *before* the caller's own
+    // filters narrow the scan. The unscanned report below distinguishes "the
+    // index has no row for this file" (#442) from "the caller filtered it
+    // out", and only the first is worth telling them about.
+    let indexed_paths: HashSet<String> = files.iter().map(|f| f.path.clone()).collect();
     // Honor the same `path_include`/`path_exclude` substring filters the
     // ranked search path applies — literal mode used to ignore them (#258).
     // `path_exclude` takes precedence, matching `filter_by_path_lists`.
@@ -245,12 +331,21 @@ async fn handle_literal_search(
     }
 
     let touched_files = unique_file_paths(touched.iter().map(String::as_str));
-    let payload = json!({
+    let mut payload = json!({
         "literal": true,
         "query": query,
         "count": matches.len(),
         "matches": matches,
     });
+    // A literal answer that scanned only part of the project must say so:
+    // `count` otherwise reads as "these are all the occurrences" (#442).
+    if let Some(unscanned) =
+        unscanned_report(cg, &indexed_paths, scope_prefix, path_include, path_exclude)
+    {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("unscanned".to_string(), unscanned);
+        }
+    }
     let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
         value: json!({
