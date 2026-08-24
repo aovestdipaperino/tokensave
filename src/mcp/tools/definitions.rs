@@ -76,8 +76,15 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
     properties.insert(
         "graph_root".to_string(),
         json!({
-            "type": ["string", "array"],
-            "items": { "type": "string" },
+            // `anyOf` rather than `"type": ["string", "array"]` (#440): JSON
+            // Schema permits a union in `type`, but Gemini's
+            // function-declaration proto validates `items` against a single
+            // `Type.ARRAY` and rejects the whole request — every tool in it,
+            // not just this one. `anyOf` says the same thing and passes.
+            "anyOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+            ],
             "description": "Exact absolute initialized project root to query. Omit to query \
              the project this server already serves; when present it must name a different \
              project. `tokensave_search` and `tokensave_files` also accept an array of roots \
@@ -2749,21 +2756,25 @@ mod tests {
             );
 
             if expected {
-                // `["string", "array"]`, not `"string"`: a single root is
-                // still a string, and `search`/`files` also accept an array to
-                // federate across roots (#376). The union is asserted rather
-                // than loosened to "any type" so a future edit cannot quietly
-                // widen what callers may pass.
-                assert_eq!(
-                    graph_root.unwrap()["type"],
-                    serde_json::json!(["string", "array"]),
-                    "{}",
+                // A union, not `"string"`: a single root is still a string, and
+                // `search`/`files` also accept an array to federate across
+                // roots (#376). Spelled `anyOf` rather than
+                // `"type": ["string", "array"]` because Gemini rejects the
+                // latter (#440), and asserted exactly rather than loosened to
+                // "any type" so a future edit cannot quietly widen what
+                // callers may pass — or regress to the union that broke.
+                assert!(
+                    graph_root.unwrap().get("type").is_none(),
+                    "{} must not carry a union `type` (#440)",
                     definition.name
                 );
                 assert_eq!(
-                    graph_root.unwrap()["items"]["type"],
-                    "string",
-                    "{} array form must hold strings",
+                    graph_root.unwrap()["anyOf"],
+                    serde_json::json!([
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]),
+                    "{}",
                     definition.name
                 );
                 assert_eq!(
