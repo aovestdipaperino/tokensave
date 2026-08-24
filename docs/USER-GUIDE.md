@@ -473,11 +473,14 @@ The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
 from that watcher. It is still accepted, but nothing reads it, and the
 30-second cooldown is not configurable.
 
-### Strict mode: refuse instead of answering from the wrong tree
+### Strict mode: refuse worktree content mismatches
 
-By default, when tokensave notices its index describes a different working tree
-than the one you are in, it answers anyway and prefixes a warning. Two
-situations trigger that: the index belongs to a **different git worktree**, or
+Branch drift is now refused by default; `strict_tree` remains relevant to the
+separate different-worktree mismatch described here.
+
+For a **different git worktree**, tokensave can answer with a warning by
+default, or refuse when `strict_tree` is enabled. Branch drift is handled by
+the mandatory default refusal documented above.
 the server is serving a **different branch** than your working tree is on
 (see [BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md#how-syncing-interacts-with-branches)).
 

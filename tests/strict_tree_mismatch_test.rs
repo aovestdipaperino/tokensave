@@ -103,14 +103,42 @@ async fn drifted_server(strict: bool) -> (TempDir, Arc<McpServer>) {
 /// #400 added. Strict mode must be something a user opts into, never a silent
 /// change to how a working install behaves.
 #[tokio::test]
-async fn drift_is_advisory_by_default() {
+async fn branch_drift_refuses_local_graph_tools_by_default() {
     let (_dir, server) = drifted_server(false).await;
 
     let response = call(&server, "tokensave_search", json!({"query": "base"})).await;
+    let error = response
+        .get("error")
+        .expect("branch drift must refuse, not answer");
+    assert_eq!(error["code"], -32600);
+    let message = error["message"].as_str().unwrap_or_default();
     assert!(
-        response.get("error").is_none(),
-        "default mode must still answer, got {response:?}"
+        message.contains("master")
+            && message.contains("feature")
+            && message.contains("Restart"),
+        "refusal must name both branches and the recovery action, got {message:?}"
     );
+
+    let status = call(&server, "tokensave_status", json!({})).await;
+    assert!(
+        status.get("error").is_none(),
+        "tokensave_status must remain callable under branch drift, got {status:?}"
+    );
+
+    for tool in [
+        "tokensave_affected",
+        "tokensave_diff_context",
+        "tokensave_simplify_scan",
+        "tokensave_redundancy",
+        "tokensave_diagnostics",
+        "tokensave_diagnose",
+    ] {
+        let response = call(&server, tool, json!({})).await;
+        assert_eq!(
+            response["error"]["code"], -32600,
+            "{tool} must refuse local graph work under branch drift: {response:?}"
+        );
+    }
 }
 
 /// With `strict_tree` enabled, a content tool refuses instead of answering
@@ -128,10 +156,6 @@ async fn strict_mode_refuses_a_content_tool_under_drift() {
     assert!(
         message.contains("master") && message.contains("feature"),
         "the refusal must name both branches so it is actionable, got {message:?}"
-    );
-    assert!(
-        message.contains("strict"),
-        "the refusal must say which setting caused it, got {message:?}"
     );
 }
 
@@ -154,11 +178,7 @@ async fn strict_mode_spares_the_diagnostic_tools() {
     // must still refuse: under a wrong-tree index `diagnose` and `diagnostics`
     // would attribute a real compiler error to a node from another tree, and
     // `config` reports nothing that helps explain a refusal.
-    for tool in [
-        "tokensave_diagnose",
-        "tokensave_diagnostics",
-        "tokensave_config",
-    ] {
+    for tool in ["tokensave_config"] {
         let response = call(&server, tool, json!({})).await;
         let message = response["error"]["message"].as_str().unwrap_or_default();
         assert!(
