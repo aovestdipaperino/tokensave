@@ -486,6 +486,17 @@ than a blocked `find` (#323). They are never parsed and contribute no symbols;
 mean "code" exclude them. An extension already handled by a language extractor
 is ignored in this list, so it cannot be used to stop a language being parsed.
 
+The list also decides what **literal search can look inside** (#442). A literal
+(`literal: true`) search over `tokensave_search` reads bytes rather than
+symbols, so it needs no parser -- but it iterates the indexed files, so it can
+only reach a file the index holds a row for. A tracked `.html` template or
+`.css` stylesheet has neither an extractor nor a default artifact entry, so its
+matches are missing; add the extension here and run `tokensave sync -f` and its
+lines are searched like any other, reported with `enclosing: null` since there
+is no symbol context. A literal response that could not reach every tracked
+file says so in an `unscanned` block naming the count and the extensions, so a
+partial answer is never presented as a complete one.
+
 ### Call Graph & Impact
 
 | Tool | Purpose |
