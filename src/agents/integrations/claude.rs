@@ -150,10 +150,8 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     // install, not be swallowed — silently succeeding here would report
     // install as complete while stale rules text stays stuck in CLAUDE.md.
     uninstall_claude_md_rules(&claude_md_path)?;
-    write_managed_rules_file(
-        &claude_rules_path(&claude_dir),
-        &managed_rules_markdown(RulesVariant::Claude),
-    )?;
+    write_managed_rules_file(&claude_rules_path(&claude_dir), &rules_for_agent("claude")?)
+        .map(|_| ())?;
     install_clean_local_config();
 
     crate::agent_note!();
@@ -183,10 +181,8 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
     write_json_file(&settings_path, &settings)?;
 
     uninstall_claude_md_rules(&claude_md_path)?;
-    write_managed_rules_file(
-        &claude_rules_path(&claude_dir),
-        &managed_rules_markdown(RulesVariant::Claude),
-    )?;
+    write_managed_rules_file(&claude_rules_path(&claude_dir), &rules_for_agent("claude")?)
+        .map(|_| ())?;
     // NB: no install_clean_local_config() — that is the global-only cleanup.
 
     crate::agent_note!();
@@ -1072,18 +1068,7 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
 /// `~/.claude/rules/tokensave.md`, not appended to the user's CLAUDE.md).
 fn doctor_check_claude_md(dc: &mut DoctorCounters, home: &Path) {
     let rules_path = claude_rules_path(&claude_config_dir(home));
-    if rules_path.exists() {
-        let has_rules = std::fs::read_to_string(&rules_path)
-            .unwrap_or_default()
-            .contains("tokensave");
-        if has_rules {
-            dc.pass("rules/tokensave.md contains tokensave rules");
-        } else {
-            dc.fail("rules/tokensave.md missing tokensave rules — run `tokensave install`");
-        }
-    } else {
-        dc.fail("~/.claude/rules/tokensave.md does not exist — run `tokensave install`");
-    }
+    check_managed_rules_file(dc, &rules_path, "claude");
 }
 
 /// Clean up local project config (.mcp.json and settings.local.json).

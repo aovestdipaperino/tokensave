@@ -74,6 +74,7 @@ impl AgentIntegration for PiIntegration {
             mcp_path.display()
         );
 
+        install_prompt_rules(&ctx.home)?;
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
@@ -84,6 +85,7 @@ impl AgentIntegration for PiIntegration {
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
         let mcp_path = pi_config_path(&ctx.home);
         uninstall_mcp_server(&mcp_path);
+        uninstall_prompt_rules(&ctx.home);
 
         crate::agent_note!();
         crate::agent_note!("Uninstall complete. Tokensave has been removed from Pi.");
@@ -94,6 +96,7 @@ impl AgentIntegration for PiIntegration {
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mPi integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
+        doctor_check_prompt(dc, &ctx.home);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -200,4 +203,26 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
             mcp_path.display()
         ));
     }
+}
+
+/// Path to the shared Pi global rules file.
+fn pi_rules_path(home: &Path) -> PathBuf {
+    home.join(".agents/AGENTS.md")
+}
+
+/// Write or refresh the tokensave rules block in Pi's global AGENTS.md.
+fn install_prompt_rules(home: &Path) -> Result<()> {
+    let body = rules_for_agent("pi")?;
+    write_rules_block(&pi_rules_path(home), "pi", &body).map(|_| ())
+}
+
+/// Remove the tokensave rules block from Pi's global AGENTS.md.
+fn uninstall_prompt_rules(home: &Path) {
+    remove_rules_block(&pi_rules_path(home)).ok();
+    remove_legacy_rules_block(&pi_rules_path(home), LEGACY_RULES_MARKER, &[]).ok();
+}
+
+/// Check Pi's AGENTS.md contains the up-to-date tokensave rules block.
+fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
+    check_shared_rules_block(dc, &pi_rules_path(home), "pi");
 }
