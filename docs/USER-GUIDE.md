@@ -458,9 +458,11 @@ are bounded, and they decline rather than run in two cases:
   `git checkout` underneath it does not change which database it holds.
   Syncing then would write the new branch's files into the old branch's
   index, which is how `main` ends up holding a file that only ever existed
-  on `feature` (#400). Restart the MCP server to serve the new branch; each
-  tool response also carries a warning naming both branches while the drift
-  lasts. This applies only to projects using per-branch databases — a
+  on `feature` (#400). While the drift lasts, local graph tools also refuse
+  to answer from the old branch's index: the call fails with an error naming
+  both branches and the recovery action. Restart the MCP server to serve the
+  new branch; `tokensave_status` stays callable so you can see what is being
+  served. This applies only to projects using per-branch databases — a
   single-index project is unaffected by a checkout.
 
 Either way the server prints what it skipped and what to run. `tokensave sync`
@@ -475,14 +477,16 @@ from that watcher. It is still accepted, but nothing reads it, and the
 
 ### Strict mode: refuse worktree content mismatches
 
-Branch drift is now refused by default; `strict_tree` remains relevant to the
-separate different-worktree mismatch described here.
+Branch drift is now refused by default (see the sync safeguards above), so
+`strict_tree` remains relevant only to the separate different-worktree
+mismatch described here: the index belongs to a **different git worktree**
+than the one you are in. Branch drift, where the server is serving a
+**different branch** than your working tree is on, no longer needs the
+opt-in (see
+[BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md#how-syncing-interacts-with-branches)).
 
-For a **different git worktree**, tokensave can answer with a warning by
-default, or refuse when `strict_tree` is enabled. Branch drift is handled by
-the mandatory default refusal documented above.
-the server is serving a **different branch** than your working tree is on
-(see [BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md#how-syncing-interacts-with-branches)).
+For a different git worktree, tokensave answers with a warning by default,
+or refuses when `strict_tree` is enabled.
 
 For worktree-heavy or branch-heavy workflows, a warning may not be enough. An
 agent rule that says "always check tokensave before reading files" inherits the

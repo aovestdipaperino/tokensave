@@ -113,9 +113,7 @@ async fn branch_drift_refuses_local_graph_tools_by_default() {
     assert_eq!(error["code"], -32600);
     let message = error["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("master")
-            && message.contains("feature")
-            && message.contains("Restart"),
+        message.contains("master") && message.contains("feature") && message.contains("Restart"),
         "refusal must name both branches and the recovery action, got {message:?}"
     );
 
