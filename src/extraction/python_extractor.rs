@@ -6,7 +6,7 @@ use std::time::Instant;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PYTHON_COMPLEXITY};
-use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, PythonClassAttrs};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -135,8 +135,28 @@ impl PythonExtractor {
                         }
                     }
                 }
+                // A call in a module- or class-scope statement (`_KEYMAP =
+                // _build_keymap()`, or a bare `_setup()`) is a real call
+                // site. Call sites were only extracted from function bodies,
+                // so the callee had no incoming `calls` edge and
+                // `tokensave_dead_code` reported it dead. Attribute the call
+                // to the enclosing scope: the File node at module level, the
+                // class node in a class body.
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
             }
-            _ => {}
+            // Any other statement at module or class scope (`if __name__ ==
+            // "__main__":`, `try`, `with`, `for`, `while`, `match`, `assert`,
+            // `raise`, ...) can hold call sites too. Extract them the same
+            // way; `extract_call_sites` stops at a nested def, so a function
+            // defined inside the block is not indexed here and its body is
+            // not attributed to this scope.
+            _ => {
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
+            }
         }
     }
 
@@ -226,6 +246,10 @@ impl PythonExtractor {
                     }
                 }
             }
+            // A default that is itself a call (`def f(x=_build())`) runs at
+            // definition time. The value scan above covers its arguments;
+            // this covers the callee.
+            Self::extract_call_sites(state, params, &id);
         }
 
         // Extract call sites from the function body.
@@ -388,8 +412,16 @@ impl PythonExtractor {
 
         // Extract base classes (inheritance).
         Self::extract_base_classes(state, node, &id);
+        // A call in the class header (`class C(_make_base()):`) runs at
+        // definition time. `extract_base_classes` records the bases by name;
+        // this records the call.
+        if let Some(args) = find_child_by_kind(node, "argument_list") {
+            Self::extract_call_sites(state, args, &id);
+        }
 
         // Visit class body.
+        let attrs = Self::collect_class_attrs(state, node);
+        state.python_class_attrs.push(attrs);
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
         if let Some(body) = find_child_by_kind(node, "block") {
@@ -397,6 +429,7 @@ impl PythonExtractor {
         }
         state.class_depth -= 1;
         state.node_stack.pop();
+        state.python_class_attrs.pop();
     }
 
     /// Extract a decorated definition (decorator + function or class).
@@ -478,6 +511,32 @@ impl PythonExtractor {
                         parent_id: None,
                     };
                     state.nodes.push(graph_node);
+
+                    // Applying a decorator calls it. A bare name (`@_register`,
+                    // `@_make()`) is a project-level reference worth an edge;
+                    // a dotted one (`@app.route`, `@status.setter`) names a
+                    // member of some object and is left alone, since its
+                    // trailing segment would bind to any same-named symbol.
+                    if !name.contains('.') {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: dec_id.clone(),
+                            reference_name: name.clone(),
+                            reference_kind: EdgeKind::Calls,
+                            line: start_line,
+                            column: start_column,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                    // The arguments of a decorator call (`@_register(_build())`)
+                    // run at definition time too, whatever the callee is.
+                    if let Some(args) = child
+                        .named_child(0)
+                        .filter(|n| n.kind() == "call")
+                        .and_then(|call| call.child_by_field_name("arguments"))
+                    {
+                        Self::extract_call_sites(state, args, &dec_id);
+                        Self::scan_value_positions(state, args, &dec_id);
+                    }
 
                     // Annotates edge from decorator to the decorated item.
                     if let Some((ref kind, ref inner_name, inner_line)) = inner_kind_and_name {
@@ -913,7 +972,147 @@ impl PythonExtractor {
         false
     }
 
-    /// Recursively find call nodes inside a given node and create unresolved Calls references.
+    /// Fully qualified name of the nearest enclosing class
+    /// (`file.py::Outer::Inner`), or None outside a class.
+    fn enclosing_class_qualified_name(state: &ExtractionState) -> Option<String> {
+        let idx = state
+            .node_stack
+            .iter()
+            .rposition(|(_, id)| id.starts_with("class:"))?;
+        let mut parts = vec![state.file_path.as_str()];
+        parts.extend(
+            state.node_stack[..=idx]
+                .iter()
+                .map(|(name, _)| name.as_str()),
+        );
+        Some(parts.join("::"))
+    }
+
+    /// `self.name` or `cls.name` -> `name`. Any other node -> None.
+    fn self_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        if node.kind() != "attribute" {
+            return None;
+        }
+        let object = node.child_by_field_name("object")?;
+        if object.kind() != "identifier"
+            || !matches!(state.node_text(object).as_str(), "self" | "cls")
+        {
+            return None;
+        }
+        Some(state.node_text(node.child_by_field_name("attribute")?))
+    }
+
+    /// Collect what a class body declares: the methods defined directly in
+    /// it (decorated or not), and every name bound through `self.<name> =`
+    /// or `cls.<name> =` anywhere inside it.
+    fn collect_class_attrs(state: &ExtractionState, class_node: TsNode<'_>) -> PythonClassAttrs {
+        let mut attrs = PythonClassAttrs::default();
+        let Some(body) = find_child_by_kind(class_node, "block") else {
+            return attrs;
+        };
+        let mut cursor = body.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let mut child = cursor.node();
+                let mut is_descriptor = false;
+                if child.kind() == "decorated_definition" {
+                    is_descriptor = Self::has_descriptor_decorator(state, child);
+                    if let Some(def) = child.child_by_field_name("definition") {
+                        child = def;
+                    }
+                }
+                match child.kind() {
+                    "function_definition" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            let name = state.node_text(name);
+                            if is_descriptor {
+                                attrs.descriptors.insert(name.clone());
+                            }
+                            attrs.methods.insert(name);
+                        }
+                    }
+                    // A class-body binding (`hook = None`) overwrites a
+                    // same-named method defined before it.
+                    "expression_statement" => {
+                        if let Some(name) = child
+                            .named_child(0)
+                            .filter(|n| n.kind() == "assignment")
+                            .and_then(|a| a.child_by_field_name("left"))
+                            .filter(|left| left.kind() == "identifier")
+                        {
+                            attrs.assigned.insert(state.node_text(name));
+                        }
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        Self::collect_self_assignments(state, body, &mut attrs.assigned);
+        attrs
+    }
+
+    /// True if any decorator on `node` marks the method as a descriptor:
+    /// `@property`, `@cached_property`, `@functools.cached_property`, or
+    /// `@<name>.setter` / `.getter` / `.deleter`.
+    fn has_descriptor_decorator(state: &ExtractionState, node: TsNode<'_>) -> bool {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return false;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "decorator" {
+                let text = state.node_text(child);
+                let name = text.trim_start_matches('@').trim();
+                let name = name.split('(').next().unwrap_or(name);
+                if matches!(
+                    name,
+                    "property" | "cached_property" | "functools.cached_property"
+                ) || name.ends_with(".setter")
+                    || name.ends_with(".getter")
+                    || name.ends_with(".deleter")
+                {
+                    return true;
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                return false;
+            }
+        }
+    }
+
+    /// Walk a class body for `self.<name> =` / `cls.<name> =` bindings.
+    /// Stops at a nested class: its `self` is a different receiver.
+    fn collect_self_assignments(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        if node.kind() == "class_definition" {
+            return;
+        }
+        if matches!(node.kind(), "assignment" | "augmented_assignment") {
+            if let Some(name) = node
+                .child_by_field_name("left")
+                .and_then(|left| Self::self_attribute_name(state, left))
+            {
+                out.insert(name);
+            }
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_self_assignments(state, cursor.node(), out);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Type name of the nearest enclosing class (for `self` receivers).
     fn enclosing_class_type(state: &ExtractionState) -> Option<String> {
         state
@@ -1209,7 +1408,43 @@ impl PythonExtractor {
                     file_path: state.file_path.clone(),
                 });
             }
-            "attribute" | "subscript" | "lambda" | "function_definition" | "class_definition" => {}
+            // A method passed by reference through `self`/`cls`
+            // (`Thread(target=self._flush_loop)`, `schedule(self._tick, 1.0)`)
+            // is a use of that method. Only a name the enclosing class
+            // defines as a method, and never binds as an attribute
+            // (`self.status = 1`), counts: otherwise the read is a field.
+            // An assignment to a descriptor (`@property` + `.setter`)
+            // invokes it and does not shadow it.
+            // The ref carries the class's full qualified name
+            // (`a.py::Daemon::_flush_loop`), so it resolves to this class's
+            // method and not to a same-named class in another file. Any
+            // other attribute (`obj.attr`) is still skipped: its sub-name is
+            // not a standalone reference.
+            "attribute" => {
+                let Some(name) = Self::self_attribute_name(state, node) else {
+                    return;
+                };
+                let Some(attrs) = state.python_class_attrs.last() else {
+                    return;
+                };
+                if !attrs.methods.contains(&name)
+                    || (attrs.assigned.contains(&name) && !attrs.descriptors.contains(&name))
+                {
+                    return;
+                }
+                let Some(class_qn) = Self::enclosing_class_qualified_name(state) else {
+                    return;
+                };
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: source_id.to_string(),
+                    reference_name: format!("{class_qn}::{name}"),
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            "subscript" | "lambda" | "function_definition" | "class_definition" => {}
             "call" => {
                 if let Some(args) = node.child_by_field_name("arguments") {
                     Self::scan_value_positions(state, args, source_id);
