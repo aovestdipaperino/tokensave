@@ -616,6 +616,38 @@ impl McpServer {
         None
     }
 
+    /// Refuse local graph calls when a live multi-branch server has drifted.
+    ///
+    /// Checked per call (a `git checkout` under a running server is what
+    /// drifts), before freshness work and dispatch, and only for local graph
+    /// tools: `tokensave_status` stays callable for diagnosis, tools without
+    /// graph reads are unaffected, and explicit external `graph_root`
+    /// selections never reach this gate.
+    fn branch_drift_refusal(&self, tool_name: &str) -> Option<String> {
+        const LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS: &[&str] = &[
+            "tokensave_affected",
+            "tokensave_diff_context",
+            "tokensave_simplify_scan",
+            "tokensave_redundancy",
+            "tokensave_diagnostics",
+            "tokensave_diagnose",
+        ];
+
+        if tool_name == "tokensave_status"
+            || (!self.graph_scoped_tools.contains(tool_name)
+                && !LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS.contains(&tool_name))
+        {
+            return None;
+        }
+
+        let drift = self.cg.branch_drift()?;
+        Some(format!(
+            "refusing: MCP server serves branch '{}' while the working tree is on '{}'. \
+             Restart the MCP server to serve this branch, or reopen it for the working branch.",
+            drift.serving, drift.working_tree
+        ))
+    }
+
     /// Answers one query across several `graph_root`s (#376).
     ///
     /// Runs the ordinary selected-graph pipeline once per root — open, decode
@@ -1862,6 +1894,10 @@ impl McpServer {
         };
 
         if selected.is_none() {
+            if let Some(reason) = self.branch_drift_refusal(tool_name) {
+                return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
+            }
+
             // Strict mode (#372 §2): refuse rather than answer from a tree the
             // user is not in. Checked before freshness and before dispatch, so
             // a refused call does no work. Selected graphs are exempt — naming

@@ -162,6 +162,21 @@ running server, files you change land in whichever database that server opened w
 outcome the warning describes, but reached because of the startup choice rather than because
 anything re-checked the branch.
 
+## MCP behavior after tracked-branch checkout
+
+The fallback behavior above remains for untracked branches. For a running
+server, however, the tracked-branch case is fail-closed: with
+multi-branch indexing, a running MCP server is bound to the branch whose
+database it opened at startup. If the working tree moves to another tracked
+branch, local graph tools fail closed instead of returning results from the
+wrong branch. The error names both branches and directs you to restart or
+reopen the MCP server. `tokensave_status` remains available so you can inspect
+the serving and working-tree branches.
+
+Single-database projects remain valid across checkout because one database is
+shared by design. Explicit `graph_root` selections are read-only snapshots and
+continue to work independently of the local checkout.
+
 ## Cross-branch queries
 
 Two MCP tools let you query across branches without switching your checkout:
