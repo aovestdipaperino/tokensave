@@ -313,7 +313,7 @@ pub fn unique_branch_db_file(meta: &crate::branch_meta::BranchMeta, branch: &str
 ///
 /// Does **not** run an incremental sync — that would require opening a
 /// `TokenSave` (re-entrant with `open()`); callers that want a fresh index run
-/// `sync()` afterwards, and the `post-commit` hook keeps a tracked branch fresh.
+/// `sync()` afterwards, and the `post-commit`/`post-merge` hooks keep a tracked branch fresh.
 ///
 /// Returns `Ok(true)` when the branch is newly tracked, `Ok(false)` when nothing
 /// was done (no branch metadata yet → single-DB mode; the branch is the default;

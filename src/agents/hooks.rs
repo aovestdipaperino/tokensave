@@ -7,10 +7,11 @@ use crate::agents::home_dir;
 use clap::ValueEnum;
 use std::path::{Path, PathBuf};
 
-/// Whether `tokensave install` should install the global git `post-commit`
-/// hook, and if so, whether to ask the user interactively or act
-/// non-interactively. The `Default` variant preserves the previous
-/// behavior: prompt on a TTY, silently skip on a non-TTY.
+/// Whether `tokensave install` should install the global git
+/// `post-commit`/`post-checkout`/`post-merge` hooks, and if so, whether to
+/// ask the user interactively or act non-interactively. The `Default`
+/// variant preserves the previous behavior: prompt on a TTY, silently skip
+/// on a non-TTY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum GitHookMode {
     /// Preserve today's behavior — prompt on a TTY, silently skip otherwise.
@@ -26,6 +27,17 @@ const HOOK_MARKER: &str = "# tokensave: auto-sync";
 
 /// Marker comment identifying tokensave's section in the post-checkout hook.
 const HOOK_MARKER_CHECKOUT: &str = "# tokensave: auto-init";
+
+/// Marker comment identifying tokensave's section in the post-merge hook.
+///
+/// `git pull` on a fast-forward or non-rebase merge fires `post-merge`, not
+/// `post-commit` or `post-checkout` — so without this hook, pulling a
+/// teammate's changes left the index stale until the next local commit
+/// (`post-commit`) or branch switch (`post-checkout`). The section shares
+/// [`post_commit_snippet`]'s body (an unconditional background `sync`),
+/// since `post-merge`'s arguments (`$1` squash flag) don't change what
+/// tokensave needs to do.
+const HOOK_MARKER_MERGE: &str = "# tokensave: auto-sync (post-merge)";
 
 /// Marker comment closing tokensave's section in the post-checkout hook.
 ///
@@ -62,16 +74,18 @@ fn chain_repo_hook_snippet(hook_name: &str) -> String {
 ///
 /// A global `core.hooksPath` makes git resolve **every** hook type from that one
 /// directory, with no fallback to `.git/hooks/`. The #164 fix only re-chained
-/// the two hooks tokensave owns (`post-commit`, `post-checkout`), so a repo's
-/// own `pre-commit`, `pre-push`, `commit-msg`, … (as delivered by
-/// `init.templateDir`, husky, pre-commit, lefthook, …) still stopped running.
-/// tokensave drops a pure forwarder for each of these so they keep firing.
+/// the three hooks tokensave owns (`post-commit`, `post-checkout`,
+/// `post-merge`), so a repo's own `pre-commit`, `pre-push`, `commit-msg`, …
+/// (as delivered by `init.templateDir`, husky, pre-commit, lefthook, …) still
+/// stopped running. tokensave drops a pure forwarder for each of these so
+/// they keep firing.
 ///
-/// `post-commit`/`post-checkout` are intentionally excluded — they are written
-/// separately with the chaining preamble **plus** tokensave's own action. The
-/// list is the client-side set from `githooks(5)`; server-side hooks
-/// (`pre-receive`, `update`, `post-receive`, `post-update`, `proc-receive`) and
-/// the config-driven `fsmonitor-watchman` are omitted.
+/// `post-commit`/`post-checkout`/`post-merge` are intentionally excluded —
+/// they are written separately with the chaining preamble **plus**
+/// tokensave's own action. The list is the client-side set from
+/// `githooks(5)`; server-side hooks (`pre-receive`, `update`,
+/// `post-receive`, `post-update`, `proc-receive`) and the config-driven
+/// `fsmonitor-watchman` are omitted.
 const FORWARDED_REPO_HOOKS: &[&str] = &[
     "applypatch-msg",
     "pre-applypatch",
@@ -81,7 +95,6 @@ const FORWARDED_REPO_HOOKS: &[&str] = &[
     "prepare-commit-msg",
     "commit-msg",
     "pre-rebase",
-    "post-merge",
     "pre-push",
     "post-rewrite",
     "pre-auto-gc",
@@ -144,6 +157,15 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
     format!(
         "{HOOK_MARKER}\n\
+         {bin} sync >/dev/null 2>&1 &\n"
+    )
+}
+
+/// The hook snippet appended to (or written as) the post-merge script.
+fn post_merge_snippet(tokensave_bin: &str) -> String {
+    let bin = tokensave_bin.replace('\\', "/");
+    format!(
+        "{HOOK_MARKER_MERGE}\n\
          {bin} sync >/dev/null 2>&1 &\n"
     )
 }
@@ -330,7 +352,7 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             // TTY + default mode: ask, and bail entirely if the user declines.
             eprintln!();
             eprint!(
-                "Install global git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m hooks to auto-run \x1b[1mtokensave sync\x1b[0m after each commit and \x1b[1mtokensave init\x1b[0m after a fresh clone? [y/N] "
+                "Install global git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m + \x1b[1mpost-merge\x1b[0m hooks to auto-run \x1b[1mtokensave sync\x1b[0m after each commit and \x1b[1mgit pull\x1b[0m, and \x1b[1mtokensave init\x1b[0m after a fresh clone? [y/N] "
             );
             let mut answer = String::new();
             if std::io::stdin().read_line(&mut answer).is_err() {
@@ -408,8 +430,29 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         );
     }
 
+    // Install the post-merge hook so `git pull` (fast-forward or a real
+    // merge) reindexes teammates' changes instead of waiting for the next
+    // local commit or branch switch. Same independent-marker treatment as
+    // post-checkout above.
+    let merge_path = hooks_dir.join("post-merge");
+    let merge_contents = std::fs::read_to_string(&merge_path).ok();
+    if should_chain_repo_hooks(
+        need_set_hookspath,
+        hooks_dir_is_default,
+        merge_contents.as_deref(),
+    ) {
+        write_global_hook(&merge_path, &chain_repo_hook_snippet("post-merge"));
+    }
+    let merge_present = merge_contents.is_some_and(|c| c.contains(HOOK_MARKER_MERGE));
+    if !merge_present && write_global_hook(&merge_path, &post_merge_snippet(tokensave_bin)) {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Installed global git post-merge hook at {}",
+            merge_path.display()
+        );
+    }
+
     // Issue #164 follow-up: claiming a global core.hooksPath disables *every*
-    // hook type in each repo's .git/hooks/, not just the two tokensave owns.
+    // hook type in each repo's .git/hooks/, not just the three tokensave owns.
     // Drop pure forwarders for the remaining client-side hooks so a repo's own
     // pre-commit / pre-push / commit-msg / … keep running.
     install_repo_hook_forwarders(&hooks_dir, need_set_hookspath, hooks_dir_is_default);
@@ -535,7 +578,7 @@ pub fn describe_git_hooks() -> Vec<String> {
         None => "core.hooksPath: not set".to_string(),
     }];
 
-    let owned = ["post-commit", "post-checkout"];
+    let owned = ["post-commit", "post-checkout", "post-merge"];
     let mut acting: Vec<&str> = Vec::new();
     let mut forwarders = 0usize;
     for name in owned.iter().copied().chain(
@@ -547,7 +590,10 @@ pub fn describe_git_hooks() -> Vec<String> {
         let Ok(contents) = std::fs::read_to_string(hooks_dir.join(name)) else {
             continue;
         };
-        if contents.contains(HOOK_MARKER) || contents.contains(HOOK_MARKER_CHECKOUT) {
+        if contents.contains(HOOK_MARKER)
+            || contents.contains(HOOK_MARKER_CHECKOUT)
+            || contents.contains(HOOK_MARKER_MERGE)
+        {
             acting.push(name);
         } else if contents.contains(HOOK_MARKER_CHAIN) {
             forwarders += 1;
@@ -574,8 +620,8 @@ pub fn describe_git_hooks() -> Vec<String> {
     out
 }
 
-/// Remove tokensave's global git hooks: the `post-commit` and `post-checkout`
-/// sections, the pure forwarders installed for every other client-side hook
+/// Remove tokensave's global git hooks: the `post-commit`, `post-checkout`,
+/// and `post-merge` sections, the pure forwarders installed for every other client-side hook
 /// (#164 follow-up), and `core.hooksPath` when tokensave's own default
 /// directory is left empty.
 ///
@@ -603,10 +649,10 @@ pub fn remove_git_hooks() -> HookRemoval {
         return result;
     }
 
-    // post-commit and post-checkout carry tokensave's own actions; the rest of
-    // FORWARDED_REPO_HOOKS are pure forwarders. Both are handled by the same
-    // strip-then-delete-if-inert rule.
-    let owned = ["post-commit", "post-checkout"];
+    // post-commit, post-checkout, and post-merge carry tokensave's own
+    // actions; the rest of FORWARDED_REPO_HOOKS are pure forwarders. All are
+    // handled by the same strip-then-delete-if-inert rule.
+    let owned = ["post-commit", "post-checkout", "post-merge"];
     for name in owned.iter().copied().chain(
         FORWARDED_REPO_HOOKS
             .iter()
@@ -1018,6 +1064,19 @@ mod git_hook_tests {
     }
 
     #[test]
+    fn post_merge_snippet_runs_sync_unconditionally() {
+        let s = post_merge_snippet("/usr/local/bin/tokensave");
+        assert!(
+            s.contains(HOOK_MARKER_MERGE),
+            "must carry its idempotency marker, got: {s}"
+        );
+        assert!(
+            s.contains("/usr/local/bin/tokensave sync"),
+            "must run `sync` with the resolved binary so a `git pull` reindexes teammates' changes, got: {s}"
+        );
+    }
+
+    #[test]
     fn post_checkout_snippet_inits_only_on_fresh_clone() {
         let s = post_checkout_snippet("/usr/local/bin/tokensave");
         assert!(
@@ -1211,11 +1270,12 @@ mod git_hook_tests {
 
     #[test]
     fn forwarded_hooks_cover_common_types_but_not_tokensave_owned() {
-        // The two hooks tokensave installs itself carry the chain preamble
+        // The three hooks tokensave installs itself carry the chain preamble
         // plus tokensave's action, so they must NOT be in the pure-forwarder
         // list (that would double-write / conflict).
         assert!(!FORWARDED_REPO_HOOKS.contains(&"post-commit"));
         assert!(!FORWARDED_REPO_HOOKS.contains(&"post-checkout"));
+        assert!(!FORWARDED_REPO_HOOKS.contains(&"post-merge"));
         // The high-value client-side hooks must be forwarded — these are where
         // husky / pre-commit / lefthook live.
         for h in ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"] {
@@ -1406,6 +1466,21 @@ mod git_hook_tests {
     #[test]
     fn strip_removes_every_tokensave_section_from_a_pure_tokensave_hook() {
         let stripped = strip_tokensave_sections(&installed_post_commit()).unwrap();
+        assert!(
+            is_inert_hook(&stripped),
+            "nothing but a shebang should remain, got: {stripped:?}"
+        );
+        assert!(!stripped.contains("tokensave"));
+    }
+
+    #[test]
+    fn strip_removes_the_post_merge_section_from_a_pure_tokensave_hook() {
+        let installed = format!(
+            "#!/bin/sh\n{}\n{}",
+            chain_repo_hook_snippet("post-merge"),
+            post_merge_snippet("tokensave")
+        );
+        let stripped = strip_tokensave_sections(&installed).unwrap();
         assert!(
             is_inert_hook(&stripped),
             "nothing but a shebang should remain, got: {stripped:?}"
