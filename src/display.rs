@@ -4,6 +4,7 @@
 //! extracted from main.rs to keep the CLI entry point focused on dispatch.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use crate::types::GraphStats;
 
@@ -104,6 +105,12 @@ pub struct BranchInfo {
     pub is_fallback: bool,
 }
 
+/// Formats the canonical project root row shared by both status layouts.
+pub fn format_project_row(project_root: &Path) -> String {
+    format!("Project: {}", project_root.display())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn print_status_header(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -112,6 +119,7 @@ pub fn print_status_header(
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
     cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
 ) {
     let num_cols = 3;
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -134,6 +142,9 @@ pub fn print_status_header(
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
     }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
+    }
     println!("{}", table_separator('╰', '─', '╯', cell_width, num_cols));
 }
 
@@ -147,6 +158,7 @@ pub fn print_status_table(
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
     cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
     details: bool,
 ) {
     let num_cols = 3;
@@ -180,6 +192,9 @@ pub fn print_status_table(
     );
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
+    }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
     }
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
@@ -374,6 +389,23 @@ fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     let visible_len = text.replace("\x1b[33m", "").replace("\x1b[0m", "").len();
     let pad = available.saturating_sub(visible_len);
     println!("│ {}{} │", " ".repeat(pad), text);
+}
+
+fn print_project_row(project_root: &Path, inner_width: usize) {
+    let text = format_project_row(project_root);
+    let available = inner_width.saturating_sub(2);
+    let visible_len = text.chars().count();
+    let bounded = if visible_len <= available {
+        text
+    } else if available == 0 {
+        String::new()
+    } else {
+        let mut truncated: String = text.chars().take(available - 1).collect();
+        truncated.push('…');
+        truncated
+    };
+    let pad = available.saturating_sub(bounded.chars().count());
+    println!("│ {}{} │", " ".repeat(pad), bounded);
 }
 
 /// Print the cost summary row: today's cost, 7-day cost, efficiency ratio.
