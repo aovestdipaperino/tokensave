@@ -13,7 +13,7 @@ use common::{make_install_ctx, make_install_ctx_with_real_bin};
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 20);
+    assert_eq!(all.len(), 21);
 }
 
 #[test]
@@ -36,11 +36,12 @@ fn test_available_integrations() {
     assert!(ids.contains(&"kimi"));
     assert!(ids.contains(&"vibe"));
     assert!(ids.contains(&"grok"));
+    assert!(ids.contains(&"omp"));
     assert!(ids.contains(&"pi"));
     assert!(ids.contains(&"plank"));
     assert!(ids.contains(&"qwen"));
     assert!(ids.contains(&"auggie"));
-    assert_eq!(ids.len(), 20);
+    assert_eq!(ids.len(), 21);
 }
 
 #[test]
@@ -63,6 +64,7 @@ fn test_get_integration_valid() {
         "kimi",
         "vibe",
         "grok",
+        "omp",
         "pi",
         "plank",
         "auggie",
