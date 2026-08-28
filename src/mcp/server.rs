@@ -30,6 +30,16 @@ use super::tools::{
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
+/// Selector-less local graph tools refused after tracked-branch drift.
+pub(crate) const LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS: &[&str] = &[
+    "tokensave_affected",
+    "tokensave_diff_context",
+    "tokensave_simplify_scan",
+    "tokensave_redundancy",
+    "tokensave_diagnostics",
+    "tokensave_diagnose",
+];
+
 /// Runtime statistics for the MCP server.
 pub struct ServerStats {
     started_at: Instant,
@@ -624,15 +634,6 @@ impl McpServer {
     /// graph reads are unaffected, and explicit external `graph_root`
     /// selections never reach this gate.
     fn branch_drift_refusal(&self, tool_name: &str) -> Option<String> {
-        const LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS: &[&str] = &[
-            "tokensave_affected",
-            "tokensave_diff_context",
-            "tokensave_simplify_scan",
-            "tokensave_redundancy",
-            "tokensave_diagnostics",
-            "tokensave_diagnose",
-        ];
-
         if tool_name == "tokensave_status"
             || (!self.graph_scoped_tools.contains(tool_name)
                 && !LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS.contains(&tool_name))
