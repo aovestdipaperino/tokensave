@@ -101,6 +101,18 @@ tokensave MCP tools have been tried. Delegation is still appropriate for \
 long-running execution work such as builds, tests, generated reports, or \
 independent implementation tasks.\n";
 
+/// Stable ownership marker for the OMP-managed rules file.
+pub(crate) const OMP_RULES_MARKER: &str = "<!-- tokensave: managed omp rules -->";
+
+/// OMP-specific division of labor layered above the canonical practical rules.
+const OMP_OVERLAY_MARKDOWN: &str = "## Tokensave and OMP\n\n\
+Use Tokensave first for architecture, multi-hop relationships, impact analysis, \
+affected tests, and indexed cross-project or cross-branch questions. Use OMP \
+live source, AST, and LSP tools for exact current text, semantic refactors, and \
+negative claims. Keep scouts for web research, unindexed code, and ambiguous \
+searches. Check graph freshness and verify decisive results against current \
+source or tests.";
+
 /// The canonical body that every harness should render.
 pub fn canonical_rules_markdown() -> &'static str {
     CANONICAL_RULES_MARKDOWN
@@ -126,12 +138,21 @@ pub fn kiro_rules_markdown() -> String {
     )
 }
 
+/// OMP-native always-applied rules with a stable whole-file ownership marker.
+pub fn omp_rules_markdown() -> String {
+    format!(
+        "---\nalwaysApply: true\n---\n\n{OMP_RULES_MARKER}\n\n{OMP_OVERLAY_MARKDOWN}\n\n{}",
+        canonical_rules_markdown()
+    )
+}
+
 /// The full expected rules text for a given agent id, including any
 /// per-harness overlay or frontmatter.
 pub fn expected_rules_markdown(agent_id: &str) -> Option<String> {
     match agent_id {
         "claude" => Some(claude_rules_markdown()),
         "kiro" => Some(kiro_rules_markdown()),
+        "omp" => Some(omp_rules_markdown()),
         "auggie" => Some(format!(
             "---\ntype: always_apply\n---\n\n{}",
             canonical_rules_markdown()
