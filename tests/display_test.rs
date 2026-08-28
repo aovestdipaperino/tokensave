@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokensave::display::{
-    format_bytes, format_number, format_project_row, format_relative_time, format_token_count,
-    print_status_header, print_status_table,
+    format_bounded_project_row, format_bytes, format_number, format_project_row,
+    format_relative_time, format_token_count, print_status_header, print_status_table,
 };
 use tokensave::types::GraphStats;
 
@@ -302,6 +302,19 @@ fn test_format_project_row_uses_absolute_path() {
         format_project_row(dir.path()),
         format!("Project: {}", dir.path().display())
     );
+}
+
+#[test]
+fn test_format_bounded_project_row_preserves_long_path_tail() {
+    let path = std::path::Path::new(
+        "/private/var/folders/disposable/session/tokensave/.worktrees/status-project-root",
+    );
+    let width = 50;
+
+    let row = format_bounded_project_row(path, width);
+
+    assert_eq!(row, "Project: …tokensave/.worktrees/status-project-root");
+    assert_eq!(row.chars().count(), width);
 }
 
 // ── print_status_table ──────────────────────────────────────────────────────
