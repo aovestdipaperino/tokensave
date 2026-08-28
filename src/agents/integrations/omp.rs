@@ -70,16 +70,18 @@ impl AgentIntegration for OmpIntegration {
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOh My Pi integration\x1b[0m");
 
-        match resolve_omp_agent_dir() {
-            Ok(agent_dir) => doctor_check_surfaces(
-                dc,
-                &agent_dir.join("mcp.json"),
-                &agent_dir.join("rules/tokensave.md"),
-                "global",
-            ),
-            Err(error) => dc.fail(&format!(
-                "could not resolve the active OMP profile with `omp config path`: {error}"
-            )),
+        if self.is_detected(&ctx.home) {
+            match resolve_omp_agent_dir() {
+                Ok(agent_dir) => doctor_check_surfaces(
+                    dc,
+                    &agent_dir.join("mcp.json"),
+                    &agent_dir.join("rules/tokensave.md"),
+                    "global",
+                ),
+                Err(error) => dc.fail(&format!(
+                    "could not resolve the active OMP profile with `omp config path`: {error}"
+                )),
+            }
         }
 
         let local_dir = ctx.project_path.join(".omp");
@@ -284,12 +286,24 @@ fn uninstall_prompt_rules(rules_path: &Path) {
 
 fn doctor_check_surfaces(dc: &mut DoctorCounters, mcp_path: &Path, rules_path: &Path, scope: &str) {
     doctor_check_mcp(dc, mcp_path, scope);
-    check_managed_rules_file(dc, rules_path, "omp");
+    if rules_path.exists() {
+        check_managed_rules_file(dc, rules_path, "omp");
+    } else {
+        dc.warn(&format!(
+            "{scope} OMP rules not found at {} — run `tokensave install --agent omp{}`",
+            rules_path.display(),
+            if scope == "project-local" {
+                " --local"
+            } else {
+                ""
+            }
+        ));
+    }
 }
 
 fn doctor_check_mcp(dc: &mut DoctorCounters, mcp_path: &Path, scope: &str) {
     if !mcp_path.exists() {
-        dc.fail(&format!(
+        dc.warn(&format!(
             "{scope} OMP MCP config not found at {} — run `tokensave install --agent omp{}`",
             mcp_path.display(),
             if scope == "project-local" {

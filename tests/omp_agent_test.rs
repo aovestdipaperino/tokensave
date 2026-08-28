@@ -399,7 +399,58 @@ fn uninstall_refuses_to_delete_rule_without_exact_ownership_marker() {
 }
 
 #[test]
-fn doctor_detects_missing_wrong_and_stale_global_surfaces() {
+fn doctor_skips_omp_when_neither_global_nor_project_install_is_detected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let _path = PathGuard::replace(&bin_dir);
+
+    let result = healthcheck(&home, &project);
+
+    assert_eq!(result.issues, 0);
+    assert_eq!(result.warnings, 0);
+}
+
+#[test]
+fn doctor_warns_when_detected_global_surfaces_are_absent() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profile/agent");
+    std::fs::create_dir_all(home.join(".omp")).unwrap();
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+
+    let result = healthcheck(&home, &project);
+
+    assert_eq!(result.issues, 0);
+    assert_eq!(result.warnings, 2);
+}
+
+#[test]
+fn doctor_warns_when_project_local_surfaces_are_absent() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(project.join(".omp")).unwrap();
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let _path = PathGuard::replace(&bin_dir);
+
+    let result = healthcheck(&home, &project);
+
+    assert_eq!(result.issues, 0);
+    assert_eq!(result.warnings, 2);
+}
+
+#[test]
+fn doctor_warns_for_missing_but_detects_present_broken_global_surfaces() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
@@ -408,6 +459,7 @@ fn doctor_detects_missing_wrong_and_stale_global_surfaces() {
     let agent_dir = temp.path().join("profile/agent");
     let mcp_path = agent_dir.join("mcp.json");
     let rules_path = agent_dir.join("rules/tokensave.md");
+    std::fs::create_dir_all(home.join(".omp")).unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -416,7 +468,9 @@ fn doctor_detects_missing_wrong_and_stale_global_surfaces() {
     assert_eq!(healthcheck(&home, &project).issues, 0);
 
     std::fs::remove_file(&mcp_path).unwrap();
-    assert!(healthcheck(&home, &project).issues > 0);
+    let missing_mcp = healthcheck(&home, &project);
+    assert_eq!(missing_mcp.issues, 0);
+    assert_eq!(missing_mcp.warnings, 1);
     OmpIntegration.install(&ctx).unwrap();
 
     let mut config = read_json(&mcp_path);
@@ -432,7 +486,9 @@ fn doctor_detects_missing_wrong_and_stale_global_surfaces() {
     OmpIntegration.install(&ctx).unwrap();
 
     std::fs::remove_file(&rules_path).unwrap();
-    assert!(healthcheck(&home, &project).issues > 0);
+    let missing_rules = healthcheck(&home, &project);
+    assert_eq!(missing_rules.issues, 0);
+    assert_eq!(missing_rules.warnings, 1);
     OmpIntegration.install(&ctx).unwrap();
 
     std::fs::write(&rules_path, format!("{OMP_RULES_MARKER}\nstale\n")).unwrap();
@@ -446,6 +502,7 @@ fn doctor_reports_resolver_failure_and_still_checks_present_local_surfaces() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(home.join(".omp")).unwrap();
     std::fs::create_dir_all(&bin_dir).unwrap();
     let _path = PathGuard::replace(&bin_dir);
     OmpIntegration
@@ -464,6 +521,30 @@ fn doctor_reports_resolver_failure_and_still_checks_present_local_surfaces() {
         malformed_local.issues > resolver_only.issues,
         "doctor must independently validate an existing project-local .omp surface"
     );
+}
+
+#[test]
+fn doctor_accepts_valid_project_local_install_without_global_omp() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    let sentinel = temp.path().join("omp-was-called");
+    write_script(
+        &bin_dir,
+        &format!("touch '{}'\nexit 99", sentinel.display()),
+    );
+    let _path = PathGuard::replace(&bin_dir);
+    OmpIntegration
+        .install(&make_local_ctx(&home, &project))
+        .unwrap();
+
+    let result = healthcheck(&home, &project);
+
+    assert_eq!(result.issues, 0);
+    assert_eq!(result.warnings, 0);
+    assert!(!sentinel.exists(), "local doctor must not invoke OMP");
 }
 
 #[test]
