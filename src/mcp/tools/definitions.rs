@@ -2664,6 +2664,7 @@ fn def_diff() -> ToolDefinition {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
 mod tests {
     use super::*;
+    use crate::mcp::server::LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS;
     use std::collections::BTreeSet;
 
     fn canonical_graph_scoped_tools() -> BTreeSet<&'static str> {
@@ -2723,6 +2724,47 @@ mod tests {
         ]
         .into_iter()
         .collect()
+    }
+
+    /// Selector-less tools intentionally outside branch-drift refusal.
+    ///
+    /// This list pins the current runtime policy. It includes non-graph tools
+    /// as well as graph-reading operations whose existing behavior is exempt.
+    fn canonical_selectorless_drift_exempt_tools() -> BTreeSet<&'static str> {
+        let mut tools = [
+            "tokensave_blame",
+            "tokensave_branch_diff",
+            "tokensave_branch_list",
+            "tokensave_branch_search",
+            "tokensave_changelog",
+            "tokensave_commit_context",
+            "tokensave_config",
+            "tokensave_dependencies",
+            "tokensave_diff",
+            "tokensave_insert_at",
+            "tokensave_insert_at_symbol",
+            "tokensave_log",
+            "tokensave_multi_str_replace",
+            "tokensave_port_order",
+            "tokensave_port_status",
+            "tokensave_pr_context",
+            "tokensave_record_code_area",
+            "tokensave_record_decision",
+            "tokensave_replace_symbol",
+            "tokensave_run_affected_tests",
+            "tokensave_runtime",
+            "tokensave_session_end",
+            "tokensave_session_recall",
+            "tokensave_session_start",
+            "tokensave_status",
+            "tokensave_str_replace",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        if ast_grep_available() {
+            tools.insert("tokensave_ast_grep_rewrite");
+        }
+        tools
     }
 
     #[test]
@@ -2821,6 +2863,55 @@ mod tests {
             .collect();
         assert_eq!(actual.len(), 52);
         assert_eq!(actual, canonical);
+    }
+
+    #[test]
+    fn every_registered_tool_has_explicit_drift_classification() {
+        let definitions = get_tool_definitions();
+        let all_registered = definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let selector_capable = definitions
+            .iter()
+            .filter(|definition| is_graph_scoped_tool(definition))
+            .map(|definition| definition.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let exempt_selectorless = canonical_selectorless_drift_exempt_tools();
+        let refused_selectorless = LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        let multiply_classified = selector_capable
+            .intersection(&refused_selectorless)
+            .chain(selector_capable.intersection(&exempt_selectorless))
+            .chain(refused_selectorless.intersection(&exempt_selectorless))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let classified = selector_capable
+            .union(&refused_selectorless)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .union(&exempt_selectorless)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let added_unclassified = all_registered
+            .difference(&classified)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let removed_stale = classified
+            .difference(&all_registered)
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert!(
+            added_unclassified.is_empty()
+                && removed_stale.is_empty()
+                && multiply_classified.is_empty(),
+            "drift classification mismatch: added/unclassified={added_unclassified:?}, \
+             removed/stale={removed_stale:?}, multiply classified={multiply_classified:?}"
+        );
     }
 
     #[test]
