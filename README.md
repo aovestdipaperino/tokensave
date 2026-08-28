@@ -78,7 +78,7 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
 | **80+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
-| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 43 more including WGSL/HLSL/Metal shaders, CUDA/HIP, and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build, Factory Droid, Pi, Plank. |
+| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 43 more including WGSL/HLSL/Metal shaders, CUDA/HIP, and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build, Factory Droid, OMP, Pi, Plank. |
 | **Multi-Branch Indexing (opt-in)** | **100% Local** | **Always Fresh** |
 | Optional per-branch databases. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | On-demand staleness check on every MCP call (30 s cooldown) plus catch-up sync when the server connects. Multi-agent work is expected to use git worktrees — each agent gets its own checkout and the index diverges are merged by git, not by a file watcher. |
 | **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
@@ -138,6 +138,7 @@ tokensave install --agent gemini          # Gemini CLI
 tokensave install --agent kilo            # Kilo CLI
 tokensave install --agent kiro            # AWS Kiro
 tokensave install --agent kimi            # Moonshot Kimi CLI
+tokensave install --agent omp             # Oh My Pi (OMP)
 tokensave install --agent opencode        # OpenCode
 tokensave install --agent pi              # Pi (pi.dev)
 tokensave install --agent plank           # Plank (macOS only)
@@ -154,6 +155,8 @@ tokensave githooks off                     # remove them, leaving any hook conte
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
+Global OMP installs target the profile reported by bare `omp config path`, writing `<resolved-agent-dir>/mcp.json` and `<resolved-agent-dir>/rules/tokensave.md`. Export `OMP_PROFILE` or OMP's compatible `PI_PROFILE` when installing into a named profile; OMP's resolver also honors `PI_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. Tokensave trusts that native resolver rather than duplicating OMP's profile logic. Tokensave installs MCP and advisory rules for OMP; it does not install OMP hook enforcement.
+
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
 ### Project-local install
@@ -162,9 +165,10 @@ By default `tokensave install` registers the MCP server in your **global** agent
 
 ```bash
 tokensave install --local --agent claude
+tokensave install --local --agent omp
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, plank** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.mcp.json` for plank). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
 
@@ -920,7 +924,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Install** | `brew install`, `cargo install`, `scoop install` | `npx @colbymchenry/codegraph` |
 | **Languages** | 50+ (3 tiers: lite/medium/full) | 19+ |
 | **MCP tools** | 80+ | 9 |
-| **Agent integrations** | 12+ (Claude, Codex, Gemini, Qwen, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe, Grok, Pi, Plank, Factory Droid) | 1 (Claude Code) |
+| **Agent integrations** | 12+ (Claude, Codex, Gemini, Qwen, OpenCode, Cursor, Cline, Copilot, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, Vibe, Grok, OMP, Pi, Plank, Factory Droid) | 1 (Claude Code) |
 | **Index freshness** | On-demand staleness check on every MCP call; catch-up sync on connect; multi-agent work expected to use git worktrees | Native OS-level file watcher (FSEvents/inotify/ReadDirectoryChangesW, 2 s debounce); catch-up sync on connect |
 | **Multi-branch indexing** | Yes, opt-in (per-branch DBs, cross-branch diff/search) | No |
 | **Complexity metrics** | AST-extracted (branches, loops, nesting depth, cyclomatic & cognitive complexity, Halstead, maintainability index, CRAP) | No |
