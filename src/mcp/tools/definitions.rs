@@ -2181,18 +2181,21 @@ fn def_field_sites() -> ToolDefinition {
          is the exact blast radius. write_count/read_count are totals over \
          the whole scan; when `truncated` is true the site arrays were capped \
          at `limit` and write_returned/read_returned say how many are listed. \
-         Pattern matches `.<field>` references, so field-by-name matches any \
-         struct's same-named field. The `Struct::field` form is accepted and \
-         parsed, but does NOT narrow the result — matching a text site to one \
-         struct needs the receiver's resolved type, which this scan does not \
-         compute. The response reports `qualifier_applied: false` and a \
-         `qualifier_note` saying so; treat the sites as the bare-name answer.",
+         Pattern matches `.<field>` references, so a bare field name matches \
+         any struct's same-named field. The `Struct::field` form narrows to \
+         that struct: a site is kept only when its receiver resolves to the \
+         type, via an explicit declaration, a self/receiver binding, or a \
+         declared field type. Receivers a source-text scan cannot type — a \
+         value returned by a call, or read out of a container — are counted \
+         in `unattributed_count` and NOT listed, so a narrowed count is a \
+         lower bound; `excluded_count` is how many resolved to another type. \
+         Query the bare name for the unnarrowed answer.",
         json!({
             "type": "object",
             "properties": {
                 "field": {
                     "type": "string",
-                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') is accepted but NOT applied — the response comes back with qualifier_applied: false and covers every struct's same-named field."
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') narrows to that struct's field; sites whose receiver cannot be typed are reported in unattributed_count rather than listed, so a narrowed result is a lower bound."
                 },
                 "writes_only": {
                     "type": "boolean",

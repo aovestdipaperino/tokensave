@@ -13,6 +13,7 @@ pub mod graph;
 pub mod health;
 pub mod info;
 pub mod memory;
+pub mod receiver_type;
 pub mod redundancy;
 pub mod workflow;
 

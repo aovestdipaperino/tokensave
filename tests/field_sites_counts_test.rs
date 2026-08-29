@@ -8,11 +8,12 @@
 //! That understates a blast radius in precisely the case where the number
 //! matters, with nothing in the response to say so.
 //!
-//! Separately, `Type::field` is parsed into a qualifier that is never
-//! applied: the sites returned are the bare name's, i.e. the broad answer
-//! under a narrow heading. Matching a text site to one struct needs the
-//! receiver's resolved type, which this source-text scan does not compute, so
-//! the fix here is to say so unmissably rather than to pretend.
+//! Separately, `Type::field` used to be parsed into a qualifier that was
+//! never applied: the sites returned were the bare name's, i.e. the broad
+//! answer under a narrow heading. It now narrows for real — a site is kept
+//! only when its receiver resolves to the named type — and the sites it
+//! cannot type are counted rather than quietly included or dropped, so a
+//! narrowed answer never poses as a complete one.
 
 use serde_json::{json, Value};
 use std::path::Path;
@@ -163,12 +164,12 @@ async fn sites_and_distinct_lines_are_separately_reported() {
     );
 }
 
-/// The dangerous direction: the caller asked to narrow. It does not narrow,
-/// so the response must say that in words, not only in a flag that is easy to
-/// miss — and the sites must be exactly the bare-name answer, never a
-/// silently different set.
+/// The dangerous direction: the caller asked to narrow. Now that it really
+/// narrows, the thing to pin is that it narrows to the *right* sites — the
+/// fixture writes `a.count` on a `Counter` and `b.count` on a `Tally`, so a
+/// qualifier that works must keep one and drop the other.
 #[tokio::test]
-async fn an_unapplied_qualifier_is_stated_not_just_flagged() {
+async fn a_qualifier_narrows_to_the_named_type() {
     let (_tmp, cg) = project_with_many_write_sites().await;
 
     let bare = field_sites(&cg, json!({ "field": "count", "writes_only": true })).await;
@@ -178,30 +179,47 @@ async fn an_unapplied_qualifier_is_stated_not_just_flagged() {
     )
     .await;
 
+    assert_eq!(qualified["qualifier"], "Counter");
     assert_eq!(
-        qualified["qualifier"], "Counter",
-        "the qualifier is still parsed and echoed back"
-    );
-    assert_eq!(
-        qualified["qualifier_applied"], false,
-        "and is still honestly reported as unapplied"
+        qualified["qualifier_applied"], true,
+        "the qualified form must now be applied, not merely echoed"
     );
 
-    let note = qualified["qualifier_note"]
-        .as_str()
-        .expect("an unapplied qualifier must be explained in words");
+    let bare_total = bare["write_count"].as_u64().expect("bare write_count");
+    let narrow_total = qualified["write_count"].as_u64().expect("write_count");
     assert!(
-        note.contains("NOT applied") && note.contains("Counter"),
-        "the note must name the qualifier and say it did not apply: {note}"
+        narrow_total < bare_total,
+        "narrowing must drop the other struct's sites: {narrow_total} vs {bare_total}"
+    );
+    assert!(
+        qualified["excluded_count"]
+            .as_u64()
+            .expect("excluded_count")
+            > 0,
+        "the Tally sites must be reported as excluded, not silently missing"
     );
 
-    // The results really are the broad answer — pinning this stops a future
-    // half-narrowing from shipping behind an unchanged `false` flag.
+    // Every site kept must actually be a `Counter` write.
+    for site in qualified["write_sites"]
+        .as_array()
+        .expect("write_sites is an array")
+    {
+        let snippet = site["snippet"].as_str().unwrap_or_default();
+        assert!(
+            snippet.contains("a.count"),
+            "a kept site must be the Counter receiver, got: {snippet}"
+        );
+    }
+
+    // The other type's qualifier is the mirror image, and the two partitions
+    // must together account for the bare answer — no site invented, none lost.
+    let tally = field_sites(&cg, json!({ "field": "Tally::count", "writes_only": true })).await;
+    let tally_total = tally["write_count"].as_u64().expect("write_count");
     assert_eq!(
-        qualified["write_count"], bare["write_count"],
-        "an unapplied qualifier returns the bare-name sites, unchanged"
+        narrow_total + tally_total,
+        bare_total,
+        "the two narrowed answers must partition the bare one exactly"
     );
-    assert_eq!(qualified["write_sites"], bare["write_sites"]);
 
     // And a bare query carries no note to ignore.
     assert!(
@@ -209,4 +227,44 @@ async fn an_unapplied_qualifier_is_stated_not_just_flagged() {
         "a bare field name has no qualifier to explain"
     );
     assert_eq!(bare["qualifier"], Value::Null);
+}
+
+/// A qualified query naming a field the type does not declare is answerable
+/// outright. Returning every *other* type's sites for it is the original
+/// complaint in its purest form.
+#[tokio::test]
+async fn a_field_the_type_does_not_declare_returns_nothing_and_says_why() {
+    let (_tmp, cg) = project_with_many_write_sites().await;
+
+    let result = field_sites(&cg, json!({ "field": "Counter::no_such_field" })).await;
+    assert_eq!(result["qualifier_applied"], true);
+    assert_eq!(result["write_count"], 0);
+    assert_eq!(result["read_count"], 0);
+    let note = result["qualifier_note"].as_str().expect("a note");
+    assert!(
+        note.contains("no_such_field") && note.contains("Counter"),
+        "the note must name both the field and the type: {note}"
+    );
+}
+
+/// A receiver the scan cannot type is neither kept nor dropped silently. The
+/// count is what stops a narrowed answer from reading as a complete one.
+#[tokio::test]
+async fn sites_that_cannot_be_typed_are_counted_rather_than_guessed() {
+    let (_tmp, cg) = project_with_many_write_sites().await;
+    let qualified = field_sites(
+        &cg,
+        json!({ "field": "Counter::count", "writes_only": true }),
+    )
+    .await;
+
+    assert!(
+        qualified.get("unattributed_count").is_some(),
+        "a narrowed answer must always report how much it could not attribute"
+    );
+    let note = qualified["qualifier_note"].as_str().expect("a note");
+    assert!(
+        note.contains("lower bound"),
+        "the note must warn that a narrowed count is a lower bound: {note}"
+    );
 }

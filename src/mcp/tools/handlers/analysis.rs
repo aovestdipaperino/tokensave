@@ -2447,9 +2447,97 @@ fn field_name_from_chunk(chunk: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+use super::receiver_type;
+
 // ---------------------------------------------------------------------------
 // tokensave_field_sites
 // ---------------------------------------------------------------------------
+
+/// Declared types of every field the graph holds, keyed `Type::field`, plus
+/// whether `want_type` declares `want_field` at all.
+///
+/// The map is what `receiver_type` follows a chain through; the flag turns a
+/// qualified query naming a nonexistent field into a direct answer rather than
+/// a broad one (#458). Both come from one pass over the field nodes.
+async fn field_type_index(
+    cg: &TokenSave,
+    want_type: &str,
+    want_field: &str,
+) -> (receiver_type::TypeIndex, bool) {
+    let mut index = receiver_type::TypeIndex::default();
+    let mut declared = false;
+    // Scala spells its fields `ValField`/`VarField`; everything else uses
+    // `Field`.
+    let mut nodes = Vec::new();
+    for kind in [
+        crate::types::NodeKind::Field,
+        crate::types::NodeKind::ValField,
+        crate::types::NodeKind::VarField,
+    ] {
+        nodes.extend(cg.db().get_nodes_by_kind(kind).await.unwrap_or_default());
+    }
+    for node in nodes {
+        // `src/types.rs::GraphStats::last_sync_at` -> owner `GraphStats`.
+        let Some(owner) = receiver_type::owning_type(&node.qualified_name) else {
+            continue;
+        };
+        if owner == want_type && node.name == want_field {
+            declared = true;
+        }
+        // `pub last_sync_at: u64` -> `u64`. Without a declared type there is
+        // nothing to follow, so the entry stays absent and a chain through it
+        // reads as unknown rather than as a guess.
+        if let Some((_, ty)) = node.signature.as_deref().and_then(|s| s.rsplit_once(':')) {
+            let ty = receiver_type::normalize_type(ty);
+            if !ty.is_empty() {
+                index.fields.insert(format!("{owner}::{}", node.name), ty);
+            }
+        }
+    }
+
+    // Return types, keyed by bare function name and kept only where every
+    // function of that name agrees — a text scan cannot tell two same-named
+    // methods apart, so a disagreement must leave the name unresolvable
+    // rather than attribute a site to the wrong type.
+    let mut seen: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut callables = Vec::new();
+    for kind in [
+        crate::types::NodeKind::Function,
+        crate::types::NodeKind::Method,
+    ] {
+        callables.extend(cg.db().get_nodes_by_kind(kind).await.unwrap_or_default());
+    }
+    for node in callables {
+        let Some(ret) = node.signature.as_deref().and_then(return_type_of) else {
+            continue;
+        };
+        match seen.get(&node.name) {
+            Some(Some(existing)) if existing != &ret => {
+                seen.insert(node.name.clone(), None);
+            }
+            Some(_) => {}
+            None => {
+                seen.insert(node.name.clone(), Some(ret));
+            }
+        }
+    }
+    for (name, ret) in seen {
+        if let Some(ret) = ret {
+            index.returns.insert(name, ret);
+        }
+    }
+    (index, declared)
+}
+
+/// The declared return type in a signature: `fn f(&self) -> Result<T>` ->
+/// `Result<T>`. Returns `None` for a signature with no return arrow, which is
+/// every language whose functions do not write one.
+fn return_type_of(signature: &str) -> Option<String> {
+    let (_, ret) = signature.split_once("->")?;
+    let ret = ret.trim().trim_end_matches(['{', ';']).trim();
+    (!ret.is_empty()).then(|| ret.to_string())
+}
 
 pub(super) async fn handle_field_sites(
     cg: &TokenSave,
@@ -2477,6 +2565,48 @@ pub(super) async fn handle_field_sites(
     };
 
     let project_root = cg.project_root();
+
+    // Declared types of every field in the graph, keyed `Type::field`. This is
+    // what lets a chain like `self.inner.field` be followed one hop at a time
+    // (#458).
+    let (type_index, declared_on) = match qualifier.as_deref() {
+        Some(q) => field_type_index(cg, receiver_type::bare_type_name(q), &field_name).await,
+        None => (receiver_type::TypeIndex::default(), true),
+    };
+    // A qualified query naming a field the type does not declare is answerable
+    // outright, and answering it with every other type's sites is exactly the
+    // broad-answer-under-a-narrow-heading this tool was reported for.
+    if let (Some(q), false) = (qualifier.as_deref(), declared_on) {
+        let payload = json!({
+            "field": raw,
+            "qualifier": q,
+            "qualifier_applied": true,
+            "write_count": 0,
+            "write_returned": 0,
+            "write_lines": 0,
+            "read_count": 0,
+            "read_returned": 0,
+            "read_lines": 0,
+            "excluded_count": 0,
+            "unattributed_count": 0,
+            "truncated": false,
+            "write_sites": [],
+            "read_sites": [],
+            "qualifier_note": format!(
+                "No field '{field_name}' is declared on '{q}' anywhere in the index, so \
+                 there are no sites to narrow to. Check the type name, or query the bare \
+                 field name '{field_name}' to see every type that declares it."
+            ),
+        });
+        let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            }),
+            touched_files: Vec::new(),
+        });
+    }
+
     // Source-text scan: tracked artifacts have no code constructs to find, so
     // reading them is pure cost (#323).
     let files = cg.get_code_files().await?;
@@ -2493,6 +2623,11 @@ pub(super) async fn handle_field_sites(
     // previous line is enough to count distinct ones (#457).
     let mut write_lines = 0usize;
     let mut read_lines = 0usize;
+    // Sites the qualifier positively ruled out, and sites whose receiver could
+    // not be typed at all. Reported separately: the first is the narrowing
+    // working, the second is the limit of what a source-text scan can know.
+    let mut excluded = 0usize;
+    let mut unattributed = 0usize;
 
     for file in &files {
         if let Some(prefix) = scope_prefix {
@@ -2515,15 +2650,43 @@ pub(super) async fn handle_field_sites(
 
         for site in find_field_references(&source, &field_name) {
             let line_text = line_at(&source, site.byte).unwrap_or("");
-            let enclosing = nodes
+            let enclosing_node = nodes
                 .iter()
                 .filter(|n| {
                     // field sites are 1-based, node spans 0-based (#203)
                     let l0 = site.line.saturating_sub(1);
                     n.start_line <= l0 && l0 <= n.end_line
                 })
-                .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
-                .map(|n| n.qualified_name.clone());
+                .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
+            let enclosing = enclosing_node.map(|n| n.qualified_name.clone());
+
+            // Narrow, when a qualifier was given and the receiver resolves. A
+            // site whose receiver cannot be typed is neither kept nor dropped
+            // silently: it is counted, and the count is reported, so a
+            // narrowed answer never poses as a complete one (#458).
+            if let Some(q) = qualifier.as_deref() {
+                let enc = enclosing_node.map(|n| receiver_type::Enclosing {
+                    qualified_name: n.qualified_name.clone(),
+                    signature: n.signature.clone(),
+                    start_line: n.start_line,
+                    end_line: n.end_line,
+                });
+                // `site.byte` is just past the field name; the receiver ends
+                // at the dot that precedes it.
+                let dot = site.byte - field_name.len() - 1;
+                match receiver_type::attribute_site(&source, dot, q, enc.as_ref(), &type_index) {
+                    receiver_type::Attribution::Matches => {}
+                    receiver_type::Attribution::Excludes => {
+                        excluded += 1;
+                        continue;
+                    }
+                    receiver_type::Attribution::Unknown => {
+                        unattributed += 1;
+                        continue;
+                    }
+                }
+            }
+
             let entry = json!({
                 "file": file.path,
                 "line": site.line,
@@ -2561,13 +2724,9 @@ pub(super) async fn handle_field_sites(
         }
     }
 
-    // The qualifier is parsed but never narrows the scan: matching
-    // `Type::field` to a text site needs the receiver's type, which this
-    // source-text pass does not resolve. Say so in words as well as in the
-    // flag, since the failure is in the dangerous direction — the caller
-    // asked to narrow and gets the broad answer under a narrow heading
-    // (#458).
-    let qualifier_applied = false;
+    // The qualifier now narrows for real (#458): a site is kept only when its
+    // receiver resolves to the named type.
+    let qualifier_applied = qualifier.is_some();
     let truncated = writes.len() < write_total || reads.len() < read_total;
     let mut payload = if writes_only {
         json!({
@@ -2597,17 +2756,19 @@ pub(super) async fn handle_field_sites(
         })
     };
     if let Some(map) = payload.as_object_mut() {
-        if qualifier.is_some() {
+        if let Some(q) = qualifier.as_deref() {
+            map.insert("excluded_count".to_string(), json!(excluded));
+            map.insert("unattributed_count".to_string(), json!(unattributed));
             map.insert(
                 "qualifier_note".to_string(),
                 json!(format!(
-                    "The qualifier '{}' was NOT applied: these sites are every '.{}' \
-                     reference in scope, across all types, not only {}'s field. \
-                     Narrowing needs the receiver's resolved type, which this \
-                     source-text scan does not compute.",
-                    qualifier.as_deref().unwrap_or_default(),
-                    field_name,
-                    qualifier.as_deref().unwrap_or_default()
+                    "Narrowed to '{q}': {excluded} site(s) resolved to a different type and \
+                     were dropped. {unattributed} site(s) could not be attributed to any \
+                     type and are NOT included — a receiver is typed only from an explicit \
+                     declaration, a self/receiver binding, or a declared field type, so a \
+                     value returned by a call or read out of a container stays unknown. \
+                     Treat these counts as a lower bound; query the bare name \
+                     '{field_name}' for the unnarrowed answer."
                 )),
             );
         }
@@ -2643,7 +2804,6 @@ struct FieldSite {
     line: u32,
     kind: FieldRefKind,
 }
-
 fn find_field_references(source: &str, field: &str) -> Vec<FieldSite> {
     let bytes = source.as_bytes();
     let needle = format!(".{field}");
