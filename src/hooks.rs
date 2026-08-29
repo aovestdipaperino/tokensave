@@ -158,6 +158,11 @@ enum PatternShape {
     WordBoundary,
     /// Multiple identifiers joined by `|` (or `\|` in BRE).
     Alternation,
+    /// A definition-anchored spelling of a single symbol — a leading
+    /// `def`/`class`/`fn`/… keyword, a trailing `(`, or both (#452). The
+    /// grepper is looking for where the symbol is *declared*, which is
+    /// precisely `tokensave_search`.
+    Definition,
 }
 
 /// `PreToolUse` hook handler for Claude Code's Agent / Grep / Bash matchers.
@@ -539,6 +544,7 @@ fn redirect_message(tool_label: &str, pattern: &str, shape: PatternShape) -> Str
         PatternShape::BareSymbol | PatternShape::WordBoundary => {
             "tokensave_search (definition) or tokensave_callers_for (usages)"
         }
+        PatternShape::Definition => "tokensave_search (definition)",
         PatternShape::Alternation => {
             "tokensave_signature_search (multiple names at once) or repeated tokensave_search calls"
         }
@@ -569,13 +575,84 @@ fn classify_symbol_pattern(pattern: &str) -> Option<PatternShape> {
     let normalized = p.replace("\\|", "|");
     let parts: Vec<&str> = normalized.split('|').collect();
     if !parts.iter().all(|s| is_pure_identifier(s)) {
-        return None;
+        // Not a bare identifier (or alternation of them). Before passing it
+        // through, check whether it is the idiomatic way to grep for a
+        // *definition* — `def foo`, `class MyError`, `foo(` (#452). Those are
+        // the highest-value redirects, not the least: the intent is exactly a
+        // declaration lookup.
+        return classify_definition_pattern(p);
     }
 
     match (parts.len(), had_wb) {
         (1, true) => Some(PatternShape::WordBoundary),
         (1, false) => Some(PatternShape::BareSymbol),
         _ => Some(PatternShape::Alternation),
+    }
+}
+
+/// Definition-anchor keywords that may precede a symbol name in a grep pattern.
+/// Deliberately short and language-idiomatic: each one is a *declaration*
+/// keyword, so what follows it is a name being defined, never arbitrary prose.
+const DEFINITION_KEYWORDS: &[&str] = &[
+    "def",
+    "class",
+    "fn",
+    "func",
+    "function",
+    "struct",
+    "enum",
+    "trait",
+    "interface",
+    "impl",
+    "type",
+    "module",
+    "package",
+];
+
+/// Recognize a definition-anchored spelling of a single symbol: an optional
+/// leading declaration keyword, the identifier, and an optional trailing `(`.
+///
+/// Conservative by construction — exactly one identifier may survive the strip,
+/// and anything else left over (extra words, regex metacharacters, a trailing
+/// `)`, an argument list) returns `None` so the call passes through.
+fn classify_definition_pattern(pattern: &str) -> Option<PatternShape> {
+    let mut rest = pattern.trim();
+    // Anchors are noise for this purpose: `^def foo` is the same intent.
+    rest = rest.strip_prefix('^').unwrap_or(rest);
+    rest = rest.trim_start();
+
+    let mut had_keyword = false;
+    let mut had_paren = false;
+    for kw in DEFINITION_KEYWORDS {
+        if let Some(tail) = rest.strip_prefix(kw) {
+            // Require real separation, so `defaults` is not read as `def aults`.
+            if tail.starts_with(|c: char| c.is_whitespace()) {
+                rest = tail.trim_start();
+                had_keyword = true;
+                break;
+            }
+        }
+    }
+
+    // A trailing `(` (bare or escaped) marks a call or definition site.
+    if let Some(head) = rest.strip_suffix('(') {
+        rest = head.strip_suffix('\\').unwrap_or(head);
+        had_paren = true;
+    }
+    rest = rest.trim_end();
+
+    // Without an anchor there is nothing here the bare-identifier path did not
+    // already reject.
+    if !(had_keyword || had_paren) || !is_pure_identifier(rest) {
+        return None;
+    }
+    // A declaration keyword pins the intent to the definition. A bare trailing
+    // paren does not — `foo(` is as often a hunt for call sites — so it gets
+    // the same both-ways suggestion a bare identifier gets.
+    if had_keyword {
+        Some(PatternShape::Definition)
+    } else {
+        Some(PatternShape::BareSymbol)
     }
 }
 
@@ -600,6 +677,10 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
     // (e.g. /tmp, another repo) are not tokensave's concern.
     // Skip when project_root is unknown (tests, edge cases): fall through to
     // the original classification rules.
+    // Set when the target is known to resolve inside the indexed tree. That is
+    // a stronger signal than any name-based rule, so it overrides the
+    // directory-basename fallback further down (#452).
+    let mut known_inside = false;
     if !path.is_empty() && env.project_root.is_some() {
         let raw = path.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
         match classify_path_within_project(raw, env.project_root.as_deref()) {
@@ -616,6 +697,7 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
                 if path_is_config_excluded(raw, env.project_root.as_deref()) {
                     return false;
                 }
+                known_inside = true;
             }
             // Unknown: keep the existing extension / directory rules.
             Containment::Unknown => {}
@@ -663,14 +745,74 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
         }
     }
 
-    // No extension — treat as a directory. Block only when the last path
-    // component is a recognized code root.
+    // No extension — treat as a directory. When the path already resolved
+    // inside the indexed tree and survived the exclude globs, that *is* the
+    // answer: the directory holds indexed files whatever it is called, and a
+    // name list can only get it wrong (#452 — `mypkg/`, `core/`, `api/` are
+    // ordinary source roots). The basename list stays as the fallback for a
+    // target we could not resolve, where a name is all we have.
+    if known_inside && dir_holds_code_files(trimmed) {
+        return true;
+    }
     let last = trimmed
         .trim_end_matches(std::path::is_separator)
         .rsplit(std::path::is_separator)
         .next()
         .unwrap_or("");
     CODE_DIRS.contains(&last)
+}
+
+/// How many directory entries `dir_holds_code_files` will look at before
+/// giving up. A hook runs on every tool call, so the walk has to be bounded;
+/// exhausting the budget answers "no" and the caller falls through to the
+/// name-based rule, which is the pre-existing behaviour.
+const CODE_FILE_SCAN_BUDGET: usize = 2_000;
+
+/// Does this directory actually contain source files the index would hold?
+///
+/// The name of a directory is a poor proxy for what is in it (#452): `mypkg/`,
+/// `core/` and `api/` are ordinary source roots, while `docs/` inside the same
+/// project is not. Answer from the contents instead, breadth-first and
+/// bounded, stopping at the first file with a known code extension. Hidden
+/// directories are skipped — they are not indexed, and descending into `.git`
+/// would burn the whole budget for nothing.
+fn dir_holds_code_files(path: &str) -> bool {
+    let start = PathBuf::from(path);
+    if start.is_file() {
+        return true;
+    }
+    let mut queue = std::collections::VecDeque::from([start]);
+    let mut seen = 0usize;
+    while let Some(dir) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > CODE_FILE_SCAN_BUDGET {
+                return false;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => queue.push_back(entry.path()),
+                Ok(ft) if ft.is_file() => {
+                    let ext = name
+                        .rsplit_once('.')
+                        .map(|(_, e)| e.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if !ext.is_empty() && CODE_EXTENSIONS.contains(&ext.as_str()) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 /// Result of asking whether a path lies inside the indexed project root.
