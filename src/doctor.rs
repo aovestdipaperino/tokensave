@@ -137,7 +137,7 @@ fn check_global_db(dc: &mut DoctorCounters) {
 /// (#450). The reported runaway was 29.9 GB; a real project on the same
 /// machine was 420 MB. Deliberately well above any plausible monorepo, since
 /// this only warns and a false positive costs the user a line of output.
-const OVERSIZED_INDEX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+use crate::index_scope::{index_size_bytes, same_directory, OVERSIZED_INDEX_BYTES};
 
 /// Warn about an index whose *scope* is wrong rather than whose contents are
 /// (#450).
@@ -162,61 +162,27 @@ fn check_index_scope(dc: &mut DoctorCounters, project_path: &Path) {
 fn check_index_scope_with(dc: &mut DoctorCounters, project_path: &Path, home: Option<&Path>) {
     // Checked whatever the working directory is: the whole problem with this
     // state is that nobody is standing in it when it does the damage.
-    let home_indexed = home.filter(|home| TokenSave::is_initialized(home));
-    if let Some(home) = &home_indexed {
-        let size = index_size_bytes(home);
-        dc.warn(&format!(
-            "Home directory is initialized as a project: {}/.tokensave/ ({}) \
-             — every `serve` started here indexes your whole home tree. \
-             Remove it with `rm -rf {}/.tokensave` unless you meant it.",
-            home.display(),
-            format_bytes(size),
-            home.display()
-        ));
-    } else {
-        dc.pass("Home directory is not indexed as a project");
+    // Shared with the warning `serve` now prints (#450), so the two cannot
+    // drift into disagreeing about what counts as a scope problem. `doctor`
+    // additionally reports the healthy states, which a server start does not.
+    let warnings = crate::index_scope::scope_warnings(project_path, home);
+    for warning in &warnings {
+        dc.warn(warning);
     }
 
-    // The current project, when it is not the home directory already reported.
-    let is_home = home_indexed
-        .as_ref()
-        .is_some_and(|home| same_directory(home, project_path));
+    let home_indexed = home.filter(|home| TokenSave::is_initialized(home));
+    if home_indexed.is_none() {
+        dc.pass("Home directory is not indexed as a project");
+    }
+    let is_home = home_indexed.is_some_and(|home| same_directory(home, project_path));
     if !is_home && TokenSave::is_initialized(project_path) {
         let size = index_size_bytes(project_path);
-        if size >= OVERSIZED_INDEX_BYTES {
-            dc.warn(&format!(
-                "Index is unusually large: {} ({}) — check `exclude` globs in \
-                 .tokensave/config.json; a `serve` maps this whole file.",
-                format_bytes(size),
-                project_path.display()
-            ));
-        } else {
+        if size < OVERSIZED_INDEX_BYTES {
             dc.pass(&format!(
                 "Index size is unremarkable: {}",
                 format_bytes(size)
             ));
         }
-    }
-}
-
-/// On-disk size of a project's index, WAL included — the WAL is part of what a
-/// running server maps, and it is where an actively-syncing runaway shows up
-/// first.
-fn index_size_bytes(project_path: &Path) -> u64 {
-    let dir = crate::config::get_tokensave_dir(project_path);
-    ["tokensave.db", "tokensave.db-wal"]
-        .iter()
-        .map(|name| std::fs::metadata(dir.join(name)).map_or(0, |m| m.len()))
-        .sum()
-}
-
-/// Compare two directories by canonical path, so `~`, a symlink, or a
-/// trailing separator does not make the home directory look like a different
-/// place than the working directory that is inside it.
-fn same_directory(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
     }
 }
 

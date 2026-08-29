@@ -475,6 +475,51 @@ The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
 from that watcher. It is still accepted, but nothing reads it, and the
 30-second cooldown is not configurable.
 
+### Interrupting a sync
+
+`Ctrl-C` and `kill` stop a sync in progress rather than waiting for it to
+finish. A sync polls for the request in the phases that dominate its runtime —
+the parallel extraction pass and the per-file write loop — so on a large tree
+it stops in well under a second instead of minutes.
+
+Stopping is always safe. The index keeps its stale marker, so the next sync
+redoes the abandoned work, and the sync lock is released so that next sync can
+run at all. What the message tells you is how far it got:
+
+- *"no partial results were committed"* — it stopped before anything was
+  written.
+- *"partway through writing"* — some files were updated and others were not.
+  This is the same state a power cut would leave, and the next `tokensave
+  sync` resolves it.
+
+An MCP server is subject to the same thing: a `kill` during its automatic
+catch-up sync now takes effect during the sync rather than after it.
+
+### Index scope warnings
+
+A `serve` warns on stderr, once at startup, about an index whose *scope* looks
+wrong rather than whose contents do:
+
+- **Your home directory is initialised as a project.** Every server started
+  there indexes your whole home tree. This is reported wherever you are
+  standing, because the whole problem with this state is that nobody is
+  standing in it when it does the damage (#450).
+- **The index is larger than 5 GB.** A server maps the whole file.
+
+Both are warnings, not refusals, and the server starts normally. An index that
+already exists is a working setup, and refusing it retroactively would decide
+for you which of your projects stop working. If you meant it, set
+`suppress_scope_warning: true` in `.tokensave/config.json` to stop being told.
+`tokensave doctor` reports the same two conditions and ignores the switch.
+
+### Orphaned servers
+
+On Unix, a `serve` whose launching process has died exits on its own within
+about 30 seconds. A host that exits without closing the server's stdin used to
+leave the server running indefinitely with its whole index mapped, to be found
+and killed by hand (#450). This covers a *dead* parent only; duplicate servers
+under a still-live host are a host-side problem (#436).
+
 ### Strict mode: refuse worktree content mismatches
 
 Branch drift is now refused by default (see the sync safeguards above), so

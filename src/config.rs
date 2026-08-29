@@ -137,6 +137,17 @@ pub struct TokenSaveConfig {
     /// the symbol pass owns those files and records them with their symbols.
     #[serde(default = "default_artifact_extensions")]
     pub artifact_extensions: Vec<String>,
+    /// Silence the index-scope warning `serve` prints for a home-directory
+    /// project or an index past 5 GB (#450). Defaults to `false`.
+    ///
+    /// The warning is not a refusal: applying #396's cap to an index that
+    /// already exists would decide for the user which of their working setups
+    /// stop working, and no threshold does that without breaking somebody who
+    /// is currently fine. Someone who deliberately indexes a very large tree
+    /// is not wrong, only unusual — this is the switch that says so once
+    /// instead of on every server start.
+    #[serde(default)]
+    pub suppress_scope_warning: bool,
 }
 
 /// Serde default for [`TokenSaveConfig::artifact_extensions`].
@@ -221,6 +232,7 @@ impl Default for TokenSaveConfig {
             max_auto_sync_files: default_max_auto_sync_files(),
             report_savings: default_report_savings(),
             artifact_extensions: default_artifact_extensions(),
+            suppress_scope_warning: false,
         }
     }
 }

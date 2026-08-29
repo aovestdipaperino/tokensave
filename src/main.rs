@@ -357,6 +357,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             doctor,
             verbose,
         } => {
+            // An explicit sync is unbounded by design and can run for minutes
+            // on a large tree; Ctrl-C must stop it at the next phase boundary
+            // rather than at the end (#450).
+            tokensave::cancel::install_signal_handlers();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             if !TokenSave::is_initialized(&project_path) {
                 eprintln!(
@@ -1038,6 +1042,19 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
             };
+
+            // Set the shutdown flag the instant a signal arrives, rather than
+            // only when the run loop next looks. The loop's own SIGTERM stream
+            // is polled only while it waits for a request, so a signal
+            // delivered during a long sync would otherwise not be observed
+            // until that sync finished (#450).
+            tokensave::cancel::install_signal_handlers();
+            watch_for_orphaning();
+            // An index whose *scope* is wrong is still a valid index, so this
+            // warns and continues rather than refusing: retroactively applying
+            // #396's cap would decide which of the user's existing setups stop
+            // working. `suppress_scope_warning` opts out (#450).
+            tokensave::index_scope::warn_on_serve(cg.project_root());
 
             // Memory instrumentation for #253: mark this process as a
             // long-lived MCP server and take a baseline RSS sample.
@@ -1817,3 +1834,44 @@ mod cost_tests {
         );
     }
 }
+
+/// Exit when the process that launched us is gone (#450, defect 3 of the #396
+/// triage).
+///
+/// A `serve` whose host died keeps its index mapped and keeps answering
+/// nothing, because stdin never reaches EOF once the parent's end of the pipe
+/// is inherited elsewhere — the reported servers survived their supervisor and
+/// had to be found by hand. A reparented process is unambiguous on Unix: its
+/// parent becomes PID 1 (or whatever subreaper adopts it), never the PID it
+/// started with.
+///
+/// This is deliberately *not* a fix for #436, where every surplus server has a
+/// live parent and there is no dead-parent signal to key on.
+#[cfg(unix)]
+fn watch_for_orphaning() {
+    /// Slow on purpose. An orphan wastes memory until it is noticed, which is
+    /// a minute-scale problem, not a second-scale one, and this polls for the
+    /// entire life of every server.
+    const POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let original = std::os::unix::process::parent_id();
+    // A server already started by PID 1 (a launchd/systemd unit) has no parent
+    // to lose, and would otherwise exit on its first tick.
+    if original <= 1 {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(POLL).await;
+            if std::os::unix::process::parent_id() != original {
+                eprintln!("[tokensave] parent process {original} is gone; shutting down");
+                tokensave::cancel::request();
+                return;
+            }
+        }
+    });
+}
+
+/// No reparenting signal to watch for off Unix.
+#[cfg(not(unix))]
+fn watch_for_orphaning() {}

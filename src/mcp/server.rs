@@ -1276,6 +1276,12 @@ impl McpServer {
                         }
                         _ = tokio::signal::ctrl_c() => break,
                         _ = sigterm.recv() => break,
+                        // Set by the process-wide handler in `cancel`, which
+                        // observes a signal the moment it lands rather than
+                        // only while this loop is parked here — and by the
+                        // orphan watchdog, which has no signal to deliver at
+                        // all (#450).
+                        () = crate::cancel::cancelled() => break,
                     }
                 }
                 #[cfg(not(unix))]
@@ -1288,6 +1294,7 @@ impl McpServer {
                             }
                         }
                         _ = tokio::signal::ctrl_c() => break,
+                        () = crate::cancel::cancelled() => break,
                     }
                 }
             };

@@ -298,6 +298,10 @@ impl TokenSave {
         // `begin_bulk_load` can fail while another process holds the table
         // lock, and clearing first would leave the project with an empty index
         // that the MCP server then keeps serving (#320).
+        // Before the destructive step, not after: `clear()` empties the index
+        // and a shutdown observed a moment later would leave nothing to serve
+        // until the next sync. Leaving here costs the caller nothing (#450).
+        crate::cancel::check("index")?;
         self.db.begin_bulk_load().await?;
         self.db.clear().await?;
 
@@ -321,6 +325,10 @@ impl TokenSave {
         let (files, artifact_files) = Self::partition_artifacts(files, &self.artifact_extensions());
         let (extractions, _skipped) =
             extract_files_isolated(&project_root, registry, files.clone());
+        // Extraction stops early on a shutdown, so a short result here means
+        // abandoned work, not an empty project. Committing it would write a
+        // partial graph that looks complete.
+        crate::cancel::check("index")?;
 
         // 4. Collect all data
         let mut all_nodes = Vec::new();
@@ -393,6 +401,12 @@ impl TokenSave {
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
         crate::memstats::set_graph_nodes(all_nodes.len() as u64);
+        // Last point before anything is written in the full-index path: the
+        // inserts all happen after resolution, so leaving here still commits
+        // nothing (#450). Resolution itself is a single whole-graph pass with
+        // no safe interior seam, hence the check in front of it rather than
+        // inside it.
+        crate::cancel::check("index")?;
         if !all_unresolved.is_empty() {
             // #253: `from_nodes` borrows from `all_nodes` rather than
             // cloning it into its caches; the remaining peak here is
@@ -734,6 +748,8 @@ impl TokenSave {
             self.db.insert_edges(&owned).await?;
         }
 
+        crate::cancel::check_partial("sync")?;
+
         // Resolve references for any new/changed unresolved refs
         if !file_paths.is_empty() {
             // #253: `from_nodes` borrows rather than clones. #306: the load
@@ -834,6 +850,7 @@ impl TokenSave {
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
+        crate::cancel::check("sync")?;
         on_progress(0, 0, "scanning files");
         let phase_start = Instant::now();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
@@ -861,6 +878,8 @@ impl TokenSave {
             file_stats.len(),
             phase_start.elapsed().as_secs_f64()
         ));
+
+        crate::cancel::check("sync")?;
 
         // Load all DB file records into a map for O(1) lookups
         let db_files = self.db.get_all_files().await?;
@@ -1034,6 +1053,10 @@ impl TokenSave {
         // so the user can see them in `tokensave sync --doctor`.
         skipped.extend(sync_skipped);
 
+        // Extraction is the long phase and stops early on a shutdown, so this
+        // is the last point at which nothing has been written yet (#450).
+        crate::cancel::check("sync")?;
+
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
         let total = sync_extractions.len();
@@ -1042,6 +1065,11 @@ impl TokenSave {
         let mut queued_edges: Vec<&Edge> = Vec::new();
         let mut body_documents = Vec::new();
         for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
+            // Past this point rows are being written per file, so an
+            // interruption leaves a partially updated index rather than an
+            // untouched one — reported as such (#450). Checked per file
+            // because on a large tree this loop is minutes of work.
+            crate::cancel::check_partial("sync")?;
             on_progress(idx + 1, total, file_path);
 
             total_nodes += result.nodes.len();

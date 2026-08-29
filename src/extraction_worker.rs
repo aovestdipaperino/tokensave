@@ -326,6 +326,15 @@ fn worker_thread<F>(
     F: Fn(usize, usize, &str) + Send + Sync,
 {
     loop {
+        // Stop pulling work the moment a shutdown is requested (#450). The
+        // in-flight round trip is bounded by `per_file_timeout`, so the pool
+        // drains in well under a second rather than running to the end of a
+        // large tree. Workers that stop early leave files unextracted; the
+        // caller's own cancellation check turns that into an `Err` with the
+        // dirty sentinel intact, so nothing half-extracted is committed.
+        if crate::cancel::is_requested() {
+            break;
+        }
         let next = queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
