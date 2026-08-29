@@ -1238,14 +1238,35 @@ impl McpServer {
             "server run() called on an already-used server"
         );
 
+        // Registered once, for the life of the loop, rather than per
+        // iteration (#450/#436).
+        //
+        // Creating the stream inside the loop meant it existed only while
+        // `select!` awaited the next line, and was dropped before
+        // `handle_request` ran. Tokio's registration is process-global and is
+        // *not* undone on drop, so the default disposition — terminate — was
+        // permanently replaced after the first iteration, while for most of a
+        // busy server's life nothing was listening. A SIGTERM delivered during
+        // request handling therefore neither killed the process nor reached
+        // the loop: the next iteration built a fresh stream, which cannot see
+        // an event delivered before it existed. That is the reported
+        // behaviour, a server that ignores `kill` and needs `SIGKILL`.
+        //
+        // Held across the whole loop, the stream coalesces and retains a
+        // signal delivered while it is not being polled, so a SIGTERM arriving
+        // mid-request is observed at the top of the next iteration and the
+        // server leaves through the normal graceful shutdown. Note this waits
+        // for the in-flight request to finish; interrupting a long sync
+        // mid-flight is a separate decision, tracked on #450.
+        #[cfg(unix)]
+        #[allow(clippy::expect_used)]
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
         loop {
             let line: String = {
                 #[cfg(unix)]
                 {
-                    #[allow(clippy::expect_used)]
-                    let mut sigterm =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                            .expect("failed to register SIGTERM handler");
                     tokio::select! {
                         result = transport.read_line() => {
                             match result {

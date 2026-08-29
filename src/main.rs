@@ -1065,6 +1065,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             server.run(&mut transport).await?;
             server.shutdown().await;
+            // Exit explicitly rather than unwinding out of `main` (#450/#436).
+            //
+            // `tokio::io::stdin()` performs its reads on a blocking thread,
+            // and a blocking task cannot be cancelled — so the outstanding
+            // read is still parked when the run loop leaves. Dropping the
+            // runtime waits for it, and under a supervisor that holds our
+            // stdin open it never completes: the server ran its whole
+            // graceful shutdown, printed its summary, and then sat there
+            // alive and unkillable by anything short of `SIGKILL`. That is
+            // the reported "kill did nothing" and the servers that "never
+            // exit" under a live parent.
+            //
+            // Shutdown has already persisted counters and checkpointed the
+            // WAL, and is idempotent, so there is nothing left to unwind for.
+            // Flush stdout first: a response written just before a signal
+            // must still reach the client.
+            {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            std::process::exit(0);
         }
         Commands::Upgrade { kill } => {
             tokensave::upgrade::run_upgrade(kill)?;
