@@ -604,8 +604,21 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
         let raw = path.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
         match classify_path_within_project(raw, env.project_root.as_deref()) {
             Containment::Outside => return false,
-            // Inside or Unknown: keep the existing extension / directory rules.
-            Containment::Inside | Containment::Unknown => {}
+            // Inside the tree is not the same as inside the index. A path
+            // under one of the project's own `exclude` globs — `node_modules`,
+            // `vendor`, `build`, `target` — is never indexed, so the tools
+            // this guardrail redirects to cannot answer for it, and blocking
+            // the grep costs a round-trip through the opt-out for a query
+            // nothing else can serve (#448). Same shape as #435, which fixed
+            // the out-of-tree half; the indexer and the hook were reading two
+            // different notions of "in scope".
+            Containment::Inside => {
+                if path_is_config_excluded(raw, env.project_root.as_deref()) {
+                    return false;
+                }
+            }
+            // Unknown: keep the existing extension / directory rules.
+            Containment::Unknown => {}
         }
     }
 
@@ -707,6 +720,60 @@ fn classify_path_containment_with_home(
         }
         _ => Containment::Unknown,
     }
+}
+
+/// True when `raw` resolves to a path the project's own `.tokensave/config.json`
+/// excludes from indexing (#448).
+///
+/// Read straight from the project's config so the hook and the indexer share
+/// one definition of what is in scope, rather than the hook keeping a second
+/// list that can drift. A config that cannot be read answers `false`, leaving
+/// the caller's existing rules in charge — the same fail-open policy
+/// [`classify_path_containment_with_home`] applies to a path it cannot
+/// resolve.
+fn path_is_config_excluded(raw: &str, project_root: Option<&Path>) -> bool {
+    let Some(root) = project_root else {
+        return false;
+    };
+    let Ok(config) = crate::config::load_config(root) else {
+        return false;
+    };
+    path_is_config_excluded_with(raw, root, &config, crate::agents::home_dir().as_deref())
+}
+
+/// [`path_is_config_excluded`] with the config and home directory injected, so
+/// tests need neither a config file on disk nor a mutated environment.
+fn path_is_config_excluded_with(
+    raw: &str,
+    root: &Path,
+    config: &crate::config::TokenSaveConfig,
+    home: Option<&Path>,
+) -> bool {
+    let Some(target) = expand_home_prefix(raw, home) else {
+        return false;
+    };
+    let resolved = if target.is_absolute() {
+        target
+    } else {
+        root.join(target)
+    };
+    let (Ok(target), Ok(root)) = (resolved.canonicalize(), root.canonicalize()) else {
+        return false;
+    };
+    let Ok(relative) = target.strip_prefix(&root) else {
+        return false;
+    };
+    // Exclude globs are written with forward slashes regardless of platform,
+    // matching how the scanner spells the paths it tests them against.
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty() {
+        return false;
+    }
+    // A grep target is as likely to be a directory as a file, and the two
+    // glob spellings (`vendor/**` and `**/vendor`) are matched by different
+    // helpers, so ask both.
+    crate::config::is_excluded(&relative, config)
+        || crate::config::is_excluded_dir(&relative, config)
 }
 
 fn classify_path_within_project(raw: &str, project_root: Option<&Path>) -> Containment {
