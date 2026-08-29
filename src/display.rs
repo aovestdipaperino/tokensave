@@ -4,6 +4,7 @@
 //! extracted from main.rs to keep the CLI entry point focused on dispatch.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use crate::types::GraphStats;
 
@@ -104,6 +105,37 @@ pub struct BranchInfo {
     pub is_fallback: bool,
 }
 
+/// Formats the canonical project root row shared by both status layouts.
+pub fn format_project_row(project_root: &Path) -> String {
+    format!("Project: {}", project_root.display())
+}
+
+/// Formats a project root row within the requested visible width.
+pub fn format_bounded_project_row(project_root: &Path, max_width: usize) -> String {
+    let text = format_project_row(project_root);
+    if text.chars().count() <= max_width {
+        text
+    } else {
+        const LABEL: &str = "Project: ";
+        let label_len = LABEL.chars().count();
+        if max_width <= label_len {
+            return LABEL.chars().take(max_width).collect();
+        }
+
+        let tail_width = max_width - label_len - 1;
+        let tail: String = text
+            .chars()
+            .rev()
+            .take(tail_width)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{LABEL}…{tail}")
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn print_status_header(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -112,6 +144,7 @@ pub fn print_status_header(
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
     cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
 ) {
     let num_cols = 3;
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -134,6 +167,9 @@ pub fn print_status_header(
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
     }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
+    }
     println!("{}", table_separator('╰', '─', '╯', cell_width, num_cols));
 }
 
@@ -147,6 +183,7 @@ pub fn print_status_table(
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
     cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
     details: bool,
 ) {
     let num_cols = 3;
@@ -180,6 +217,9 @@ pub fn print_status_table(
     );
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
+    }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
     }
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
@@ -374,6 +414,13 @@ fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     let visible_len = text.replace("\x1b[33m", "").replace("\x1b[0m", "").len();
     let pad = available.saturating_sub(visible_len);
     println!("│ {}{} │", " ".repeat(pad), text);
+}
+
+fn print_project_row(project_root: &Path, inner_width: usize) {
+    let available = inner_width.saturating_sub(2);
+    let bounded = format_bounded_project_row(project_root, available);
+    let pad = available.saturating_sub(bounded.chars().count());
+    println!("│ {}{} │", " ".repeat(pad), bounded);
 }
 
 /// Print the cost summary row: today's cost, 7-day cost, efficiency ratio.

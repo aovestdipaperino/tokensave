@@ -517,6 +517,11 @@ async fn test_status() {
         text.contains("server"),
         "status should include server stats"
     );
+    let payload: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(
+        payload["project_root"],
+        json!(cg.project_root().to_string_lossy())
+    );
 }
 
 // ---------------------------------------------------------------------------
