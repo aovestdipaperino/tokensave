@@ -43,6 +43,8 @@ mod vbnet_extractor;
 mod actionscript_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
+#[cfg(feature = "lang-canvas")]
+mod canvas_extractor;
 #[cfg(feature = "lang-clojure")]
 mod clojure_extractor;
 #[cfg(feature = "lang-cobol")]
@@ -152,6 +154,8 @@ pub use vbnet_extractor::VbNetExtractor;
 pub use actionscript_extractor::ActionScriptExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
+#[cfg(feature = "lang-canvas")]
+pub use canvas_extractor::CanvasExtractor;
 #[cfg(feature = "lang-clojure")]
 pub use clojure_extractor::ClojureExtractor;
 #[cfg(feature = "lang-cobol")]
@@ -334,6 +338,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(MetalExtractor));
         #[cfg(feature = "lang-markdown")]
         extractors.push(Box::new(MarkdownExtractor));
+        #[cfg(feature = "lang-canvas")]
+        extractors.push(Box::new(CanvasExtractor));
         #[cfg(feature = "lang-r")]
         extractors.push(Box::new(RExtractor));
         #[cfg(feature = "lang-sql")]
