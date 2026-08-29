@@ -1,3 +1,5 @@
+#![cfg(not(windows))]
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Mutex;
