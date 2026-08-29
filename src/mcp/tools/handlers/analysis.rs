@@ -2064,6 +2064,21 @@ pub(super) async fn handle_diagnostics(cg: &TokenSave, args: Value) -> Result<To
 // tokensave_constructors
 // ---------------------------------------------------------------------------
 
+/// Does this file's language build values with `Name { ... }` literals?
+///
+/// Rust and Go do; Python (`Name(...)`), Java (`new Name(...)`), Ruby and the
+/// rest do not, and against those the literal scan is guaranteed to find
+/// nothing (#458). C#'s `new Name { ... }` is an object *initializer* over an
+/// already-constructed value, not a whole-value literal, so a missing-fields
+/// list read off it would mean something different from what this tool
+/// promises — it is excluded on purpose.
+fn literal_syntax_is_supported(file_path: &str) -> bool {
+    matches!(
+        file_path.rsplit('.').next().unwrap_or_default(),
+        "rs" | "go"
+    )
+}
+
 pub(super) async fn handle_constructors(
     cg: &TokenSave,
     args: Value,
@@ -2100,6 +2115,43 @@ pub(super) async fn handle_constructors(
                 "content": [{ "type": "text", "text": format!("No struct, class, or case-class named '{struct_name}' found.") }]
             }),
             touched_files: vec![],
+        });
+    }
+
+    // The literal scan looks for `Name { ... }`, which is Rust's and Go's
+    // construction syntax and nobody else's: Python builds with
+    // `Name(...)`, Java with `new Name(...)`. Against those the scan finds
+    // nothing and used to report a clean, confident `match_count: 0`, which
+    // is indistinguishable from "this type is never constructed" — a false
+    // negative dressed as an answer, in a tool whose name promises exactly
+    // the question an impact review asks (#458).
+    //
+    // The type's own declaring file decides. Saying "not supported here" is
+    // a refusal the caller can act on; a zero is not.
+    if !struct_nodes
+        .iter()
+        .any(|n| literal_syntax_is_supported(&n.file_path))
+    {
+        let langs: Vec<String> = struct_nodes.iter().map(|n| n.file_path.clone()).collect();
+        let payload = json!({
+            "struct": struct_name,
+            "language_supported": false,
+            "note": format!(
+                "'{struct_name}' is declared in {} — this tool scans for `Name {{ ... }}` \
+                 literal syntax, which only Rust and Go use, so it cannot answer for this \
+                 type. `match_count` and `sites` are omitted deliberately: a zero here \
+                 would be indistinguishable from 'never constructed'. Try \
+                 tokensave_callers_for on the type's constructor, or tokensave_field_sites \
+                 for the individual fields.",
+                langs.join(", ")
+            ),
+        });
+        let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            }),
+            touched_files: Vec::new(),
         });
     }
 
@@ -2167,6 +2219,7 @@ pub(super) async fn handle_constructors(
 
     let payload = json!({
         "struct": struct_name,
+        "language_supported": true,
         "expected_fields": expected_fields.iter().cloned().collect::<Vec<_>>(),
         "match_count": sites.len(),
         "sites": sites,
@@ -2348,6 +2401,14 @@ fn has_disqualifying_prefix(source: &str, idx: usize) -> bool {
         return false;
     }
     if probe >= 2 && &bytes[probe - 2..probe] == b"->" {
+        return true;
+    }
+    // Go writes a return type where Rust writes `-> T`: `func f() Settings {`
+    // and `func (s *S) f() Settings {` both put the type between a `)` and the
+    // body's brace. Without this the function's own signature is reported as a
+    // construction site, with a `missing_fields` list naming every field —
+    // advice to "fix" a declaration that constructs nothing (#458).
+    if bytes[probe - 1] == b')' {
         return true;
     }
     let id_end = probe;

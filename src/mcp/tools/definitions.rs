@@ -2221,8 +2221,12 @@ fn def_constructors() -> ToolDefinition {
          relative to the struct's current definition (from the graph). The \
          missing-fields list is the typical refactor signal: after adding a \
          required field, this tool surfaces every site that needs updating, \
-         before cargo even compiles. Currently best-effort for Rust source; \
-         pattern matching ignores `match` arms and `if let` patterns.",
+         before cargo even compiles. Scans for `Name { ... }` literal syntax, \
+         so it answers for Rust and Go only; for a type declared in any other \
+         language the response is `language_supported: false` with no \
+         `match_count`, rather than a zero that would read as 'never \
+         constructed'. Pattern matching ignores `match` arms and `if let` \
+         patterns.",
         json!({
             "type": "object",
             "properties": {
