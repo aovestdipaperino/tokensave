@@ -24,6 +24,7 @@ pub(super) async fn handle_status(
 ) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
+    output["project_root"] = json!(cg.project_root().to_string_lossy());
     output["version"] = json!(env!("CARGO_PKG_VERSION"));
     if let Some(ss) = server_stats {
         output["server"] = ss;

@@ -623,6 +623,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         &country_flags,
                         branch_info.as_ref(),
                         cost_info.as_ref(),
+                        Some(cg.project_root()),
                     );
                 } else {
                     tokensave::display::print_status_table(
@@ -633,6 +634,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         &country_flags,
                         branch_info.as_ref(),
                         cost_info.as_ref(),
+                        Some(cg.project_root()),
                         details,
                     );
                 }
