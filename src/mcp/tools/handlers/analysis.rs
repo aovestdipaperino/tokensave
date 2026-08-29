@@ -2483,8 +2483,18 @@ pub(super) async fn handle_field_sites(
     let mut writes: Vec<Value> = Vec::new();
     let mut reads: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
+    // Totals are counted over every matching site, not just the ones that fit
+    // under `limit` (#457): a capped page reported as a total understates a
+    // blast radius, which is the one question this tool exists to answer.
+    let mut write_total = 0usize;
+    let mut read_total = 0usize;
+    // Two references to the field on one source line are two sites but one
+    // line. Sites arrive in byte order within a file, so lines ascend and the
+    // previous line is enough to count distinct ones (#457).
+    let mut write_lines = 0usize;
+    let mut read_lines = 0usize;
 
-    'outer: for file in &files {
+    for file in &files {
         if let Some(prefix) = scope_prefix {
             let with_slash = if prefix.ends_with('/') {
                 prefix.to_string()
@@ -2500,6 +2510,8 @@ pub(super) async fn handle_field_sites(
             continue;
         };
         let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+        let mut last_write_line: Option<u32> = None;
+        let mut last_read_line: Option<u32> = None;
 
         for site in find_field_references(&source, &field_name) {
             let line_text = line_at(&source, site.byte).unwrap_or("");
@@ -2523,31 +2535,49 @@ pub(super) async fn handle_field_sites(
             }
             match site.kind {
                 FieldRefKind::Write => {
-                    writes.push(entry);
-                    if writes.len() >= limit && (writes_only || reads.len() >= limit) {
-                        break 'outer;
+                    write_total += 1;
+                    if last_write_line != Some(site.line) {
+                        write_lines += 1;
+                        last_write_line = Some(site.line);
+                    }
+                    if writes.len() < limit {
+                        writes.push(entry);
                     }
                 }
                 FieldRefKind::Read => {
                     if writes_only {
                         continue;
                     }
-                    reads.push(entry);
-                    if reads.len() >= limit && writes.len() >= limit {
-                        break 'outer;
+                    read_total += 1;
+                    if last_read_line != Some(site.line) {
+                        read_lines += 1;
+                        last_read_line = Some(site.line);
+                    }
+                    if reads.len() < limit {
+                        reads.push(entry);
                     }
                 }
             }
         }
     }
 
+    // The qualifier is parsed but never narrows the scan: matching
+    // `Type::field` to a text site needs the receiver's type, which this
+    // source-text pass does not resolve. Say so in words as well as in the
+    // flag, since the failure is in the dangerous direction — the caller
+    // asked to narrow and gets the broad answer under a narrow heading
+    // (#458).
     let qualifier_applied = false;
-    let payload = if writes_only {
+    let truncated = writes.len() < write_total || reads.len() < read_total;
+    let mut payload = if writes_only {
         json!({
             "field": raw,
             "qualifier": qualifier,
             "qualifier_applied": qualifier_applied,
-            "write_count": writes.len(),
+            "write_count": write_total,
+            "write_returned": writes.len(),
+            "write_lines": write_lines,
+            "truncated": truncated,
             "write_sites": writes,
         })
     } else {
@@ -2555,12 +2585,43 @@ pub(super) async fn handle_field_sites(
             "field": raw,
             "qualifier": qualifier,
             "qualifier_applied": qualifier_applied,
-            "write_count": writes.len(),
-            "read_count": reads.len(),
+            "write_count": write_total,
+            "write_returned": writes.len(),
+            "write_lines": write_lines,
+            "read_count": read_total,
+            "read_returned": reads.len(),
+            "read_lines": read_lines,
+            "truncated": truncated,
             "write_sites": writes,
             "read_sites": reads,
         })
     };
+    if let Some(map) = payload.as_object_mut() {
+        if qualifier.is_some() {
+            map.insert(
+                "qualifier_note".to_string(),
+                json!(format!(
+                    "The qualifier '{}' was NOT applied: these sites are every '.{}' \
+                     reference in scope, across all types, not only {}'s field. \
+                     Narrowing needs the receiver's resolved type, which this \
+                     source-text scan does not compute.",
+                    qualifier.as_deref().unwrap_or_default(),
+                    field_name,
+                    qualifier.as_deref().unwrap_or_default()
+                )),
+            );
+        }
+        if truncated {
+            map.insert(
+                "truncation_note".to_string(),
+                json!(format!(
+                    "Site lists were capped at limit={limit}; write_count/read_count \
+                     are the true totals over the whole scan, write_returned/\
+                     read_returned are how many are listed here."
+                )),
+            );
+        }
+    }
     let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
         value: json!({

@@ -2178,15 +2178,21 @@ fn def_field_sites() -> ToolDefinition {
          read_sites (everything else). Each entry includes file, line, \
          enclosing symbol, and a source snippet. Useful when renaming, \
          removing, or adding an invariant to a field — the write-site list \
-         is the exact blast radius. Pattern matches `.<field>` references; \
-         field-by-name is shorthand for any struct's same-named field, while \
-         `Struct::field` form narrows to a specific declaration.",
+         is the exact blast radius. write_count/read_count are totals over \
+         the whole scan; when `truncated` is true the site arrays were capped \
+         at `limit` and write_returned/read_returned say how many are listed. \
+         Pattern matches `.<field>` references, so field-by-name matches any \
+         struct's same-named field. The `Struct::field` form is accepted and \
+         parsed, but does NOT narrow the result — matching a text site to one \
+         struct needs the receiver's resolved type, which this scan does not \
+         compute. The response reports `qualifier_applied: false` and a \
+         `qualifier_note` saying so; treat the sites as the bare-name answer.",
         json!({
             "type": "object",
             "properties": {
                 "field": {
                     "type": "string",
-                    "description": "Field name. Bare name ('last_sync_at') matches across structs; qualified form ('GraphStats::last_sync_at') narrows to one struct's field."
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') is accepted but NOT applied — the response comes back with qualifier_applied: false and covers every struct's same-named field."
                 },
                 "writes_only": {
                     "type": "boolean",
