@@ -63,6 +63,21 @@ fn project() -> (tempfile::TempDir, PathBuf) {
     (tmp, root)
 }
 
+/// A native `Grep` payload. Used wherever the target must be an *absolute*
+/// path: a shell command carrying a Windows path has its backslashes eaten by
+/// the hook's own shell-unescaping, and a relative target resolves against the
+/// process cwd rather than the project root, so neither can express "this
+/// exact directory inside the project".
+fn grep_is_blocked(path: &Path, env: &HookEnv) -> bool {
+    let input = serde_json::json!({
+        "pattern": "my_function",
+        "output_mode": "content",
+        "path": path.to_string_lossy(),
+    })
+    .to_string();
+    evaluate_hook_decision_with_env(&input, env).contains("\"deny\"")
+}
+
 fn is_blocked(command: &str, env: &HookEnv) -> bool {
     // `evaluate_hook_decision_with_env` takes the tool *input* object, not the
     // whole hook event.
@@ -75,9 +90,8 @@ fn in_tree_source_dirs_are_recognized_whatever_they_are_named() {
     let (_tmp, root) = project();
     let env = env_rooted_at(&root);
     for dir in ["mypkg", "core", "api", "src"] {
-        let cmd = format!("grep -rn my_function {}/{}", root.display(), dir);
         assert!(
-            is_blocked(&cmd, &env),
+            grep_is_blocked(&root.join(dir), &env),
             "{dir}/ resolves inside the indexed tree and must be redirected"
         );
     }
@@ -88,16 +102,20 @@ fn excluded_and_out_of_tree_dirs_still_pass_through() {
     let (_tmp, root) = project();
     let env = env_rooted_at(&root);
     // Inside the tree but excluded from the index: #448's rule still wins.
-    let cmd = format!("grep -rn my_function {}/vendor", root.display());
-    assert!(!is_blocked(&cmd, &env), "excluded dir must pass through");
-    // Never resolved at all, and not a recognized code-root name.
     assert!(
-        !is_blocked("grep -rn my_function /elsewhere/notes", &env),
+        !grep_is_blocked(&root.join("vendor"), &env),
+        "excluded dir must pass through"
+    );
+    // Outside the project entirely.
+    assert!(
+        !grep_is_blocked(&root.join("..").join("elsewhere"), &env),
         "out-of-tree dir must pass through"
     );
     // In-tree, not excluded, but holding no source the index could answer for.
-    let cmd = format!("grep -rn my_function {}/docs", root.display());
-    assert!(!is_blocked(&cmd, &env), "a doc-only dir must pass through");
+    assert!(
+        !grep_is_blocked(&root.join("docs"), &env),
+        "a doc-only dir must pass through"
+    );
 }
 
 #[test]
@@ -113,7 +131,7 @@ fn definition_anchored_patterns_are_redirected() {
         "^def foo",
         "struct Node",
     ] {
-        let cmd = format!("grep -rn '{pattern}' {}", root.display());
+        let cmd = format!("grep -rn '{pattern}' src");
         assert!(
             is_blocked(&cmd, &env),
             "`{pattern}` is a declaration lookup"
@@ -137,7 +155,7 @@ fn prose_and_structural_patterns_still_pass_through() {
         "TODO: fix this",
         "error handling",
     ] {
-        let cmd = format!("grep -rn '{pattern}' {}", root.display());
+        let cmd = format!("grep -rn '{pattern}' src");
         assert!(
             !is_blocked(&cmd, &env),
             "`{pattern}` is not a symbol lookup"
@@ -152,11 +170,31 @@ fn a_keyword_prefix_requires_a_word_break() {
     // A keyword is only an anchor when a word break follows it, so `typeof x`
     // is not read as the `type` keyword followed by the name `of x`, and
     // `default handler` is not `def` + `ault handler`.
+    // Targeted at a real in-tree source dir via a Grep payload, so the
+    // decision turns on the *pattern* and not on the target failing to
+    // resolve — otherwise this would pass even if the classifier changed.
     for pattern in ["typeof x", "default handler", "className foo"] {
-        let cmd = format!("grep -rn '{pattern}' {}/mypkg", root.display());
+        let input = serde_json::json!({
+            "pattern": pattern,
+            "output_mode": "content",
+            "path": root.join("mypkg").to_string_lossy(),
+        })
+        .to_string();
         assert!(
-            !is_blocked(&cmd, &env),
+            !evaluate_hook_decision_with_env(&input, &env).contains("\"deny\""),
             "`{pattern}` has no word break after a keyword and must pass through"
         );
     }
+    // Control: the same target with a real definition pattern must block, so
+    // the assertions above cannot pass because the target was never eligible.
+    let control = serde_json::json!({
+        "pattern": "def place_on_grid",
+        "output_mode": "content",
+        "path": root.join("mypkg").to_string_lossy(),
+    })
+    .to_string();
+    assert!(
+        evaluate_hook_decision_with_env(&control, &env).contains("\"deny\""),
+        "the target must be one the guardrail would otherwise act on"
+    );
 }
