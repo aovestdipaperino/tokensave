@@ -40,6 +40,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     }
 
     check_global_db(&mut dc);
+    check_index_scope(&mut dc, &project_path);
     check_stale_stores(&mut dc).await;
     check_user_config(&mut dc);
 
@@ -129,6 +130,93 @@ fn check_global_db(dc: &mut DoctorCounters) {
         }
     } else {
         dc.fail("Could not determine home directory for global DB");
+    }
+}
+
+/// An index this large is more likely a scope accident than a big project
+/// (#450). The reported runaway was 29.9 GB; a real project on the same
+/// machine was 420 MB. Deliberately well above any plausible monorepo, since
+/// this only warns and a false positive costs the user a line of output.
+const OVERSIZED_INDEX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+/// Warn about an index whose *scope* is wrong rather than whose contents are
+/// (#450).
+///
+/// A home directory initialized as a project — the shape #372 could produce —
+/// leaves an index that every later `serve` inherits and keeps syncing. The
+/// reported case reached 29.9 GB on disk and a 38 GB footprint once mapped,
+/// with the machine paging heavily, and nothing surfaced it: `serve`'s
+/// existing guardrail refuses *uninitialized* directories, and this directory
+/// is initialized, just absurd in scope.
+///
+/// Both checks are warnings, not failures. Neither state is corrupt, and the
+/// remedy is a judgment call the user has to make — so this reports what is
+/// there and leaves the decision alone.
+fn check_index_scope(dc: &mut DoctorCounters, project_path: &Path) {
+    eprintln!("\n\x1b[1mIndex scope\x1b[0m");
+    check_index_scope_with(dc, project_path, agents::home_dir().as_deref());
+}
+
+/// [`check_index_scope`] with the home directory injected, so tests can build
+/// both states on disk without mutating process-global environment.
+fn check_index_scope_with(dc: &mut DoctorCounters, project_path: &Path, home: Option<&Path>) {
+    // Checked whatever the working directory is: the whole problem with this
+    // state is that nobody is standing in it when it does the damage.
+    let home_indexed = home.filter(|home| TokenSave::is_initialized(home));
+    if let Some(home) = &home_indexed {
+        let size = index_size_bytes(home);
+        dc.warn(&format!(
+            "Home directory is initialized as a project: {}/.tokensave/ ({}) \
+             — every `serve` started here indexes your whole home tree. \
+             Remove it with `rm -rf {}/.tokensave` unless you meant it.",
+            home.display(),
+            format_bytes(size),
+            home.display()
+        ));
+    } else {
+        dc.pass("Home directory is not indexed as a project");
+    }
+
+    // The current project, when it is not the home directory already reported.
+    let is_home = home_indexed
+        .as_ref()
+        .is_some_and(|home| same_directory(home, project_path));
+    if !is_home && TokenSave::is_initialized(project_path) {
+        let size = index_size_bytes(project_path);
+        if size >= OVERSIZED_INDEX_BYTES {
+            dc.warn(&format!(
+                "Index is unusually large: {} ({}) — check `exclude` globs in \
+                 .tokensave/config.json; a `serve` maps this whole file.",
+                format_bytes(size),
+                project_path.display()
+            ));
+        } else {
+            dc.pass(&format!(
+                "Index size is unremarkable: {}",
+                format_bytes(size)
+            ));
+        }
+    }
+}
+
+/// On-disk size of a project's index, WAL included — the WAL is part of what a
+/// running server maps, and it is where an actively-syncing runaway shows up
+/// first.
+fn index_size_bytes(project_path: &Path) -> u64 {
+    let dir = crate::config::get_tokensave_dir(project_path);
+    ["tokensave.db", "tokensave.db-wal"]
+        .iter()
+        .map(|name| std::fs::metadata(dir.join(name)).map_or(0, |m| m.len()))
+        .sum()
+}
+
+/// Compare two directories by canonical path, so `~`, a symlink, or a
+/// trailing separator does not make the home directory look like a different
+/// place than the working directory that is inside it.
+fn same_directory(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
@@ -250,8 +338,104 @@ fn print_summary(dc: &DoctorCounters) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A project directory with an index of `db_bytes`, plus a small WAL, so
+    /// the size check has something real to stat.
+    fn project_with_index(root: &Path, db_bytes: u64) {
+        let dir = crate::config::get_tokensave_dir(root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = std::fs::File::create(dir.join("tokensave.db")).unwrap();
+        db.set_len(db_bytes).unwrap();
+        std::fs::write(dir.join("tokensave.db-wal"), vec![0u8; 512]).unwrap();
+    }
+
+    /// The reported state: `$HOME` itself initialized as a project. It must
+    /// warn no matter how big the index is or where the user is standing,
+    /// because `serve` inherits it from anywhere and its own guardrail only
+    /// refuses *uninitialized* directories (#450).
+    #[test]
+    fn an_indexed_home_directory_warns_regardless_of_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let elsewhere = tmp.path().join("work");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        project_with_index(&home, 1024);
+
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &elsewhere, Some(&home));
+        assert_eq!(
+            dc.warnings, 1,
+            "an indexed home directory must warn even when small and even from another cwd"
+        );
+    }
+
+    /// Standing in the home directory must not report it twice.
+    #[test]
+    fn an_indexed_home_is_reported_once_when_it_is_also_the_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        project_with_index(&home, OVERSIZED_INDEX_BYTES + 1);
+
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &home, Some(&home));
+        assert_eq!(
+            dc.warnings, 1,
+            "the home warning and the size warning must not both fire for one directory"
+        );
+    }
+
+    /// An ordinary project is silent, and a runaway one is not. The reported
+    /// runaway was 29.9 GB against a 420 MB real project on the same machine.
+    #[test]
+    fn only_an_oversized_project_index_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let ordinary = tmp.path().join("ordinary");
+        project_with_index(&ordinary, 420 * 1024 * 1024);
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &ordinary, Some(&home));
+        assert_eq!(dc.warnings, 0, "a 420 MB index is a normal project");
+
+        let runaway = tmp.path().join("runaway");
+        project_with_index(&runaway, OVERSIZED_INDEX_BYTES + 1);
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &runaway, Some(&home));
+        assert_eq!(dc.warnings, 1, "an index past the cap must be surfaced");
+    }
+
+    /// The WAL counts: an actively-syncing runaway shows up there first, and
+    /// a running server maps it too.
+    #[test]
+    fn index_size_includes_the_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        project_with_index(&root, 2048);
+        assert_eq!(
+            index_size_bytes(&root),
+            2048 + 512,
+            "db and wal are both part of what a server maps"
+        );
+    }
+
+    /// A home directory that is not a project is the ordinary case and must
+    /// stay quiet.
+    #[test]
+    fn an_unindexed_home_directory_is_not_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let work = tmp.path().join("work");
+        project_with_index(&work, 1024);
+
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &work, Some(&home));
+        assert_eq!(dc.warnings, 0);
+    }
 
     #[test]
     fn format_bytes_boundaries() {
