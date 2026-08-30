@@ -196,10 +196,14 @@ async fn legacy_views_exclude_droid() {
     assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
 
     // token_breakdown_since: claude only
-    let (inp, out, cache_read) = db.token_breakdown_since(0).await.unwrap();
+    let (inp, out, cache_read, cache_write) = db.token_breakdown_since(0).await.unwrap();
     assert_eq!(inp, 100, "token_breakdown_since must exclude droid");
     assert_eq!(out, 20);
     assert_eq!(cache_read, 7);
+    assert_eq!(
+        cache_write, 5,
+        "cache creation is priced and must be reported"
+    );
 
     // cost_by_model_since: only claude model present
     let by_model = db.cost_by_model_since(0).await;
@@ -307,6 +311,48 @@ async fn cost_summary_tokens_saved_agrees_with_the_gain_ledger() {
         summary.tokens_saved,
         db.sum_savings(None, 0).await.saved_tokens,
         "cost and gain must report one quantity, not two"
+    );
+}
+
+/// #472: the exported tokens must account for the exported cost.
+///
+/// The summary published only uncached input and output, while the cost was
+/// computed from the full usage record. Agent traffic is dominated by the
+/// cached context resent each turn, so the omission implied a price per million
+/// several times any published rate, and made the output:input ratio look
+/// backwards.
+#[tokio::test]
+async fn cost_summary_counts_every_priced_token_category() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+
+    let mut turn = claude_turn("c1", 100, 20);
+    turn.cache_read_tokens = 50_000;
+    turn.cache_write_tokens = 3_000;
+    assert!(db.insert_turn(&turn).await);
+
+    let summary = tokensave::accounting::metrics::cost_summary(&db, 0)
+        .await
+        .expect("summary must exist");
+
+    assert_eq!(summary.total_input_tokens, 100);
+    assert_eq!(summary.total_output_tokens, 20);
+    assert_eq!(summary.total_cache_read_tokens, 50_000);
+    assert_eq!(
+        summary.total_cache_write_tokens, 3_000,
+        "cache creation is priced and must be reported"
+    );
+
+    // `by_model` is the payload's own cross-check: a consumer that sums it must
+    // arrive at the same total the four fields do, or the cost is unexplainable.
+    let by_model_total: u64 = summary.by_model.iter().map(|(_, _, t)| *t).sum();
+    assert_eq!(
+        by_model_total,
+        summary.total_input_tokens
+            + summary.total_output_tokens
+            + summary.total_cache_read_tokens
+            + summary.total_cache_write_tokens,
+        "sum(by_model[].tokens) must reconcile with the summary totals"
     );
 }
 

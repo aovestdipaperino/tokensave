@@ -1248,6 +1248,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "total_cost_usd": s.total_cost,
                             "total_input_tokens": s.total_input_tokens,
                             "total_output_tokens": s.total_output_tokens,
+                            // Cache reads and writes are priced, and they dominate
+                            // agent traffic. Without them the exported tokens
+                            // cannot account for the exported cost (#472).
+                            "total_cache_read_tokens": s.total_cache_read_tokens,
+                            "total_cache_creation_tokens": s.total_cache_write_tokens,
+                            "total_tokens": s.total_input_tokens
+                                + s.total_output_tokens
+                                + s.total_cache_read_tokens
+                                + s.total_cache_write_tokens,
                             "tokens_saved": s.tokens_saved,
                             "efficiency_ratio": s.efficiency_ratio,
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
@@ -1354,7 +1363,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let today_breakdown = gdb
                     .token_breakdown_since(today_since)
                     .await
-                    .unwrap_or((0, 0, 0));
+                    .unwrap_or((0, 0, 0, 0));
 
                 let fmt_row = |label: &str, cost: f64, input: u64, output: u64, cache_read: u64| {
                     let input_s = tokensave::display::format_token_count(input);
