@@ -226,9 +226,11 @@ async fn cost_summary_efficiency_uses_all_agents() {
     assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
     // Droid: 200 input + 30 output = 230 tokens
     assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
-    // total_tokens_since = 350; tokens_saved = 350
+    // total_tokens_since = 350; the ledger holds 350 saved
     // efficiency = 350 / (350 + 350) = 0.5
-    let summary = tokensave::accounting::metrics::cost_summary(&db, 0, 350)
+    db.record_savings("/p", "tokensave_search", 400, 50, 1_000)
+        .await;
+    let summary = tokensave::accounting::metrics::cost_summary(&db, 0)
         .await
         .expect("summary must exist");
 
@@ -248,6 +250,66 @@ async fn cost_summary_efficiency_uses_all_agents() {
     assert_eq!(summary.by_agent.len(), 2, "by_agent must have two entries");
 }
 
+/// #473: `tokens_saved` must be scoped to the summary's own range.
+///
+/// It used to be passed in by the caller, which always passed a lifetime,
+/// all-projects counter — so the savings figure for `today` equalled the one
+/// for `all`, and `efficiency_ratio` moved across ranges only because a fixed
+/// numerator was divided by a growing denominator.
+#[tokio::test]
+async fn cost_summary_tokens_saved_is_scoped_to_the_range() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
+
+    // One old saving and one recent one, so a range that excludes the old one
+    // has to report a smaller figure than all-time.
+    db.record_savings("/p", "tokensave_search", 1_000, 0, 1_000)
+        .await;
+    db.record_savings("/p", "tokensave_search", 300, 0, 9_000)
+        .await;
+
+    let all = tokensave::accounting::metrics::cost_summary(&db, 0)
+        .await
+        .expect("summary must exist");
+    let recent = tokensave::accounting::metrics::cost_summary(&db, 5_000)
+        .await
+        .expect("summary must exist");
+
+    assert_eq!(
+        all.tokens_saved, 1_300,
+        "all-time must sum both ledger rows"
+    );
+    assert_eq!(
+        recent.tokens_saved, 300,
+        "a narrower range must exclude the older saving"
+    );
+    assert!(
+        recent.efficiency_ratio < all.efficiency_ratio,
+        "the ratio must follow the range it was computed for"
+    );
+}
+
+/// The same figure must agree with what `tokensave gain` reports for the same
+/// scope: both read the savings ledger, so they cannot disagree by source.
+#[tokio::test]
+async fn cost_summary_tokens_saved_agrees_with_the_gain_ledger() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
+    db.record_savings("/p", "tokensave_search", 900, 100, 2_000)
+        .await;
+
+    let summary = tokensave::accounting::metrics::cost_summary(&db, 0)
+        .await
+        .expect("summary must exist");
+    assert_eq!(
+        summary.tokens_saved,
+        db.sum_savings(None, 0).await.saved_tokens,
+        "cost and gain must report one quantity, not two"
+    );
+}
+
 /// Stale Droid rows must not change legacy output after the local Droid source disappears.
 #[tokio::test]
 async fn cost_summary_excludes_stale_droid_when_source_is_absent() {
@@ -257,10 +319,11 @@ async fn cost_summary_excludes_stale_droid_when_source_is_absent() {
     assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
     assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
 
-    let summary =
-        tokensave::accounting::metrics::cost_summary_with_droid_presence(&db, 0, 120, false)
-            .await
-            .expect("summary must exist");
+    db.record_savings("/p", "tokensave_search", 240, 120, 1_000)
+        .await;
+    let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(&db, 0, false)
+        .await
+        .expect("summary must exist");
 
     assert!(
         (summary.efficiency_ratio - 0.5).abs() < 1e-9,
