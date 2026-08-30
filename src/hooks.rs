@@ -357,7 +357,7 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if !target_looks_like_code(path, glob, ty, env) {
+    if !target_looks_like_code(path, &[glob], ty, env) {
         return None;
     }
     let shape = classify_symbol_pattern(pattern)?;
@@ -412,7 +412,13 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
         } else {
             Cow::Borrowed(target)
         };
-    if !target_looks_like_code(target.as_ref(), "", "", env) {
+    let globs: Vec<&str> = inv.globs.iter().map(String::as_str).collect();
+    if !target_looks_like_code(
+        target.as_ref(),
+        &globs,
+        inv.ty.as_deref().unwrap_or(""),
+        env,
+    ) {
         return None;
     }
     let shape = classify_symbol_pattern(&inv.pattern)?;
@@ -475,7 +481,7 @@ fn evaluate_find_command(command: &str, env: &HookEnv) -> Option<String> {
     if !targets.is_empty()
         && !targets
             .iter()
-            .all(|target| target_looks_like_code(target, "", "", env))
+            .all(|target| target_looks_like_code(target, &[], "", env))
     {
         return None;
     }
@@ -522,7 +528,7 @@ fn evaluate_glob_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         return None;
     }
     let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    if !target_looks_like_code(path, "", "", env) {
+    if !target_looks_like_code(path, &[], "", env) {
         return None;
     }
     Some(files_redirect_message("Glob", pattern))
@@ -671,7 +677,7 @@ fn is_pure_identifier(s: &str) -> bool {
 ///
 /// Conservative: when the answer is ambiguous we return `false` so the call
 /// passes through unchanged.
-fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bool {
+fn target_looks_like_code(path: &str, globs: &[&str], ty: &str, env: &HookEnv) -> bool {
     // When a concrete path is provided, it must resolve inside the indexed
     // project for the guardrail to apply. Greps targeting other directories
     // (e.g. /tmp, another repo) are not tokensave's concern.
@@ -708,11 +714,26 @@ fn target_looks_like_code(path: &str, glob: &str, ty: &str, env: &HookEnv) -> bo
         return CODE_TYPE_FILTERS.contains(&ty.to_ascii_lowercase().as_str());
     }
 
-    if let Some(glob_is_code) = classify_glob_target(glob) {
-        return glob_is_code;
+    // A search narrowed to a file set is answered by that set, not by the root
+    // the walk starts from. When several globs are given, one non-code member
+    // is enough to pass the whole search through: the graph cannot answer for
+    // it, so blocking costs a round-trip through the opt-out for nothing.
+    let glob_verdicts: Vec<bool> = globs
+        .iter()
+        .filter_map(|g| classify_glob_target(g))
+        .collect();
+    if glob_verdicts.iter().any(|is_code| !is_code) {
+        return false;
+    }
+    if !glob_verdicts.is_empty() {
+        return true;
     }
 
-    let raw = if path.is_empty() { glob } else { path };
+    let raw = if path.is_empty() {
+        globs.first().copied().unwrap_or("")
+    } else {
+        path
+    };
     let trimmed = raw.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
         return true;
@@ -1024,10 +1045,16 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct GrepInvocation {
     pattern: String,
     targets: Vec<String>,
+    /// File globs the search was narrowed to: grep's `--include`, rg/ag's
+    /// `-g`/`--glob`/`--iglob`. An include glob is more specific evidence than
+    /// the search root, exactly as the native `Grep` tool's `glob` field is.
+    globs: Vec<String>,
+    /// rg/ag's `-t`/`--type` file-type filter, if given.
+    ty: Option<String>,
 }
 
 /// A `find`/`fd` invocation reduced to what the policy needs: the name globs
@@ -1178,6 +1205,8 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     let tokens = shell_split(after_tool);
     let mut pattern: Option<String> = None;
     let mut targets: Vec<String> = Vec::new();
+    let mut globs: Vec<String> = Vec::new();
+    let mut ty: Option<String> = None;
     let mut iter = tokens.into_iter().peekable();
     while let Some(tok) = iter.next() {
         if tok.starts_with('-') {
@@ -1189,6 +1218,37 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
                 if pattern.is_none() {
                     pattern = Some(p.to_string());
                 }
+            // An include glob narrows the search to a file set, which is
+            // stronger evidence about what is being searched than the root the
+            // walk starts from: `grep -rn foo --include='*.md' .` is a docs
+            // search whatever `.` contains. Both spellings, and both the
+            // separate-token and `=`-joined forms.
+            } else if tok == "--include" || tok == "-g" || tok == "--glob" || tok == "--iglob" {
+                if let Some(g) = iter.next() {
+                    globs.push(g);
+                }
+            } else if let Some(g) = tok
+                .strip_prefix("--include=")
+                .or_else(|| tok.strip_prefix("--glob="))
+                .or_else(|| tok.strip_prefix("--iglob="))
+            {
+                globs.push(g.to_string());
+            } else if tok == "-t" || tok == "--type" {
+                // First filter wins, mirroring the single `type` field the
+                // native `Grep` tool carries.
+                if let Some(t) = iter.next() {
+                    ty.get_or_insert(t);
+                }
+            } else if let Some(t) = tok.strip_prefix("--type=") {
+                ty.get_or_insert(t.to_string());
+            // Value-taking flags whose argument is not a glob. Consuming the
+            // value keeps it from being misread as the pattern or a target.
+            } else if tok == "--exclude"
+                || tok == "--exclude-dir"
+                || tok == "-T"
+                || tok == "--type-not"
+            {
+                iter.next();
             }
             continue;
         }
@@ -1202,6 +1262,8 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     Some(GrepInvocation {
         pattern: pattern?,
         targets,
+        globs,
+        ty,
     })
 }
 
