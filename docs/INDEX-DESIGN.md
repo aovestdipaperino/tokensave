@@ -255,6 +255,21 @@ qualified name, by node id, by `::` suffix, and a set of known names. The
 `docstring` and `signature` columns are not loaded, since resolution reads
 neither and both are unbounded text.
 
+**The name index is global; the reference list is not.** Incremental sync reads
+`unresolved_refs` a page at a time (25,000, keyset on the table's autoincrement
+`id`) rather than materialising it — on this repository that table holds
+189,446 rows and cost +74.6 MiB per sync, a one-line edit included (#482). A
+full index keeps them in memory, since extraction has just produced them.
+
+The asymmetry is the whole point and is worth stating, because it was got wrong
+once: the **nodes** cannot be chunked, because binding a cross-file reference
+means looking up a name that may be defined anywhere, so a chunked index loses
+targets outside the chunk and silently drops edges. The **references** can be,
+because each is resolved independently against the whole index — chunking the
+input cannot lose anything the index still holds. Only one step needs the whole
+set, suppressing the bare-name sibling of a resolved Go selector call, and it
+runs once over the accumulated results.
+
 For each `UnresolvedRef`, resolution is attempted in order:
 
 1. **Qualified name match** (confidence 0.95) — if the reference contains `::`, look it up in the qualified name cache. Also tries suffix matching (e.g. `types::Node` matches `crate::types::Node`).
@@ -289,12 +304,27 @@ fabricated finding.
 
 Successfully resolved refs become edges with the ref's `from_node_id` as source, the resolved target node's ID as target, and the ref's `reference_kind` as the edge kind.
 
+A reference that fails is reported by its **position in the input slice**, not
+as an owned copy. Most references fail on any given sync — 189,446 in and
+28,849 out here — so copying them was ~160,000 owned records per sync for
+information the caller already held (#483).
+
+#### Build-variant propagation
+
+A call bound to one `#[cfg]`-gated definition would leave its platform sibling
+looking uncalled, so a call into any member of a build-variant group is
+propagated to the others (#141). The group is tiny by construction — on this
+repository 3 groups of two, out of 19,331 nodes — so it is found with two
+bounded queries (the groups, then only the `calls` edges targeting a member)
+rather than by scanning the graph. The common case, no group with two members,
+returns before reading the edges table at all (#481).
+
 ## Full Index (`index_all`)
 
 1. **Clear** — delete all rows from every table.
 2. **Scan** — walk the project directory, collecting files with supported extensions. Respects `.gitignore` (via the `ignore` crate) and user-configured exclude patterns.
 3. **Extract** — for each file: parse with tree-sitter, walk the AST, insert nodes, intra-file edges, and unresolved refs into the database.
-4. **Resolve** — load all unresolved refs, run the resolver, insert the resulting cross-file edges.
+4. **Resolve** — run the resolver over the unresolved refs (held in memory here, since extraction just produced them) and insert the resulting cross-file edges. Incremental sync pages them out of the database instead.
 5. **Record timestamps** — write `last_full_sync_at` and `last_sync_at` to metadata.
 
 ## Incremental Sync (`sync`)

@@ -650,6 +650,10 @@ tokensave memory [--clean]
 
 A machine-wide memory report for every tokensave process (MCP servers, syncs, index runs), via a shared memory-mapped table at `~/.tokensave/memory.mmap`. Each instance self-samples its RSS best-effort at startup, per MCP tool call, and around the sync/resolution phases, so the report shows current and peak RSS **with the phase that produced the peak** — the data needed to attribute high memory use (see #253). Rows are flagged `alive`, `dead` (an OOM-killed process leaves its peak/phase behind as a forensic record), or `orphan` (still running but reparented to init). `--clean` purges dead slots.
 
+`PEAK PHASE` names the highest *sample*, so it is only as precise as the sampling. Incremental sync records, in order: `sync:extract`, `sync:resolve:load_nodes`, `sync:resolve:build_caches`, `sync:resolve:refs`, `sync:variants`, `sync:done`. A full index records `index:extract`, `index:resolve:build_caches`, `index:resolve:refs`, `index:resolve:done`, `index:insert`, `index:done`.
+
+**Each is recorded after the work it names.** They used to be recorded before it, so every sample reported the previous step's RSS under the next step's label — which attributed 73 MiB to the node load that in fact belonged to loading the unresolved references, a step with no sample at all, and pointed a memory investigation at the wrong subsystem for months (#409). If you add a phase, sample after the work, not before it, and add one for any step large enough to hold the peak.
+
 ### Session and lifetime counters
 
 ```bash
