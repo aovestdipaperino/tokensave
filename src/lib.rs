@@ -47,6 +47,7 @@ pub mod project_manifest;
 pub mod redundancy;
 pub mod resolution;
 pub mod runtime_telemetry;
+pub mod servers;
 pub mod sync;
 pub mod text;
 pub mod tokensave;

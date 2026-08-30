@@ -520,6 +520,86 @@ leave the server running indefinitely with its whole index mapped, to be found
 and killed by hand (#450). This covers a *dead* parent only; duplicate servers
 under a still-live host are a host-side problem (#436).
 
+### Finding which server holds an index
+
+A `serve` process keeps an exclusive handle on its database for as long as it
+runs — file watching is why the process is long-lived, and the handle comes
+with it. So an indexed directory cannot be deleted while a client has a server
+up. On Linux and macOS the delete succeeds and the space is reclaimed when the
+last handle closes; on Windows it fails outright:
+
+```
+Remove-Item: The process cannot access the file
+'...\.tokensave\tokensave.db' because it is being used by another process.
+```
+
+This bites most often on git worktrees: a worktree per task, each one indexed,
+each one cleaned up afterwards. `git worktree remove` deregisters the worktree
+even when the file delete fails, which leaves git metadata pruned and the
+directory still on disk.
+
+`tokensave servers` names the holder:
+
+```bash
+tokensave servers
+```
+
+```
+  PID  VERSION  PROJECT
+87904   7.10.0  /Users/you/Code/app/worktrees/feature-x
+```
+
+A per-branch database is not derivable from the project root, so it is shown
+on its own line when it is not the default `<project>/.tokensave/tokensave.db`.
+
+Most servers carry no project in their command line — the host supplies it
+through the global database or MCP `initialize` roots rather than `--path` — so
+a process lister cannot answer this and neither can `ps`.
+
+#### Reading the registry directly
+
+Each running server writes `~/.tokensave/servers/<pid>.json`. Wrappers should
+read these files rather than shelling out; `tokensave servers --json` emits the
+same objects.
+
+```json
+{
+  "pid": 87904,
+  "started_at": 1788099755,
+  "project_path": "/Users/you/Code/app",
+  "argv_path": "/Users/you/Code/app",
+  "db_path": "/Users/you/Code/app/.tokensave/tokensave.db",
+  "version": "7.10.0"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `pid` | OS process id; also the filename stem |
+| `started_at` | Process start time, Unix epoch seconds, as the OS reports it. With `pid` this survives PID reuse |
+| `project_path` | The project root the server resolved and is serving |
+| `argv_path` | The root as given on the command line, or `null` when the host supplied it another way |
+| `db_path` | The database actually held open — **match on this** for the index → process direction |
+| `version` | The tokensave version serving, so a stale binary is visible |
+
+The registry lives in the global directory rather than beside the index on
+purpose: a PID file inside `.tokensave/` would sit in the one directory whose
+defining problem is that it cannot be deleted, and would vanish with the
+checkout being cleaned up.
+
+Entries are removed on clean exit. A hard kill skips that, so stale entries are
+also reaped whenever a server starts and whenever the registry is read — an
+entry never outlives one listing.
+
+#### There is no `servers --stop`
+
+Stopping is deliberately left to you. MCP clients restart their servers, so
+"stop them all" does not converge: new processes appear while old ones are
+being killed. Terminating is only safe for someone who knows whether the host
+is running and can stop it first, which tokensave cannot know. Identify the
+holder here, then stop the client — or kill that one PID, which `serve` now
+honours (a `SIGTERM` used to be ignored; fixed in #436/#450).
+
 ### Strict mode: refuse worktree content mismatches
 
 Branch drift is now refused by default (see the sync safeguards above), so

@@ -182,6 +182,19 @@ pub enum Commands {
         #[arg(long)]
         timings: bool,
     },
+    /// List running `tokensave serve` processes and the index each one holds
+    ///
+    /// `serve` keeps an exclusive handle on its database for the life of the
+    /// process, so an indexed directory cannot be deleted while a client has a
+    /// server up — on Windows that is a hard block. This answers which process
+    /// holds which index. It deliberately does not stop anything: MCP clients
+    /// restart their servers, so a stop the host undoes is a trap that looks
+    /// like a fix (#421).
+    Servers {
+        /// Emit JSON, matching the `~/.tokensave/servers/<pid>.json` entries
+        #[arg(long)]
+        json: bool,
+    },
     /// Download and install the latest version from GitHub
     Upgrade {
         /// Kill other running tokensave processes without asking

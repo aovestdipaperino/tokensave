@@ -1011,6 +1011,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // (possibly a different repo than the CWD, #201); only
             // CWD-discovered roots get the borrowed-worktree check.
             let explicit_path = path.is_some();
+            // What the host actually launched, kept separate from what we
+            // resolved: a process lister shows only the former, and the
+            // registry has to be readable against both (#421).
+            let path_for_registry = path.clone();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             // Track the first stdin line if we need to peek at `initialize` roots.
             let mut peeked_line: Option<String> = None;
@@ -1058,6 +1062,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("serve", cg.project_root());
             tokensave::memstats::record("start");
 
+            // Record this process in the server registry, now that the index
+            // is open and the lock is genuinely held (#421). Nothing else on
+            // the machine records which server holds which index: most
+            // instances carry no project in argv, because the host supplies it
+            // through the global DB or MCP `initialize` roots rather than
+            // `--path`.
+            tokensave::servers::register(
+                cg.project_root(),
+                &cg.db_path(),
+                path_for_registry.as_deref(),
+            );
+
             // Compute scope prefix: relative path from project root to original cwd
             let scope_prefix = original_cwd.and_then(|cwd| {
                 cwd.strip_prefix(cg.project_root())
@@ -1079,6 +1095,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
             server.run(&mut transport).await?;
             server.shutdown().await;
+            // A hard kill skips this; that is what reaping on startup and on
+            // read is for.
+            tokensave::servers::unregister();
             // Exit explicitly rather than unwinding out of `main` (#450/#436).
             //
             // `tokio::io::stdin()` performs its reads on a blocking thread,
@@ -1100,6 +1119,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let _ = std::io::stdout().flush();
             }
             std::process::exit(0);
+        }
+        Commands::Servers { json } => {
+            let entries = tokensave::servers::list();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+                );
+            } else {
+                print!("{}", tokensave::servers::render(&entries));
+            }
         }
         Commands::Upgrade { kill } => {
             tokensave::upgrade::run_upgrade(kill)?;
@@ -1517,6 +1547,11 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             // big home-dir trees (#84). Skip them; the same maintenance
             // runs on the user's next interactive `tokensave …` invocation.
             | Commands::Serve { .. }
+            // `Servers` exists for wrappers to poll while rendering a list UI
+            // (#421), so it is a hot path for the same reason `Serve` is: a
+            // network flush and a scan over every tracked agent do not belong
+            // behind a directory listing that a UI refreshes on a timer.
+            | Commands::Servers { .. }
             // Hook handlers are on the per-tool-call hot path (Cursor fires
             // `preToolUse` before every Grep/Shell; Factory Droid fires
             // `hook-droid-pre-tool-use` before every Execute/Grep). They must
