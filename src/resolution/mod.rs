@@ -6,4 +6,7 @@ mod resolver;
 mod variants;
 
 pub use resolver::ReferenceResolver;
-pub use variants::propagate_variant_edges;
+pub use variants::{
+    emit_variant_edges, propagate_variant_edges, variant_groups_from_candidates,
+    CALLABLE_KIND_NAMES,
+};

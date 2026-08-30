@@ -414,6 +414,7 @@ impl TokenSave {
             crate::memstats::record("index:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             let resolution = resolver.resolve_all(&all_unresolved);
+            crate::memstats::record("index:resolve:refs");
             // Ties are recorded rather than dropped, so a caller can pick the
             // intended target and `dead_code` can tell "referenced, target
             // unknown" from "uncalled" (#412).
@@ -609,6 +610,39 @@ impl TokenSave {
     /// it to release so the DB is fresh by the time the caller refreshes its
     /// view; if the peer covered our files, return without doing extra work,
     /// otherwise sync ourselves.
+    /// Re-propagate build-variant call edges without a whole-graph load (#481).
+    ///
+    /// The old shape loaded every `annotates` and `calls` edge — and did it
+    /// while the resolver's node slice was still alive, so two graph-sized
+    /// allocations were resident at once and the sync's peak RSS landed here.
+    /// On this repository that was 12.9 MiB and the run's high-water mark, to
+    /// emit **zero** edges: the grouping keeps 3 groups out of 19,331 nodes,
+    /// and a call has to point into one of them to propagate at all.
+    ///
+    /// The output set is small by construction, so ask SQL for it. Two bounded
+    /// queries — the variant groups, then only the `calls` edges targeting a
+    /// member — feed the same emitter the whole-graph path uses, so behaviour
+    /// is unchanged. The common case, no multi-member group, returns before
+    /// touching the edges table at all.
+    ///
+    /// Best-effort: a query failure yields no propagated edges rather than
+    /// failing the sync, matching the `unwrap_or_default()` this replaces.
+    async fn propagate_variant_edges_bounded(&self) -> Vec<Edge> {
+        let rust = self.db.variant_group_candidates().await.unwrap_or_default();
+        let go = self.db.go_variant_candidates().await.unwrap_or_default();
+        let groups = crate::resolution::variant_groups_from_candidates(&rust, &go);
+        if groups.is_empty() {
+            return Vec::new();
+        }
+        let members: Vec<String> = groups
+            .values()
+            .flatten()
+            .map(|id| (*id).to_string())
+            .collect();
+        let edges = self.db.calls_edges_into(&members).await.unwrap_or_default();
+        crate::resolution::emit_variant_edges(&groups, &edges)
+    }
+
     pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
         if stale_files.is_empty() {
             return Ok(());
@@ -773,6 +807,11 @@ impl TokenSave {
             let unresolved = self.db.get_unresolved_refs().await?;
             if !unresolved.is_empty() {
                 let resolution = resolver.resolve_all(&unresolved);
+                // The sync's peak lives between `resolve:done` and `sync:done`,
+                // and with no sample in that window it was attributed to
+                // whichever sample came next — which is why #409 was argued
+                // from `size_of` arithmetic rather than from RSS.
+                crate::memstats::record("sync:resolve:refs");
                 // See the full-index site: ambiguities are kept, not dropped.
                 let ambiguity_files: Vec<String> = self.scan_files();
                 let _ = self
@@ -782,20 +821,11 @@ impl TokenSave {
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
-                    // Re-propagate build-variant call edges over the full graph
-                    // now that new call edges exist (#141).
-                    // Only the two kinds `propagate_variant_edges` reads, not
-                    // the whole table (#418). The `calls` half is irreducible
-                    // for this algorithm — any call into a variant member
-                    // matters — but type_of, returns, uses, implements, extends
-                    // and receives were all carried and never looked at.
-                    let all_db_edges = self
-                        .db
-                        .get_edges_by_kinds(&[EdgeKind::Annotates, EdgeKind::Calls])
-                        .await
-                        .unwrap_or_default();
-                    let variant_edges =
-                        crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
+                    // Re-propagate build-variant call edges now that new call
+                    // edges exist (#141), from the two bounded queries rather
+                    // than the whole graph (#481).
+                    let variant_edges = self.propagate_variant_edges_bounded().await;
+                    crate::memstats::record("sync:variants");
                     if !variant_edges.is_empty() {
                         self.db.insert_edges(&variant_edges).await?;
                     }
@@ -1146,6 +1176,11 @@ impl TokenSave {
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
                 crate::memstats::record("sync:resolve:done");
                 let resolution = resolver.resolve_all(&unresolved);
+                // The sync's peak lives between `resolve:done` and `sync:done`,
+                // and with no sample in that window it was attributed to
+                // whichever sample came next — which is why #409 was argued
+                // from `size_of` arithmetic rather than from RSS.
+                crate::memstats::record("sync:resolve:refs");
                 // See the full-index site: ambiguities are kept, not dropped.
                 let ambiguity_files: Vec<String> = self.scan_files();
                 let _ = self
@@ -1155,19 +1190,11 @@ impl TokenSave {
                 let edges = resolver.create_edges(&resolution.resolved);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
-                    // Propagate call edges across build-config variants (#141).
-                    // Only the two kinds `propagate_variant_edges` reads, not
-                    // the whole table (#418). The `calls` half is irreducible
-                    // for this algorithm — any call into a variant member
-                    // matters — but type_of, returns, uses, implements, extends
-                    // and receives were all carried and never looked at.
-                    let all_db_edges = self
-                        .db
-                        .get_edges_by_kinds(&[EdgeKind::Annotates, EdgeKind::Calls])
-                        .await
-                        .unwrap_or_default();
-                    let variant_edges =
-                        crate::resolution::propagate_variant_edges(&all_nodes, &all_db_edges);
+                    // Propagate call edges across build-config variants (#141),
+                    // from the two bounded queries rather than the whole graph
+                    // (#481).
+                    let variant_edges = self.propagate_variant_edges_bounded().await;
+                    crate::memstats::record("sync:variants");
                     if !variant_edges.is_empty() {
                         self.db.insert_edges(&variant_edges).await?;
                     }

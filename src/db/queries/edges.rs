@@ -1512,6 +1512,125 @@ impl Database {
         collect_rows(&mut rows, row_to_edge, "get_edges_by_kinds").await
     }
 
+    /// Candidate build-variant members: `(group key, node id)` (#481).
+    ///
+    /// `propagate_variant_edges` used to derive these by loading every node and
+    /// every `annotates`/`calls` edge, then filtering in Rust — a whole-graph
+    /// pass to find a set that is tiny by construction. On this repository the
+    /// grouping keeps 3 groups out of 19,331 nodes, and the pass emitted 0
+    /// edges while holding the sync's peak RSS.
+    ///
+    /// Two languages, two shapes:
+    ///
+    /// - **Rust** — a callable in a `.rs` file that is the target of an
+    ///   `annotates` edge from a `cfg`/`cfg_attr` annotation. The cfg gate is
+    ///   what keeps two unrelated impls that share a `qualified_name`
+    ///   (`From<A>`/`From<B>`, both named `from`) from being fused, so it is a
+    ///   correctness condition rather than an optimisation. Highly selective:
+    ///   237 annotated nodes here.
+    /// - **Go** — a package-level `function` in a `.go` file. Two such
+    ///   declarations can only coexist under build constraints, so >= 2 members
+    ///   in a package directory is itself the signal. There is no cfg-equivalent
+    ///   to narrow on, so this pre-filters on *name* repeating anywhere, which
+    ///   is a superset of the real groups and bounded by duplicate names rather
+    ///   than by graph size. The caller does the exact `(directory, name)`
+    ///   grouping, since SQLite has no `dirname`.
+    ///
+    /// Group keys match the ones [`crate::resolution::propagate_variant_edges`]
+    /// builds, except that the Go key is completed by the caller.
+    pub async fn variant_group_candidates(&self) -> Result<Vec<(String, String)>> {
+        let kinds = crate::resolution::CALLABLE_KIND_NAMES
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT 'rs' || char(1) || n.qualified_name, n.id \
+             FROM nodes n \
+             JOIN edges e ON e.target = n.id AND e.kind = 'annotates' \
+             JOIN nodes a ON a.id = e.source \
+             WHERE a.kind = 'annotation_usage' AND a.name IN ('cfg', 'cfg_attr') \
+               AND lower(n.file_path) LIKE '%.rs' \
+               AND n.kind IN ({kinds})"
+        );
+        let mut rows = self
+            .conn()
+            .query(&sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query rust variant candidates: {e}"),
+                operation: "variant_group_candidates".to_string(),
+            })?;
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let (Ok(key), Ok(id)) = (row.get::<String>(0), row.get::<String>(1)) {
+                out.push((key, id));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Go package-level functions whose name repeats somewhere in the graph:
+    /// `(file_path, name, node id)` (#481).
+    ///
+    /// A superset of the real Go variant groups — the caller narrows to the
+    /// same directory — but bounded by how often a name repeats rather than by
+    /// the node count, and three columns rather than a whole `Node`.
+    pub async fn go_variant_candidates(&self) -> Result<Vec<(String, String, String)>> {
+        let sql = "SELECT file_path, name, id FROM nodes                    WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                      AND name IN (                        SELECT name FROM nodes                        WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                        GROUP BY name HAVING COUNT(*) >= 2                      )";
+        let mut rows = self
+            .conn()
+            .query(sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query go variant candidates: {e}"),
+                operation: "go_variant_candidates".to_string(),
+            })?;
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let (Ok(path), Ok(name), Ok(id)) = (
+                row.get::<String>(0),
+                row.get::<String>(1),
+                row.get::<String>(2),
+            ) {
+                out.push((path, name, id));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every `calls` edge whose target is one of `targets` (#481).
+    ///
+    /// Chunked, because SQLite caps a statement at 999 bound parameters and a
+    /// large Go corpus can exceed that in variant members alone.
+    pub async fn calls_edges_into(&self, targets: &[String]) -> Result<Vec<Edge>> {
+        const CHUNK: usize = 900;
+        let mut out = Vec::new();
+        for chunk in targets.chunks(CHUNK) {
+            let placeholders: Vec<String> =
+                (0..chunk.len()).map(|i| format!("?{}", i + 1)).collect();
+            let sql = format!(
+                "SELECT source, target, kind, line FROM edges \
+                 WHERE kind = 'calls' AND target IN ({})",
+                placeholders.join(", ")
+            );
+            let values: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|t| libsql::Value::Text(t.clone()))
+                .collect();
+            let mut rows = self
+                .conn()
+                .query(&sql, libsql::params_from_iter(values))
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query calls edges into targets: {e}"),
+                    operation: "calls_edges_into".to_string(),
+                })?;
+            out.extend(collect_rows(&mut rows, row_to_edge, "calls_edges_into").await?);
+        }
+        Ok(out)
+    }
+
     /// Returns `(node_id, in_degree, out_degree)` for the `limit` nodes with the
     /// highest combined degree, computed in SQL.
     ///

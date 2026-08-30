@@ -107,6 +107,65 @@ pub fn propagate_variant_edges(nodes: &[Node], edges: &[Edge]) -> Vec<Edge> {
         }
     }
 
+    emit_variant_edges(&groups, edges)
+}
+
+/// Node kinds that can be a build variant, as SQL string literals.
+///
+/// Kept beside [`is_callable`] so the in-memory and SQL paths cannot drift:
+/// a kind added to one must be added to the other, and
+/// `callable_kinds_match_is_callable` fails if they disagree.
+pub const CALLABLE_KIND_NAMES: &[&str] = &[
+    "function",
+    "method",
+    "singleton_method",
+    "struct_method",
+    "constructor",
+    "abstract_method",
+];
+
+/// Build the variant groups from the SQL candidate rows (#481).
+///
+/// The Rust rows arrive already keyed and already gated on `cfg`, so they pass
+/// straight through. The Go rows are a superset — filtered on a repeated
+/// *name* because SQLite has no `dirname` — so the exact `(directory, name)`
+/// grouping happens here, matching what the whole-graph pass builds.
+///
+/// Groups with a single member are dropped: they cannot propagate anything,
+/// and dropping them here is what keeps the follow-up edge query small.
+pub fn variant_groups_from_candidates<'a>(
+    rust: &'a [(String, String)],
+    go: &'a [(String, String, String)],
+) -> HashMap<String, Vec<&'a str>> {
+    let mut groups: HashMap<String, Vec<&'a str>> = HashMap::new();
+    for (key, id) in rust {
+        groups.entry(key.clone()).or_default().push(id.as_str());
+    }
+    for (file_path, name, id) in go {
+        groups
+            .entry(format!("go\u{1}{}\u{1}{}", parent_dir(file_path), name))
+            .or_default()
+            .push(id.as_str());
+    }
+    groups.retain(|_, members| members.len() >= 2);
+    groups
+}
+
+/// Emit the propagated edges for pre-computed variant groups.
+///
+/// Split out of [`propagate_variant_edges`] so the whole-graph caller and the
+/// SQL-backed one run identical logic (#481) — the two differ only in how the
+/// groups and the candidate edges are obtained, and a second copy of this
+/// would be a correctness risk for no benefit.
+///
+/// `edges` need only contain the `calls` edges whose target is a group member.
+/// Both uses are member-targeted: `incoming` is keyed by member, and the
+/// duplicate check asks whether `(source, sibling)` already exists, where
+/// `sibling` is itself a member of the same group.
+pub fn emit_variant_edges<S: std::hash::BuildHasher>(
+    groups: &HashMap<String, Vec<&str>, S>,
+    edges: &[Edge],
+) -> Vec<Edge> {
     // Index existing `calls` edges: which targets are called, and the (src,dst)
     // pairs already present (so we never emit a duplicate).
     let mut incoming: HashMap<&str, Vec<&Edge>> = HashMap::new();
