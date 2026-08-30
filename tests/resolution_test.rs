@@ -209,7 +209,10 @@ async fn test_unresolvable_in_resolve_all() {
     assert_eq!(result.total, 2);
     assert_eq!(result.resolved_count, 1);
     assert_eq!(result.unresolved.len(), 1);
-    assert_eq!(result.unresolved[0].reference_name, "nonexistent");
+    assert_eq!(
+        refs[result.unresolved[0] as usize].reference_name, "nonexistent",
+        "`unresolved` indexes the slice passed in (#483)"
+    );
 }
 
 #[tokio::test]
@@ -518,7 +521,7 @@ async fn test_ruby_receiver_calls_do_not_fall_back_to_bare_names() {
     let unresolved_names: Vec<_> = result
         .unresolved
         .iter()
-        .map(|reference| reference.reference_name.as_str())
+        .map(|i| refs[*i as usize].reference_name.as_str())
         .collect();
     for receiver_call in &names[..names.len() - 1] {
         assert!(

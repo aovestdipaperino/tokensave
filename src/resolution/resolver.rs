@@ -339,6 +339,10 @@ pub struct ReferenceResolver<'a> {
     go_import_qualifiers: HashMap<String, HashMap<String, String>>,
 }
 
+/// References paired with their position in the slice `resolve_all` was given,
+/// so a failure can be reported by index rather than by an owned copy (#483).
+type IndexedRefs<'r> = Vec<(usize, &'r UnresolvedRef)>;
+
 impl<'a> ReferenceResolver<'a> {
     /// Creates a resolver from pre-loaded nodes.
     pub fn from_nodes(db: &'a Database, all_nodes: &'a [Node]) -> Self {
@@ -581,22 +585,30 @@ impl<'a> ReferenceResolver<'a> {
         // ever ran. That silently lost all `Self::`/`Type::` and Python/TS
         // dotted-method call edges (#141). Also admit a ref when its trailing
         // simple name is known.
-        let (candidates, hopeless): (Vec<_>, Vec<_>) = refs.iter().partition(|uref| {
-            self.is_known_name(&uref.reference_name)
-                || self.is_known_name(simple_ref_name(&uref.reference_name))
-        });
+        // Carried with their input positions, so a reference that fails can be
+        // reported by index instead of by an owned copy (#483).
+        let (candidates, hopeless): (IndexedRefs<'_>, IndexedRefs<'_>) =
+            refs.iter().enumerate().partition(|(_, uref)| {
+                self.is_known_name(&uref.reference_name)
+                    || self.is_known_name(simple_ref_name(&uref.reference_name))
+            });
 
         let results: Vec<_> = candidates
             .par_iter()
-            .map(|uref| (*uref, self.resolve_one(uref)))
+            .map(|(i, uref)| (*i, *uref, self.resolve_one(uref)))
             .collect();
 
         let mut resolved = Vec::new();
-        let mut unresolved: Vec<UnresolvedRef> = hopeless.into_iter().cloned().collect();
-        for (uref, res) in results {
+
+        // Borrowed, not cloned. This used to build a `Vec<UnresolvedRef>` by
+        // cloning every reference that failed — ~160,000 owned records per
+        // sync on tokensave's own tree, several `String`s each, to populate a
+        // field nothing in the product reads (#483).
+        let mut failed: IndexedRefs<'_> = hopeless;
+        for (i, uref, res) in results {
             match res {
                 Some(r) if r.confidence >= 0.6 => resolved.push(r),
-                Some(_) | None => unresolved.push(uref.clone()), // below confidence floor or unresolved
+                Some(_) | None => failed.push((i, uref)), // below confidence floor or unresolved
             }
         }
 
@@ -609,10 +621,20 @@ impl<'a> ReferenceResolver<'a> {
         let resolved_count = resolved.len();
 
         // Why each remaining ref failed, where the reason was a tie (#412).
-        let ambiguous: Vec<AmbiguousCall> = unresolved
+        let ambiguous: Vec<AmbiguousCall> = failed
             .iter()
-            .filter_map(|uref| self.explain_ambiguity(uref))
+            .filter_map(|(_, uref)| self.explain_ambiguity(uref))
             .collect();
+
+        // Input order, which the old field was not: it listed the references
+        // rejected by the name pre-filter first, then those that failed
+        // resolution, so its order depended on the partition rather than on
+        // the caller's slice.
+        let mut unresolved: Vec<u32> = failed
+            .iter()
+            .map(|(i, _)| u32::try_from(*i).unwrap_or(u32::MAX))
+            .collect();
+        unresolved.sort_unstable();
 
         ResolutionResult {
             resolved,
