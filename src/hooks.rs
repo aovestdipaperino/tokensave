@@ -1040,6 +1040,46 @@ struct FindInvocation {
     targets: Vec<String>,
 }
 
+/// True when `command` carries a top-level shell operator — `&&`, `||`, `;`,
+/// `|`, or a backgrounding `&` — outside of quotes.
+///
+/// A search is only ever a *suggestion* to use the graph instead, so it must
+/// never be allowed to veto a command it does not fully model. When the line
+/// chains a search to anything else, denying it discards the other command's
+/// work — a `./deploy.sh` that never runs is a far worse failure than a grep
+/// that was not redirected (#475). The parsers that follow assume the whole
+/// line belongs to the search they matched, so anything chained makes that
+/// assumption false and the command passes through untouched.
+fn has_chained_command(command: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            if c == '\\' {
+                chars.next();
+            } else if c == '"' {
+                in_double = false;
+            }
+        } else {
+            match c {
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '\\' if !cfg!(windows) => {
+                    chars.next();
+                }
+                '&' | '|' | ';' => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 /// Parse a bash command that *starts* with `find` or `fd`, after the same
 /// leading-noise stripping `extract_grep_invocation` applies.
 ///
@@ -1051,6 +1091,9 @@ struct FindInvocation {
 /// not a glob, and guessing at one would block calls we cannot actually serve.
 fn extract_find_invocation(command: &str) -> Option<FindInvocation> {
     let rest = strip_command_prefixes(command.trim()).rest;
+    if has_chained_command(rest) {
+        return None;
+    }
     let (is_find, after_tool) = if let Some(after) = rest.strip_prefix("find ") {
         (true, after)
     } else if let Some(after) = rest.strip_prefix("fd ") {
@@ -1120,6 +1163,11 @@ fn extract_find_invocation(command: &str) -> Option<FindInvocation> {
 /// search, so it deliberately passes through.
 fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     let rest = strip_command_prefixes(command.trim()).rest;
+    // A search chained to other work is not this command's whole story, and a
+    // denial would throw that other work away (#475).
+    if has_chained_command(rest) {
+        return None;
+    }
 
     // Identify the tool. `git grep` is intentionally excluded — it searches
     // git history, which tokensave does not index.
