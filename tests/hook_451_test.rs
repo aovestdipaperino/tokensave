@@ -134,10 +134,28 @@ fn a_leading_cd_is_still_modeled() {
 }
 
 #[test]
-fn error_suppression_after_a_search_is_not_an_inert_batch() {
+fn an_exit_status_controller_ahead_of_the_search_is_inert() {
     let (_tmp, root) = project();
-    // `true` and `:` control exit status; suppressing a failing search is the
-    // idiom #475/#476 pinned. Treating them as inert would deny the chain.
+    // Nothing is discarded here: `true` and `:` carry no work of their own, so
+    // the search is effectively the whole command — the #451 shape.
+    for command in [
+        "true; grep -n MySymbol src/lib.rs",
+        ": && grep -n MySymbol src/lib.rs",
+        "echo searching && true && grep -n MySymbol src/lib.rs",
+    ] {
+        assert!(
+            is_blocked(command, &root),
+            "a leading exit-status controller is not work, so the search is still redirected: {command}"
+        );
+    }
+}
+
+#[test]
+fn error_suppression_after_the_search_still_passes_through() {
+    let (_tmp, root) = project();
+    // The same two words after the search are the error-suppression idiom
+    // `hook_475_test.rs` pins: they consume the search's exit status, and
+    // #475/#476 guarantee that chain is left alone.
     for command in [
         "grep -n MySymbol src/lib.rs || true",
         "grep -n MySymbol src/lib.rs && true",
@@ -146,7 +164,7 @@ fn error_suppression_after_a_search_is_not_an_inert_batch() {
     ] {
         assert!(
             !is_blocked(command, &root),
-            "error suppression must not turn a chained search into a denial: {command}"
+            "suppressing a failing search must not become a denial: {command}"
         );
     }
 }

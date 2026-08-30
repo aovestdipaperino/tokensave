@@ -367,14 +367,20 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
 /// Inspect a `Bash` tool command. Returns `Some(reason)` to redirect.
 /// Commands whose only effect is output. Anything not listed is treated as
 /// side-effecting, so an unrecognized command means the batch is left alone.
-fn is_inert_command(segment: &str) -> bool {
-    // Commands whose job is producing output. Exit-status controllers like
-    // `true` and `:` are deliberately absent: `grep … || true` is the ordinary
-    // error-suppression idiom, and calling it inert would deny a chain that
-    // #475/#476 guarantee passes through.
+///
+/// `before_search` distinguishes the two positions `true` and `:` appear in.
+/// Ahead of the search they carry nothing, so `true; grep -n Sym src/lib.rs`
+/// is a batched search. *After* it they are consuming the search's exit
+/// status — `grep -n Sym src/lib.rs || true` is the error-suppression idiom
+/// #475/#476 pin as pass-through, so they are not inert there.
+fn is_inert_command(segment: &str, before_search: bool) -> bool {
+    // Deliberately short and conservative: anything unrecognised counts as
+    // having side effects, so the unknown case allows rather than eating work.
     const INERT: [&str; 5] = ["echo", "pwd", "ls", "cat", "printf"];
+    const EXIT_STATUS_ONLY: [&str; 2] = ["true", ":"];
     let rest = strip_command_prefixes(segment.trim()).rest;
-    INERT.contains(&rest.split_whitespace().next().unwrap_or(""))
+    let head = rest.split_whitespace().next().unwrap_or("");
+    INERT.contains(&head) || (before_search && EXIT_STATUS_ONLY.contains(&head))
 }
 
 /// Split a command on top-level `&&`, `||` and `;`, keeping each segment
@@ -479,7 +485,7 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     for segment in &segments {
         if let Some(found) = evaluate_bash_segment(segment, env) {
             reason.get_or_insert(found);
-        } else if !is_inert_command(segment) {
+        } else if !is_inert_command(segment, reason.is_none()) {
             return None;
         }
     }
