@@ -175,20 +175,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     // First-run notice (check BEFORE any config save creates the file)
     let is_first_run = tokensave::user_config::UserConfig::is_fresh();
 
-    // Best-effort flush of pending worldwide counter tokens.
-    // `matches!` borrows `command` temporarily; the borrow is dropped
-    // before the `match command` move below, so this compiles.
-    let is_force_flush = matches!(
-        command,
-        Commands::Init { .. } | Commands::Sync { .. } | Commands::Status { .. }
-    );
+    // Best-effort flush of pending worldwide counter tokens. Which command is
+    // running no longer affects this: `try_flush` gates on one daily interval
+    // shared by every upload path, so `init`/`sync`/`status` no longer force an
+    // attempt the other commands would have skipped.
     let mut user_config = tokensave::user_config::UserConfig::load();
     // Skip the worldwide-counter flush on hot startup paths. `try_flush`
     // makes a synchronous HTTP call (#84) which can add seconds to
     // `tokensave serve` startup on slow networks — long enough to blow the
     // MCP client's 30 s `initialize` timeout.
     if !skip_agent_install_maintenance {
-        global::try_flush(&mut user_config, is_force_flush);
+        global::try_flush(&mut user_config);
     }
     user_config.save();
 
