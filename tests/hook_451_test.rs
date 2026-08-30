@@ -166,3 +166,21 @@ fn a_second_search_segment_is_real_work_too() {
         );
     }
 }
+
+#[test]
+fn several_symbol_searches_in_one_call_are_the_headline_case() {
+    let (_tmp, root) = project();
+    // The shape #451 is actually about: label, search, label, search. Both
+    // searches are symbol-shaped, so tokensave replaces both and a denial
+    // discards nothing. Treating the second search as work to be preserved
+    // would allow this command straight through and un-fix the bug.
+    for command in [
+        r#"echo "=== A ===" && grep -n First src/lib.rs && echo "=== B ===" && grep -n Second src/one.rs"#,
+        "grep -n First src/lib.rs && grep -n Second src/one.rs",
+    ] {
+        assert!(
+            is_blocked(command, &root),
+            "a batch of redirectable searches is #451 itself: {command}"
+        );
+    }
+}
