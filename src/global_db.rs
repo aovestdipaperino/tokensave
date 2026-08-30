@@ -726,13 +726,14 @@ impl GlobalDb {
 
     /// Token breakdown (input, output, `cache_read`) since a given timestamp.
     /// Claude-only: Droid turns are excluded so legacy USD views remain accurate.
-    pub async fn token_breakdown_since(&self, since: u64) -> Option<(u64, u64, u64)> {
+    pub async fn token_breakdown_since(&self, since: u64) -> Option<(u64, u64, u64, u64)> {
         let mut rows = self
             .conn
             .query(
                 "SELECT COALESCE(SUM(input_tokens), 0),
                         COALESCE(SUM(output_tokens), 0),
-                        COALESCE(SUM(cache_read_tokens), 0)
+                        COALESCE(SUM(cache_read_tokens), 0),
+                        COALESCE(SUM(cache_write_tokens), 0)
                  FROM turns WHERE timestamp >= ?1 AND agent = 'claude'",
                 params![since as i64],
             )
@@ -743,16 +744,24 @@ impl GlobalDb {
             row.get::<i64>(0).unwrap_or(0) as u64,
             row.get::<i64>(1).unwrap_or(0) as u64,
             row.get::<i64>(2).unwrap_or(0) as u64,
+            row.get::<i64>(3).unwrap_or(0) as u64,
         ))
     }
 
     /// Cost grouped by model since a given timestamp. Claude-only.
     /// Returns `(model, cost, total_tokens)`.
+    ///
+    /// `total_tokens` counts every category the cost was computed from, cache
+    /// reads and cache writes included (#472). Summing only uncached input and
+    /// output implied a price per million several times any published rate,
+    /// because agent traffic is dominated by the cached context resent each
+    /// turn — priced, but previously uncounted.
     pub async fn cost_by_model_since(&self, since: u64) -> Vec<(String, f64, u64)> {
         let Ok(mut rows) = self
             .conn
             .query(
-                "SELECT model, SUM(cost_usd), SUM(input_tokens + output_tokens)
+                "SELECT model, SUM(cost_usd),
+                        SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens)
                  FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
                  GROUP BY model ORDER BY SUM(cost_usd) DESC",
                 params![since as i64],

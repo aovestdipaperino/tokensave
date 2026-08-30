@@ -10,6 +10,7 @@ pub struct CostSummary {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub total_cache_read_tokens: u64,
+    pub total_cache_write_tokens: u64,
     pub by_model: Vec<(String, f64, u64)>, // (model, cost, total_tokens)
     pub by_category: Vec<(String, f64, u64)>, // (category, cost, turn_count)
     pub tokens_saved: u64,
@@ -85,8 +86,10 @@ pub async fn cost_summary_with_droid_presence(
 ) -> Option<CostSummary> {
     let tokens_saved = gdb.sum_savings(None, since as i64).await.saved_tokens;
     let total_cost = gdb.total_cost_since(since).await?;
-    let (total_input, total_output, total_cache_read) =
-        gdb.token_breakdown_since(since).await.unwrap_or((0, 0, 0));
+    let (total_input, total_output, total_cache_read, total_cache_write) = gdb
+        .token_breakdown_since(since)
+        .await
+        .unwrap_or((0, 0, 0, 0));
     let by_model = gdb.cost_by_model_since(since).await;
     let by_category = gdb.cost_by_category_since(since).await;
     let mut by_agent = gdb.cost_by_agent_since(since).await;
@@ -106,6 +109,7 @@ pub async fn cost_summary_with_droid_presence(
         total_input_tokens: total_input,
         total_output_tokens: total_output,
         total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
         by_model,
         by_category,
         tokens_saved,
