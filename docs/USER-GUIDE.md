@@ -627,7 +627,7 @@ tokensave servers
 
 ```
   PID  VERSION  PROJECT
-87904   7.10.0  /Users/you/Code/app/worktrees/feature-x
+87904   7.11.0  /Users/you/Code/app/worktrees/feature-x
 ```
 
 A per-branch database is not derivable from the project root, so it is shown
@@ -650,7 +650,7 @@ same objects.
   "project_path": "/Users/you/Code/app",
   "argv_path": "/Users/you/Code/app",
   "db_path": "/Users/you/Code/app/.tokensave/tokensave.db",
-  "version": "7.10.0"
+  "version": "7.11.0"
 }
 ```
 
