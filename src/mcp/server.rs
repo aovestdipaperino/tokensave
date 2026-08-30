@@ -62,6 +62,13 @@ impl ServerStats {
 /// Cache duration for version checks (15 minutes).
 const VERSION_CHECK_INTERVAL: Duration = Duration::from_mins(15);
 
+/// How often a running server bothers to *consider* a worldwide-counter upload.
+///
+/// This is a re-entry guard, not the upload cadence: it only keeps a busy
+/// server from reading the user config on every tool call. Whether a request is
+/// actually made is `cloud::upload_is_due`, which is daily.
+const FLUSH_CHECK_INTERVAL_SECS: i64 = 30;
+
 /// Hand-maintained schema documentation for the `tokensave://schema` resource.
 /// Mirrors `src/db/migrations.rs::create_schema`. Update both together.
 const SCHEMA_MARKDOWN: &str = r"# tokensave SQLite schema
@@ -1103,15 +1110,26 @@ impl McpServer {
             .unwrap_or_default()
     }
 
-    /// Flushes pending tokens to the worldwide counter if at least 30 seconds
-    /// have elapsed since the last flush. Best-effort, never blocks for long.
+    /// Uploads the accumulated saved-token delta to the worldwide counter, at
+    /// most once a day. Best-effort, never blocks for long.
+    ///
+    /// Two gates, doing different jobs. The in-process one keeps a busy server
+    /// from loading the user config on every single tool call; the daily one in
+    /// `cloud::upload_is_due` decides whether a request is actually made, and is
+    /// shared with the CLI so both cadences are the same decision.
+    ///
+    /// Nothing is lost by declining to upload: `last_flushed_tokens` advances
+    /// only on success, so the delta is re-derived from the running total next
+    /// time. That is also why the accumulated total is not *persisted* when the
+    /// upload is skipped — writing it while `last_flushed_tokens` stays put
+    /// would count the same tokens twice.
     async fn maybe_flush_worldwide(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
         let last = self.last_flush_at.load(Ordering::Relaxed);
-        if now - last < 30 {
+        if now - last < FLUSH_CHECK_INTERVAL_SECS {
             return;
         }
         // Mark as attempted immediately to prevent re-entry.
@@ -1127,13 +1145,14 @@ impl McpServer {
         let success = tokio::task::spawn_blocking(move || {
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
-            if config.upload_enabled && crate::cloud::flush_pending(config.pending_upload).is_some()
-            {
+            if !crate::cloud::upload_is_due(&config, now) {
+                // Deliberately not saved: see the note above on double counting.
+                return false;
+            }
+            config.last_flush_attempt_at = now;
+            if crate::cloud::flush_pending(config.pending_upload).is_some() {
                 config.pending_upload = 0;
-                config.last_upload_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
+                config.last_upload_at = now;
                 config.save();
                 return true;
             }
@@ -1383,19 +1402,24 @@ impl McpServer {
             gdb.checkpoint().await;
         }
 
-        // Flush remaining delta to worldwide counter (what periodic flushes missed)
+        // Record the remaining delta the periodic flushes did not upload, and
+        // upload it only if a day has passed. Unlike the periodic path this
+        // always *persists* the accumulated total: the process is ending, so
+        // `last_flushed_tokens` is about to be lost and the config file is the
+        // only thing that will still remember these tokens.
         let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
         if tokens_saved > last_flushed {
             let delta = tokens_saved - last_flushed;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
-            if config.upload_enabled {
-                if let Some(_total) = crate::cloud::flush_pending(config.pending_upload) {
+            if crate::cloud::upload_is_due(&config, now) {
+                config.last_flush_attempt_at = now;
+                if crate::cloud::flush_pending(config.pending_upload).is_some() {
                     config.pending_upload = 0;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
                     config.last_upload_at = now;
                 }
             }

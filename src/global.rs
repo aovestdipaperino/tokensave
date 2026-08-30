@@ -21,23 +21,17 @@ pub(crate) async fn update_global_db(cg: &TokenSave) {
 }
 
 /// Best-effort: try to flush pending tokens to the worldwide counter.
-/// `force` = true on status/sync commands (always attempt), false on others
-/// (only flush if stale > 30s).
-pub(crate) fn try_flush(config: &mut tokensave::user_config::UserConfig, force: bool) {
-    if config.pending_upload == 0 || !config.upload_enabled {
-        return;
-    }
+///
+/// The `force` parameter is gone. It used to mean "status and sync always
+/// attempt, everything else waits 30 seconds", which on an active machine
+/// amounted to a network request per command. The cadence is now one daily
+/// gate shared by every upload path (`cloud::upload_is_due`), and a command
+/// asking to flush cannot opt out of it: pending tokens accumulate locally
+/// either way, so nothing is lost by waiting, and the worldwide total is a
+/// single global sum that no local decision needs at a finer grain.
+pub(crate) fn try_flush(config: &mut tokensave::user_config::UserConfig) {
     let now = current_unix_timestamp();
-
-    // Cooldown: skip if last flush attempt failed less than 60s ago
-    if config.last_flush_attempt_at > config.last_upload_at
-        && now - config.last_flush_attempt_at < 60
-    {
-        return;
-    }
-
-    // Staleness check for non-force commands
-    if !force && now - config.last_upload_at < 30 {
+    if !tokensave::cloud::upload_is_due(config, now) {
         return;
     }
 

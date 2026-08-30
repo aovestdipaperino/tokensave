@@ -37,6 +37,43 @@ pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
+/// How long a successful upload holds off the next one: once a day.
+///
+/// The counter is a single global sum, so nothing about it needs a finer
+/// grain than this — an intermediate upload changes the number it reports for
+/// a few hours and then is indistinguishable from having waited. What the old
+/// 30-second cadence did buy was one network request per command on an active
+/// machine, from every path that touches the counter.
+pub const UPLOAD_INTERVAL_SECS: i64 = 24 * 60 * 60;
+
+/// How long a *failed* attempt holds off the next one.
+///
+/// Deliberately much shorter than [`UPLOAD_INTERVAL_SECS`]: a failure leaves
+/// `last_upload_at` untouched, so the daily gate stays open and this is the
+/// only thing standing between a broken network and a request per command.
+pub const FAILED_ATTEMPT_COOLDOWN_SECS: i64 = 60;
+
+/// Whether an upload is due: uploads are enabled, something is pending, a day
+/// has passed since the last success, and the last attempt did not just fail.
+///
+/// Every path that uploads goes through this, so the cadence is one decision
+/// in one place rather than a staleness check repeated per call site with its
+/// own threshold (and, at two of them, none at all).
+pub fn upload_is_due(config: &crate::user_config::UserConfig, now: i64) -> bool {
+    if config.pending_upload == 0 || !config.upload_enabled {
+        return false;
+    }
+    // A failed attempt is recorded past the last success; back off briefly so a
+    // broken network does not mean a request per command.
+    if config.last_flush_attempt_at > config.last_upload_at
+        && now - config.last_flush_attempt_at < FAILED_ATTEMPT_COOLDOWN_SECS
+    {
+        return false;
+    }
+    // A machine that has never uploaded has `last_upload_at == 0`, which is due.
+    now - config.last_upload_at >= UPLOAD_INTERVAL_SECS
+}
+
 /// Uploads pending tokens to the worldwide counter.
 /// Returns the new worldwide total on success, or None on any failure.
 pub fn flush_pending(amount: u64) -> Option<u64> {
@@ -414,6 +451,74 @@ pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn cfg(
+        pending: u64,
+        last_upload_at: i64,
+        last_attempt_at: i64,
+    ) -> crate::user_config::UserConfig {
+        crate::user_config::UserConfig {
+            upload_enabled: true,
+            pending_upload: pending,
+            last_upload_at,
+            last_flush_attempt_at: last_attempt_at,
+            ..crate::user_config::UserConfig::default()
+        }
+    }
+
+    const DAY: i64 = UPLOAD_INTERVAL_SECS;
+
+    #[test]
+    fn upload_is_due_only_once_a_day() {
+        let now = 10 * DAY;
+        assert!(
+            !upload_is_due(&cfg(500, now - 60, 0), now),
+            "an upload a minute ago must not trigger another"
+        );
+        assert!(
+            !upload_is_due(&cfg(500, now - (DAY - 1), 0), now),
+            "one second short of a day is not due"
+        );
+        assert!(
+            upload_is_due(&cfg(500, now - DAY, now - DAY), now),
+            "a full day since the last success is due"
+        );
+    }
+
+    #[test]
+    fn upload_is_due_on_a_machine_that_has_never_uploaded() {
+        // `last_upload_at` is 0 until the first success, which must read as due
+        // rather than as "uploaded at the epoch, wait a day".
+        assert!(upload_is_due(&cfg(500, 0, 0), 10 * DAY));
+    }
+
+    #[test]
+    fn nothing_to_send_or_opted_out_is_never_due() {
+        let now = 10 * DAY;
+        assert!(
+            !upload_is_due(&cfg(0, 0, 0), now),
+            "no pending tokens means no request"
+        );
+        let mut opted_out = cfg(500, 0, 0);
+        opted_out.upload_enabled = false;
+        assert!(!upload_is_due(&opted_out, now), "opt-out is honored");
+    }
+
+    #[test]
+    fn a_failed_attempt_backs_off_briefly_then_retries() {
+        let now = 10 * DAY;
+        // A failure leaves `last_upload_at` behind `last_flush_attempt_at`, so
+        // the daily gate is still open — the cooldown is the only thing
+        // stopping a request per command while the network is down.
+        let just_failed = cfg(500, now - 5 * DAY, now - 1);
+        assert!(!upload_is_due(&just_failed, now));
+
+        let failed_a_while_ago = cfg(500, now - 5 * DAY, now - FAILED_ATTEMPT_COOLDOWN_SECS);
+        assert!(
+            upload_is_due(&failed_a_while_ago, now),
+            "the cooldown must expire, or a single failure would wedge uploads for a day"
+        );
+    }
 
     #[test]
     fn update_check_defaults_on_and_honors_off_values() {
