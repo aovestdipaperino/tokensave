@@ -63,17 +63,27 @@ pub async fn quick_cost_summary_with_droid_presence(
 }
 
 /// Build a full cost summary for a given time range.
-pub async fn cost_summary(gdb: &GlobalDb, since: u64, tokens_saved: u64) -> Option<CostSummary> {
-    cost_summary_with_droid_presence(gdb, since, tokens_saved, true).await
+pub async fn cost_summary(gdb: &GlobalDb, since: u64) -> Option<CostSummary> {
+    cost_summary_with_droid_presence(gdb, since, true).await
 }
 
 /// Build a full summary while excluding stale Droid rows when no Droid source exists.
+///
+/// `tokens_saved` is read from the savings ledger for the same `since` the rest
+/// of the summary uses, rather than taken as an argument (#473). It used to be
+/// passed in, and every caller passed `global_tokens_saved()` — a lifetime,
+/// all-projects counter — which put a constant inside a range-scoped payload:
+/// the savings figure for `today` equalled the one for `all`, and
+/// `efficiency_ratio` moved across ranges only because a fixed numerator was
+/// being divided by a growing denominator. Deriving it here from `since` makes
+/// the two halves of the summary share one scope by construction, and makes the
+/// figure agree with `tokensave gain`, which reads the same ledger.
 pub async fn cost_summary_with_droid_presence(
     gdb: &GlobalDb,
     since: u64,
-    tokens_saved: u64,
     droid_present: bool,
 ) -> Option<CostSummary> {
+    let tokens_saved = gdb.sum_savings(None, since as i64).await.saved_tokens;
     let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read) =
         gdb.token_breakdown_since(since).await.unwrap_or((0, 0, 0));

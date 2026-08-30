@@ -1222,7 +1222,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
 
             let since = tokensave::accounting::metrics::parse_range(&range);
-            let tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
             let droid_present = ingest_stats.coverage.iter().any(|coverage| {
                 coverage.agent == "droid"
                     && coverage.state != tokensave::accounting::CoverageState::Absent
@@ -1230,7 +1229,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
                 &gdb,
                 since,
-                tokens_saved,
                 droid_present,
             )
             .await;
