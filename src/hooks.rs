@@ -368,7 +368,11 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
 /// Commands whose only effect is output. Anything not listed is treated as
 /// side-effecting, so an unrecognized command means the batch is left alone.
 fn is_inert_command(segment: &str) -> bool {
-    const INERT: [&str; 7] = ["echo", "true", ":", "pwd", "ls", "cat", "printf"];
+    // Commands whose job is producing output. Exit-status controllers like
+    // `true` and `:` are deliberately absent: `grep … || true` is the ordinary
+    // error-suppression idiom, and calling it inert would deny a chain that
+    // #475/#476 guarantee passes through.
+    const INERT: [&str; 5] = ["echo", "pwd", "ls", "cat", "printf"];
     let rest = strip_command_prefixes(segment.trim()).rest;
     INERT.contains(&rest.split_whitespace().next().unwrap_or(""))
 }
@@ -378,13 +382,16 @@ fn is_inert_command(segment: &str) -> bool {
 ///
 /// Returns `None` for a single segment, for unbalanced quotes, and for the
 /// shapes this hook deliberately does not model: subshells, command
-/// substitution, pipes, redirects and background jobs. Not modeled means not
+/// substitution, newlines, pipes, redirects and background jobs. Not modeled means not
 /// blocked — the caller falls through and allows.
 fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
     // Command substitution is unmodeled wherever it sits, and quoting does not
     // make it inert: `echo "$(curl -X POST …)"` runs the POST. The scan below
     // skips quoted spans, so this has to be caught before it starts.
-    if command.contains("$(") || command.contains('`') {
+    // A newline separates commands just like `;` does, but the segment scan
+    // below does not split on it, so an embedded newline would hide real work
+    // inside a segment that looks inert from its first word.
+    if command.contains("$(") || command.contains('`') || command.contains('\n') {
         return None;
     }
 
@@ -472,7 +479,7 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     for segment in &segments {
         if let Some(found) = evaluate_bash_segment(segment, env) {
             reason.get_or_insert(found);
-        } else if extract_grep_invocation(segment).is_none() && !is_inert_command(segment) {
+        } else if !is_inert_command(segment) {
             return None;
         }
     }

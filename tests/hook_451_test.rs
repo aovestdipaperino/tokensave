@@ -54,7 +54,7 @@ fn a_search_batched_behind_inert_commands_is_redirected() {
     let (_tmp, root) = project();
     for command in [
         r#"echo "=== A ===" && grep -n SymbolOne src/one.rs"#,
-        "true; grep -n MySymbol src/lib.rs",
+        "printf hi; grep -n MySymbol src/lib.rs",
         "ls && grep -n MySymbol src/lib.rs",
     ] {
         assert!(
@@ -97,6 +97,9 @@ fn unmodeled_shell_shapes_fall_through() {
         "echo `id` && grep -n MySymbol src/lib.rs",
         // A pipe is not a sequencing operator and never was in scope.
         "echo hi | grep -n MySymbol src/lib.rs",
+        // A newline sequences commands, but the split only breaks on
+        // `&&`/`||`/`;`, so real work could hide behind an inert first word.
+        "echo header\ntouch marker && rg MySymbol src/",
     ] {
         assert!(
             !is_blocked(command, &root),
@@ -128,4 +131,38 @@ fn a_leading_cd_is_still_modeled() {
         is_blocked("cd src && grep -n MySymbol lib.rs", &root),
         "a leading cd must still resolve the target, not read as a work segment"
     );
+}
+
+#[test]
+fn error_suppression_after_a_search_is_not_an_inert_batch() {
+    let (_tmp, root) = project();
+    // `true` and `:` control exit status; suppressing a failing search is the
+    // idiom #475/#476 pinned. Treating them as inert would deny the chain.
+    for command in [
+        "grep -n MySymbol src/lib.rs || true",
+        "grep -n MySymbol src/lib.rs && true",
+        "grep -n MySymbol src/lib.rs ; true",
+        "grep -n MySymbol src/lib.rs || :",
+    ] {
+        assert!(
+            !is_blocked(command, &root),
+            "error suppression must not turn a chained search into a denial: {command}"
+        );
+    }
+}
+
+#[test]
+fn a_second_search_segment_is_real_work_too() {
+    let (_tmp, root) = project();
+    // The sibling grep is not symbol-shaped, so tokensave cannot replace it.
+    // Denying on the other segment's account would discard it.
+    for command in [
+        r#"grep -rn "some prose pattern" src/ && grep -n MySymbol src/lib.rs"#,
+        r#"grep -n MySymbol src/lib.rs && grep -rn "some prose pattern" src/"#,
+    ] {
+        assert!(
+            !is_blocked(command, &root),
+            "a search the hook cannot replace is work: {command}"
+        );
+    }
 }
