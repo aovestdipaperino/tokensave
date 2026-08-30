@@ -32,6 +32,12 @@ pub enum Commands {
         /// Folders to skip during indexing (can be repeated)
         #[arg(long = "skip-folder", num_args = 1..)]
         skip_folders: Vec<String>,
+        /// Install this repository's own git hooks without asking (#455)
+        #[arg(long, conflicts_with = "no_git_hook")]
+        git_hook: bool,
+        /// Do not offer this repository's own git hooks
+        #[arg(long = "no-git-hook")]
+        no_git_hook: bool,
     },
     /// Incremental sync (project must already be initialized with `tokensave init`)
     Sync {
@@ -249,9 +255,21 @@ pub enum Commands {
     /// Show or remove the global git hooks tokensave installs
     #[command(name = "githooks")]
     Githooks {
-        /// "off" to remove tokensave's global git hooks, "on" to install them,
+        /// "off" to remove tokensave's git hooks, "on" to install them,
         /// omit to show what is currently installed
         action: Option<String>,
+        /// Act on this repository's own hooks instead of the global ones (#455)
+        ///
+        /// Global hooks work by claiming `core.hooksPath`, which is a single
+        /// machine-wide setting: it forces one hook directory on every
+        /// repository and makes git ignore each one's `.git/hooks`. Use
+        /// `--local` when your projects need different tooling. No git config
+        /// is touched, so other repositories are unaffected.
+        #[arg(long)]
+        local: bool,
+        /// Repository to act on with `--local` (default: current directory)
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
     },
     /// Check tokensave installation, configuration, and agent integration
     Doctor {

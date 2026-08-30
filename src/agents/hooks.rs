@@ -459,6 +459,233 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-repository hooks (#455)
+// ---------------------------------------------------------------------------
+
+/// What [`install_local_git_hooks`] did, so the caller can report it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct LocalHookInstall {
+    /// The repository hook directory that was written to.
+    pub hooks_dir: PathBuf,
+    /// Hooks installed by this run.
+    pub installed: Vec<String>,
+    /// Hooks that already carried tokensave's section.
+    pub already_present: Vec<String>,
+    /// Set when a `core.hooksPath` is in effect for this repository, which
+    /// makes git resolve every hook from *that* directory and ignore the one
+    /// written here.
+    pub shadowed_by: Option<PathBuf>,
+}
+
+/// Run `git` in `repo` and return trimmed stdout on success.
+fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The directory holding this repository's own hooks.
+///
+/// Resolved from `--git-common-dir` rather than `--git-dir` because linked
+/// worktrees share one hook directory with the main checkout: reading
+/// `--git-dir` from inside a worktree would write hooks to a per-worktree
+/// directory git never consults.
+pub fn repo_hooks_dir(repo: &Path) -> Option<PathBuf> {
+    let common = git_output(repo, &["rev-parse", "--git-common-dir"])?;
+    let common = PathBuf::from(&common);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        repo.join(common)
+    };
+    Some(common.join("hooks"))
+}
+
+/// A `core.hooksPath` in effect for this repository, from any config scope.
+///
+/// When one is set, git resolves **every** hook from there and never looks at
+/// the repository's own hook directory — so a hook installed there would be
+/// silently inert. That is the whole complaint behind #455 pointed the other
+/// way, and the caller says so rather than reporting a successful install of
+/// something that will not run.
+fn effective_hooks_path(repo: &Path) -> Option<PathBuf> {
+    git_output(repo, &["config", "--get", "core.hooksPath"]).map(PathBuf::from)
+}
+
+/// Are tokensave's *global* hooks installed?
+///
+/// Checked before offering local ones: a repository covered by both would run
+/// a sync twice per commit.
+pub fn global_git_hooks_installed() -> bool {
+    let Some(home) = home_dir() else {
+        return false;
+    };
+    let hooks_dir = read_global_hooks_path(&home)
+        .unwrap_or_else(|| home.join(".config").join("git").join("hooks"));
+    [
+        ("post-commit", HOOK_MARKER),
+        ("post-checkout", HOOK_MARKER_CHECKOUT),
+        ("post-merge", HOOK_MARKER_MERGE),
+    ]
+    .iter()
+    .any(|(name, marker)| {
+        std::fs::read_to_string(hooks_dir.join(name)).is_ok_and(|c| c.contains(*marker))
+    })
+}
+
+/// Does this repository's hook directory already carry tokensave's sections?
+pub fn local_git_hooks_present(repo: &Path) -> bool {
+    let Some(dir) = repo_hooks_dir(repo) else {
+        return false;
+    };
+    [
+        ("post-commit", HOOK_MARKER),
+        ("post-checkout", HOOK_MARKER_CHECKOUT),
+        ("post-merge", HOOK_MARKER_MERGE),
+    ]
+    .iter()
+    .any(|(name, marker)| {
+        std::fs::read_to_string(dir.join(name)).is_ok_and(|c| c.contains(*marker))
+    })
+}
+
+/// Install tokensave's three hooks into this repository's own hook directory,
+/// leaving `core.hooksPath` alone (#455).
+///
+/// A global `core.hooksPath` is a single setting for every repository on the
+/// machine, so claiming it forces one hook set on all of them — which is
+/// wrong for anyone whose projects need different tooling. Per-repository
+/// hooks are the git-native answer, and they need no global config at all.
+///
+/// Writing is additive in the same way the global path is: an existing hook
+/// keeps everything it already has and gains a marked tokensave section, so a
+/// repository's husky or pre-commit setup is not disturbed. There is
+/// deliberately no chaining preamble here — the repository's own hook *is*
+/// this file, and a forwarder would invoke itself.
+pub fn install_local_git_hooks(
+    repo: &Path,
+    tokensave_bin: &str,
+) -> Result<LocalHookInstall, String> {
+    let hooks_dir = repo_hooks_dir(repo)
+        .ok_or_else(|| format!("{} is not a git repository", repo.display()))?;
+    std::fs::create_dir_all(&hooks_dir)
+        .map_err(|e| format!("failed to create {}: {e}", hooks_dir.display()))?;
+
+    let mut result = LocalHookInstall {
+        hooks_dir: hooks_dir.clone(),
+        shadowed_by: effective_hooks_path(repo),
+        ..Default::default()
+    };
+
+    for (name, marker, snippet) in [
+        (
+            "post-commit",
+            HOOK_MARKER,
+            post_commit_snippet(tokensave_bin),
+        ),
+        (
+            "post-checkout",
+            HOOK_MARKER_CHECKOUT,
+            post_checkout_snippet(tokensave_bin),
+        ),
+        (
+            "post-merge",
+            HOOK_MARKER_MERGE,
+            post_merge_snippet(tokensave_bin),
+        ),
+    ] {
+        let path = hooks_dir.join(name);
+        let existing = std::fs::read_to_string(&path).ok();
+        if existing.is_some_and(|c| c.contains(marker)) {
+            result.already_present.push(name.to_string());
+            continue;
+        }
+        if write_global_hook(&path, &snippet) {
+            result.installed.push(name.to_string());
+        }
+    }
+    Ok(result)
+}
+
+/// Remove tokensave's sections from this repository's own hooks.
+///
+/// Same conservative rule as the global removal: a hook holding anything
+/// tokensave did not write keeps that content and loses only the marked
+/// section; a file that is nothing but tokensave's own content is deleted. No
+/// git config is touched, because installing never set any.
+pub fn remove_local_git_hooks(repo: &Path) -> HookRemoval {
+    let Some(hooks_dir) = repo_hooks_dir(repo) else {
+        return HookRemoval::default();
+    };
+    let mut result = HookRemoval {
+        hooks_dir: hooks_dir.clone(),
+        ..Default::default()
+    };
+    for name in ["post-commit", "post-checkout", "post-merge"] {
+        let path = hooks_dir.join(name);
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(stripped) = strip_tokensave_sections(&contents) else {
+            continue;
+        };
+        if is_inert_hook(&stripped) {
+            if std::fs::remove_file(&path).is_ok() {
+                result.deleted.push(path);
+            }
+        } else if std::fs::write(&path, &stripped).is_ok() {
+            result.cleaned.push(path);
+        }
+    }
+    result
+}
+
+/// Report this repository's own hooks, for `tokensave githooks --local`.
+pub fn describe_local_git_hooks(repo: &Path) -> Vec<String> {
+    let Some(hooks_dir) = repo_hooks_dir(repo) else {
+        return vec![format!("{} is not a git repository", repo.display())];
+    };
+    let mut out = vec![format!("repository hooks: {}", hooks_dir.display())];
+
+    if let Some(path) = effective_hooks_path(repo) {
+        out.push(format!(
+            "core.hooksPath is set to {} — git reads hooks from there and ignores the directory above",
+            path.display()
+        ));
+    }
+
+    let mut acting = Vec::new();
+    for (name, marker) in [
+        ("post-commit", HOOK_MARKER),
+        ("post-checkout", HOOK_MARKER_CHECKOUT),
+        ("post-merge", HOOK_MARKER_MERGE),
+    ] {
+        if std::fs::read_to_string(hooks_dir.join(name)).is_ok_and(|c| c.contains(marker)) {
+            acting.push(name);
+        }
+    }
+
+    if acting.is_empty() {
+        out.push("no tokensave hooks installed in this repository".to_string());
+        out.push("install them with `tokensave githooks on --local`".to_string());
+        return out;
+    }
+    for name in acting {
+        out.push(format!("{name}: runs tokensave"));
+    }
+    out.push("remove them with `tokensave githooks off --local`".to_string());
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Removal (#420)
 // ---------------------------------------------------------------------------
 

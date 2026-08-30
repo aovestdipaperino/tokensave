@@ -370,13 +370,52 @@ During `tokensave install`, you'll be offered a global git `post-commit` hook. I
 
 If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
 
+#### Per-repository hooks instead of global ones
+
+The global hooks work by claiming `core.hooksPath`, which is a **single
+machine-wide setting**. It overrides git's default of a separate `.git/hooks`
+per checkout, so every repository on the machine is forced to share one hook
+directory — which is wrong if your projects need different tooling (#455).
+
+Per-repository hooks avoid that entirely. They go in the repository's own hook
+directory and touch no git config at all, so nothing else on the machine
+changes:
+
+```bash
+tokensave githooks on --local      # install into this repository only
+tokensave githooks --local         # show what this repository has
+tokensave githooks off --local     # remove them from this repository
+```
+
+`tokensave init` offers them for you. Accept and the three hooks are installed;
+decline and nothing is written. It only asks on a terminal, so scripted and CI
+installs are unaffected, and it stays quiet when tokensave's global hooks are
+already installed — a repository covered by both would sync twice per commit.
+
+```bash
+tokensave init --git-hook       # install without asking
+tokensave init --no-git-hook    # don't ask, don't install
+```
+
+Writing is additive: a repository that already has a `post-commit` — husky,
+pre-commit, or one you wrote — keeps everything it had and gains a marked
+tokensave section. Linked worktrees share the checkout's hook directory, which
+is what git itself reads, so installing from inside a worktree does the right
+thing.
+
+One thing to watch: if a `core.hooksPath` is set for the repository, from any
+config scope, git reads hooks from *there* and never looks at the repository's
+own directory. Local hooks would be written but never run, so tokensave says so
+rather than reporting a success that is not one.
+
 #### Removing the git hooks
 
 The hooks are global and outlive every agent integration, so removing tokensave from your agents does not stop them on its own (#420). Two ways to remove them:
 
 ```bash
 tokensave githooks              # show what is installed, and where
-tokensave githooks off          # remove tokensave's hooks
+tokensave githooks off          # remove tokensave's global hooks
+tokensave githooks off --local  # remove this repository's own hooks
 tokensave uninstall             # removes the hooks along with all agent integrations
 tokensave uninstall --keep-git-hooks   # ...or keep them
 ```

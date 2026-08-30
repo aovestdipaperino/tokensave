@@ -282,7 +282,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
-        Commands::Init { path, skip_folders } => {
+        Commands::Init {
+            path,
+            skip_folders,
+            git_hook,
+            no_git_hook,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
             if TokenSave::is_initialized(&project_path) {
                 eprintln!(
@@ -326,6 +331,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::record("start");
 
             commands::init_and_index(&project_path, &skip_folders, false).await?;
+
+            // Offer this repository's own git hooks (#455). Local rather than
+            // global, because the global path claims `core.hooksPath` — one
+            // machine-wide setting that forces the same hook directory on
+            // every repository — and `init` is per-project by definition.
+            offer_local_git_hooks(&project_path, git_hook, no_git_hook);
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
@@ -1174,30 +1185,51 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.save();
             eprintln!("Worldwide counter upload enabled.");
         }
-        Commands::Githooks { action } => match action.as_deref() {
-            Some("off") => {
-                report_hook_removal(&tokensave::agents::remove_git_hooks());
-            }
-            Some("on") => {
-                let bin = std::env::current_exe()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "tokensave".to_string());
-                tokensave::agents::offer_git_post_commit_hook(
-                    &bin,
-                    tokensave::agents::GitHookMode::Yes,
-                );
-            }
-            Some(other) => {
-                return Err(tokensave::errors::TokenSaveError::Config {
-                    message: format!("unknown action '{other}': expected 'on' or 'off'"),
-                });
-            }
-            None => {
-                for line in tokensave::agents::describe_git_hooks() {
-                    eprintln!("{line}");
+        Commands::Githooks {
+            action,
+            local,
+            path,
+        } => {
+            let repo = tokensave::config::resolve_path(path);
+            match (action.as_deref(), local) {
+                (Some("off"), true) => {
+                    report_hook_removal(&tokensave::agents::remove_local_git_hooks(&repo));
+                }
+                (Some("off"), false) => {
+                    report_hook_removal(&tokensave::agents::remove_git_hooks());
+                }
+                (Some("on"), true) => {
+                    let bin = current_bin_path();
+                    match tokensave::agents::install_local_git_hooks(&repo, &bin) {
+                        Ok(outcome) => report_local_hook_install(&outcome),
+                        Err(message) => {
+                            return Err(tokensave::errors::TokenSaveError::Config { message })
+                        }
+                    }
+                }
+                (Some("on"), false) => {
+                    tokensave::agents::offer_git_post_commit_hook(
+                        &current_bin_path(),
+                        tokensave::agents::GitHookMode::Yes,
+                    );
+                }
+                (Some(other), _) => {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!("unknown action '{other}': expected 'on' or 'off'"),
+                    });
+                }
+                (None, true) => {
+                    for line in tokensave::agents::describe_local_git_hooks(&repo) {
+                        eprintln!("{line}");
+                    }
+                }
+                (None, false) => {
+                    for line in tokensave::agents::describe_git_hooks() {
+                        eprintln!("{line}");
+                    }
                 }
             }
-        },
+        }
         Commands::Gitignore { path, action } => {
             let project_path = tokensave::config::resolve_path(path);
             let mut config = tokensave::config::load_config(&project_path)?;
@@ -1580,6 +1612,88 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
 /// Print what `remove_git_hooks` did. Says so explicitly when it found
 /// nothing, so `githooks off` never exits silently on a machine that has no
 /// tokensave hooks installed.
+fn current_bin_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "tokensave".to_string())
+}
+
+fn report_local_hook_install(outcome: &tokensave::agents::LocalHookInstall) {
+    for name in &outcome.installed {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Installed git {name} hook at {}",
+            outcome.hooks_dir.join(name).display()
+        );
+    }
+    for name in &outcome.already_present {
+        eprintln!("  git {name} hook already contains tokensave, skipping");
+    }
+    // A hook that will never run is worse than no hook, because nothing else
+    // says so. `core.hooksPath` makes git resolve every hook from one
+    // directory with no fallback to the repository's own.
+    if let Some(path) = &outcome.shadowed_by {
+        eprintln!(
+            "  \x1b[33m⚠\x1b[0m core.hooksPath is set to {} — git reads hooks from there, so \
+             the hooks just written will not run. Unset it (`git config --unset core.hooksPath`), \
+             or use the global hooks instead (`tokensave githooks on`).",
+            path.display()
+        );
+    }
+}
+
+/// Offer this repository's own git hooks after `init` (#455).
+///
+/// Local rather than global on purpose: the global path claims
+/// `core.hooksPath`, a single machine-wide setting that forces one hook
+/// directory on every repository, which is exactly what someone juggling
+/// projects with different tooling does not want.
+///
+/// Prompt defaults to *yes* — the hooks are per-repository, live in `.git/`
+/// so they are never committed, and are removable with one command — but a
+/// non-TTY skips silently, so scripted and CI installs are unchanged.
+fn offer_local_git_hooks(project_path: &std::path::Path, forced: bool, refused: bool) {
+    if refused {
+        return;
+    }
+    if tokensave::agents::repo_hooks_dir(project_path).is_none() {
+        return;
+    }
+    // Global hooks already cover this repository; installing local ones too
+    // would run a sync twice per commit.
+    if !forced && tokensave::agents::global_git_hooks_installed() {
+        return;
+    }
+    if !forced && tokensave::agents::local_git_hooks_present(project_path) {
+        return;
+    }
+    if !forced {
+        if !std::io::stdin().is_terminal() {
+            return;
+        }
+        eprintln!();
+        eprint!(
+            "Install this repository's git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m + \x1b[1mpost-merge\x1b[0m hooks to keep the index fresh? [Y/n] "
+        );
+        io::stderr().flush().ok();
+        let mut answer = String::new();
+        if io::stdin().lock().read_line(&mut answer).is_err() {
+            return;
+        }
+        let answer = answer.trim();
+        if !(answer.is_empty()
+            || answer.eq_ignore_ascii_case("y")
+            || answer.eq_ignore_ascii_case("yes"))
+        {
+            eprintln!("  Skipped git hooks — install later with `tokensave githooks on --local`");
+            return;
+        }
+    }
+    match tokensave::agents::install_local_git_hooks(project_path, &current_bin_path()) {
+        Ok(outcome) => report_local_hook_install(&outcome),
+        Err(message) => eprintln!("  \x1b[31m✘\x1b[0m {message}"),
+    }
+}
+
 fn report_hook_removal(r: &tokensave::agents::HookRemoval) {
     if r.found_nothing() {
         eprintln!(
