@@ -287,6 +287,22 @@ pub fn resolve_extractor<'r>(
     registry.extractor_for_file(file_path)
 }
 
+/// `resolve_extractor` for a caller that already holds the source text, which
+/// is what tells a C++ `.h` from a C one. A manifest override still wins.
+pub fn resolve_extractor_for_source<'r>(
+    registry: &'r LanguageRegistry,
+    project_root: &Path,
+    file_path: &str,
+    source: &str,
+) -> Option<&'r dyn crate::extraction::LanguageExtractor> {
+    if let Some(manifest) = manifest_for(project_root, registry) {
+        if let Some(lang) = manifest.language_for(file_path) {
+            return registry.extractor_for_language(lang);
+        }
+    }
+    registry.extractor_for_source(file_path, source)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

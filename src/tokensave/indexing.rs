@@ -1858,10 +1858,11 @@ impl TokenSave {
             message: format!("failed to read file {file_path}: {e}"),
         })?;
 
-        let Some(extractor) = crate::project_manifest::resolve_extractor(
+        let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
             &self.registry,
             &self.project_root,
             file_path,
+            &source,
         ) else {
             return Ok(());
         };

@@ -423,9 +423,6 @@ fn probe_rename_at_boundary(
 
     let mut best: Option<(f64, String)> = None;
     for cand in candidates {
-        let Some(lang_key) = ts_lang_key_from_path(&cand) else {
-            continue;
-        };
         let Some(entry) = parent_tree
             .lookup_entry_by_path(std::path::Path::new(&cand))
             .map_err(|e| format!("lookup_entry_by_path: {e}"))?
@@ -441,7 +438,11 @@ fn probe_rename_at_boundary(
         let Ok(source) = std::str::from_utf8(&blob.data) else {
             continue;
         };
+        let Some(lang_key) = ts_lang_key_for_source(&cand, source) else {
+            continue;
+        };
         let lang = ts_provider::language(lang_key);
+        let source = &crate::extraction::c_api_macro::source_for_parse(lang_key, source);
         let Some(tree) = parse_file(source, &lang) else {
             continue;
         };
@@ -669,6 +670,23 @@ fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
 /// Returns `None` if the extension isn't recognised by any tree-sitter
 /// grammar bundled with `tokensave-large-treesitters`. Keys must match
 /// those accepted by `crate::extraction::ts_provider::language`.
+/// `.h` is C, C++ and Objective-C at once, and a wrong grammar parses shapes no stored node matches.
+pub fn ts_lang_key_for_source(path: &str, source: &str) -> Option<&'static str> {
+    let key = ts_lang_key_from_path(path)?;
+    let is_h = path
+        .rsplit('.')
+        .next()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("h"));
+    if key != "c" || !is_h {
+        return Some(key);
+    }
+    Some(match crate::extraction::header_dialect(source) {
+        Some("C++") => "cpp",
+        Some("Objective-C") => "objc",
+        _ => "c",
+    })
+}
+
 pub fn ts_lang_key_from_path(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next().unwrap_or("");
     Some(match ext {
@@ -682,7 +700,7 @@ pub fn ts_lang_key_from_path(path: &str) -> Option<&'static str> {
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
         "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "metal" => "cpp",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" | "metal" => "cpp",
         "cs" => "c_sharp",
         "rb" => "ruby",
         "php" => "php",
@@ -719,9 +737,10 @@ pub fn compute_target_fingerprint(
         return None;
     }
     let lang = ts_provider::language(language_key);
-    let tree = parse_file(source, &lang)?;
+    let source = crate::extraction::c_api_macro::source_for_parse(language_key, source);
+    let tree = parse_file(&source, &lang)?;
     let node = find_node_at_lines(&tree, start_line, end_line)?;
-    Some(compute_fingerprint(source, node))
+    Some(compute_fingerprint(&source, node))
 }
 
 /// Returns true when `key` is registered in `ts_provider::LANGUAGES`.

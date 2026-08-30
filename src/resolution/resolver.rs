@@ -225,7 +225,7 @@ fn lang_from_path(path: &str) -> &'static str {
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
         "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => "cpp",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" => "cpp",
         "cs" => "csharp",
         "rb" => "ruby",
         "php" => "php",
@@ -239,6 +239,23 @@ fn lang_from_path(path: &str) -> &'static str {
         "proto" => "proto",
         _ => "unknown",
     }
+}
+
+/// A `.cpp` calling into its own `.h` tags differently, and without this the match takes 0.5, under
+/// the 0.6 floor in [`Resolver::resolve_all`], and the edge is dropped.
+fn same_language_family(a: &str, b: &str) -> bool {
+    a == b || matches!((a, b), ("c", "cpp") | ("cpp", "c"))
+}
+
+fn is_c_family(lang: &str) -> bool {
+    matches!(lang, "c" | "cpp")
+}
+
+fn is_header_path(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().unwrap_or(""),
+        "h" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc"
+    )
 }
 
 /// Count shared path segments between two file paths.
@@ -872,7 +889,7 @@ impl<'a> ReferenceResolver<'a> {
             let candidate_lang = lang_from_path(&candidates[0].file_path);
             let confidence = if ref_lang != "unknown"
                 && candidate_lang != "unknown"
-                && ref_lang != candidate_lang
+                && !same_language_family(ref_lang, candidate_lang)
             {
                 0.5
             } else {
@@ -952,7 +969,7 @@ impl<'a> ReferenceResolver<'a> {
             let candidate_lang = lang_from_path(&candidates[0].file_path);
             let confidence = if ref_lang != "unknown"
                 && candidate_lang != "unknown"
-                && ref_lang != candidate_lang
+                && !same_language_family(ref_lang, candidate_lang)
             {
                 0.5
             } else {
@@ -1016,11 +1033,18 @@ impl<'a> ReferenceResolver<'a> {
         // Language matching
         let candidate_lang = lang_from_path(&node.file_path);
         if ref_lang != "unknown" && candidate_lang != "unknown" {
-            if ref_lang == candidate_lang {
+            if same_language_family(ref_lang, candidate_lang) {
                 score += 50;
             } else {
                 score -= 80;
             }
+        }
+
+        // Header declares, source defines, a caller wants the body; small enough that directory
+        // proximity still decides between two definitions.
+        if is_c_family(ref_lang) && is_c_family(candidate_lang) && !is_header_path(&node.file_path)
+        {
+            score += 20;
         }
 
         // Exported / pub bonus

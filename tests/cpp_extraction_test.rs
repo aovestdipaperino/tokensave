@@ -1,5 +1,6 @@
 use tokensave::extraction::CppExtractor;
 use tokensave::extraction::LanguageExtractor;
+use tokensave::extraction::LanguageRegistry;
 use tokensave::types::*;
 
 #[test]
@@ -935,4 +936,310 @@ int platform_fallback(void) { return 2; }
     let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"platform_init"), "nodes: {:?}", names);
     assert!(names.contains(&"platform_fallback"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_cpp_array_declarator_globals() {
+    let source = r#"
+namespace {
+const char* const NameTable[] = {"alpha", "beta"};
+const int NumberTable[] = {1, 2, 3};
+int MutableTable[4] = {0, 0, 0, 0};
+const char* Uninitialized[8];
+const int ScalarConst = 7;
+}
+"#;
+    let result = CppExtractor.extract("tables.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(statics.contains(&"NameTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"NumberTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"MutableTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"Uninitialized"), "statics: {statics:?}");
+    assert!(statics.contains(&"ScalarConst"), "statics: {statics:?}");
+}
+
+#[test]
+fn test_cpp_array_declarator_does_not_capture_prototypes() {
+    let source = r#"
+int lookup(const char* keys[], int count);
+
+void (*Handlers[2])(int);
+"#;
+    let result = CppExtractor.extract("protos.cpp", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(!statics.contains(&"lookup"), "statics: {statics:?}");
+    assert!(!statics.contains(&"keys"), "statics: {statics:?}");
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(fns.contains(&"lookup"), "functions: {fns:?}");
+}
+
+#[test]
+fn test_cpp_api_macro_class_yields_its_members() {
+    let source = r#"
+UCLASS()
+class MYLIB_API AExampleState : public AGameStateBase
+{
+    GENERATED_BODY()
+
+public:
+    void StartRound(int32 Seed);
+
+    UPROPERTY(Replicated)
+    int32 RoundIndex;
+
+private:
+    float Elapsed;
+};
+"#;
+    let result = CppExtractor.extract("example_state.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    assert!(
+        nodes.contains(&(NodeKind::Class, "AExampleState")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Method, "StartRound")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Field, "RoundIndex")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Field, "Elapsed")),
+        "nodes: {nodes:?}"
+    );
+    // Macros are not symbols - no node named after one or after its argument.
+    for bogus in ["UCLASS", "GENERATED_BODY", "UPROPERTY", "Replicated"] {
+        assert!(
+            !nodes.iter().any(|(_, name)| *name == bogus),
+            "macro leaked as a node: {nodes:?}"
+        );
+    }
+}
+
+#[test]
+fn test_cpp_macro_call_in_a_body_keeps_its_call_sites() {
+    let source = r#"
+void AExampleState::StartRound(int32 Seed)
+{
+    UE_LOG(LogExample, Log, TEXT("%d"), ComputeSeed(Seed));
+}
+"#;
+    let result = CppExtractor.extract("example_state.cpp", source);
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_name.ends_with("ComputeSeed")),
+        "refs: {:?}",
+        result
+            .unresolved_refs
+            .iter()
+            .map(|r| r.reference_name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_cpp_api_macro_survives_a_raw_string_and_a_digit_separator() {
+    let source = r##"
+const char* kPattern = R"(a")";
+static const int kBig = 1'000'000;
+static const int kOdd = 1'000;
+
+class MYLIB_API AAfterLiterals
+{
+public:
+    void Start();
+};
+"##;
+    let result = CppExtractor.extract("after_literals.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    assert!(
+        nodes.contains(&(NodeKind::Class, "AAfterLiterals")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Method, "Start")),
+        "nodes: {nodes:?}"
+    );
+}
+
+#[test]
+fn test_cpp_caps_named_type_keeps_its_declaration() {
+    let source = r#"
+HANDLE const gHandle = 0;
+HANDLE gPlain = 0;
+MYLIB_API const int kLimit = 4;
+"#;
+    let result = CppExtractor.extract("globals.cpp", source);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    for expected in ["gHandle", "gPlain", "kLimit"] {
+        assert!(names.contains(&expected), "names: {names:?}");
+    }
+}
+
+#[test]
+fn test_cpp_class_members_inside_a_preprocessor_guard() {
+    let source = r#"
+class Widget
+{
+public:
+    void Alpha();
+#if !BUILD_SHIPPING
+    void Beta();
+    int Gamma = 0;
+#endif
+    void Delta();
+};
+"#;
+    let result = CppExtractor.extract("widget.h", source);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    for expected in [
+        (NodeKind::Method, "Alpha"),
+        (NodeKind::Method, "Beta"),
+        (NodeKind::Field, "Gamma"),
+        (NodeKind::Method, "Delta"),
+    ] {
+        assert!(nodes.contains(&expected), "nodes: {nodes:?}");
+    }
+}
+
+#[test]
+fn test_cpp_friend_definition_and_function_pointer_member() {
+    let source = r#"
+class Key
+{
+public:
+    int Value;
+    int (*Resolve)(const char* name);
+    void Run();
+    friend unsigned Hash(const Key& K) { return 1u; }
+};
+"#;
+    let result = CppExtractor.extract("key.h", source);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    for expected in [
+        (NodeKind::Field, "Value"),
+        (NodeKind::Field, "Resolve"),
+        (NodeKind::Method, "Run"),
+        (NodeKind::Method, "Hash"),
+    ] {
+        assert!(nodes.contains(&expected), "nodes: {nodes:?}");
+    }
+    assert!(
+        !nodes.iter().any(|(_, name)| *name == "<anonymous>"),
+        "nodes: {nodes:?}"
+    );
+}
+
+#[test]
+fn test_cpp_nested_type_and_alias_members() {
+    let source = r#"
+using FTilePos = FIntPoint;
+
+class Shape
+{
+public:
+    enum class EKind : unsigned char
+    {
+        Block,
+        Ledge
+    };
+
+    using FSet = TMap<int, int>;
+    typedef int FCount;
+
+    EKind Kind = EKind::Block;
+};
+"#;
+    let result = CppExtractor.extract("shape.h", source);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    for expected in [
+        (NodeKind::TypeAlias, "FTilePos"),
+        (NodeKind::Class, "Shape"),
+        (NodeKind::Enum, "EKind"),
+        (NodeKind::TypeAlias, "FSet"),
+        (NodeKind::Typedef, "FCount"),
+        (NodeKind::Field, "Kind"),
+    ] {
+        assert!(nodes.contains(&expected), "nodes: {nodes:?}");
+    }
+}
+
+/// `.inl`, `.ipp` and `.tcc` hold a template layer's definitions. Unregistered they were never
+/// indexed at all, so `is_header_path` and `lang_from_path` named extensions the walker skipped.
+#[test]
+fn test_template_implementation_headers_route_to_cpp() {
+    let registry = LanguageRegistry::new();
+    for path in ["grid.inl", "asio/impl/write.ipp", "bits/stl_map.tcc"] {
+        let extractor = registry
+            .extractor_for_file(path)
+            .unwrap_or_else(|| panic!("no extractor for {path}"));
+        assert_eq!(extractor.language_name(), "C++", "{path}");
+    }
+    for ext in ["inl", "ipp", "tcc"] {
+        assert!(
+            registry.supported_extensions().contains(&ext),
+            "{ext} must be walked"
+        );
+    }
+}
+
+#[test]
+fn test_inl_file_yields_its_members() {
+    let source = r#"
+template <typename T>
+void Grid<T>::Reset(int n) {
+    count_ = n;
+}
+"#;
+    let extractor = CppExtractor;
+    let result = extractor.extract("grid.inl", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(
+        result.nodes.iter().any(|n| n.name == "Reset"),
+        "nodes: {:?}",
+        result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
 }

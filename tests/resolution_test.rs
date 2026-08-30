@@ -1825,3 +1825,138 @@ fn propagate_variant_edges_ignores_every_kind_but_annotates_and_calls() {
         "an ungated same-named function must not join the variant group"
     );
 }
+
+/// Ext tags differ (`c` vs `cpp`), so a cross-language penalty here lands under the floor.
+#[tokio::test]
+async fn test_cpp_call_resolves_to_header_declaration() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+    let decl = variant_node(
+        "fn:cell_to_world",
+        NodeKind::Function,
+        "CellToWorld",
+        "grid.h::CellToWorld",
+        "include/grid.h",
+    );
+    let caller = variant_node(
+        "fn:step",
+        NodeKind::Function,
+        "Step",
+        "mover.cpp::Step",
+        "src/mover.cpp",
+    );
+    db.insert_node(&decl).await.expect("insert decl");
+    db.insert_node(&caller).await.expect("insert caller");
+
+    let all_nodes = db.get_all_nodes().await.unwrap();
+    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let uref = UnresolvedRef {
+        from_node_id: "fn:step".to_string(),
+        reference_name: "CellToWorld".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 12,
+        column: 8,
+        file_path: "src/mover.cpp".to_string(),
+    };
+
+    let resolved = resolver.resolve_one(&uref).expect("header decl resolves");
+    assert_eq!(resolved.target_node_id, "fn:cell_to_world");
+    assert!(
+        resolved.confidence >= 0.6,
+        "confidence must clear the resolve_all floor, got {}",
+        resolved.confidence
+    );
+}
+
+/// `.inl`, `.ipp` and `.tcc` are headers to `is_header_path`; unmapped in `lang_from_path` they
+/// would score as `unknown`, which #346 measured as exempt from both cross-language guards and so
+/// an advantage over the correct same-language candidate.
+#[tokio::test]
+async fn test_cpp_call_resolves_into_a_template_implementation_header() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+    let decl = variant_node(
+        "fn:apply",
+        NodeKind::Function,
+        "Apply",
+        "grid.inl::Apply",
+        "include/grid.inl",
+    );
+    let caller = variant_node(
+        "fn:step",
+        NodeKind::Function,
+        "Step",
+        "mover.cpp::Step",
+        "src/mover.cpp",
+    );
+    db.insert_node(&decl).await.expect("insert decl");
+    db.insert_node(&caller).await.expect("insert caller");
+
+    let all_nodes = db.get_all_nodes().await.unwrap();
+    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let uref = UnresolvedRef {
+        from_node_id: "fn:step".to_string(),
+        reference_name: "Apply".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 12,
+        column: 8,
+        file_path: "src/mover.cpp".to_string(),
+    };
+
+    let resolved = resolver
+        .resolve_one(&uref)
+        .expect("the .inl definition resolves");
+    assert_eq!(resolved.target_node_id, "fn:apply");
+    assert!(
+        resolved.confidence >= 0.6,
+        "confidence must clear the resolve_all floor, got {}",
+        resolved.confidence
+    );
+}
+
+/// The family is C/C++ only - a genuinely foreign single candidate still pays.
+#[tokio::test]
+async fn test_cross_language_single_candidate_still_penalised() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+    let decl = variant_node(
+        "fn:py_helper",
+        NodeKind::Function,
+        "helper",
+        "tools/gen.py::helper",
+        "tools/gen.py",
+    );
+    let caller = variant_node(
+        "fn:step",
+        NodeKind::Function,
+        "Step",
+        "mover.cpp::Step",
+        "src/mover.cpp",
+    );
+    db.insert_node(&decl).await.expect("insert decl");
+    db.insert_node(&caller).await.expect("insert caller");
+
+    let all_nodes = db.get_all_nodes().await.unwrap();
+    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let uref = UnresolvedRef {
+        from_node_id: "fn:step".to_string(),
+        reference_name: "helper".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 12,
+        column: 8,
+        file_path: "src/mover.cpp".to_string(),
+    };
+
+    let resolved = resolver.resolve_one(&uref).expect("a candidate is found");
+    assert!(
+        resolved.confidence < 0.6,
+        "a python callee for a cpp call must stay under the floor, got {}",
+        resolved.confidence
+    );
+}
