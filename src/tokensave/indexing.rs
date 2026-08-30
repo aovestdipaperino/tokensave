@@ -411,8 +411,8 @@ impl TokenSave {
             // #253: `from_nodes` borrows from `all_nodes` rather than
             // cloning it into its caches; the remaining peak here is
             // `all_nodes` itself (#306).
-            crate::memstats::record("index:resolve:build_caches");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            crate::memstats::record("index:resolve:build_caches");
             let resolution = resolver.resolve_all(&all_unresolved);
             crate::memstats::record("index:resolve:refs");
             // Ties are recorded rather than dropped, so a caller can pick the
@@ -794,17 +794,19 @@ impl TokenSave {
             // resolver borrows from this slice for its whole life and needs
             // a global name index, so the pass cannot be chunked without a
             // redesign.
-            crate::memstats::record("sync:resolve:load_nodes");
+            // Samples are taken after the work they name; see the sibling
+            // site for why that matters (#409).
             let all_nodes = self
                 .db
                 .get_all_nodes_for_resolution()
                 .await
                 .unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
-            crate::memstats::record("sync:resolve:build_caches");
+            crate::memstats::record("sync:resolve:load_nodes");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
-            crate::memstats::record("sync:resolve:done");
+            crate::memstats::record("sync:resolve:build_caches");
             let unresolved = self.db.get_unresolved_refs().await?;
+            crate::memstats::record("sync:resolve:load_refs");
             if !unresolved.is_empty() {
                 let resolution = resolver.resolve_all(&unresolved);
                 // The sync's peak lives between `resolve:done` and `sync:done`,
@@ -1159,22 +1161,27 @@ impl TokenSave {
             on_progress(0, 0, "resolving references");
             let phase_start = Instant::now();
             let unresolved = self.db.get_unresolved_refs().await?;
+            // Every sample here is taken *after* the work it names. They used
+            // to be taken before it, so each one reported the RSS of the
+            // previous step under the next step's name — which is how the
+            // whole-graph node load came to be blamed for 73 MiB that
+            // belonged to this ref load (#409).
+            crate::memstats::record("sync:resolve:load_refs");
             if !unresolved.is_empty() {
                 // #253: `from_nodes` borrows rather than clones. #306: the
                 // load drops `docstring` and `signature`, which resolution
                 // never reads and which are unbounded TEXT. The remaining
                 // peak is the node count itself — see the sibling site in
                 // the incremental path for why it cannot be chunked.
-                crate::memstats::record("sync:resolve:load_nodes");
                 let all_nodes = self
                     .db
                     .get_all_nodes_for_resolution()
                     .await
                     .unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);
-                crate::memstats::record("sync:resolve:build_caches");
+                crate::memstats::record("sync:resolve:load_nodes");
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
-                crate::memstats::record("sync:resolve:done");
+                crate::memstats::record("sync:resolve:build_caches");
                 let resolution = resolver.resolve_all(&unresolved);
                 // The sync's peak lives between `resolve:done` and `sync:done`,
                 // and with no sample in that window it was attributed to
