@@ -121,11 +121,28 @@ fn an_exclude_glob_does_not_stand_in_for_the_target() {
 
 /// An out-of-tree search stays out of scope however it is narrowed: the
 /// containment check runs before the glob is consulted.
+///
+/// Expressed as a native `Grep` payload rather than a shell command, because
+/// an absolute path is the only way to say "outside this project" and a
+/// Windows path in a command string has its backslashes eaten by the hook's
+/// own shell-unescaping.
 #[test]
 fn a_code_glob_does_not_pull_an_outside_path_into_scope() {
     let (_tmp, root) = project();
-    assert!(!is_blocked(
-        "grep -rn my_function --include=*.rs /etc",
-        &env_rooted_at(&root)
-    ));
+    let outside = tempfile::Builder::new()
+        .prefix("tsglob-outside")
+        .tempdir()
+        .expect("tempdir");
+    let outside = outside.path().canonicalize().expect("canonicalize");
+    let input = serde_json::json!({
+        "pattern": "my_function",
+        "output_mode": "content",
+        "path": outside.to_string_lossy(),
+        "glob": "*.rs",
+    })
+    .to_string();
+    assert!(
+        !evaluate_hook_decision_with_env(&input, &env_rooted_at(&root)).contains("\"deny\""),
+        "a code glob describes the file set, not which project owns it"
+    );
 }
