@@ -1121,13 +1121,10 @@ fn extract_find_invocation(command: &str) -> Option<FindInvocation> {
     if has_chained_command(rest) {
         return None;
     }
-    let (is_find, after_tool) = if let Some(after) = rest.strip_prefix("find ") {
-        (true, after)
-    } else if let Some(after) = rest.strip_prefix("fd ") {
-        (false, after)
-    } else {
-        return None;
-    };
+    let (is_find, after_tool) = rest
+        .strip_prefix("find ")
+        .map(|after| (true, after))
+        .or_else(|| rest.strip_prefix("fd ").map(|after| (false, after)))?;
 
     let mut inv = FindInvocation::default();
     let mut iter = shell_split(after_tool).into_iter().peekable();

@@ -19,7 +19,7 @@ pub fn compact_signature(sig: &str) -> String {
     let first = sig.lines().next().unwrap_or("").trim_end();
     let truncated_lines = sig.lines().nth(1).is_some();
     match first.char_indices().nth(MAX_SIGNATURE_LEN) {
-        Some((idx, _)) => format!("{} …", &first[..idx].trim_end()),
+        Some((idx, _)) => format!("{} …", first[..idx].trim_end()),
         None if truncated_lines => format!("{first} …"),
         None => first.to_string(),
     }

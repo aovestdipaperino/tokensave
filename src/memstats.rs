@@ -344,9 +344,7 @@ fn alive_pids(pids: &[u64]) -> HashSet<u64> {
     pids.iter()
         .copied()
         .filter(|&p| {
-            u32::try_from(p)
-                .ok()
-                .is_some_and(|p32| p32 != 0 && sys.process(Pid::from_u32(p32)).is_some())
+            u32::try_from(p).is_ok_and(|p32| p32 != 0 && sys.process(Pid::from_u32(p32)).is_some())
         })
         .collect()
 }

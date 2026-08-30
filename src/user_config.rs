@@ -301,8 +301,7 @@ const LEGACY_STATE_KEYS: &[&str] = &[
 
 fn contains_legacy_state(contents: &str) -> bool {
     toml::from_str::<toml::Table>(contents)
-        .ok()
-        .is_some_and(|table| LEGACY_STATE_KEYS.iter().any(|key| table.contains_key(*key)))
+        .is_ok_and(|table| LEGACY_STATE_KEYS.iter().any(|key| table.contains_key(*key)))
 }
 
 /// Overlays the state fields of `StateFile` onto an in-memory `UserConfig`.

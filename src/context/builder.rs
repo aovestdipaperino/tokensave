@@ -1663,7 +1663,7 @@ mod tests {
         let terms = vec!["auth".to_string(), "handler".to_string()];
         apply_cooccurrence_boost(&mut candidates, &terms);
         // auth_handler matches both terms, user_list matches neither
-        assert!(candidates[0].node.name == "auth_handler");
+        assert_eq!(candidates[0].node.name, "auth_handler");
         assert!(candidates[0].score > candidates[1].score);
     }
 
@@ -1693,7 +1693,7 @@ mod tests {
             .filter(|n| n.file_path == "src/big.rs")
             .count();
         assert!(big_count <= 3); // 2 accepted + possibly 1 spillover
-        assert!(result.len() == 4);
+        assert_eq!(result.len(), 4);
         // First 2 slots for big.rs, 3rd for other.rs
         assert_eq!(result[0].name, "fn1");
         assert_eq!(result[1].name, "fn2");

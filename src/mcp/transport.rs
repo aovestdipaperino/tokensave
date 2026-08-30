@@ -199,12 +199,16 @@ impl McpTransport for ChannelTransport {
         Ok(self.rx.recv().await)
     }
 
+    // Awaits nothing — a channel send is immediate — but the signature is the
+    // trait's, not ours to narrow.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         self.tx
             .send(line.to_string())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }

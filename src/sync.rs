@@ -13,20 +13,16 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
 
     // UTF-16 LE BOM: FF FE
     if bytes.starts_with(&[0xFF, 0xFE]) {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
+        let (pairs, _) = bytes[2..].as_chunks::<2>();
+        let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
         return String::from_utf16(&u16s)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // UTF-16 BE BOM: FE FF
     if bytes.starts_with(&[0xFE, 0xFF]) {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
-            .collect();
+        let (pairs, _) = bytes[2..].as_chunks::<2>();
+        let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_be_bytes).collect();
         return String::from_utf16(&u16s)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }

@@ -1288,10 +1288,8 @@ impl RustExtractor {
                 s = r.trim_start();
             } else if s.starts_with('\'') {
                 // lifetime token like `'a` — drop up to the next whitespace.
-                match s.find(char::is_whitespace) {
-                    Some(pos) => s = s[pos..].trim_start(),
-                    None => return None,
-                }
+                let pos = s.find(char::is_whitespace)?;
+                s = s[pos..].trim_start();
             } else {
                 break;
             }

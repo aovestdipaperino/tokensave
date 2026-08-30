@@ -1997,7 +1997,7 @@ impl TypeScriptExtractor {
             end_column: call.end_position().column as u32,
             signature: Some(format!(
                 "{callee_text}(\"{}\", ...)",
-                &name[base.len()..].trim_start()
+                name[base.len()..].trim_start()
             )),
             docstring: None,
             visibility: Visibility::Private,
