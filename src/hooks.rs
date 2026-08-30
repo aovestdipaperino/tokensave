@@ -1067,16 +1067,20 @@ struct FindInvocation {
     targets: Vec<String>,
 }
 
-/// True when `command` carries a top-level shell operator — `&&`, `||`, `;`,
-/// `|`, or a backgrounding `&` — outside of quotes.
+/// True when `command` carries work beyond the search itself — a top-level
+/// `&&`, `||`, `;`, `|`, backgrounding `&`, a command substitution (`$(…)` or
+/// backticks), or an output redirect — outside of single quotes.
 ///
 /// A search is only ever a *suggestion* to use the graph instead, so it must
 /// never be allowed to veto a command it does not fully model. When the line
-/// chains a search to anything else, denying it discards the other command's
-/// work — a `./deploy.sh` that never runs is a far worse failure than a grep
-/// that was not redirected (#475). The parsers that follow assume the whole
-/// line belongs to the search they matched, so anything chained makes that
+/// carries anything else, denying it discards that other work — a
+/// `./deploy.sh` that never runs is a far worse failure than a grep that was
+/// not redirected (#475). The parsers that follow assume the whole line
+/// belongs to the search they matched, so anything else on it makes that
 /// assumption false and the command passes through untouched.
+///
+/// `2>`/`2>>` is the exception: it only discards the search's own stderr, so
+/// the line still *is* just the search and stays deniable (#480).
 fn has_chained_command(command: &str) -> bool {
     let mut in_single = false;
     let mut in_double = false;
@@ -1091,6 +1095,9 @@ fn has_chained_command(command: &str) -> bool {
                 chars.next();
             } else if c == '"' {
                 in_double = false;
+            } else if c == '`' || (c == '$' && chars.peek() == Some(&'(')) {
+                // Substitutions still run inside double quotes.
+                return true;
             }
         } else {
             match c {
@@ -1099,7 +1106,17 @@ fn has_chained_command(command: &str) -> bool {
                 '\\' if !cfg!(windows) => {
                     chars.next();
                 }
-                '&' | '|' | ';' => return true,
+                '$' if chars.peek() == Some(&'(') => return true,
+                // Consume `2>` / `2>>` before the redirect arm sees it: routing
+                // the search's own stderr away leaves nothing for a denial to
+                // discard, so it is still fully modeled.
+                '2' if chars.peek() == Some(&'>') => {
+                    chars.next();
+                    if chars.peek() == Some(&'>') {
+                        chars.next();
+                    }
+                }
+                '&' | '|' | ';' | '`' | '>' => return true,
                 _ => {}
             }
         }
