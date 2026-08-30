@@ -610,6 +610,55 @@ impl TokenSave {
     /// it to release so the DB is fresh by the time the caller refreshes its
     /// view; if the peer covered our files, return without doing extra work,
     /// otherwise sync ourselves.
+    /// How many unresolved references to resolve at a time (#482).
+    ///
+    /// The whole table used to be materialised: 189,446 records and +74.6 MiB
+    /// on this repository, on every sync. 25,000 keeps that page under ~10 MiB
+    /// while making the paging overhead — one indexed query per page — a
+    /// rounding error against resolving the batch.
+    const RESOLVE_BATCH: usize = 25_000;
+
+    /// Resolve every unresolved reference, a page at a time (#482).
+    ///
+    /// The resolver's name index is built once and stays global; only the
+    /// input is paged. That is what makes this safe where chunking the *node*
+    /// slice is not — each reference resolves independently, so a page cannot
+    /// lose a target the way a chunked index would.
+    ///
+    /// What still accumulates is small and bounded by the *answers* rather than
+    /// the questions: on this repository 28,849 resolved and 11,713 ambiguity
+    /// records, against 189,446 inputs. The Go selector suppression runs once
+    /// over the accumulated set, since nothing guarantees a selector and its
+    /// bare-name sibling land in the same page.
+    async fn resolve_all_streamed(
+        &self,
+        resolver: &ReferenceResolver<'_>,
+    ) -> Result<(Vec<ResolvedRef>, Vec<AmbiguousCall>, usize)> {
+        let mut cursor = 0i64;
+        let mut resolved: Vec<ResolvedRef> = Vec::new();
+        let mut ambiguous: Vec<AmbiguousCall> = Vec::new();
+        let mut total = 0usize;
+
+        loop {
+            let page = self
+                .db
+                .get_unresolved_refs_after(cursor, Self::RESOLVE_BATCH)
+                .await?;
+            let Some((last_id, _)) = page.last() else {
+                break;
+            };
+            cursor = *last_id;
+            let refs: Vec<UnresolvedRef> = page.into_iter().map(|(_, r)| r).collect();
+            total += refs.len();
+            let (batch_resolved, batch_ambiguous) = resolver.resolve_batch(&refs);
+            resolved.extend(batch_resolved);
+            ambiguous.extend(batch_ambiguous);
+        }
+
+        resolver.finalize_resolved(&mut resolved);
+        Ok((resolved, ambiguous, total))
+    }
+
     /// Re-propagate build-variant call edges without a whole-graph load (#481).
     ///
     /// The old shape loaded every `annotates` and `calls` edge — and did it
@@ -805,10 +854,11 @@ impl TokenSave {
             crate::memstats::record("sync:resolve:load_nodes");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             crate::memstats::record("sync:resolve:build_caches");
-            let unresolved = self.db.get_unresolved_refs().await?;
-            crate::memstats::record("sync:resolve:load_refs");
-            if !unresolved.is_empty() {
-                let resolution = resolver.resolve_all(&unresolved);
+            // Paged rather than materialised (#482).
+            let (resolved_refs, ambiguous, total_refs) =
+                self.resolve_all_streamed(&resolver).await?;
+            crate::memstats::record("sync:resolve:refs");
+            if total_refs > 0 {
                 // The sync's peak lives between `resolve:done` and `sync:done`,
                 // and with no sample in that window it was attributed to
                 // whichever sample came next — which is why #409 was argued
@@ -818,9 +868,9 @@ impl TokenSave {
                 let ambiguity_files: Vec<String> = self.scan_files();
                 let _ = self
                     .db
-                    .replace_ambiguous_calls(&ambiguity_files, &resolution.ambiguous)
+                    .replace_ambiguous_calls(&ambiguity_files, &ambiguous)
                     .await;
-                let edges = resolver.create_edges(&resolution.resolved);
+                let edges = resolver.create_edges(&resolved_refs);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
                     // Re-propagate build-variant call edges now that new call
@@ -1160,14 +1210,13 @@ impl TokenSave {
         if !to_index.is_empty() {
             on_progress(0, 0, "resolving references");
             let phase_start = Instant::now();
-            let unresolved = self.db.get_unresolved_refs().await?;
             // Every sample here is taken *after* the work it names. They used
             // to be taken before it, so each one reported the RSS of the
             // previous step under the next step's name — which is how the
             // whole-graph node load came to be blamed for 73 MiB that
-            // belonged to this ref load (#409).
-            crate::memstats::record("sync:resolve:load_refs");
-            if !unresolved.is_empty() {
+            // belonged to the reference load (#409).
+            let pending_refs = self.db.count_unresolved_refs().await.unwrap_or(0);
+            if pending_refs > 0 {
                 // #253: `from_nodes` borrows rather than clones. #306: the
                 // load drops `docstring` and `signature`, which resolution
                 // never reads and which are unbounded TEXT. The remaining
@@ -1182,7 +1231,10 @@ impl TokenSave {
                 crate::memstats::record("sync:resolve:load_nodes");
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
                 crate::memstats::record("sync:resolve:build_caches");
-                let resolution = resolver.resolve_all(&unresolved);
+                // Paged rather than materialised (#482).
+                let (resolved_refs, ambiguous, _total_refs) =
+                    self.resolve_all_streamed(&resolver).await?;
+                crate::memstats::record("sync:resolve:refs");
                 // The sync's peak lives between `resolve:done` and `sync:done`,
                 // and with no sample in that window it was attributed to
                 // whichever sample came next — which is why #409 was argued
@@ -1192,9 +1244,9 @@ impl TokenSave {
                 let ambiguity_files: Vec<String> = self.scan_files();
                 let _ = self
                     .db
-                    .replace_ambiguous_calls(&ambiguity_files, &resolution.ambiguous)
+                    .replace_ambiguous_calls(&ambiguity_files, &ambiguous)
                     .await;
-                let edges = resolver.create_edges(&resolution.resolved);
+                let edges = resolver.create_edges(&resolved_refs);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
                     // Propagate call edges across build-config variants (#141),
@@ -1208,8 +1260,7 @@ impl TokenSave {
                 }
             }
             on_verbose(&format!(
-                "resolved {} references in {:.1}s",
-                unresolved.len(),
+                "resolved {pending_refs} references in {:.1}s",
                 phase_start.elapsed().as_secs_f64()
             ));
         }

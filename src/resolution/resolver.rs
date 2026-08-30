@@ -574,7 +574,57 @@ impl<'a> ReferenceResolver<'a> {
     /// turning hopeless lookups into O(1) hash checks.
     pub fn resolve_all(&self, refs: &[UnresolvedRef]) -> ResolutionResult {
         let total = refs.len();
+        let (mut resolved, ambiguous, unresolved) = self.resolve_batch_inner(refs);
+        self.finalize_resolved(&mut resolved);
+        let resolved_count = resolved.len();
+        ResolutionResult {
+            resolved,
+            unresolved,
+            total,
+            resolved_count,
+            ambiguous,
+        }
+    }
 
+    /// Resolve one batch of references, without the cross-batch finishing step.
+    ///
+    /// For callers streaming the reference table rather than materialising it
+    /// (#482). Every reference resolves independently against the whole index
+    /// — `resolve_batch_inner` is a `par_iter().map(resolve_one)` — so the
+    /// index stays global and only the *input* is chunked. That is why this is
+    /// safe where chunking the node slice is not: a chunked name index would
+    /// silently lose targets defined outside the chunk, but a chunked input
+    /// cannot lose anything.
+    ///
+    /// The caller must run [`Self::finalize_resolved`] once over the
+    /// accumulated results before creating edges.
+    pub fn resolve_batch(&self, refs: &[UnresolvedRef]) -> (Vec<ResolvedRef>, Vec<AmbiguousCall>) {
+        let (resolved, ambiguous, _) = self.resolve_batch_inner(refs);
+        (resolved, ambiguous)
+    }
+
+    /// The one step that cannot be done per batch.
+    ///
+    /// A Go selector call emits both a selector ref and a bare-name sibling at
+    /// the same site; once the selector resolves via its import path the
+    /// sibling only adds a phantom name-tie edge (#153 Bug 1). Both members of
+    /// such a pair come from the same call site and so from the same file, but
+    /// nothing guarantees they land in the same batch, so this runs once over
+    /// the accumulated set.
+    pub fn finalize_resolved(&self, resolved: &mut Vec<ResolvedRef>) {
+        suppress_go_selector_bare_siblings(resolved);
+    }
+
+    /// Resolve `refs`, returning the resolved edges, the ambiguity records, and
+    /// the input positions that did not resolve.
+    ///
+    /// Ambiguity is derived before the Go suppression, as it always was: a
+    /// suppressed sibling is a resolution that is deliberately dropped, not a
+    /// failure to explain.
+    fn resolve_batch_inner(
+        &self,
+        refs: &[UnresolvedRef],
+    ) -> (Vec<ResolvedRef>, Vec<AmbiguousCall>, Vec<u32>) {
         // Partition into resolvable (name exists in graph) and hopeless.
         //
         // A qualified/dotted ref (`Self::method`, `Type::method`, `obj.method`)
@@ -585,6 +635,7 @@ impl<'a> ReferenceResolver<'a> {
         // ever ran. That silently lost all `Self::`/`Type::` and Python/TS
         // dotted-method call edges (#141). Also admit a ref when its trailing
         // simple name is known.
+        //
         // Carried with their input positions, so a reference that fails can be
         // reported by index instead of by an owned copy (#483).
         let (candidates, hopeless): (IndexedRefs<'_>, IndexedRefs<'_>) =
@@ -599,7 +650,6 @@ impl<'a> ReferenceResolver<'a> {
             .collect();
 
         let mut resolved = Vec::new();
-
         // Borrowed, not cloned. This used to build a `Vec<UnresolvedRef>` by
         // cloning every reference that failed — ~160,000 owned records per
         // sync on tokensave's own tree, several `String`s each, to populate a
@@ -611,14 +661,6 @@ impl<'a> ReferenceResolver<'a> {
                 Some(_) | None => failed.push((i, uref)), // below confidence floor or unresolved
             }
         }
-
-        // #153 Bug 1: a Go selector call emits both a selector ref and a
-        // bare-name sibling at the same site. Once the selector resolves via
-        // its import path, the sibling only adds a phantom name-tie edge — drop
-        // it so a package-qualified call yields exactly one correct edge.
-        suppress_go_selector_bare_siblings(&mut resolved);
-
-        let resolved_count = resolved.len();
 
         // Why each remaining ref failed, where the reason was a tie (#412).
         let ambiguous: Vec<AmbiguousCall> = failed
@@ -636,13 +678,7 @@ impl<'a> ReferenceResolver<'a> {
             .collect();
         unresolved.sort_unstable();
 
-        ResolutionResult {
-            resolved,
-            unresolved,
-            total,
-            resolved_count,
-            ambiguous,
-        }
+        (resolved, ambiguous, unresolved)
     }
 
     /// Converts a slice of resolved references into graph edges.
