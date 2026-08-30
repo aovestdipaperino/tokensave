@@ -520,6 +520,48 @@ leave the server running indefinitely with its whole index mapped, to be found
 and killed by hand (#450). This covers a *dead* parent only; duplicate servers
 under a still-live host are a host-side problem (#436).
 
+### Bounding a host that leaks servers
+
+Some MCP hosts start a **new** server per subagent and keep every one of them
+alive after the subagent that used it has finished. They are all children of
+the same still-live supervisor, so nothing ever closes their stdin and the EOF
+that would normally stop them never arrives; each one goes on holding its index
+open. A four-server pile-up measured on Windows cost roughly 113 MB private
+memory and 922 handles.
+
+This is the host's bug — the same hosts retain duplicate fleets of unrelated
+MCP servers too — and tokensave cannot detect it: a parent-PID watchdog has
+nothing to key on, because the parent is alive. What tokensave can do is stop
+waiting:
+
+```bash
+tokensave serve --idle-timeout-secs 900
+```
+
+The server exits after that many seconds with no request, through the ordinary
+graceful shutdown (counters persisted, WAL checkpointed, registry entry
+removed).
+
+**Off by default, and check one thing before turning it on.** Whether this is
+safe depends on your host starting a fresh server when a tool is called after
+an idle exit. Most do; tokensave cannot verify it for yours, and if yours does
+not, tools stop working until the host is restarted. Try it on one project
+first.
+
+Two things it deliberately does not do:
+
+- **It never interrupts a request.** The deadline is evaluated only while the
+  server is parked waiting for the next request, and the timer restarts each
+  time it parks — so a request slower than the timeout cannot be cut off, and a
+  server busier than its timeout never expires.
+- **It never cuts off startup work.** A deadline landing while the startup
+  catch-up sync or a version-bump reindex is still running is deferred, and
+  waits out another full window.
+
+This is host-integration policy rather than project state, so it lives on the
+command line only — there is no config-file equivalent, and `tokensave install`
+does not add it to generated host config for you.
+
 ### Finding which server holds an index
 
 A `serve` process keeps an exclusive handle on its database for as long as it

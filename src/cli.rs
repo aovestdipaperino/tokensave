@@ -181,6 +181,17 @@ pub enum Commands {
         /// Useful for profiling index work vs. JSON-RPC / stdio overhead.
         #[arg(long)]
         timings: bool,
+        /// Exit after this many seconds with no request (#436)
+        ///
+        /// Off by default, which keeps today's indefinite lifetime. Turn it on
+        /// when a host leaks servers — one per subagent, none of them exiting,
+        /// because the host never closes their stdin so the EOF that would
+        /// stop them never arrives. Only safe if your host starts a fresh
+        /// server when a tool is called after an idle exit; probe that before
+        /// relying on it. The deadline is only ever checked while the server
+        /// is waiting for a request, so it cannot interrupt one.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        idle_timeout_secs: Option<u64>,
     },
     /// List running `tokensave serve` processes and the index each one holds
     ///

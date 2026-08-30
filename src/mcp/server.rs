@@ -422,6 +422,42 @@ fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
     }
 }
 
+/// The deferral rule for [`McpServer::startup_work_in_flight`], as a pure
+/// function of the three flags so the truth table can be tested directly.
+///
+/// The asymmetry between the two jobs is deliberate. Startup catch-up is
+/// spawned unconditionally, so its `done` flag always settles and "not done"
+/// really does mean "still running". A version reindex may never be triggered
+/// at all, so it defers only while *started and not finished* — keying on
+/// `!done` alone would make every ordinary session defer forever and the
+/// option would silently do nothing.
+fn defer_idle_exit(catch_up_done: bool, reindex_started: bool, reindex_done: bool) -> bool {
+    !catch_up_done || (reindex_started && !reindex_done)
+}
+
+/// Sleep until `d` elapses, or never when there is no deadline.
+///
+/// Created fresh at each park, so the window always starts whole and never
+/// spans request handling.
+async fn idle_deadline(d: Option<std::time::Duration>) {
+    match d {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Say why the server is leaving. An idle exit is indistinguishable from a
+/// crash in a host's log otherwise, and the whole point of the option is that
+/// an operator turned it on and wants to see it working.
+fn report_idle_exit(d: Option<std::time::Duration>) {
+    if let Some(d) = d {
+        eprintln!(
+            "[tokensave] idle for {}s with no request — exiting (--idle-timeout-secs)",
+            d.as_secs()
+        );
+    }
+}
+
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
     ///
@@ -1251,6 +1287,51 @@ impl McpServer {
         self: &Arc<Self>,
         transport: &mut impl super::transport::McpTransport,
     ) -> Result<()> {
+        self.run_with_idle_timeout(transport, None).await
+    }
+
+    /// Is a detached startup job still running?
+    ///
+    /// The idle deadline must not cut one of these off. Both are spawned
+    /// rather than awaited, so a server can look idle — no request in flight,
+    /// nothing on stdin — while it is still doing the work a client is about
+    /// to depend on. Startup catch-up is always spawned, so its `done` flag
+    /// settles either way; the version reindex is checked as
+    /// started-and-not-finished, because a session that never triggers one
+    /// must not be treated as forever busy.
+    fn startup_work_in_flight(&self) -> bool {
+        defer_idle_exit(
+            self.startup_catch_up_done.load(Ordering::Acquire),
+            self.version_reindex_started.load(Ordering::Acquire),
+            self.version_reindex_done.load(Ordering::Acquire),
+        )
+    }
+
+    /// Run the MCP loop, optionally exiting after `idle_timeout` passes with
+    /// no request (#436).
+    ///
+    /// A host that keeps a finished subagent's server alive never closes its
+    /// stdin, so the EOF that would normally stop the server never arrives and
+    /// one server accumulates per subagent, each holding its index open. That
+    /// is the host's bug to fix — the servers are all children of the same
+    /// still-live supervisor, so there is no dead-parent signal to key on
+    /// either — but a deadline bounds the damage without waiting for it.
+    ///
+    /// Off unless asked for. Whether this is safe depends on the host starting
+    /// a fresh server when a tool is called after an idle exit, which varies by
+    /// host and is not something tokensave can detect, so the default stays
+    /// today's indefinite lifetime.
+    ///
+    /// The deadline is evaluated **only** while parked waiting for the next
+    /// line, never during request handling: the timer is created fresh each
+    /// time the loop parks, so a request that takes longer than the timeout
+    /// cannot be interrupted by it, and the window after it starts whole.
+    /// Requests are handled serially, so no in-flight counter is needed.
+    pub async fn run_with_idle_timeout(
+        self: &Arc<Self>,
+        transport: &mut impl super::transport::McpTransport,
+        idle_timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
         let already_started = self.run_started.swap(true, Ordering::Relaxed);
         debug_assert!(
             !already_started,
@@ -1282,25 +1363,36 @@ impl McpServer {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
 
-        loop {
-            let line: String = {
+        'serve: loop {
+            // The inner loop exists only so a deferred idle expiry can re-arm:
+            // a deadline that lands while a detached startup job is still
+            // running is not evidence the server is finished with, so it waits
+            // out another whole window rather than exiting or being ignored.
+            let line: String = 'wait: loop {
                 #[cfg(unix)]
                 {
                     tokio::select! {
                         result = transport.read_line() => {
                             match result {
-                                Ok(Some(line)) => line,
-                                _ => break,
+                                Ok(Some(line)) => break 'wait line,
+                                _ => break 'serve,
                             }
                         }
-                        _ = tokio::signal::ctrl_c() => break,
-                        _ = sigterm.recv() => break,
+                        _ = tokio::signal::ctrl_c() => break 'serve,
+                        _ = sigterm.recv() => break 'serve,
                         // Set by the process-wide handler in `cancel`, which
                         // observes a signal the moment it lands rather than
                         // only while this loop is parked here — and by the
                         // orphan watchdog, which has no signal to deliver at
                         // all (#450).
-                        () = crate::cancel::cancelled() => break,
+                        () = crate::cancel::cancelled() => break 'serve,
+                        () = idle_deadline(idle_timeout) => {
+                            if self.startup_work_in_flight() {
+                                continue 'wait;
+                            }
+                            report_idle_exit(idle_timeout);
+                            break 'serve;
+                        }
                     }
                 }
                 #[cfg(not(unix))]
@@ -1308,12 +1400,19 @@ impl McpServer {
                     tokio::select! {
                         result = transport.read_line() => {
                             match result {
-                                Ok(Some(line)) => line,
-                                _ => break,
+                                Ok(Some(line)) => break 'wait line,
+                                _ => break 'serve,
                             }
                         }
-                        _ = tokio::signal::ctrl_c() => break,
-                        () = crate::cancel::cancelled() => break,
+                        _ = tokio::signal::ctrl_c() => break 'serve,
+                        () = crate::cancel::cancelled() => break 'serve,
+                        () = idle_deadline(idle_timeout) => {
+                            if self.startup_work_in_flight() {
+                                continue 'wait;
+                            }
+                            report_idle_exit(idle_timeout);
+                            break 'serve;
+                        }
                     }
                 }
             };
@@ -1362,11 +1461,11 @@ impl McpServer {
                 let output = format!("{json_line}\n");
                 if let Err(e) = transport.write_line(&output).await {
                     eprintln!("failed to write response: {e}");
-                    break;
+                    break 'serve;
                 }
                 if let Err(e) = transport.flush().await {
                     eprintln!("failed to flush stdout: {e}");
-                    break;
+                    break 'serve;
                 }
             }
         }
@@ -2518,5 +2617,40 @@ mod staleness_banner_tests {
         assert!(!warning.contains('`'));
         assert!(!warning.contains("tokensave branch add"));
         assert!(!warning.contains("tokensave sync --path"));
+    }
+}
+
+#[cfg(test)]
+mod idle_timeout_tests {
+    use super::defer_idle_exit;
+
+    /// Startup catch-up is spawned unconditionally, so "not done" means it is
+    /// genuinely still walking the tree — and cutting that off would abandon
+    /// work the next client request depends on.
+    #[test]
+    fn a_running_startup_catch_up_defers_the_exit() {
+        assert!(defer_idle_exit(false, false, false));
+        assert!(defer_idle_exit(false, true, true));
+    }
+
+    /// The case that would have made the whole option a no-op: a session that
+    /// never triggers a version reindex leaves `reindex_done` false forever, so
+    /// keying on that alone would defer every expiry on every server.
+    #[test]
+    fn a_reindex_that_never_started_does_not_defer_forever() {
+        assert!(
+            !defer_idle_exit(true, false, false),
+            "an ordinary idle server must be allowed to exit"
+        );
+    }
+
+    #[test]
+    fn a_running_version_reindex_defers_the_exit() {
+        assert!(defer_idle_exit(true, true, false));
+    }
+
+    #[test]
+    fn a_finished_reindex_stops_deferring() {
+        assert!(!defer_idle_exit(true, true, true));
     }
 }

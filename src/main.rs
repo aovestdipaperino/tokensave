@@ -996,7 +996,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 process::exit(code);
             }
         }
-        Commands::Serve { path, timings } => {
+        Commands::Serve {
+            path,
+            timings,
+            idle_timeout_secs,
+        } => {
             let canonical_disable = std::env::var("TOKENSAVE_DISABLE_SERVER").ok();
             let legacy_disable = std::env::var("DISABLE_TOKENSAVE").ok();
             if server_disabled_from_env(canonical_disable.as_deref(), legacy_disable.as_deref()) {
@@ -1093,7 +1097,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Some(line) = peeked_line {
                 server.handle_and_write(&line, &mut transport).await;
             }
-            server.run(&mut transport).await?;
+            server
+                .run_with_idle_timeout(
+                    &mut transport,
+                    idle_timeout_secs.map(std::time::Duration::from_secs),
+                )
+                .await?;
             server.shutdown().await;
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
@@ -1735,6 +1744,7 @@ mod startup_tests {
         assert!(should_skip_agent_install_maintenance(&Commands::Serve {
             path: None,
             timings: false,
+            idle_timeout_secs: None,
         }));
     }
 

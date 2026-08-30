@@ -763,7 +763,7 @@ tokensave affected <files...> [--stdin] [--depth N]        # Find affected test 
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
-tokensave serve                    # Start MCP server
+tokensave serve [--idle-timeout-secs N]   # Start MCP server (N: exit after N idle seconds)
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
