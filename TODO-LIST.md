@@ -1,7 +1,11 @@
 # TODO-LIST
 
 Backlog snapshot: 2026-08-29. Local-only working list, not committed.
-`master` is pushed through `1a9b983`.
+`master` is pushed through `3850ca9`, CI green on all five jobs.
+
+Closed this session: **#450** (all three parts) and **#458** (both halves).
+**#452** is half-fixed and open only on the `Read`-matcher decision;
+**#449** turned out not to reproduce and is waiting on the reporter.
 
 Owner decisions live on GitHub under the **`PTaL`** label and are not
 duplicated here: `gh issue list --repo aovestdipaperino/tokensave --label PTaL`
@@ -27,14 +31,17 @@ duplicated here: `gh issue list --repo aovestdipaperino/tokensave --label PTaL`
 - [ ] **#419 (open part)** — the `✔ Wrote` trigger is fixed and shipped
       (`23eca6d`); what stays open is whether a version-drift refresh should
       exist at all and where (`install`/`reinstall`/`doctor`).
-- [ ] **#458 (open part)** — the honesty fix shipped (`5186090`): the tool
-      description, the `field` parameter and a new `qualifier_note` all now
-      say the `Type::field` form is accepted but not applied. What is left is
-      your call between the reporter's two options: implement real narrowing
-      (needs receiver type resolution, a feature not a fix) or reject the
-      qualified form outright (makes a documented feature error out). Same
-      shape of question for `tokensave_constructors` returning a confident
-      `match_count: 0` on non-Rust source.
+- [x] **#458** — **done and closed** (`01a8d39`, `3850ca9`). Went with the
+      reporter's option 1: `Type::field` narrows for real. A receiver is typed
+      from a self/receiver binding, a written-down local or parameter, a chain
+      through declared field types (3 hops), or a call whose return type every
+      same-named function agrees on. Everything else is counted in
+      `unattributed_count` rather than kept or dropped, so a narrowed answer
+      cannot pose as a complete one. `tokensave_constructors` now returns
+      `language_supported: false` with no `match_count` for a language the
+      literal scan cannot read. That work also fixed an unreported defect: Go's
+      `func make() Settings {` was counted as a construction site, because Go
+      puts a return type where Rust puts `-> T`.
 - [x] **#451** — **answered and approved.** Semantics agreed: split on
       `&&`/`||`/`;`, redirect only when *no* segment has side effects, so the
       labelled batch is caught (`echo` is inert) but `git checkout -b x && rg
@@ -42,22 +49,23 @@ duplicated here: `gh issue list --repo aovestdipaperino/tokensave --label PTaL`
       unknown commands counting as having side effects; no parsing beyond the
       three top-level operators. Reporter is writing the patch — issue marked
       `in-progress`.
-- [ ] **#449** — literal/structural grep patterns (`-c` counts, conflict
-      markers, regex with structural parens) classify as symbol-shaped and get
-      blocked, with no tokensave tool that could answer them. Fix direction is
-      clear but "what counts as structural" is a judgment call worth your eye.
-- [ ] **#450 (open part)** — the `doctor` discovery check shipped (PR #471):
-      a new `Index scope` section flags `$HOME` initialized as a project (at
-      any size, from any cwd) and a project index past 5 GB, WAL included.
-      What stays open is the reporter's other two, both of which are yours:
-      (1) apply the #396 scope cap to *already-initialized* projects — a real
-      behaviour change, since it decides which existing indexes stop working;
-      (2) a SIGTERM handler that interrupts an in-flight sync, since today the
-      busy sync swallows it and SIGKILL is required. Also unfixed: the server
-      surviving parent death (PPID 1), which is defect 3 in the #396 triage.
-- [ ] **#452** — `CODE_DIRS` is 8 hardcoded names and Grep/Read have no
-      handler at all. Same classifier as #448/#449; needs a decision on
-      whether the allow-list should be derived rather than listed.
+- [x] **#450** — **done and closed** (`3495b14`). All three: a sync now stops
+      on a signal at phase boundaries and per file (280s incremental sync exits
+      within 200ms of the kill); the scope cap became a warn-and-continue with
+      `suppress_scope_warning` as the opt-out, rather than a retroactive
+      refusal that would decide which existing indexes stop working; and an
+      orphaned `serve` exits within ~30s via a parent-PID poll. `sync --force`
+      remains uninterruptible from the start of resolution onward — no safe
+      interior seam, which is the same fact #409 is about.
+- [ ] **#452 (open part)** — the directory allow-list and the multi-word
+      pattern gap are fixed (`c975c7e`): containment plus a bounded scan for
+      source files decides, and `def foo`/`class X`/`foo(` now redirect. The
+      reporter's item 1 was already fixed before they filed — their payloads
+      lacked `output_mode: "content"`, so their 4.4% may be measuring the Bash
+      path alone; asked them to confirm. What is left is yours: handle `Read`,
+      or drop `Grep` from the matcher the extension installs so the routing
+      matches the implementation. Also unanswered: their note that hand-edits
+      to the matcher look non-durable.
 - [ ] **CI: `Star History` scheduled workflow has failed daily since at least
       2026-08-19** — `401 Access Token Unauthorized` at the render step. Needs
       a token secret created or rotated, which only you can do. Six
@@ -66,6 +74,12 @@ duplicated here: `gh issue list --repo aovestdipaperino/tokensave --label PTaL`
 
 ## Blocked on someone else
 
+- [ ] **#449** — **not reproducible on `master`.** All four reported patterns
+      return `allow`: none is a bare identifier, so `classify_symbol_pattern`
+      rejects them and fails open, and two would pass on the target alone
+      (`.txt`/`.log` are not code extensions). Asked the reporter for the exact
+      JSON payloads and the version that produced a deny. Do not close until
+      they answer — the tri-state they propose may already be the behaviour.
 - [ ] **#346** — `pending-verification`. Parts 2(a)/2(c)/2(d) fixed; parts 1
       (fabricated cross-language SCC) and 2(b) (build tags) not reproducible
       across five fixtures. Waiting on two rows of the offending *edges*.
@@ -111,7 +125,9 @@ duplicated here: `gh issue list --repo aovestdipaperino/tokensave --label PTaL`
 | **#450/#436 SIGTERM** | `1a9b983` | **reapability fixed.** Root cause was *not* the busy-sync hypothesis: `tokio::io::stdin()` reads on an uncancellable blocking thread, so the runtime drop waited on it forever under a supervisor holding stdin — the server ran full graceful shutdown, printed its summary, and stayed alive 30s+. Only stdin closing had ever really stopped a server. Serve path now flushes and `process::exit(0)`s after shutdown. Second defect fixed alongside: SIGTERM stream was rebuilt per loop iteration so it was absent during `handle_request`, and tokio never restores the default disposition on drop. `tests/serve_sigterm_test.rs` hangs 20s pre-fix, exits in 0.0s now |
 | **Triage pass** | — | `enhancement` applied to #459/#455/#421/#409/#342/#48; `PTaL` applied to the seven design-decision bugs (#458/#452/#450/#449/#442/#436/#419); new `BBRI` label (blocked by reporter input) created and applied to #346 — its reporter @drewjocham has never responded since filing; #451 marked `in-progress`; #468 closed as fixed-in-v7.1.0 |
 
-Thank-you notes posted on #467, #453, #457, #448; status notes on #458, #468 and #450.
+| **#486** `diff_context` truncated into invalid JSON | `27a27d7` (PR #490) | **closed**. The payload is now bounded *before* serialization: `serialize_bounded_json` sheds whole elements off the least-useful lists (halving the longest each round) and records `truncated: {field: {shown, total}}`; `impacted_symbols_count` keeps the true total. Same fix applied to `changelog`, `commit_context` and the `diff` aggregator. `commit_context`'s `symbols_by_role` is a map of arrays and stays unshedable — noted in the code. 5 unit tests |
+
+Thank-you notes posted on #467, #453, #457, #448, #486; status notes on #458, #468 and #450.
 
 ## Follow-up worth filing
 
