@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::super::ToolResult;
-use super::{truncate_response, unique_file_paths};
+use super::{serialize_bounded_json, truncate_response, unique_file_paths};
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
 
@@ -202,6 +202,20 @@ fn cargo_package_root(
     }
 }
 
+/// Lists in a `diff_context` payload that may lose elements when the response
+/// would otherwise exceed the size limit, least useful first. The impact radius
+/// is the unbounded one — a wide change can reach thousands of symbols — while
+/// `changed_files` is the caller's own input and stays whole.
+const DIFF_CONTEXT_SHEDABLE: &[&str] = &["impacted_symbols", "affected_tests", "modified_symbols"];
+
+/// Lists in a `changelog` payload that may lose elements, least useful first.
+const CHANGELOG_SHEDABLE: &[&str] = &["symbols_in_changed_files", "files_not_indexed"];
+
+/// Lists in a `commit_context` payload that may lose elements. `symbols_by_role`
+/// is a map of arrays rather than an array, so it is not shedable here; a commit
+/// touching enough files to blow the limit falls back to the bounded note.
+const COMMIT_CONTEXT_SHEDABLE: &[&str] = &["recent_commits", "changed_files"];
+
 /// Handles `tokensave_diff_context` tool calls.
 /// Structured diff-context payload (value + touched files), shared by the public
 /// `handle_diff_context` tool and the `handle_diff` aggregator. Returning the raw
@@ -355,10 +369,14 @@ async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<S
 
 pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let (output, touched_files) = diff_context_value(cg, args).await?;
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    // Shed list elements rather than slicing the serialized string: the text we
+    // return is parsed as JSON by callers, and prefix truncation handed them a
+    // half-written object (#486). `impacted_symbols_count` still carries the
+    // true total, and `truncated` names whatever was dropped.
+    let formatted = serialize_bounded_json(&output, DIFF_CONTEXT_SHEDABLE);
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            "content": [{ "type": "text", "text": formatted }]
         }),
         touched_files,
     })
@@ -741,10 +759,10 @@ async fn changelog_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<Stri
 
 pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let (result, touched_files) = changelog_value(cg, args).await?;
-    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    let formatted = serialize_bounded_json(&result, CHANGELOG_SHEDABLE);
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            "content": [{ "type": "text", "text": formatted }]
         }),
         touched_files,
     })
@@ -836,9 +854,9 @@ async fn commit_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec
 
 pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let (output, touched_files) = commit_context_value(cg, args).await?;
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let formatted = serialize_bounded_json(&output, COMMIT_CONTEXT_SHEDABLE);
     Ok(ToolResult {
-        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        value: json!({"content": [{"type": "text", "text": formatted}]}),
         touched_files,
     })
 }
@@ -1311,9 +1329,18 @@ pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResul
         "delegated_to": delegated,
         "changes": payload,
     });
-    let formatted = serde_json::to_string_pretty(&envelope).unwrap_or_default();
+    // Same JSON-validity contract as `handle_diff_context` (#486): bound the
+    // nested payload's lists, never the serialized text.
+    let base: &[&str] = match delegated.as_str() {
+        "diff_context" => DIFF_CONTEXT_SHEDABLE,
+        "changelog" => CHANGELOG_SHEDABLE,
+        _ => COMMIT_CONTEXT_SHEDABLE,
+    };
+    let shedable: Vec<String> = base.iter().map(|f| format!("changes.{f}")).collect();
+    let shedable: Vec<&str> = shedable.iter().map(String::as_str).collect();
+    let formatted = serialize_bounded_json(&envelope, &shedable);
     Ok(ToolResult {
-        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        value: json!({"content": [{"type": "text", "text": formatted}]}),
         touched_files: vec![],
     })
 }

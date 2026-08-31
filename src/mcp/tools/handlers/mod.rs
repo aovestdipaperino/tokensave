@@ -19,7 +19,7 @@ pub mod workflow;
 
 use std::collections::HashSet;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
@@ -218,6 +218,113 @@ pub(crate) fn truncate_response(s: &str) -> String {
         }
         format!("{}\n\n[... truncated at {} chars]", &s[..end], end)
     }
+}
+
+/// Serializes a structured payload for a tool response without ever emitting
+/// text that has stopped being JSON.
+///
+/// `truncate_response` slices an already-serialized string, which leaves the
+/// caller holding a half-written object — `jq` fails and the CLI still exits 0
+/// (#486). Here the payload is bounded *before* serialization by shedding whole
+/// elements off the arrays named in `shedable`, so every byte we emit parses.
+///
+/// `shedable` names the arrays that may lose elements, in the order they should
+/// be sacrificed (least useful first); a name may be a dotted path into nested
+/// objects, e.g. `"changes.impacted_symbols"`. What was dropped is recorded
+/// under a top-level `truncated` object, one entry per shed array:
+/// `{"impacted_symbols": {"shown": 40, "total": 900}}`.
+pub(crate) fn serialize_bounded_json(value: &Value, shedable: &[&str]) -> String {
+    let fits = |v: &Value| -> Option<String> {
+        let s = serde_json::to_string_pretty(v).unwrap_or_default();
+        (s.len() <= MAX_RESPONSE_CHARS).then_some(s)
+    };
+    if let Some(s) = fits(value) {
+        return s;
+    }
+
+    let mut working = value.clone();
+    let mut totals: Vec<(&str, usize)> = Vec::new();
+    for path in shedable {
+        if let Some(len) = array_at(&working, path).map(Vec::len) {
+            totals.push((path, len));
+        }
+    }
+
+    // Halve the longest remaining array each round. Halving (rather than
+    // popping) keeps this O(log n) serializations instead of one per dropped
+    // element, which matters when a wide impact radius yields tens of
+    // thousands of symbols.
+    loop {
+        let longest = totals
+            .iter()
+            .filter_map(|(path, _)| {
+                let len = array_at(&working, path)?.len();
+                (len > 0).then_some((len, *path))
+            })
+            .max_by_key(|(len, _)| *len);
+        let Some((len, path)) = longest else {
+            break;
+        };
+        let keep = len / 2;
+        if let Some(arr) = array_at_mut(&mut working, path) {
+            arr.truncate(keep);
+        }
+        set_truncation_note(&mut working, path, keep, &totals);
+        if let Some(s) = fits(&working) {
+            return s;
+        }
+    }
+
+    // Nothing left to shed and the remainder still does not fit: the payload's
+    // scalar content alone is over budget. Report that as JSON rather than
+    // handing back a sliced object.
+    let note = json!({
+        "truncated": {
+            "error": "payload exceeds the response limit even with every list emptied",
+            "limit_chars": MAX_RESPONSE_CHARS,
+            "totals": totals.iter().map(|(p, n)| json!({"field": p, "total": n})).collect::<Vec<_>>(),
+        }
+    });
+    serde_json::to_string_pretty(&note).unwrap_or_default()
+}
+
+/// Records, under a top-level `truncated` object, that `path` was cut down to
+/// `keep` of its original element count.
+fn set_truncation_note(root: &mut Value, path: &str, keep: usize, totals: &[(&str, usize)]) {
+    let total = totals
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map_or(keep, |(_, n)| *n);
+    let key = path.rsplit('.').next().unwrap_or(path).to_string();
+    let entry = json!({"shown": keep, "total": total});
+    match root.get_mut("truncated").and_then(Value::as_object_mut) {
+        Some(map) => {
+            map.insert(key, entry);
+        }
+        None => {
+            if let Some(map) = root.as_object_mut() {
+                map.insert("truncated".to_string(), json!({key: entry}));
+            }
+        }
+    }
+}
+
+/// Resolves a dotted path to an array inside `root`.
+fn array_at<'a>(root: &'a Value, path: &str) -> Option<&'a Vec<Value>> {
+    let mut cur = root;
+    for seg in path.split('.') {
+        cur = cur.get(seg)?;
+    }
+    cur.as_array()
+}
+
+/// Mutable counterpart of `array_at`.
+fn array_at_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a mut Vec<Value>> {
+    let mut cur = root;
+    for seg in path.split('.') {
+        cur = cur.get_mut(seg)?;
+    }
+    cur.as_array_mut()
 }
 
 /// Like `truncate_response`, but everything from the last occurrence of
@@ -460,6 +567,75 @@ mod tests {
 
     use super::super::get_tool_definitions;
     use super::*;
+
+    /// #486: a payload over the limit must still serialize to parseable JSON.
+    #[test]
+    fn bounded_json_stays_parseable_when_oversized() {
+        let items: Vec<Value> = (0..5_000)
+            .map(|i| json!({"id": format!("node-{i}"), "name": "some_function_name"}))
+            .collect();
+        let payload = json!({
+            "changed_files": ["src/foo.rs"],
+            "impacted_symbols_count": items.len(),
+            "impacted_symbols": items,
+        });
+        let out = serialize_bounded_json(&payload, &["impacted_symbols"]);
+        assert!(out.len() <= MAX_RESPONSE_CHARS, "len {}", out.len());
+        let parsed: Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert_eq!(parsed["impacted_symbols_count"], 5_000);
+        let shown = parsed["impacted_symbols"].as_array().unwrap().len();
+        assert!(shown > 0 && shown < 5_000, "shown {shown}");
+        assert_eq!(parsed["truncated"]["impacted_symbols"]["shown"], shown);
+        assert_eq!(parsed["truncated"]["impacted_symbols"]["total"], 5_000);
+        assert!(!out.contains("[... truncated at"));
+    }
+
+    #[test]
+    fn bounded_json_leaves_small_payload_untouched() {
+        let payload = json!({"impacted_symbols": [{"id": "a"}]});
+        let out = serialize_bounded_json(&payload, &["impacted_symbols"]);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed, payload);
+        assert!(parsed.get("truncated").is_none());
+    }
+
+    /// Sheds in the order given: the first list is sacrificed before the ones
+    /// after it, so a caller's ranking of what matters is respected.
+    #[test]
+    fn bounded_json_sheds_in_declared_order() {
+        let big: Vec<Value> = (0..4_000)
+            .map(|i| json!({"i": i, "pad": "xxxxxxxxxx"}))
+            .collect();
+        let payload = json!({"first": big.clone(), "second": ["keep-me"]});
+        let out = serialize_bounded_json(&payload, &["first", "second"]);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["second"], json!(["keep-me"]));
+        assert!(parsed["first"].as_array().unwrap().len() < 4_000);
+    }
+
+    /// Nested (dotted) paths are what `tokensave_diff` uses for its envelope.
+    #[test]
+    fn bounded_json_sheds_through_dotted_path() {
+        let items: Vec<Value> = (0..5_000)
+            .map(|i| json!({"id": i, "pad": "yyyyyyyyyy"}))
+            .collect();
+        let payload =
+            json!({"delegated_to": "diff_context", "changes": {"impacted_symbols": items}});
+        let out = serialize_bounded_json(&payload, &["changes.impacted_symbols"]);
+        assert!(out.len() <= MAX_RESPONSE_CHARS);
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["delegated_to"], "diff_context");
+        assert_eq!(parsed["truncated"]["impacted_symbols"]["total"], 5_000);
+    }
+
+    /// Unshedable bulk (one giant scalar) still yields JSON, not a sliced object.
+    #[test]
+    fn bounded_json_reports_when_nothing_can_be_shed() {
+        let payload = json!({"blob": "z".repeat(MAX_RESPONSE_CHARS + 100)});
+        let out = serialize_bounded_json(&payload, &["items"]);
+        let parsed: Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert!(parsed["truncated"]["error"].is_string());
+    }
 
     #[test]
     fn test_truncate_keep_tail_preserves_footer_and_ids() {
