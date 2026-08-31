@@ -118,17 +118,21 @@ fn install_repo_hook_forwarders(
     hooks_dir: &Path,
     claiming_hookspath: bool,
     hooks_dir_is_default: bool,
-) {
+) -> Vec<&'static str> {
+    let mut failed = Vec::new();
     if !(claiming_hookspath || hooks_dir_is_default) {
-        return;
+        return failed;
     }
     for name in FORWARDED_REPO_HOOKS {
         let path = hooks_dir.join(name);
         if path.exists() {
             continue;
         }
-        write_global_hook(&path, &chain_repo_hook_snippet(name));
+        if !write_global_hook(&path, &chain_repo_hook_snippet(name)) {
+            failed.push(*name);
+        }
     }
+    failed
 }
 
 /// Whether the chaining preamble should be added to a global hook file.
@@ -290,8 +294,16 @@ pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>)
 /// the hook is already present, if stdin is not a terminal, or if the user
 /// declines. The `mode` argument lets the caller pre-decide the answer so
 /// scripted installs do not have to drive an interactive prompt.
-pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
-    let Some(home) = home_dir() else { return };
+///
+/// Returns `Err` only when the user asked for hooks and they could not be
+/// written. Declining, or a hook that is already present, is `Ok` — those are
+/// not failures. The specific reason is printed at the point of failure; the
+/// returned message exists so an explicit `githooks on` can exit non-zero
+/// instead of reporting a failed install as a success.
+pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Result<(), String> {
+    let Some(home) = home_dir() else {
+        return Ok(());
+    };
 
     // Determine the global hooks directory by reading core.hooksPath from
     // the global gitconfig file(s). Falls back to ~/.config/git/hooks/.
@@ -346,7 +358,7 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         HookAction::Skip => {
             // Mode `No` (or default-mode non-TTY). Stay quiet — script
             // callers asked for no output here.
-            return;
+            return Ok(());
         }
         HookAction::Prompt => {
             // TTY + default mode: ask, and bail entirely if the user declines.
@@ -356,11 +368,11 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             );
             let mut answer = String::new();
             if std::io::stdin().read_line(&mut answer).is_err() {
-                return;
+                return Ok(());
             }
             if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
                 eprintln!("  Skipped git hooks");
-                return;
+                return Ok(());
             }
             true
         }
@@ -373,7 +385,7 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
             "  \x1b[31m✘\x1b[0m Failed to create {}: {e}",
             hooks_dir.display()
         );
-        return;
+        return Err(format!("failed to create {}: {e}", hooks_dir.display()));
     }
 
     // If no global hooksPath was configured, set it in ~/.gitconfig.
@@ -381,7 +393,7 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         let gitconfig_path = home.join(".gitconfig");
         if let Err(msg) = set_global_hooks_path(&gitconfig_path, &hooks_dir) {
             eprintln!("  \x1b[31m✘\x1b[0m {msg} — hook not installed");
-            return;
+            return Err(format!("{msg} — hook not installed"));
         }
         eprintln!(
             "\x1b[32m✔\x1b[0m Set git core.hooksPath to {}",
@@ -400,11 +412,20 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         write_global_hook(&hook_path, &chain_repo_hook_snippet("post-commit"));
     }
 
-    if install_post_commit && write_global_hook(&hook_path, &post_commit_snippet(tokensave_bin)) {
-        eprintln!(
-            "\x1b[32m✔\x1b[0m Installed global git post-commit hook at {}",
-            hook_path.display()
-        );
+    // Hooks the user asked for whose write failed. Collected rather than
+    // returned early: this installs three hooks, and bailing on the first
+    // would skip the other two the user also asked for.
+    let mut failed: Vec<&str> = Vec::new();
+
+    if install_post_commit {
+        if write_global_hook(&hook_path, &post_commit_snippet(tokensave_bin)) {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Installed global git post-commit hook at {}",
+                hook_path.display()
+            );
+        } else {
+            failed.push("post-commit");
+        }
     }
 
     // Install the post-checkout hook so a fresh clone or worktree
@@ -422,12 +443,15 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         write_global_hook(&checkout_path, &chain_repo_hook_snippet("post-checkout"));
     }
     let checkout_present = checkout_contents.is_some_and(|c| c.contains(HOOK_MARKER_CHECKOUT));
-    if !checkout_present && write_global_hook(&checkout_path, &post_checkout_snippet(tokensave_bin))
-    {
-        eprintln!(
-            "\x1b[32m✔\x1b[0m Installed global git post-checkout hook at {}",
-            checkout_path.display()
-        );
+    if !checkout_present {
+        if write_global_hook(&checkout_path, &post_checkout_snippet(tokensave_bin)) {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Installed global git post-checkout hook at {}",
+                checkout_path.display()
+            );
+        } else {
+            failed.push("post-checkout");
+        }
     }
 
     // Install the post-merge hook so `git pull` (fast-forward or a real
@@ -444,18 +468,35 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) {
         write_global_hook(&merge_path, &chain_repo_hook_snippet("post-merge"));
     }
     let merge_present = merge_contents.is_some_and(|c| c.contains(HOOK_MARKER_MERGE));
-    if !merge_present && write_global_hook(&merge_path, &post_merge_snippet(tokensave_bin)) {
-        eprintln!(
-            "\x1b[32m✔\x1b[0m Installed global git post-merge hook at {}",
-            merge_path.display()
-        );
+    if !merge_present {
+        if write_global_hook(&merge_path, &post_merge_snippet(tokensave_bin)) {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Installed global git post-merge hook at {}",
+                merge_path.display()
+            );
+        } else {
+            failed.push("post-merge");
+        }
     }
 
     // Issue #164 follow-up: claiming a global core.hooksPath disables *every*
     // hook type in each repo's .git/hooks/, not just the three tokensave owns.
     // Drop pure forwarders for the remaining client-side hooks so a repo's own
     // pre-commit / pre-push / commit-msg / … keep running.
-    install_repo_hook_forwarders(&hooks_dir, need_set_hookspath, hooks_dir_is_default);
+    failed.extend(install_repo_hook_forwarders(
+        &hooks_dir,
+        need_set_hookspath,
+        hooks_dir_is_default,
+    ));
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not install git hooks: {}",
+            failed.join(", ")
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +512,10 @@ pub struct LocalHookInstall {
     pub installed: Vec<String>,
     /// Hooks that already carried tokensave's section.
     pub already_present: Vec<String>,
+    /// Hooks whose write was attempted and failed. The reason was printed at
+    /// the point of failure; this records it so the caller can exit non-zero
+    /// rather than reporting a partial install as a success.
+    pub failed: Vec<String>,
     /// Set when a `core.hooksPath` is in effect for this repository, which
     /// makes git resolve every hook from *that* directory and ignore the one
     /// written here.
@@ -610,6 +655,8 @@ pub fn install_local_git_hooks(
         }
         if write_global_hook(&path, &snippet) {
             result.installed.push(name.to_string());
+        } else {
+            result.failed.push(name.to_string());
         }
     }
     Ok(result)

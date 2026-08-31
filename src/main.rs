@@ -825,7 +825,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
 
-            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
+            // Best-effort during `install`: a hook that could not be written
+            // must not fail the whole install. The reason was already printed.
+            let _ = tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
         }
         Commands::Reinstall {
             wildcard_permissions,
@@ -1201,17 +1203,35 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 (Some("on"), true) => {
                     let bin = current_bin_path();
                     match tokensave::agents::install_local_git_hooks(&repo, &bin) {
-                        Ok(outcome) => report_local_hook_install(&outcome),
+                        Ok(outcome) => {
+                            report_local_hook_install(&outcome);
+                            // The specific reason was already printed by
+                            // write_global_hook; this only stops an explicit
+                            // `githooks on --local` from reporting a partial
+                            // install as success.
+                            if !outcome.failed.is_empty() {
+                                return Err(tokensave::errors::TokenSaveError::Config {
+                                    message: format!(
+                                        "could not install git hooks: {}",
+                                        outcome.failed.join(", ")
+                                    ),
+                                });
+                            }
+                        }
                         Err(message) => {
                             return Err(tokensave::errors::TokenSaveError::Config { message })
                         }
                     }
                 }
                 (Some("on"), false) => {
-                    tokensave::agents::offer_git_post_commit_hook(
+                    // The specific reason was already printed; this only stops
+                    // `githooks on` from reporting a failed install as success.
+                    if let Err(message) = tokensave::agents::offer_git_post_commit_hook(
                         &current_bin_path(),
                         tokensave::agents::GitHookMode::Yes,
-                    );
+                    ) {
+                        return Err(tokensave::errors::TokenSaveError::Config { message });
+                    }
                 }
                 (Some(other), _) => {
                     return Err(tokensave::errors::TokenSaveError::Config {
