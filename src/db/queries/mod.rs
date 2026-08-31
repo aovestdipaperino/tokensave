@@ -5,6 +5,7 @@ use libsql::params;
 
 use super::connection::{CachedTraitDispatchCaller, Database};
 use crate::errors::{Result, TokenSaveError};
+use crate::resolution::{AmbiguityRefKey, TouchedNode};
 use crate::types::*;
 
 mod clear;

@@ -122,7 +122,7 @@ const CROSS_FILE_BLOCKLIST: &[&str] = &[
 /// the last segment after the final `::` (Rust/C++/PHP path) or `.`
 /// (Python/TS/JS/Java receiver call). `Self::watermark_band` -> `watermark_band`,
 /// `obj.render_to_png` -> `render_to_png`, `plain` -> `plain`.
-fn simple_ref_name(name: &str) -> &str {
+pub fn simple_ref_name(name: &str) -> &str {
     let after_path = name.rsplit("::").next().unwrap_or(name);
     after_path.rsplit('.').next().unwrap_or(after_path)
 }
@@ -565,6 +565,12 @@ impl<'a> ReferenceResolver<'a> {
     /// Returns true if a reference name could plausibly resolve to a known symbol.
     fn is_known_name(&self, name: &str) -> bool {
         self.known_names.contains(name)
+    }
+
+    /// Every key the name pre-filter admits, for the equivalence test that
+    /// pins `resolution::touched::index_keys` to this index's real shape (#484).
+    pub fn known_names(&self) -> &HashSet<&'a str> {
+        &self.known_names
     }
 
     /// Resolves a batch of unresolved references in parallel, returning a

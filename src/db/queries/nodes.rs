@@ -695,9 +695,11 @@ impl Database {
 
     /// Replaces the recorded ambiguities for a set of files (#412).
     ///
-    /// Scoped by file so an incremental sync refreshes only what it re-resolved
-    /// rather than clearing the whole table, matching how nodes and edges are
-    /// replaced per file.
+    /// Scoped by file so a sync refreshes only what it re-resolved rather than
+    /// clearing the whole table, matching how nodes and edges are replaced per
+    /// file. Correct only for a pass that re-resolved *every* reference in
+    /// those files — see [`Self::replace_ambiguous_calls_for_refs`] for the
+    /// incremental case, where it is not.
     pub async fn replace_ambiguous_calls(
         &self,
         files: &[String],
@@ -715,6 +717,72 @@ impl Database {
                     operation: "replace_ambiguous_calls".to_string(),
                 })?;
         }
+        self.insert_ambiguous_calls(calls).await
+    }
+
+    /// Replaces the recorded ambiguities for a set of *references* (#484).
+    ///
+    /// An incremental resolution pass re-attempts a subset of a file's
+    /// references, so it cannot clear that file: `replace_ambiguous_calls`
+    /// would delete the records of every reference in the file and put back
+    /// only the ones this pass looked at. That is not hypothetical — it is what
+    /// `tests/incremental_resolution_test.rs` caught, an `area` ambiguity in an
+    /// untouched caller vanishing because a sibling reference in the same file
+    /// was re-resolved.
+    ///
+    /// So the delete is keyed the same way the insert is: by the reference's
+    /// own identity. Every re-attempted reference has its record cleared,
+    /// whether or not it produced a new one, and only those.
+    pub async fn replace_ambiguous_calls_for_refs(
+        &self,
+        refs: &[AmbiguityRefKey],
+        calls: &[AmbiguousCall],
+    ) -> Result<()> {
+        if refs.is_empty() {
+            return self.insert_ambiguous_calls(calls).await;
+        }
+
+        // One prepared statement inside one transaction, as `insert_unresolved_refs`
+        // does: this loop is per re-attempted reference rather than per file, so
+        // a sync that touches a lot of names would otherwise pay a round trip
+        // and an implicit transaction for each one.
+        let err = |e: libsql::Error, what: &str| TokenSaveError::Database {
+            message: format!("failed to {what}: {e}"),
+            operation: "replace_ambiguous_calls_for_refs".to_string(),
+        };
+        self.conn()
+            .execute("BEGIN", ())
+            .await
+            .map_err(|e| err(e, "begin"))?;
+        let stmt = self
+            .conn()
+            .prepare(
+                "DELETE FROM ambiguous_calls
+                 WHERE from_node_id = ?1 AND reference_name = ?2
+                   AND file_path = ?3 AND line = ?4",
+            )
+            .await
+            .map_err(|e| err(e, "prepare"))?;
+        for key in refs {
+            stmt.execute(params![
+                key.from_node_id.as_str(),
+                key.reference_name.as_str(),
+                key.file_path.as_str(),
+                i64::from(key.line)
+            ])
+            .await
+            .map_err(|e| err(e, "clear ambiguous call"))?;
+            stmt.reset();
+        }
+        self.conn()
+            .execute("COMMIT", ())
+            .await
+            .map_err(|e| err(e, "commit"))?;
+
+        self.insert_ambiguous_calls(calls).await
+    }
+
+    async fn insert_ambiguous_calls(&self, calls: &[AmbiguousCall]) -> Result<()> {
         for call in calls {
             let encoded = serde_json::to_string(&call.candidate_node_ids).map_err(|e| {
                 TokenSaveError::Database {
@@ -941,6 +1009,40 @@ impl Database {
             })?;
 
         collect_rows(&mut rows, row_to_node, "get_all_nodes_for_resolution").await
+    }
+
+    /// The identifying fields of a file's nodes, for the incremental-resolution
+    /// touched-name set (#484).
+    ///
+    /// Called immediately before `delete_nodes_by_file` re-extracts the file:
+    /// the nodes about to disappear take their in-edges with them, so their
+    /// name-index keys have to be recorded while the rows still exist. Three
+    /// columns rather than the whole row, because that is all
+    /// `resolution::touched::index_keys` reads.
+    pub async fn touched_nodes_by_file(&self, file_path: &str) -> Result<Vec<TouchedNode>> {
+        let mut rows = self
+            .conn()
+            .query(
+                "SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1",
+                params![file_path],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query node names: {e}"),
+                operation: "touched_nodes_by_file".to_string(),
+            })?;
+
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+                .unwrap_or(NodeKind::Function);
+            out.push(TouchedNode {
+                kind,
+                name: row.get::<String>(1).unwrap_or_default(),
+                qualified_name: row.get::<String>(2).unwrap_or_default(),
+            });
+        }
+        Ok(out)
     }
 
     /// Deletes all nodes (and cascading edges, unresolved refs, vectors) for a file.

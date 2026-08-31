@@ -17,7 +17,7 @@ use crate::db::Database;
 use crate::errors::{Result, TokenSaveError};
 use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
-use crate::resolution::ReferenceResolver;
+use crate::resolution::{AmbiguityRefKey, ReferenceResolver, TouchedNode, TouchedSet};
 use crate::sync;
 use crate::types::*;
 

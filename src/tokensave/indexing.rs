@@ -178,6 +178,40 @@ fn reenters_project_root(path: &Path, canonical_root: Option<&Path>) -> bool {
 // Indexing
 // ---------------------------------------------------------------------------
 
+/// Whether incremental reference invalidation is active (#484 phase 5).
+///
+/// A missed invalidation shows up as a silently absent edge, which no user
+/// reports as a bug, so there has to be a way back to resolving everything
+/// without waiting for a release: `TOKENSAVE_FULL_RESOLVE=1` makes every sync
+/// re-attempt the whole reference table, exactly as it did before #484.
+/// `tests/incremental_resolution_test.rs` drives both modes over the same edits
+/// and asserts they agree, which is also what makes the flag a real fallback
+/// rather than a dead branch.
+fn incremental_resolution_enabled() -> bool {
+    std::env::var_os("TOKENSAVE_FULL_RESOLVE").is_none()
+}
+
+/// The name-index fields of freshly extracted nodes, for the touched set (#484).
+fn node_touch_records(nodes: &[Node]) -> Vec<TouchedNode> {
+    nodes.iter().map(TouchedNode::from).collect()
+}
+
+/// What one streamed resolution pass produced.
+///
+/// `total` counts the references the table holds; `attempted` counts the ones
+/// this pass actually resolved, which an incremental pass narrows to those the
+/// sync could have changed the answer for (#484). `attempted_refs` identifies
+/// those references, and bounds which ambiguity records may be replaced; it is
+/// collected only for an incremental pass, since for a full one it would be the
+/// whole table — exactly the materialisation #482 removed.
+struct StreamedResolution {
+    resolved: Vec<ResolvedRef>,
+    ambiguous: Vec<AmbiguousCall>,
+    total: usize,
+    attempted: usize,
+    attempted_refs: Vec<AmbiguityRefKey>,
+}
+
 impl TokenSave {
     /// Builds `Doc` nodes and `Documents` edges for companion documentation.
     ///
@@ -633,11 +667,14 @@ impl TokenSave {
     async fn resolve_all_streamed(
         &self,
         resolver: &ReferenceResolver<'_>,
-    ) -> Result<(Vec<ResolvedRef>, Vec<AmbiguousCall>, usize)> {
+        touched: Option<&TouchedSet>,
+    ) -> Result<StreamedResolution> {
         let mut cursor = 0i64;
         let mut resolved: Vec<ResolvedRef> = Vec::new();
         let mut ambiguous: Vec<AmbiguousCall> = Vec::new();
         let mut total = 0usize;
+        let mut attempted = 0usize;
+        let mut attempted_refs: Vec<AmbiguityRefKey> = Vec::new();
 
         loop {
             let page = self
@@ -648,15 +685,67 @@ impl TokenSave {
                 break;
             };
             cursor = *last_id;
-            let refs: Vec<UnresolvedRef> = page.into_iter().map(|(_, r)| r).collect();
+            let mut refs: Vec<UnresolvedRef> = page.into_iter().map(|(_, r)| r).collect();
             total += refs.len();
+            // Incremental invalidation (#484): drop the references this sync
+            // provably cannot have changed the answer for. Their edges are
+            // already in the table and their ambiguity records already written,
+            // so re-deriving them produces byte-identical rows at full cost.
+            if let Some(touched) = touched {
+                refs.retain(|uref| touched.needs_resolve(&uref.file_path, &uref.reference_name));
+            }
+            if refs.is_empty() {
+                continue;
+            }
+            attempted += refs.len();
+            // Only the references actually re-resolved may have their ambiguity
+            // records replaced — see `write_ambiguities`. Not collected for a
+            // full pass, where the file-scoped delete already covers every
+            // reference and this vector would be the whole table.
+            if touched.is_some() {
+                attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
+            }
             let (batch_resolved, batch_ambiguous) = resolver.resolve_batch(&refs);
             resolved.extend(batch_resolved);
             ambiguous.extend(batch_ambiguous);
         }
 
         resolver.finalize_resolved(&mut resolved);
-        Ok((resolved, ambiguous, total))
+        Ok(StreamedResolution {
+            resolved,
+            ambiguous,
+            total,
+            attempted,
+            attempted_refs,
+        })
+    }
+
+    /// Writes the ambiguity records at the granularity this pass earns
+    /// (#484 phase 3).
+    ///
+    /// A full pass re-resolved every reference in every file, so it clears by
+    /// file and rewrites. An incremental pass re-resolved a *subset* of some
+    /// files' references, so clearing by file would delete the records of the
+    /// references it never looked at — the `area` ambiguity in an untouched
+    /// caller that `tests/incremental_resolution_test.rs` watches for. It
+    /// clears by reference instead.
+    ///
+    /// Best effort in both branches, matching the `let _ =` this replaces: a
+    /// lost ambiguity record degrades an explanation, and is not worth failing
+    /// a sync that has already written its nodes and edges.
+    async fn write_ambiguities(&self, resolution: &StreamedResolution, incremental: bool) {
+        if incremental {
+            let _ = self
+                .db
+                .replace_ambiguous_calls_for_refs(&resolution.attempted_refs, &resolution.ambiguous)
+                .await;
+        } else {
+            let files = self.scan_files();
+            let _ = self
+                .db
+                .replace_ambiguous_calls(&files, &resolution.ambiguous)
+                .await;
+        }
     }
 
     /// Re-propagate build-variant call edges without a whole-graph load (#481).
@@ -791,7 +880,14 @@ impl TokenSave {
         // can reference them. Edges are queued for phase 2 (#58).
         let mut queued_edges: Vec<&Edge> = Vec::new();
         let mut body_documents = Vec::new();
+        // Which files and names this sync touched, so resolution can skip the
+        // references it provably cannot have changed (#484). The deleted half
+        // has to be read before `delete_nodes_by_file` removes the rows.
+        let mut touched = TouchedSet::new();
         for (file_path, result, hash, size, mtime) in &sync_extractions {
+            touched.touch_file(file_path);
+            touched.touch_nodes(&self.db.touched_nodes_by_file(file_path).await?);
+            touched.touch_nodes(&node_touch_records(&result.nodes));
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
             if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
@@ -854,23 +950,23 @@ impl TokenSave {
             crate::memstats::record("sync:resolve:load_nodes");
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             crate::memstats::record("sync:resolve:build_caches");
-            // Paged rather than materialised (#482).
-            let (resolved_refs, ambiguous, total_refs) =
-                self.resolve_all_streamed(&resolver).await?;
+            // Paged rather than materialised (#482), and narrowed to the
+            // references this sync could have changed (#484).
+            let incremental = incremental_resolution_enabled();
+            let resolution = self
+                .resolve_all_streamed(&resolver, incremental.then_some(&touched))
+                .await?;
+            let resolved_refs = &resolution.resolved;
             crate::memstats::record("sync:resolve:refs");
-            if total_refs > 0 {
+            if resolution.attempted > 0 {
                 // The sync's peak lives between `resolve:done` and `sync:done`,
                 // and with no sample in that window it was attributed to
                 // whichever sample came next — which is why #409 was argued
                 // from `size_of` arithmetic rather than from RSS.
                 crate::memstats::record("sync:resolve:refs");
                 // See the full-index site: ambiguities are kept, not dropped.
-                let ambiguity_files: Vec<String> = self.scan_files();
-                let _ = self
-                    .db
-                    .replace_ambiguous_calls(&ambiguity_files, &ambiguous)
-                    .await;
-                let edges = resolver.create_edges(&resolved_refs);
+                self.write_ambiguities(&resolution, incremental).await;
+                let edges = resolver.create_edges(resolved_refs);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
                     // Re-propagate build-variant call edges now that new call
@@ -1100,9 +1196,17 @@ impl TokenSave {
             }
         }
 
+        // Which files and names this sync touched, so resolution can skip the
+        // references it provably cannot have changed (#484). Deletions count as
+        // much as insertions: removing a file takes the edges pointing *into*
+        // it with them, and only the touched-name set brings those back.
+        let mut touched = TouchedSet::new();
+
         // Remove deleted files
         for path in &removed {
             on_progress(0, 0, &format!("removing {path}"));
+            touched.touch_file(path);
+            touched.touch_nodes(&self.db.touched_nodes_by_file(path).await?);
             self.db.delete_file(path).await?;
         }
 
@@ -1157,6 +1261,9 @@ impl TokenSave {
             total_nodes += result.nodes.len();
             total_edges += result.edges.len();
 
+            touched.touch_file(file_path);
+            touched.touch_nodes(&self.db.touched_nodes_by_file(file_path).await?);
+            touched.touch_nodes(&node_touch_records(&result.nodes));
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
             if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
@@ -1216,6 +1323,7 @@ impl TokenSave {
             // whole-graph node load came to be blamed for 73 MiB that
             // belonged to the reference load (#409).
             let pending_refs = self.db.count_unresolved_refs().await.unwrap_or(0);
+            let mut attempted_refs = 0usize;
             if pending_refs > 0 {
                 // #253: `from_nodes` borrows rather than clones. #306: the
                 // load drops `docstring` and `signature`, which resolution
@@ -1231,9 +1339,15 @@ impl TokenSave {
                 crate::memstats::record("sync:resolve:load_nodes");
                 let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
                 crate::memstats::record("sync:resolve:build_caches");
-                // Paged rather than materialised (#482).
-                let (resolved_refs, ambiguous, _total_refs) =
-                    self.resolve_all_streamed(&resolver).await?;
+                // Paged rather than materialised (#482), and narrowed to the
+                // references this sync could have changed (#484).
+                let incremental = incremental_resolution_enabled();
+                let resolution = self
+                    .resolve_all_streamed(&resolver, incremental.then_some(&touched))
+                    .await?;
+                attempted_refs = resolution.attempted;
+                debug_assert!(resolution.attempted <= resolution.total);
+                let resolved_refs = &resolution.resolved;
                 crate::memstats::record("sync:resolve:refs");
                 // The sync's peak lives between `resolve:done` and `sync:done`,
                 // and with no sample in that window it was attributed to
@@ -1241,12 +1355,8 @@ impl TokenSave {
                 // from `size_of` arithmetic rather than from RSS.
                 crate::memstats::record("sync:resolve:refs");
                 // See the full-index site: ambiguities are kept, not dropped.
-                let ambiguity_files: Vec<String> = self.scan_files();
-                let _ = self
-                    .db
-                    .replace_ambiguous_calls(&ambiguity_files, &ambiguous)
-                    .await;
-                let edges = resolver.create_edges(&resolved_refs);
+                self.write_ambiguities(&resolution, incremental).await;
+                let edges = resolver.create_edges(resolved_refs);
                 if !edges.is_empty() {
                     self.db.insert_edges(&edges).await?;
                     // Propagate call edges across build-config variants (#141),
@@ -1259,8 +1369,11 @@ impl TokenSave {
                     }
                 }
             }
+            // Reports what was re-attempted against what the table holds, so
+            // the incremental narrowing (#484) is visible rather than implied.
             on_verbose(&format!(
-                "resolved {pending_refs} references in {:.1}s",
+                "resolved {attempted_refs} of {pending_refs} references ({} names touched) in {:.1}s",
+                touched.name_count(),
                 phase_start.elapsed().as_secs_f64()
             ));
         }
