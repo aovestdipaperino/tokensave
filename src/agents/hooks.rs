@@ -118,17 +118,21 @@ fn install_repo_hook_forwarders(
     hooks_dir: &Path,
     claiming_hookspath: bool,
     hooks_dir_is_default: bool,
-) {
+) -> Vec<&'static str> {
+    let mut failed = Vec::new();
     if !(claiming_hookspath || hooks_dir_is_default) {
-        return;
+        return failed;
     }
     for name in FORWARDED_REPO_HOOKS {
         let path = hooks_dir.join(name);
         if path.exists() {
             continue;
         }
-        write_global_hook(&path, &chain_repo_hook_snippet(name));
+        if !write_global_hook(&path, &chain_repo_hook_snippet(name)) {
+            failed.push(*name);
+        }
     }
+    failed
 }
 
 /// Whether the chaining preamble should be added to a global hook file.
@@ -479,7 +483,11 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
     // hook type in each repo's .git/hooks/, not just the three tokensave owns.
     // Drop pure forwarders for the remaining client-side hooks so a repo's own
     // pre-commit / pre-push / commit-msg / … keep running.
-    install_repo_hook_forwarders(&hooks_dir, need_set_hookspath, hooks_dir_is_default);
+    failed.extend(install_repo_hook_forwarders(
+        &hooks_dir,
+        need_set_hookspath,
+        hooks_dir_is_default,
+    ));
 
     if failed.is_empty() {
         Ok(())
