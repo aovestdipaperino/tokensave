@@ -365,10 +365,135 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
 }
 
 /// Inspect a `Bash` tool command. Returns `Some(reason)` to redirect.
+/// Commands whose only effect is output. Anything not listed is treated as
+/// side-effecting, so an unrecognized command means the batch is left alone.
+///
+/// `before_search` distinguishes the two positions `true` and `:` appear in.
+/// Ahead of the search they carry nothing, so `true; grep -n Sym src/lib.rs`
+/// is a batched search. *After* it they are consuming the search's exit
+/// status — `grep -n Sym src/lib.rs || true` is the error-suppression idiom
+/// #475/#476 pin as pass-through, so they are not inert there.
+fn is_inert_command(segment: &str, before_search: bool) -> bool {
+    // Deliberately short and conservative: anything unrecognised counts as
+    // having side effects, so the unknown case allows rather than eating work.
+    const INERT: [&str; 5] = ["echo", "pwd", "ls", "cat", "printf"];
+    const EXIT_STATUS_ONLY: [&str; 2] = ["true", ":"];
+    let rest = strip_command_prefixes(segment.trim()).rest;
+    let head = rest.split_whitespace().next().unwrap_or("");
+    INERT.contains(&head) || (before_search && EXIT_STATUS_ONLY.contains(&head))
+}
+
+/// Split a command on top-level `&&`, `||` and `;`, keeping each segment
+/// verbatim so it can be re-classified on its own.
+///
+/// Returns `None` for a single segment, for unbalanced quotes, and for the
+/// shapes this hook deliberately does not model: subshells, command
+/// substitution, newlines, pipes, redirects and background jobs. Not modeled means not
+/// blocked — the caller falls through and allows.
+fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
+    // Command substitution is unmodeled wherever it sits, and quoting does not
+    // make it inert: `echo "$(curl -X POST …)"` runs the POST. The scan below
+    // skips quoted spans, so this has to be caught before it starts.
+    // A newline separates commands just like `;` does, but the segment scan
+    // below does not split on it, so an embedded newline would hide real work
+    // inside a segment that looks inert from its first word.
+    if command.contains("$(") || command.contains('`') || command.contains('\n') {
+        return None;
+    }
+
+    let mut segments: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.char_indices().peekable();
+
+    while let Some((i, c)) = chars.next() {
+        if in_single {
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
+            if c == '\\' {
+                chars.next();
+            } else if c == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            // Matches has_chained_command: on Windows a backslash is a path separator,
+            // not an escape, so consuming the next char there would desynchronise the
+            // two scanners on the same line.
+            '\\' if !cfg!(windows) => {
+                chars.next();
+            }
+            '(' | ')' | '`' | '<' | '>' => return None,
+            // A lone `&` backgrounds and a lone `|` pipes; only the doubled
+            // forms are sequencing operators.
+            '&' | '|' => {
+                if chars.peek().map(|&(_, next)| next) != Some(c) {
+                    return None;
+                }
+                chars.next();
+                segments.push(&command[start..i]);
+                start = i + 2;
+            }
+            ';' => {
+                segments.push(&command[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if in_single || in_double {
+        return None;
+    }
+    segments.push(&command[start..]);
+
+    let segments: Vec<&str> = segments
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        None
+    } else {
+        Some(segments)
+    }
+}
+
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
+    // The whole command first. This is the only path that models a leading
+    // `cd`, which segment splitting would otherwise read as a side-effecting
+    // command and allow.
+    if let Some(reason) = evaluate_bash_segment(command, env) {
+        return Some(reason);
+    }
+    // #451: batching a search behind other commands is an ordinary shape, not
+    // an attempt to slip past the hook. Redirect the search only when every
+    // other segment is inert, so a denial can never discard real work.
+    let segments = split_top_level_segments(command)?;
+    let mut reason = None;
+    for segment in &segments {
+        if let Some(found) = evaluate_bash_segment(segment, env) {
+            reason.get_or_insert(found);
+        } else if !is_inert_command(segment, reason.is_none()) {
+            return None;
+        }
+    }
+    reason
+}
+
+/// Classify one command that carries no top-level sequencing operators.
+fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     // An explicit inline `TOKENSAVE_DISABLE_GREP_HOOK=<truthy>` opts out too, so
     // the deliberate bypass is honored rather than stripped and then blocked.
     let stripped = strip_command_prefixes(command.trim());
