@@ -156,3 +156,31 @@ fn a_directory_that_is_not_a_repository_is_an_error_not_a_silent_success() {
     assert!(install_local_git_hooks(dir.path(), "/usr/bin/tokensave").is_err());
     assert!(!local_git_hooks_present(dir.path()));
 }
+
+#[test]
+fn a_hook_that_cannot_be_written_is_reported_as_failed() {
+    let dir = repo();
+    let hooks = repo_hooks_dir(dir.path()).expect("hooks dir");
+    // A directory where the hook file belongs: the path exists, so the append
+    // branch is taken, and opening a directory for writing fails on both Unix
+    // and Windows.
+    std::fs::create_dir_all(hooks.join("post-commit")).expect("occupy hook path");
+
+    let out = install_local_git_hooks(dir.path(), "/usr/bin/tokensave").expect("install");
+
+    assert_eq!(
+        out.failed,
+        vec!["post-commit"],
+        "a hook that could not be written must be reported, not silently dropped"
+    );
+    assert!(
+        !out.installed.contains(&"post-commit".to_string()),
+        "a failed hook must not be listed as installed, got: {:?}",
+        out.installed
+    );
+    assert_eq!(
+        out.installed,
+        vec!["post-checkout", "post-merge"],
+        "the other two hooks must still install"
+    );
+}

@@ -16,6 +16,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 
 
+### Fixed
+
+- **`githooks on` no longer exits 0 after failing to install a hook (#488).** Both paths printed a red `✘ Failed to open … for writing` and then returned success, so a setup script gating on the exit code carried on with no hooks installed and no way to tell. The global path called `write_global_hook`, which returns a `bool`, in an `if` whose `else` did not exist; the local path collected `installed` and `already_present` but had nowhere to put a hook that failed. `offer_git_post_commit_hook` now returns `Result<(), String>` and `LocalHookInstall` carries a `failed` list, which `githooks on` turns into a non-zero exit naming the hooks. Failures are collected rather than raised at the first one: the command installs three hooks, and bailing early would skip the two the user also asked for. Declining the prompt, an already-present hook, and the best-effort call inside `install` all stay success — only an explicit `githooks on` that could not do what it was asked now fails.
+
 ## [7.11.0] - 2026-08-30
 
 ### Added
