@@ -103,9 +103,13 @@ scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
 scoop install tokensave
 ```
 
-**Cargo (any platform):**
+**Cargo / cargo-binstall (any platform):**
 
 ```bash
+# Fast install prebuilt binary without compiling:
+cargo binstall tokensave
+
+# Or compile from source:
 cargo install tokensave                          # full (50+ languages, default)
 cargo install tokensave --features medium        # medium tier
 cargo install tokensave --no-default-features    # lite (smallest binary)
