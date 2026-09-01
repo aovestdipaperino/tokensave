@@ -14,12 +14,15 @@
 //! does not install an OMP hook because no OMP-specific executable hook
 //! contract has been proven for Tokensave.
 
+use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::errors::{Result, TokenSaveError};
@@ -27,6 +30,21 @@ use crate::errors::{Result, TokenSaveError};
 use super::*;
 
 const OMP_CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
+const OMP_PROFILE_REGISTRY_VERSION: u32 = 1;
+const OMP_PROFILE_REGISTRY_FILE: &str = "omp-profiles.json";
+const OMP_PROFILE_REGISTRY_LOCK: &str = "omp-profiles.lock";
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct OmpProfileRegistry {
+    version: u32,
+    agent_dirs: Vec<PathBuf>,
+}
+
+struct LockedOmpProfileRegistry {
+    _lock: File,
+    path: PathBuf,
+    registry: OmpProfileRegistry,
+}
 
 /// Oh My Pi coding agent.
 pub struct OmpIntegration;
@@ -45,9 +63,13 @@ impl AgentIntegration for OmpIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let (mcp_path, rules_path) = omp_paths(ctx)?;
-        install_mcp_server(&mcp_path, &ctx.tokensave_bin)?;
-        write_managed_rules_file(&rules_path, &rules_for_agent("omp")?).map(|_| ())?;
+        match &ctx.scope {
+            InstallScope::Local { .. } => {
+                let (mcp_path, rules_path) = omp_paths(ctx)?;
+                install_omp_surfaces(&mcp_path, &rules_path, &ctx.tokensave_bin)?;
+            }
+            InstallScope::Global => install_global(ctx)?,
+        }
 
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
@@ -57,9 +79,13 @@ impl AgentIntegration for OmpIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let (mcp_path, rules_path) = omp_paths(ctx)?;
-        uninstall_mcp_server(&mcp_path);
-        uninstall_prompt_rules(&rules_path);
+        match &ctx.scope {
+            InstallScope::Local { .. } => {
+                let (mcp_path, rules_path) = omp_paths(ctx)?;
+                uninstall_omp_surfaces(&mcp_path, &rules_path)?;
+            }
+            InstallScope::Global => uninstall_global(ctx)?,
+        }
 
         crate::agent_note!();
         crate::agent_note!("Uninstall complete. Tokensave has been removed from Oh My Pi.");
@@ -70,19 +96,7 @@ impl AgentIntegration for OmpIntegration {
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOh My Pi integration\x1b[0m");
 
-        if self.is_detected(&ctx.home) {
-            match resolve_omp_agent_dir() {
-                Ok(agent_dir) => doctor_check_surfaces(
-                    dc,
-                    &agent_dir.join("mcp.json"),
-                    &agent_dir.join("rules/tokensave.md"),
-                    "global",
-                ),
-                Err(error) => dc.fail(&format!(
-                    "could not resolve the active OMP profile with `omp config path`: {error}"
-                )),
-            }
-        }
+        doctor_check_global_profiles(dc, &ctx.home);
 
         let local_dir = ctx.project_path.join(".omp");
         if local_dir.is_dir() {
@@ -96,24 +110,28 @@ impl AgentIntegration for OmpIntegration {
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".omp").is_dir()
+        if home.join(".omp").is_dir() {
+            return true;
+        }
+        if load_omp_profile_registry(home)
+            .is_ok_and(|registry| registry.agent_dirs.iter().any(|path| path.is_dir()))
+        {
+            return true;
+        }
+        resolve_omp_agent_dir().is_ok()
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let config = load_json_file(&default_omp_mcp_path(home));
-        config
-            .get("mcpServers")
-            .and_then(|servers| servers.get("tokensave"))
-            .is_some()
+        omp_candidate_dirs(home)
+            .iter()
+            .any(|agent_dir| omp_mcp_has_tokensave(&agent_dir.join("mcp.json")))
     }
 
-    fn primary_config_path(&self, home: &Path) -> Option<PathBuf> {
-        Some(default_omp_mcp_path(home))
+    fn primary_config_path(&self, _home: &Path) -> Option<PathBuf> {
+        resolve_omp_agent_dir()
+            .ok()
+            .map(|agent_dir| agent_dir.join("mcp.json"))
     }
-}
-
-fn default_omp_mcp_path(home: &Path) -> PathBuf {
-    home.join(".omp/agent/mcp.json")
 }
 
 fn omp_paths(ctx: &InstallContext) -> Result<(PathBuf, PathBuf)> {
@@ -130,6 +148,243 @@ fn omp_paths(ctx: &InstallContext) -> Result<(PathBuf, PathBuf)> {
             ))
         }
     }
+}
+
+impl LockedOmpProfileRegistry {
+    fn load(home: &Path) -> Result<Self> {
+        let state_dir = home.join(".tokensave");
+        std::fs::create_dir_all(&state_dir).map_err(|error| {
+            omp_registry_error(format!("could not create {}: {error}", state_dir.display()))
+        })?;
+        let lock_path = state_dir.join(OMP_PROFILE_REGISTRY_LOCK);
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&lock_path).map_err(|error| {
+            omp_registry_error(format!(
+                "could not open lock {}: {error}",
+                lock_path.display()
+            ))
+        })?;
+        lock.lock_exclusive().map_err(|error| {
+            omp_registry_error(format!("could not lock {}: {error}", lock_path.display()))
+        })?;
+
+        let path = state_dir.join(OMP_PROFILE_REGISTRY_FILE);
+        let registry = load_omp_profile_registry_from(&path)?;
+        Ok(Self {
+            _lock: lock,
+            path,
+            registry,
+        })
+    }
+
+    fn save(&mut self) -> Result<()> {
+        normalize_agent_dirs(&mut self.registry.agent_dirs)?;
+        if self.registry.agent_dirs.is_empty() {
+            if self.path.exists() {
+                std::fs::remove_file(&self.path).map_err(|error| {
+                    omp_registry_error(format!("could not remove {}: {error}", self.path.display()))
+                })?;
+            }
+            return Ok(());
+        }
+        self.registry.version = OMP_PROFILE_REGISTRY_VERSION;
+        let value = serde_json::to_value(&self.registry)
+            .map_err(|error| omp_registry_error(format!("could not be serialized: {error}")))?;
+        safe_write_json_file(&self.path, &value, None)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600)).map_err(
+                |error| {
+                    omp_registry_error(format!(
+                        "could not restrict permissions on {}: {error}",
+                        self.path.display()
+                    ))
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn omp_registry_error(message: impl Into<String>) -> TokenSaveError {
+    TokenSaveError::Config {
+        message: format!("OMP profile registry {}", message.into()),
+    }
+}
+
+fn load_omp_profile_registry(home: &Path) -> Result<OmpProfileRegistry> {
+    load_omp_profile_registry_from(&home.join(".tokensave").join(OMP_PROFILE_REGISTRY_FILE))
+}
+
+fn load_omp_profile_registry_from(path: &Path) -> Result<OmpProfileRegistry> {
+    if !path.exists() {
+        return Ok(OmpProfileRegistry {
+            version: OMP_PROFILE_REGISTRY_VERSION,
+            agent_dirs: Vec::new(),
+        });
+    }
+    let contents = std::fs::read_to_string(path).map_err(|error| {
+        omp_registry_error(format!("could not read {}: {error}", path.display()))
+    })?;
+    let mut registry: OmpProfileRegistry = serde_json::from_str(&contents).map_err(|error| {
+        omp_registry_error(format!("at {} is malformed: {error}", path.display()))
+    })?;
+    if registry.version != OMP_PROFILE_REGISTRY_VERSION {
+        return Err(omp_registry_error(format!(
+            "at {} has unsupported version {}",
+            path.display(),
+            registry.version
+        )));
+    }
+    normalize_agent_dirs(&mut registry.agent_dirs)?;
+    Ok(registry)
+}
+
+fn normalize_agent_dirs(agent_dirs: &mut Vec<PathBuf>) -> Result<()> {
+    if let Some(path) = agent_dirs.iter().find(|path| !path.is_absolute()) {
+        return Err(omp_registry_error(format!(
+            "contains a non-absolute agent directory: {}",
+            path.display()
+        )));
+    }
+    agent_dirs.sort();
+    agent_dirs.dedup();
+    Ok(())
+}
+
+fn omp_candidate_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut paths = load_omp_profile_registry(home)
+        .map(|registry| registry.agent_dirs)
+        .unwrap_or_default();
+    if let Ok(active) = resolve_omp_agent_dir() {
+        paths.push(active);
+    }
+    paths.push(home.join(".omp/agent"));
+    let _ = normalize_agent_dirs(&mut paths);
+    paths
+}
+
+fn omp_mcp_has_tokensave(mcp_path: &Path) -> bool {
+    let config = load_json_file(mcp_path);
+    config
+        .get("mcpServers")
+        .and_then(|servers| servers.get("tokensave"))
+        .is_some()
+}
+
+fn install_global(ctx: &InstallContext) -> Result<()> {
+    let active = resolve_omp_agent_dir()?;
+    let mut locked = LockedOmpProfileRegistry::load(&ctx.home)?;
+    locked
+        .registry
+        .agent_dirs
+        .retain(|path| path == &active || path.is_dir());
+    locked.registry.agent_dirs.push(active.clone());
+    normalize_agent_dirs(&mut locked.registry.agent_dirs)?;
+    locked.save()?;
+
+    let rules = rules_for_agent("omp")?;
+    let mut targets = vec![active.clone()];
+    targets.extend(
+        locked
+            .registry
+            .agent_dirs
+            .iter()
+            .filter(|path| *path != &active)
+            .cloned(),
+    );
+    let mut failures = Vec::new();
+    for agent_dir in &targets {
+        if let Err(error) = install_omp_surfaces_with_rules(
+            &agent_dir.join("mcp.json"),
+            &agent_dir.join("rules/tokensave.md"),
+            &ctx.tokensave_bin,
+            &rules,
+        ) {
+            failures.push(format!("{}: {error}", agent_dir.display()));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(omp_profile_failures("install", &failures));
+    }
+    Ok(())
+}
+
+fn uninstall_global(ctx: &InstallContext) -> Result<()> {
+    let mut locked = LockedOmpProfileRegistry::load(&ctx.home)?;
+    let active = resolve_omp_agent_dir();
+    let mut targets = locked.registry.agent_dirs.clone();
+    targets.push(ctx.home.join(".omp/agent"));
+    if let Ok(path) = &active {
+        targets.push(path.clone());
+    }
+    normalize_agent_dirs(&mut targets)?;
+    let had_known_target = targets.iter().any(|path| path.is_dir());
+
+    let mut failures = Vec::new();
+    let mut retry = Vec::new();
+    for agent_dir in targets.iter().filter(|path| path.is_dir()) {
+        if let Err(error) = uninstall_omp_surfaces(
+            &agent_dir.join("mcp.json"),
+            &agent_dir.join("rules/tokensave.md"),
+        ) {
+            failures.push(format!("{}: {error}", agent_dir.display()));
+            retry.push(agent_dir.clone());
+        }
+    }
+
+    locked.registry.agent_dirs = retry;
+    locked.save()?;
+    if !failures.is_empty() {
+        return Err(omp_profile_failures("uninstall", &failures));
+    }
+    match active {
+        Ok(_) => Ok(()),
+        Err(error) if had_known_target => {
+            crate::agent_note!(
+                "  Active OMP profile unavailable; removed tokensave from recorded profiles: {error}"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn omp_profile_failures(action: &str, failures: &[String]) -> TokenSaveError {
+    TokenSaveError::Config {
+        message: format!(
+            "OMP {action} was incomplete for {} profile(s): {}",
+            failures.len(),
+            failures.join("; ")
+        ),
+    }
+}
+
+fn install_omp_surfaces(mcp_path: &Path, rules_path: &Path, tokensave_bin: &str) -> Result<()> {
+    let rules = rules_for_agent("omp")?;
+    install_omp_surfaces_with_rules(mcp_path, rules_path, tokensave_bin, &rules)
+}
+
+fn install_omp_surfaces_with_rules(
+    mcp_path: &Path,
+    rules_path: &Path,
+    tokensave_bin: &str,
+    rules: &str,
+) -> Result<()> {
+    install_mcp_server(mcp_path, tokensave_bin)?;
+    write_managed_rules_file(rules_path, rules).map(|_| ())
+}
+
+fn uninstall_omp_surfaces(mcp_path: &Path, rules_path: &Path) -> Result<()> {
+    uninstall_mcp_server(mcp_path)?;
+    uninstall_prompt_rules(rules_path)
 }
 
 fn resolver_error(message: impl Into<String>) -> TokenSaveError {
@@ -186,7 +441,11 @@ fn resolve_omp_agent_dir() -> Result<PathBuf> {
         ));
     }
 
-    Ok(PathBuf::from(trimmed))
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err(resolver_error("returned a non-absolute path"));
+    }
+    Ok(path)
 }
 
 fn install_mcp_server(mcp_path: &Path, tokensave_bin: &str) -> Result<()> {
@@ -221,18 +480,26 @@ fn install_mcp_server(mcp_path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
-fn uninstall_mcp_server(mcp_path: &Path) {
+fn uninstall_mcp_server(mcp_path: &Path) -> Result<()> {
     if !mcp_path.exists() {
         crate::agent_note!("  {} not found, skipping", mcp_path.display());
-        return;
+        return Ok(());
     }
 
-    let Ok(contents) = std::fs::read_to_string(mcp_path) else {
-        return;
-    };
-    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&contents) else {
-        return;
-    };
+    let contents = std::fs::read_to_string(mcp_path).map_err(|error| TokenSaveError::Config {
+        message: format!(
+            "failed to read OMP MCP config {}: {error}",
+            mcp_path.display()
+        ),
+    })?;
+    let mut config = serde_json::from_str::<serde_json::Value>(&contents).map_err(|error| {
+        TokenSaveError::Config {
+            message: format!(
+                "failed to parse OMP MCP config {} during uninstall: {error}",
+                mcp_path.display()
+            ),
+        }
+    })?;
     let Some(servers) = config
         .get_mut("mcpServers")
         .and_then(serde_json::Value::as_object_mut)
@@ -241,14 +508,14 @@ fn uninstall_mcp_server(mcp_path: &Path) {
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
-        return;
+        return Ok(());
     };
     if servers.remove("tokensave").is_none() {
         crate::agent_note!(
             "  No tokensave MCP server in {}, skipping",
             mcp_path.display()
         );
-        return;
+        return Ok(());
     }
 
     let is_empty = config.as_object().is_some_and(|object| {
@@ -257,31 +524,97 @@ fn uninstall_mcp_server(mcp_path: &Path) {
         })
     });
     if is_empty {
-        std::fs::remove_file(mcp_path).ok();
+        std::fs::remove_file(mcp_path).map_err(|error| TokenSaveError::Config {
+            message: format!(
+                "failed to remove empty OMP MCP config {}: {error}",
+                mcp_path.display()
+            ),
+        })?;
         crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed {} (was empty)",
             mcp_path.display()
         );
-    } else if backup_and_write_json(mcp_path, &config) {
+    } else {
+        let backup = backup_config_file(mcp_path)?;
+        safe_write_json_file(mcp_path, &config, backup.as_deref())?;
         crate::agent_note!(
             "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
             mcp_path.display()
         );
     }
+    Ok(())
 }
 
-fn uninstall_prompt_rules(rules_path: &Path) {
-    let Ok(contents) = std::fs::read_to_string(rules_path) else {
-        return;
+fn uninstall_prompt_rules(rules_path: &Path) -> Result<()> {
+    let contents = match std::fs::read_to_string(rules_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "failed to read OMP rules {} during uninstall: {error}",
+                    rules_path.display()
+                ),
+            });
+        }
     };
     if !contents.contains(OMP_RULES_MARKER) {
         crate::agent_note!(
             "  {} does not contain the OMP ownership marker, skipping",
             rules_path.display()
         );
-        return;
+        return Ok(());
     }
+    let real_path = resolve_symlink_target(rules_path).map_err(|error| TokenSaveError::Config {
+        message: format!(
+            "failed to resolve OMP rules {} during uninstall: {error}",
+            rules_path.display()
+        ),
+    })?;
     remove_managed_rules_file(rules_path);
+    if real_path.exists() {
+        return Err(TokenSaveError::Config {
+            message: format!(
+                "failed to remove OMP rules {} during uninstall",
+                real_path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn doctor_check_global_profiles(dc: &mut DoctorCounters, home: &Path) {
+    let registry = match load_omp_profile_registry(home) {
+        Ok(registry) => registry,
+        Err(error) => {
+            dc.fail(&error.to_string());
+            OmpProfileRegistry::default()
+        }
+    };
+    let mut targets = registry.agent_dirs;
+    if home.join(".omp/agent").is_dir() {
+        targets.push(home.join(".omp/agent"));
+    }
+    match resolve_omp_agent_dir() {
+        Ok(active) => targets.push(active),
+        Err(_) if targets.is_empty() && !home.join(".omp").is_dir() => return,
+        Err(error) if targets.is_empty() => dc.fail(&format!(
+            "could not resolve the active OMP profile with `omp config path`: {error}"
+        )),
+        Err(error) => dc.warn(&format!(
+            "could not resolve the active OMP profile with `omp config path`; checking recorded profiles only: {error}"
+        )),
+    }
+    let _ = normalize_agent_dirs(&mut targets);
+
+    for agent_dir in &targets {
+        doctor_check_surfaces(
+            dc,
+            &agent_dir.join("mcp.json"),
+            &agent_dir.join("rules/tokensave.md"),
+            "global",
+        );
+    }
 }
 
 fn doctor_check_surfaces(dc: &mut DoctorCounters, mcp_path: &Path, rules_path: &Path, scope: &str) {
