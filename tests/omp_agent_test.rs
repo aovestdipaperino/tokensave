@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    available_integrations, expected_tool_perms, get_integration, rules_for_agent,
-    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext, InstallScope,
-    OmpIntegration,
+    available_integrations, expected_tool_perms, get_integration, migrate_installed_agents,
+    rules_for_agent, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
+    InstallScope, OmpIntegration,
 };
 use tokensave::errors::TokenSaveError;
+use tokensave::user_config::UserConfig;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -210,6 +211,10 @@ fn global_resolver_rejects_missing_failed_empty_and_multiline_output() {
         (
             "multiline",
             Some("[ \"$1 $2\" = \"config path\" ] || exit 64\nprintf '/one\\n/two\\n'"),
+        ),
+        (
+            "relative",
+            Some("[ \"$1 $2\" = \"config path\" ] || exit 64\nprintf 'relative/agent\\n'"),
         ),
     ] {
         let script_path = bin_dir.join("omp");
@@ -526,7 +531,7 @@ fn doctor_reports_resolver_failure_and_still_checks_present_local_surfaces() {
 }
 
 #[test]
-fn doctor_accepts_valid_project_local_install_without_global_omp() {
+fn doctor_accepts_valid_project_local_install_when_global_resolver_fails() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
@@ -535,7 +540,7 @@ fn doctor_accepts_valid_project_local_install_without_global_omp() {
     let sentinel = temp.path().join("omp-was-called");
     write_script(
         &bin_dir,
-        &format!("touch '{}'\nexit 99", sentinel.display()),
+        &format!("printf called > '{}'\nexit 99", sentinel.display()),
     );
     let _path = PathGuard::replace(&bin_dir);
     OmpIntegration
@@ -546,11 +551,14 @@ fn doctor_accepts_valid_project_local_install_without_global_omp() {
 
     assert_eq!(result.issues, 0);
     assert_eq!(result.warnings, 0);
-    assert!(!sentinel.exists(), "local doctor must not invoke OMP");
+    assert!(
+        sentinel.exists(),
+        "doctor must probe OMP to discover unrecorded custom profiles"
+    );
 }
 
 #[test]
-fn detection_and_migration_checks_are_subprocess_free_and_parse_tokensave_key() {
+fn default_profile_detection_survives_resolver_failure() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
@@ -558,7 +566,7 @@ fn detection_and_migration_checks_are_subprocess_free_and_parse_tokensave_key() 
     let sentinel = temp.path().join("omp-was-called");
     write_script(
         &bin_dir,
-        &format!("touch '{}'\nexit 99", sentinel.display()),
+        &format!("printf called > '{}'\nexit 99", sentinel.display()),
     );
     let _path = PathGuard::replace(&bin_dir);
     let mcp_path = home.join(".omp/agent/mcp.json");
@@ -571,7 +579,8 @@ fn detection_and_migration_checks_are_subprocess_free_and_parse_tokensave_key() 
 
     assert!(OmpIntegration.is_detected(&home));
     assert!(!OmpIntegration.has_tokensave(&home));
-    assert!(!sentinel.exists());
+    assert!(sentinel.exists());
+    std::fs::remove_file(&sentinel).unwrap();
 
     std::fs::write(
         &mcp_path,
@@ -579,11 +588,299 @@ fn detection_and_migration_checks_are_subprocess_free_and_parse_tokensave_key() 
     )
     .unwrap();
     assert!(OmpIntegration.has_tokensave(&home));
+    assert_eq!(OmpIntegration.primary_config_path(&home), None);
+    assert!(sentinel.exists());
+}
+
+#[test]
+fn custom_profile_without_registry_is_detected_migrated_and_reported() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profiles/work/agent");
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+
+    OmpIntegration.install(&make_ctx(&home)).unwrap();
+    std::fs::remove_file(home.join(".tokensave/omp-profiles.json")).unwrap();
+
+    assert!(!home.join(".omp").exists());
+    assert!(OmpIntegration.is_detected(&home));
+    assert!(OmpIntegration.has_tokensave(&home));
     assert_eq!(
         OmpIntegration.primary_config_path(&home),
-        Some(home.join(".omp/agent/mcp.json"))
+        Some(agent_dir.join("mcp.json"))
     );
-    assert!(!sentinel.exists());
+
+    let mut config = UserConfig::default();
+    migrate_installed_agents(&home, &mut config);
+    assert_eq!(config.installed_agents, vec!["omp"]);
+    assert_eq!(healthcheck(&home, &project).issues, 0);
+}
+
+#[test]
+fn doctor_checks_custom_profile_when_default_directory_is_absent() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profiles/work/agent");
+    let mcp_path = agent_dir.join("mcp.json");
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    OmpIntegration.install(&make_ctx(&home)).unwrap();
+    std::fs::remove_file(home.join(".tokensave/omp-profiles.json")).unwrap();
+
+    let mut config = read_json(&mcp_path);
+    config["mcpServers"]["tokensave"]["args"] = serde_json::json!(["wrong"]);
+    std::fs::write(&mcp_path, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    assert!(!home.join(".omp").exists());
+    assert!(healthcheck(&home, &project).issues > 0);
+}
+
+#[test]
+fn profile_change_uninstall_cleans_original_without_populating_new_profile() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let original = temp.path().join("profiles/original/agent");
+    let active = temp.path().join("profiles/active/agent");
+    write_fake_omp(&bin_dir, &original, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    write_fake_omp(&bin_dir, &active, 0);
+    OmpIntegration.uninstall(&ctx).unwrap();
+
+    assert!(!original.join("mcp.json").exists());
+    assert!(!original.join("rules/tokensave.md").exists());
+    assert!(
+        !active.exists(),
+        "uninstall must never populate a new profile"
+    );
+}
+
+#[test]
+fn uninstall_uses_recorded_profile_when_resolver_disappears() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let original = temp.path().join("profiles/original/agent");
+    write_fake_omp(&bin_dir, &original, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    std::fs::remove_file(bin_dir.join("omp")).unwrap();
+    OmpIntegration.uninstall(&ctx).unwrap();
+
+    assert!(!original.join("mcp.json").exists());
+    assert!(!original.join("rules/tokensave.md").exists());
+    assert!(!home.join(".tokensave/omp-profiles.json").exists());
+}
+
+#[test]
+fn reinstall_refreshes_recorded_and_current_profiles() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let original = temp.path().join("profiles/original/agent");
+    let active = temp.path().join("profiles/active/agent");
+    write_fake_omp(&bin_dir, &original, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    let mut original_config = read_json(&original.join("mcp.json"));
+    original_config["mcpServers"]["tokensave"]["args"] = serde_json::json!(["stale"]);
+    std::fs::write(
+        original.join("mcp.json"),
+        serde_json::to_vec(&original_config).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        original.join("rules/tokensave.md"),
+        format!("{OMP_RULES_MARKER}\nstale\n"),
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(&active).unwrap();
+    write_fake_omp(&bin_dir, &active, 0);
+    OmpIntegration.install(&ctx).unwrap();
+
+    for profile in [&original, &active] {
+        assert_eq!(
+            read_json(&profile.join("mcp.json"))["mcpServers"]["tokensave"]["args"],
+            serde_json::json!(["serve"])
+        );
+        assert_eq!(
+            std::fs::read_to_string(profile.join("rules/tokensave.md")).unwrap(),
+            format!("{}\n", rules_for_agent("omp").unwrap().trim_end())
+        );
+    }
+}
+
+#[test]
+fn reinstall_forgets_deleted_profiles_without_recreating_them() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let deleted = temp.path().join("profiles/deleted/agent");
+    let active = temp.path().join("profiles/active/agent");
+    write_fake_omp(&bin_dir, &deleted, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    std::fs::remove_dir_all(&deleted).unwrap();
+    std::fs::create_dir_all(&active).unwrap();
+    write_fake_omp(&bin_dir, &active, 0);
+
+    OmpIntegration.install(&ctx).unwrap();
+
+    assert!(!deleted.exists());
+    assert_eq!(
+        read_json(&home.join(".tokensave/omp-profiles.json"))["agent_dirs"],
+        serde_json::json!([active])
+    );
+}
+
+#[test]
+fn broken_recorded_profile_does_not_block_installing_current_profile() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let recorded = temp.path().join("profiles/a-recorded/agent");
+    let active = temp.path().join("profiles/b-active/agent");
+    write_fake_omp(&bin_dir, &recorded, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    std::fs::write(recorded.join("mcp.json"), "{ malformed").unwrap();
+    std::fs::create_dir_all(&active).unwrap();
+    write_fake_omp(&bin_dir, &active, 0);
+
+    assert!(OmpIntegration.install(&ctx).is_err());
+    assert!(omp_has_tokensave(&active.join("mcp.json")));
+    assert!(active.join("rules/tokensave.md").exists());
+}
+
+#[test]
+fn uninstall_attempts_every_profile_and_retains_failed_ownership() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let broken = temp.path().join("profiles/a-broken/agent");
+    let healthy = temp.path().join("profiles/b-healthy/agent");
+    write_fake_omp(&bin_dir, &broken, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    std::fs::create_dir_all(&healthy).unwrap();
+    write_fake_omp(&bin_dir, &healthy, 0);
+    OmpIntegration.install(&ctx).unwrap();
+    std::fs::write(broken.join("mcp.json"), "{ malformed").unwrap();
+
+    assert!(OmpIntegration.uninstall(&ctx).is_err());
+    assert!(!healthy.join("mcp.json").exists());
+    assert!(!healthy.join("rules/tokensave.md").exists());
+
+    let registry = read_json(&home.join(".tokensave/omp-profiles.json"));
+    assert_eq!(registry["agent_dirs"], serde_json::json!([broken]));
+}
+
+#[test]
+fn uninstall_retains_ownership_when_rules_removal_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profiles/work/agent");
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+    let ctx = make_ctx(&home);
+
+    OmpIntegration.install(&ctx).unwrap();
+    let rules_dir = agent_dir.join("rules");
+    std::fs::set_permissions(&rules_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let result = OmpIntegration.uninstall(&ctx);
+
+    std::fs::set_permissions(&rules_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err());
+    assert!(agent_dir.join("rules/tokensave.md").exists());
+    assert_eq!(
+        read_json(&home.join(".tokensave/omp-profiles.json"))["agent_dirs"],
+        serde_json::json!([agent_dir])
+    );
+}
+
+#[test]
+fn malformed_profile_registry_blocks_install_without_touching_omp() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profiles/work/agent");
+    let registry = home.join(".tokensave/omp-profiles.json");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry, "{ malformed").unwrap();
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+
+    let message = config_error_message(OmpIntegration.install(&make_ctx(&home)).unwrap_err());
+
+    assert!(message.contains("OMP profile registry"), "{message}");
+    assert_eq!(std::fs::read_to_string(registry).unwrap(), "{ malformed");
+    assert!(!agent_dir.exists());
+}
+
+#[test]
+fn unsupported_or_relative_profile_registry_blocks_install_without_touching_omp() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let agent_dir = temp.path().join("profiles/work/agent");
+    let registry = home.join(".tokensave/omp-profiles.json");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    write_fake_omp(&bin_dir, &agent_dir, 0);
+    let _path = PathGuard::replace(&bin_dir);
+
+    for contents in [
+        r#"{"version":99,"agent_dirs":[]}"#,
+        r#"{"version":1,"agent_dirs":["relative/agent"]}"#,
+    ] {
+        std::fs::write(&registry, contents).unwrap();
+
+        let message = config_error_message(OmpIntegration.install(&make_ctx(&home)).unwrap_err());
+
+        assert!(message.contains("OMP profile registry"), "{message}");
+        assert_eq!(std::fs::read_to_string(&registry).unwrap(), contents);
+        assert!(!agent_dir.exists());
+    }
+}
+
+fn omp_has_tokensave(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .is_some_and(|config| config.pointer("/mcpServers/tokensave").is_some())
 }
 
 #[test]
