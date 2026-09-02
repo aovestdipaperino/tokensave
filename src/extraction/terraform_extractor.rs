@@ -56,7 +56,7 @@ impl TerraformExtractor {
         file_id: &str,
         file_path: &str,
     ) {
-        if node.kind() == "block" {
+        if node.kind() == "block" && node.start_position().column == 0 {
             Self::emit_block(state, node, file_id, file_path);
         }
         let mut cursor = node.walk();
@@ -142,12 +142,14 @@ impl TerraformExtractor {
                     if child.kind() == "attribute" {
                         let prefix = (block_type == "locals").then_some("local");
                         Self::emit_attribute(state, child, &id, &qualified_name, prefix);
-                        Self::collect_references(state, child, &id);
                     }
                     if !cursor.goto_next_sibling() {
                         break;
                     }
                 }
+            }
+            if !block.has_error() {
+                Self::collect_references(state, body, &id);
             }
         }
     }
@@ -272,13 +274,13 @@ impl TerraformExtractor {
             [root, name, ..] if root == "var" => Some(format!("var.{name}")),
             [root, name, ..] if root == "local" => Some(format!("local.{name}")),
             [root, name, ..] if root == "module" => Some(format!("module.{name}")),
+            [root, name, ..] if root == "output" => Some(format!("output.{name}")),
             [root, kind, name, ..] if root == "data" => Some(format!("data.{kind}.{name}")),
             [kind, name, ..]
-                if kind.contains('_')
-                    && !matches!(
-                        kind.as_str(),
-                        "path" | "terraform" | "count" | "each" | "self"
-                    ) =>
+                if !matches!(
+                    kind.as_str(),
+                    "path" | "terraform" | "count" | "each" | "self"
+                ) =>
             {
                 Some(format!("resource.{kind}.{name}"))
             }

@@ -1,5 +1,7 @@
 use tempfile::TempDir;
 use tokensave::db::Database;
+#[cfg(feature = "lang-terraform")]
+use tokensave::extraction::{LanguageExtractor, TerraformExtractor};
 use tokensave::resolution::ReferenceResolver;
 use tokensave::types::*;
 
@@ -109,6 +111,57 @@ async fn test_resolve_exact_name_match() {
         resolved.target_node_id,
         generate_node_id("src/utils.rs", &NodeKind::Function, "helper", 1),
     );
+}
+
+#[cfg(feature = "lang-terraform")]
+#[tokio::test]
+async fn terraform_canonical_uses_resolve_to_full_declaration_names() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .expect("failed to init db");
+    let declarations = TerraformExtractor.extract(
+        "decls.tf",
+        r#"
+variable "region" {}
+locals { tags = {} }
+data "aws_ami" "base" {}
+resource "random" "pet" {}
+module "network" { source = "./network" }
+output "shared" { value = "declared" }
+"#,
+    );
+    let references = TerraformExtractor.extract(
+        "refs.tf",
+        r#"
+resource "aws_instance" "web" {
+  region = var.region
+  tags = local.tags
+  ami = data.aws_ami.base.id
+  pet = random.pet.id
+  subnet = module.network.subnet_id
+  shared = output.shared
+}
+"#,
+    );
+
+    for node in declarations.nodes.iter().chain(&references.nodes) {
+        db.insert_node(node).await.expect("failed to insert node");
+    }
+    let all_nodes = db.get_all_nodes().await.expect("failed to load nodes");
+    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+
+    assert_eq!(references.unresolved_refs.len(), 6);
+    for reference in &references.unresolved_refs {
+        let resolved = resolver
+            .resolve_one(reference)
+            .unwrap_or_else(|| panic!("failed to resolve {}", reference.reference_name));
+        let target = all_nodes
+            .iter()
+            .find(|node| node.id == resolved.target_node_id)
+            .expect("resolved target is missing");
+        assert_eq!(target.name, reference.reference_name);
+    }
 }
 
 #[tokio::test]

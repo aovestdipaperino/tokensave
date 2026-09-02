@@ -141,7 +141,9 @@ resource "aws_instance" "web" {
   subnet_id  = module.network.subnet_id
   tags       = local.tags
   peer       = aws_instance.peer.id
+  pet        = random.pet.id
   region     = var.region
+  shared     = output.shared
   item_count = length(var.items)
   path       = path.module
   workspace  = terraform.workspace
@@ -171,7 +173,9 @@ resource "aws_instance" "web" {
             "data.aws_ami.base",
             "local.tags",
             "module.network",
+            "output.shared",
             "resource.aws_instance.peer",
+            "resource.random.pet",
             "var.from_template",
             "var.items",
             "var.region",
@@ -184,11 +188,33 @@ resource "aws_instance" "web" {
 }
 
 #[test]
+fn collects_references_from_nested_blocks() {
+    let result = extract(
+        "main.tf",
+        r#"
+resource "null_resource" "example" {
+  provisioner "local-exec" {
+    command = module.network.command
+  }
+}
+"#,
+    );
+
+    assert!(result
+        .unresolved_refs
+        .iter()
+        .any(|reference| reference.reference_name == "module.network"));
+}
+
+#[test]
 fn keeps_valid_neighboring_blocks_when_input_is_malformed() {
     let result = extract(
         "main.tf",
         r#"
 resource "broken" {
+  module "fake" {
+    source = "./fake"
+  }
   value =
 }
 
@@ -203,4 +229,5 @@ output "ok" {
         .unresolved_refs
         .iter()
         .any(|reference| reference.reference_name == "var.region"));
+    assert!(!result.nodes.iter().any(|node| node.name == "module.fake"));
 }

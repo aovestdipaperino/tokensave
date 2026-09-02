@@ -235,6 +235,7 @@ fn lang_from_path(path: &str) -> &'static str {
         "pl" | "pm" => "perl",
         "sh" | "bash" => "bash",
         "nix" => "nix",
+        "tf" | "tfvars" => "terraform",
         "zig" => "zig",
         "proto" => "proto",
         _ => "unknown",
@@ -507,6 +508,16 @@ impl<'a> ReferenceResolver<'a> {
             && (uref.reference_name.contains('.') || uref.reference_name.contains("::"))
         {
             return self.try_ruby_receiver_match(uref);
+        }
+
+        // Terraform `Uses` references are canonical declaration addresses, not
+        // receiver calls. Preserve the whole dotted name so `var.region` cannot
+        // fall back to an unrelated `region` attribute.
+        if uref.reference_kind == EdgeKind::Uses
+            && lang_from_path(&uref.file_path) == "terraform"
+            && uref.reference_name.contains('.')
+        {
+            return self.try_exact_name_match(uref);
         }
 
         // Strategy 1: qualified name match (`::`-separated paths, e.g. Rust's
