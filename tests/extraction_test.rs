@@ -360,6 +360,18 @@ fn test_language_registry_supported_extensions() {
     assert!(exts.contains(&"cjs"));
     assert!(exts.contains(&"mts"));
     assert!(exts.contains(&"cts"));
+    #[cfg(feature = "lang-terraform")]
+    {
+        // #495: Terraform/OpenTofu configurations and variable assignments.
+        assert!(exts.contains(&"tf"));
+        assert!(exts.contains(&"tfvars"));
+        assert_eq!(
+            registry
+                .extractor_for_language("Terraform")
+                .map(|extractor| extractor.language_name()),
+            Some("Terraform")
+        );
+    }
     // #262: Minecraft datapack functions.
     #[cfg(feature = "lang-mcfunction")]
     assert!(exts.contains(&"mcfunction"));
