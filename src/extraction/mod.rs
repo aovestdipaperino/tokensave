@@ -106,6 +106,8 @@ mod r_extractor;
 mod sql_extractor;
 #[cfg(feature = "lang-systemverilog")]
 mod systemverilog_extractor;
+#[cfg(feature = "lang-terraform")]
+mod terraform_extractor;
 #[cfg(feature = "lang-toml")]
 mod toml_extractor;
 #[cfg(feature = "lang-wgsl")]
@@ -217,6 +219,8 @@ pub use r_extractor::RExtractor;
 pub use sql_extractor::SqlExtractor;
 #[cfg(feature = "lang-systemverilog")]
 pub use systemverilog_extractor::SystemVerilogExtractor;
+#[cfg(feature = "lang-terraform")]
+pub use terraform_extractor::TerraformExtractor;
 #[cfg(feature = "lang-toml")]
 pub use toml_extractor::TomlExtractor;
 #[cfg(feature = "lang-wgsl")]
@@ -365,6 +369,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(LeanExtractor));
         #[cfg(feature = "lang-toml")]
         extractors.push(Box::new(TomlExtractor));
+        #[cfg(feature = "lang-terraform")]
+        extractors.push(Box::new(TerraformExtractor));
         #[cfg(feature = "lang-gdscript")]
         extractors.push(Box::new(GdScriptExtractor));
         #[cfg(feature = "lang-mcfunction")]

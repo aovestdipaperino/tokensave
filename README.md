@@ -911,6 +911,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
 | F* | `.fst`, `.fsti` | `lang-fstar` |
 | Quint | `.qnt` | `lang-quint` |
+| Terraform | `.tf`, `.tfvars` | `lang-terraform` |
 | TOML | `.toml` | `lang-toml` |
 | Lean | `.lean` | `lang-lean` |
 
