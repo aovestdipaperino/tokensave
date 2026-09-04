@@ -1558,12 +1558,8 @@ impl McpServer {
                 self.cg.report_savings(),
                 &self.sibling_projects,
             )),
-            "initialized" => {
-                // Notification - no response required
-                None
-            }
-            "notifications/initialized" => {
-                // Alternative notification path - no response required
+            "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
+                // Known notifications - no response required
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id)),
@@ -1574,11 +1570,19 @@ impl McpServer {
                     .await,
             ),
             "ping" | "logging/setLevel" => Some(JsonRpcResponse::success(id, json!({}))),
-            _ => Some(JsonRpcResponse::error(
-                id,
-                ErrorCode::MethodNotFound,
-                format!("method not found: {}", request.method),
-            )),
+            _ => {
+                if request.is_notification() {
+                    // JSON-RPC 2.0 §4.1: The server MUST NOT reply to a notification,
+                    // including those with unhandled methods.
+                    None
+                } else {
+                    Some(JsonRpcResponse::error(
+                        id,
+                        ErrorCode::MethodNotFound,
+                        format!("method not found: {}", request.method),
+                    ))
+                }
+            }
         };
 
         // Track errors
