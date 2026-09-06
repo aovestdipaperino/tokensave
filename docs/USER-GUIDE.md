@@ -998,13 +998,13 @@ under-count rather than an over-claim:
 - Bash-based navigation (`grep`, `find`, `cat`, `rg`) is invisible here. Only
   the literal tool name `Bash` is recorded, never the command text, so those
   turns are not counted at all.
-- Turns ingested before tokensave 7.12.0 carry no measured result size and
+- Turns ingested before tokensave 7.11.1 carry no measured result size and
   contribute nothing. The figure comes from transcript lines the database does
   not keep, so it is not backfilled; a range reaching back before you upgraded
   will say so rather than printing a bare zero.
 - Only Claude Code turns are analyzed.
 
-Before 7.12.0 the addressable column summed a turn's `input_tokens`, which
+Before 7.11.1 the addressable column summed a turn's `input_tokens`, which
 under prompt caching is only the uncached remainder of the prompt — a
 single-digit figure per turn that had nothing to do with what a `Read` put into
 the conversation (#474).
