@@ -963,6 +963,54 @@ Discovery and analysis tools are read-only and safe to call in parallel. Session
 
 ---
 
+## Finding missed opportunities: `tokensave discover`
+
+`tokensave discover` looks back over ingested Claude Code turns and reports
+navigation a graph query could have served more cheaply.
+
+```bash
+tokensave discover                 # last 30 days
+tokensave discover --since 7d      # today, 7d, 30d, month, all
+tokensave discover --json
+```
+
+A turn is counted only when **every** tool it used was `Read`, `Grep` or
+`Glob`. A turn that also edited a file, ran Bash or delegated to an agent is
+left out entirely, so an edit turn's cost is never attributed to navigation.
+Turns are bucketed by the strongest signal present, `Grep` over `Glob` over
+`Read`, and each bucket names the tokensave query that would have answered the
+same question.
+
+### Reading the two token columns
+
+**Addressable** is the size of the tool results those turns injected into the
+conversation — the text a graph query could have returned more compactly. It is
+measured from the transcript, per `tool_result` block.
+
+**Recoverable** is half of that, and is a deliberately conservative lower
+bound rather than a measurement. A graph query is not free: it returns a
+compact slice where a `Read` returned a whole file, so it replaces most of the
+payload rather than all of it.
+
+Three limits are worth knowing, because each one makes the report an
+under-count rather than an over-claim:
+
+- Bash-based navigation (`grep`, `find`, `cat`, `rg`) is invisible here. Only
+  the literal tool name `Bash` is recorded, never the command text, so those
+  turns are not counted at all.
+- Turns ingested before tokensave 7.12.0 carry no measured result size and
+  contribute nothing. The figure comes from transcript lines the database does
+  not keep, so it is not backfilled; a range reaching back before you upgraded
+  will say so rather than printing a bare zero.
+- Only Claude Code turns are analyzed.
+
+Before 7.12.0 the addressable column summed a turn's `input_tokens`, which
+under prompt caching is only the uncached remainder of the prompt — a
+single-digit figure per turn that had nothing to do with what a `Read` put into
+the conversation (#474).
+
+---
+
 ## Supported Languages
 
 Tokensave supports more than 50 languages, organized into three tiers. Each tier includes all the languages from the tier below it. See the README for the full table with file extensions and feature flags.

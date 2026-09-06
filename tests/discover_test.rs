@@ -34,6 +34,22 @@ fn turn(id: &str, ts: u64, input: u64, tool_names: &str) -> CostTurn {
     }
 }
 
+/// Inserts a turn and records the tool-result size the analyzer reads.
+///
+/// The size no longer comes from `input_tokens` (#474): it is the measured
+/// text those tools injected, accumulated onto the turn after insertion the
+/// way the transcript parser does it, since a tool result arrives in a later
+/// line than the call it answers.
+async fn seed(db: &GlobalDb, id: &str, ts: u64, result_tokens: u64, tool_names: &str) -> bool {
+    let inserted = db
+        .insert_turn(&turn(id, ts, result_tokens, tool_names))
+        .await;
+    if inserted && result_tokens > 0 {
+        db.add_tool_result_tokens(id, result_tokens).await;
+    }
+    inserted
+}
+
 #[tokio::test]
 async fn analyzer_buckets_seeded_turns() {
     let tmp = TempDir::new().unwrap();
@@ -41,21 +57,15 @@ async fn analyzer_buckets_seeded_turns() {
 
     let base: u64 = 1_715_000_000;
     // Replaceable navigation turns.
-    assert!(db.insert_turn(&turn("m1", base, 1000, "Read")).await);
-    assert!(db.insert_turn(&turn("m2", base + 1, 2000, "Read")).await);
-    assert!(db.insert_turn(&turn("m3", base + 2, 5000, "Grep")).await);
-    assert!(db.insert_turn(&turn("m4", base + 3, 900, "Glob")).await);
-    assert!(
-        db.insert_turn(&turn("m5", base + 4, 1500, "Read,Grep"))
-            .await
-    ); // -> Grep
-       // Non-navigation / mixed turns that must NOT be counted.
-    assert!(
-        db.insert_turn(&turn("m6", base + 5, 9999, "Read,Edit"))
-            .await
-    );
-    assert!(db.insert_turn(&turn("m7", base + 6, 9999, "Bash")).await);
-    assert!(db.insert_turn(&turn("m8", base + 7, 9999, "")).await);
+    assert!(seed(&db, "m1", base, 1000, "Read").await);
+    assert!(seed(&db, "m2", base + 1, 2000, "Read").await);
+    assert!(seed(&db, "m3", base + 2, 5000, "Grep").await);
+    assert!(seed(&db, "m4", base + 3, 900, "Glob").await);
+    assert!(seed(&db, "m5", base + 4, 1500, "Read,Grep").await); // -> Grep
+                                                                 // Non-navigation / mixed turns that must NOT be counted.
+    assert!(seed(&db, "m6", base + 5, 9999, "Read,Edit").await);
+    assert!(seed(&db, "m7", base + 6, 9999, "Bash").await);
+    assert!(seed(&db, "m8", base + 7, 9999, "").await);
 
     let rows = db.nav_turns_since(0).await;
     assert_eq!(rows.len(), 8, "all 8 turns fetched");
@@ -93,11 +103,8 @@ async fn since_filter_restricts_window_and_estimate_is_monotonic() {
     let db = open_isolated_db(&tmp).await;
 
     let base: u64 = 1_715_000_000;
-    assert!(db.insert_turn(&turn("old", base, 1000, "Read")).await);
-    assert!(
-        db.insert_turn(&turn("new", base + 10_000, 4000, "Grep"))
-            .await
-    );
+    assert!(seed(&db, "old", base, 1000, "Read").await);
+    assert!(seed(&db, "new", base + 10_000, 4000, "Grep").await);
 
     // Full window sees both turns.
     let full = discover::analyze(&db.nav_turns_since(0).await);
