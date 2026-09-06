@@ -68,6 +68,10 @@ static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
     map.insert("hlsl", tree_sitter_hlsl::LANGUAGE_HLSL.into());
     #[cfg(feature = "lang-systemverilog")]
     map.insert("systemverilog", tree_sitter_systemverilog::LANGUAGE.into());
+    #[cfg(feature = "lang-html")]
+    map.insert("html", tree_sitter_html::LANGUAGE.into());
+    #[cfg(feature = "lang-css")]
+    map.insert("css", tree_sitter_css::LANGUAGE.into());
 
     map
 });
@@ -121,6 +125,13 @@ mod tests {
             super::LANGUAGES.get("gdscript").is_some(),
             "gdscript grammar missing"
         );
+        #[cfg(feature = "lang-html")]
+        assert!(
+            super::LANGUAGES.get("html").is_some(),
+            "html grammar missing"
+        );
+        #[cfg(feature = "lang-css")]
+        assert!(super::LANGUAGES.get("css").is_some(), "css grammar missing");
         let missing: Vec<&str> = keys
             .iter()
             .copied()

@@ -497,8 +497,8 @@ is ignored in this list, so it cannot be used to stop a language being parsed.
 The list also decides what **literal search can look inside** (#442). A literal
 (`literal: true`) search over `tokensave_search` reads bytes rather than
 symbols, so it needs no parser -- but it iterates the indexed files, so it can
-only reach a file the index holds a row for. A tracked `.html` template or
-`.css` stylesheet has neither an extractor nor a default artifact entry, so its
+only reach a file the index holds a row for. A tracked `.rst` document or
+`.tmpl` template has neither an extractor nor a default artifact entry, so its
 matches are missing; add the extension here and run `tokensave sync -f` and its
 lines are searched like any other, reported with `enclosing: null` since there
 is no symbol context. A literal response that could not reach every tracked
@@ -914,6 +914,8 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Terraform | `.tf`, `.tfvars` | `lang-terraform` |
 | TOML | `.toml` | `lang-toml` |
 | Lean | `.lean` | `lang-lean` |
+| HTML | `.html`, `.htm` | `lang-html` |
+| CSS | `.css` | `lang-css` |
 
 Individual languages can also be cherry-picked without a full tier:
 
@@ -922,6 +924,8 @@ cargo install tokensave --no-default-features --features lang-nix,lang-bash
 ```
 
 All extractors share the same depth: functions, classes, methods, fields, imports, call graphs, inheritance chains, docstrings, complexity metrics, decorator/annotation extraction, and cross-file dependency tracking.
+
+HTML and CSS are the exception, because neither language has callable symbols. HTML records elements carrying an `id`, custom elements, and the stylesheets and scripts a page pulls in; CSS records class and id selectors, custom properties, `@keyframes` names, and `@import`s. Neither resolves a `class="..."` attribute to a stylesheet rule: class names are ordinary words, and matching them by bare name across a whole project invents edges rather than finding them.
 
 ---
 
