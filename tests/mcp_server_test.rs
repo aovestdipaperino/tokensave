@@ -586,6 +586,70 @@ async fn test_notifications_initialized() {
     );
 }
 
+#[tokio::test]
+async fn test_notifications_roots_list_changed() {
+    let (_dir, server) = setup_server().await;
+    // Send "notifications/roots/list_changed" notification (no id), then ping.
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("notifications/roots/list_changed"),
+            jsonrpc_request(json!(4), "ping", json!({})),
+        ],
+    )
+    .await;
+
+    // The notification should produce no response; we should only get the ping response.
+    assert_eq!(
+        responses.len(),
+        1,
+        "expected only 1 response, got: {responses:?}"
+    );
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 4);
+    assert!(resp["error"].is_null(), "ping should succeed");
+}
+
+#[tokio::test]
+async fn test_unhandled_notification_produces_no_response() {
+    let (_dir, server) = setup_server().await;
+    // Send unknown notification methods without id, then ping.
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("notifications/unknown_future_event"),
+            jsonrpc_notification("custom/unhandled_event"),
+            jsonrpc_request(json!(5), "ping", json!({})),
+        ],
+    )
+    .await;
+
+    // Notifications must be silently ignored per JSON-RPC 2.0 §4.1.
+    assert_eq!(
+        responses.len(),
+        1,
+        "expected only 1 response, got: {responses:?}"
+    );
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 5);
+}
+
+#[tokio::test]
+async fn test_unhandled_request_with_id_produces_method_not_found() {
+    let (_dir, server) = setup_server().await;
+    // Send unknown method WITH an id.
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(6), "nonexistent/method", json!({}))],
+    )
+    .await;
+
+    assert_eq!(responses.len(), 1);
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 6);
+    assert_eq!(resp["error"]["code"], -32601);
+}
+
 // ---------------------------------------------------------------------------
 // 4. test_ping
 // ---------------------------------------------------------------------------

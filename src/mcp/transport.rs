@@ -21,6 +21,21 @@ pub struct JsonRpcRequest {
     pub params: Option<serde_json::Value>,
 }
 
+impl JsonRpcRequest {
+    /// Returns true if this message is a JSON-RPC notification.
+    ///
+    /// Per JSON-RPC 2.0 §4.1, a notification is a request without an `id` member
+    /// (deserialized as `Value::Null`), or an MCP notification method (e.g. prefixed
+    /// with `"notifications/"` or `"initialized"`). Servers must never send a response
+    /// to notifications.
+    #[must_use]
+    pub fn is_notification(&self) -> bool {
+        self.id.is_null()
+            || self.method.starts_with("notifications/")
+            || self.method == "initialized"
+    }
+}
+
 /// A JSON-RPC 2.0 response sent back to the client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
@@ -291,5 +306,56 @@ mod tests {
 
         let request: JsonRpcRequest = serde_json::from_value(msg).unwrap();
         assert_eq!(request.id, serde_json::Value::String("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_is_notification() {
+        let req_with_num_id = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(1.into()),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        assert!(!req_with_num_id.is_notification());
+
+        let req_with_str_id = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::String("req-1".to_string()),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        assert!(!req_with_str_id.is_notification());
+
+        let notif_null_id = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Null,
+            method: "notifications/roots/list_changed".to_string(),
+            params: None,
+        };
+        assert!(notif_null_id.is_notification());
+
+        let notif_custom_method = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Null,
+            method: "custom/event".to_string(),
+            params: None,
+        };
+        assert!(notif_custom_method.is_notification());
+
+        let notif_with_id = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Number(2.into()),
+            method: "notifications/roots/list_changed".to_string(),
+            params: None,
+        };
+        assert!(notif_with_id.is_notification());
+
+        let notif_initialized = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::Value::Null,
+            method: "initialized".to_string(),
+            params: None,
+        };
+        assert!(notif_initialized.is_notification());
     }
 }
