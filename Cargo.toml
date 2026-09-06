@@ -54,7 +54,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-actionscript", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-cuda", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-fstar", "lang-quint", "lang-toml", "lang-terraform", "lang-lean", "lang-gdscript", "lang-xaml", "lang-mcfunction", "lang-systemverilog", "lang-canvas"]
+full = ["medium", "lang-actionscript", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-cuda", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-fstar", "lang-quint", "lang-toml", "lang-terraform", "lang-lean", "lang-gdscript", "lang-xaml", "lang-mcfunction", "lang-systemverilog", "lang-canvas", "lang-html", "lang-css"]
 
 # Language features (grammars come from tokensave-large-treesitters unless noted).
 # ActionScript is vendored; Terraform uses the direct tree-sitter-hcl dependency.
@@ -101,6 +101,8 @@ lang-fstar = []
 lang-quint = []
 lang-toml = []
 lang-terraform = ["dep:tree-sitter-hcl"]
+lang-html = ["dep:tree-sitter-html"]
+lang-css = ["dep:tree-sitter-css"]
 lang-lean = []
 lang-gdscript = []
 lang-xaml = []
@@ -158,6 +160,8 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 tree-sitter-hlsl = { version = "0.2.0", optional = true }
 tree-sitter-systemverilog = { version = "0.4", optional = true }
 tree-sitter-hcl = { version = "1.1", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"

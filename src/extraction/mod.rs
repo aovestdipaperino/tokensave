@@ -50,6 +50,8 @@ mod canvas_extractor;
 mod clojure_extractor;
 #[cfg(feature = "lang-cobol")]
 mod cobol_extractor;
+#[cfg(feature = "lang-css")]
+mod css_extractor;
 #[cfg(feature = "lang-cuda")]
 mod cuda_extractor;
 #[cfg(feature = "lang-dockerfile")]
@@ -74,6 +76,8 @@ mod gwbasic_extractor;
 mod haskell_extractor;
 #[cfg(feature = "lang-hlsl")]
 mod hlsl_extractor;
+#[cfg(feature = "lang-html")]
+mod html_extractor;
 #[cfg(feature = "lang-julia")]
 mod julia_extractor;
 #[cfg(feature = "lang-lean")]
@@ -163,6 +167,8 @@ pub use canvas_extractor::CanvasExtractor;
 pub use clojure_extractor::ClojureExtractor;
 #[cfg(feature = "lang-cobol")]
 pub use cobol_extractor::CobolExtractor;
+#[cfg(feature = "lang-css")]
+pub use css_extractor::CssExtractor;
 #[cfg(feature = "lang-cuda")]
 pub use cuda_extractor::CudaExtractor;
 #[cfg(feature = "lang-dockerfile")]
@@ -187,6 +193,8 @@ pub use gwbasic_extractor::GwBasicExtractor;
 pub use haskell_extractor::HaskellExtractor;
 #[cfg(feature = "lang-hlsl")]
 pub use hlsl_extractor::HlslExtractor;
+#[cfg(feature = "lang-html")]
+pub use html_extractor::HtmlExtractor;
 #[cfg(feature = "lang-julia")]
 pub use julia_extractor::JuliaExtractor;
 #[cfg(feature = "lang-lean")]
@@ -371,6 +379,10 @@ impl LanguageRegistry {
         extractors.push(Box::new(TomlExtractor));
         #[cfg(feature = "lang-terraform")]
         extractors.push(Box::new(TerraformExtractor));
+        #[cfg(feature = "lang-html")]
+        extractors.push(Box::new(HtmlExtractor));
+        #[cfg(feature = "lang-css")]
+        extractors.push(Box::new(CssExtractor));
         #[cfg(feature = "lang-gdscript")]
         extractors.push(Box::new(GdScriptExtractor));
         #[cfg(feature = "lang-mcfunction")]
