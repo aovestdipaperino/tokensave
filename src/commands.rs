@@ -118,8 +118,30 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             meta.add_branch(&branch_name, &db_file, &parent);
             branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
 
+            // A sync reads the working directory, so it can only speak for the
+            // branch that is actually checked out. Adding some *other* branch
+            // used to call `TokenSave::open`, which resolves the DB for HEAD:
+            // the new branch's DB stayed a bare copy of the parent while the
+            // working tree — including files that exist on no branch at all —
+            // was written into the *current* branch's DB (#501). When the
+            // target is not checked out, the copy of the parent is the honest
+            // answer, and the `post-checkout` hook refreshes it on arrival.
+            let checked_out = branch::current_branch(&project_path);
+            if checked_out.as_deref() != Some(branch_name.as_str()) {
+                spinner.done(&format!(
+                    "branch '{branch_name}' tracked — copied from '{parent}'"
+                ));
+                eprintln!(
+                    "Not checked out, so nothing was indexed from the working tree. \
+                     Check it out and run `tokensave sync` to bring it up to date."
+                );
+                return Ok(());
+            }
+
             // Run incremental sync (hash-based delta) against the new branch DB
             spinner.set_message("syncing changes");
+            // Safe now: the guard above established that HEAD is this branch,
+            // so `open` resolves to the DB just registered for it.
             let cg = TokenSave::open(&project_path).await?;
             let result = cg.sync().await?;
 
@@ -211,21 +233,28 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 return Ok(());
             };
 
+            // Ask git which branches exist rather than probing for
+            // `.git/refs/heads/<name>` on disk (#501). That probe finds
+            // nothing inside a linked worktree, where `.git` is a file, and
+            // nothing in a `reftable` repository, which keeps no loose refs —
+            // so every tracked branch looked stale and its live DB was
+            // deleted. Refuse to delete anything when the refs cannot be
+            // read: not knowing is not the same as knowing they are gone.
+            let Some(live) = branch::local_branches(&project_path) else {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "cannot list branches in '{}' — refusing to delete any branch DB",
+                        project_path.display()
+                    ),
+                });
+            };
+
             // Find branches in metadata that no longer exist in git
             let stale: Vec<String> = meta
                 .branches
                 .keys()
                 .filter(|name| *name != &meta.default_branch)
-                .filter(|name| {
-                    let ref_path = project_path.join(format!(".git/refs/heads/{name}"));
-                    let packed = project_path.join(".git/packed-refs");
-                    let suffix = format!("refs/heads/{name}");
-                    let in_packed = packed.exists()
-                        && std::fs::read_to_string(&packed)
-                            .map(|c| c.lines().any(|line| line.ends_with(&suffix)))
-                            .unwrap_or(false);
-                    !ref_path.exists() && !in_packed
-                })
+                .filter(|name| !live.contains(name.as_str()))
                 .cloned()
                 .collect();
 

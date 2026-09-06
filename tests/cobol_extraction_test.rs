@@ -248,3 +248,57 @@ fn test_cobol_language_name() {
     let extractor = CobolExtractor;
     assert_eq!(extractor.language_name(), "COBOL");
 }
+
+/// A final line of one to five characters used to hang the grammar (#498).
+///
+/// Without the sequence-area padding this test does not fail, it never
+/// returns: tree-sitter spins on the CPU and only the extraction worker's
+/// 60-second watchdog stops it, in a subprocess this test does not use.
+#[test]
+fn short_final_line_does_not_hang_the_grammar() {
+    let base = "IDENTIFICATION DIVISION.\nPROGRAM-ID. HELLO.\nPROCEDURE DIVISION.\n    DISPLAY \"HI\".\n    STOP RUN.\n";
+    let extractor = CobolExtractor;
+
+    for tail in [
+        "a",
+        "ab",
+        "abc",
+        "abcd",
+        "abcde",
+        "a\n",
+        "abcde\n",
+        "a\r\n",
+        "abcde\r\n",
+    ] {
+        let started = std::time::Instant::now();
+        let result = extractor.extract("t.cob", &format!("{base}{tail}"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "extraction of a {:?} final line took {:?}",
+            tail,
+            started.elapsed()
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == NodeKind::File),
+            "the file should still be extracted with a {tail:?} final line"
+        );
+    }
+}
+
+/// The padding must not disturb an ordinary file: a final line of six or more
+/// characters is already fine, and a short line anywhere but the end never
+/// triggered the pathology.
+#[test]
+fn padding_leaves_ordinary_sources_untouched() {
+    let extractor = CobolExtractor;
+    let long_tail =
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. HELLO.\nPROCEDURE DIVISION.\n    STOP RUN.\nabcdef";
+    let short_middle =
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. HELLO.\nab\nPROCEDURE DIVISION.\n    STOP RUN.\n";
+
+    for source in [long_tail, short_middle] {
+        let result = extractor.extract("t.cob", source);
+        assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+}

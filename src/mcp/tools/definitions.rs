@@ -160,7 +160,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_callees()),
         graph_scoped(def_impact()),
         graph_scoped(def_node()),
-        def_status(),
+        graph_scoped(def_status()),
         graph_scoped(def_files()),
         def_affected(),
         graph_scoped(def_dead_code()),
@@ -2688,6 +2688,7 @@ mod tests {
             "tokensave_callees",
             "tokensave_impact",
             "tokensave_node",
+            "tokensave_status",
             "tokensave_files",
             "tokensave_dead_code",
             "tokensave_ambiguous_calls",
@@ -2769,7 +2770,6 @@ mod tests {
             "tokensave_session_end",
             "tokensave_session_recall",
             "tokensave_session_start",
-            "tokensave_status",
             "tokensave_str_replace",
         ]
         .into_iter()
@@ -2874,7 +2874,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 52);
+        assert_eq!(actual.len(), 53);
         assert_eq!(actual, canonical);
     }
 

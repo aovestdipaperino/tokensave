@@ -3566,3 +3566,57 @@ async fn test_cli_indexed_project_needs_no_forced_reindex() {
     let after = tokensave::config::load_config(project).unwrap();
     assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
 }
+
+/// `tokensave_status` accepts a graph selector — #500.
+///
+/// Status was classified selector-less, so an agent that had just selected
+/// another project's graph could not ask what that snapshot contained: the
+/// call came back `-32602`. The counts, sync metadata and serving branch it
+/// reports are all read from the graph it is given, so answering for a
+/// selected one needs no new plumbing. Server statistics stay local, because
+/// they describe the running process rather than the snapshot.
+#[tokio::test]
+async fn selected_status_reports_the_selected_graph() {
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+
+    let selected = call_server(
+        &server,
+        71,
+        "tokensave_status",
+        json!({ "graph_root": foreign_dir.path().display().to_string() }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
+
+    let text = response_text(&selected);
+    let foreign_root = foreign_dir.path().canonicalize().unwrap();
+    assert!(
+        text.contains(&foreign_root.display().to_string()),
+        "status should describe the selected project: {text}"
+    );
+    assert!(
+        !text.contains(
+            &local_dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        ),
+        "status must not describe the local project: {text}"
+    );
+    assert_eq!(selected["result"]["_meta"]["tokensave"]["selected"], true);
+
+    // The local call still answers for the server's own project.
+    let local_status = call_server(&server, 72, "tokensave_status", json!({})).await;
+    assert!(local_status["error"].is_null(), "{local_status}");
+    let local_text = response_text(&local_status);
+    assert!(
+        !local_text.contains(&foreign_root.display().to_string()),
+        "an unselected status must still answer for the local project: {local_text}"
+    );
+    let _ = local_dir;
+}

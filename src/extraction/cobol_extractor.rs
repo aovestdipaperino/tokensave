@@ -40,6 +40,8 @@ impl CobolExtractor {
     /// `source` is the COBOL source code to parse.
     pub fn extract_cobol(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+        let padded = Self::pad_short_final_line(source);
+        let source = padded.as_ref();
         let mut state = ExtractionState::new(file_path, source);
 
         let tree = match Self::parse_source(source) {
@@ -92,6 +94,56 @@ impl CobolExtractor {
         state.node_stack.pop();
 
         state.build_result(start)
+    }
+
+    /// Width of the COBOL fixed-format sequence area, columns 1 through 6.
+    const SEQUENCE_AREA_WIDTH: usize = 6;
+
+    /// Pads a final line of one to five characters out to six with spaces.
+    ///
+    /// The COBOL grammar does not terminate on a file whose last line is that
+    /// short (#498): it spins on the CPU indefinitely, and the only thing that
+    /// ever stopped it was the extraction worker's 60-second watchdog, which
+    /// then discarded the file and respawned the worker. A minute per file, on
+    /// `.cob`, `.cbl` and `.cpy` alike — and `.cpy` copybooks are fragments,
+    /// so an odd final line is likeliest exactly there.
+    ///
+    /// Six is not a guess. Columns 1-6 are the fixed-format sequence area, and
+    /// the boundary measured on the grammar sits exactly there: one to five
+    /// characters hangs, six or more parses in microseconds, with or without a
+    /// trailing newline. A short line *anywhere else* in the file is fine, so
+    /// only the last one is touched.
+    ///
+    /// The padding is trailing whitespace on the final line, which COBOL
+    /// ignores, and it is appended at the very end — so every byte offset in
+    /// the real source is unchanged and the padded text is what the extraction
+    /// state indexes, keeping the two in agreement.
+    ///
+    /// Borrowed when nothing needs doing, which is every ordinary file.
+    fn pad_short_final_line(source: &str) -> std::borrow::Cow<'_, str> {
+        // The last *content* line, which is not the text after the last
+        // newline: a file ending "a\n" has a final line of "a" and hangs just
+        // as one ending in a bare "a" does. Everything from that line's end
+        // onward — the trailing newline, and a `\r` before it — is kept and
+        // re-appended after the padding, so a CRLF file stays CRLF.
+        let body = source
+            .strip_suffix('\n')
+            .map_or(source, |b| b.strip_suffix('\r').unwrap_or(b));
+        let terminator = &source[body.len()..];
+
+        let final_line = body.rsplit('\n').next().unwrap_or("");
+        let width = final_line.chars().count();
+        if width == 0 || width >= Self::SEQUENCE_AREA_WIDTH {
+            return std::borrow::Cow::Borrowed(source);
+        }
+
+        let mut padded = String::with_capacity(source.len() + Self::SEQUENCE_AREA_WIDTH);
+        padded.push_str(body);
+        for _ in width..Self::SEQUENCE_AREA_WIDTH {
+            padded.push(' ');
+        }
+        padded.push_str(terminator);
+        std::borrow::Cow::Owned(padded)
     }
 
     /// Parse source code into a tree-sitter AST.

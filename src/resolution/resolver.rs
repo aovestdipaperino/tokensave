@@ -532,7 +532,7 @@ impl<'a> ReferenceResolver<'a> {
                 .rsplit("::")
                 .next()
                 .unwrap_or(&uref.reference_name);
-            if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name) {
+            if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name, false) {
                 return Some(resolved);
             }
             return None;
@@ -562,7 +562,7 @@ impl<'a> ReferenceResolver<'a> {
                 .next()
                 .unwrap_or(&uref.reference_name);
             if simple_name != uref.reference_name {
-                if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name) {
+                if let Some(resolved) = self.try_exact_name_match_simple(uref, simple_name, true) {
                     return Some(resolved);
                 }
             }
@@ -956,7 +956,12 @@ impl<'a> ReferenceResolver<'a> {
             // Cache the filtered subset in a local Vec so the downstream
             // helpers see the same shape. Allocating here only on the
             // shrunk path keeps the happy path zero-copy.
-            return resolve_from_filtered(uref, &kind_filtered, &self.import_index);
+            return resolve_from_filtered(
+                uref,
+                &kind_filtered,
+                &self.import_index,
+                &self.node_id_cache,
+            );
         };
 
         if candidates.len() == 1 {
@@ -997,6 +1002,7 @@ impl<'a> ReferenceResolver<'a> {
         &self,
         uref: &UnresolvedRef,
         simple_name: &str,
+        require_reachable: bool,
     ) -> Option<ResolvedRef> {
         if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
             let candidates = self.name_cache.get(simple_name)?;
@@ -1036,10 +1042,22 @@ impl<'a> ReferenceResolver<'a> {
                 &kind_filtered,
                 "simple-name-match",
                 &self.import_index,
+                require_reachable,
+                &self.node_id_cache,
             );
         };
 
         if candidates.len() == 1 {
+            if require_reachable
+                && !is_plausibly_reachable(
+                    uref,
+                    candidates[0],
+                    &self.import_index,
+                    &self.node_id_cache,
+                )
+            {
+                return None;
+            }
             let ref_lang = lang_from_path(&uref.file_path);
             let candidate_lang = lang_from_path(&candidates[0].file_path);
             let confidence = if ref_lang != "unknown"
@@ -1322,12 +1340,104 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
 /// candidate list to a strict subset of `name_cache`. Mirrors the
 /// single-candidate / multi-candidate branches of
 /// `try_exact_name_match` but operates on the borrowed slice.
-fn resolve_from_filtered(
+fn resolve_from_filtered<'a>(
     uref: &UnresolvedRef,
     kind_filtered: &[&Node],
     import_index: &HashMap<String, HashSet<String>>,
+    node_by_id: &HashMap<&'a str, &'a Node>,
 ) -> Option<ResolvedRef> {
-    resolve_from_filtered_named(uref, kind_filtered, "exact-match", import_index)
+    resolve_from_filtered_named(
+        uref,
+        kind_filtered,
+        "exact-match",
+        import_index,
+        false,
+        node_by_id,
+    )
+}
+
+/// Whether a lone candidate is plausibly visible from the call site.
+///
+/// This governs the dotted-receiver fallback only — `recv.method()` in a
+/// dynamically typed language, where the receiver's type is not tracked and
+/// the resolver has nothing to go on but the method name. Being the only
+/// symbol in the project with that name is *not* evidence of a match: nothing
+/// checked that the call site can reach it (#503, the #378 defect in Python).
+///
+/// The failure is quiet and it has a direction. Test doubles are deliberately
+/// named after the API they stand in for, so a fake logger defines `info` and
+/// a faithful fake of a UI toolkit defines `after`, `delete` and `grid` —
+/// exactly the names production code calls on untracked receivers. Production
+/// code then binds to the test tree, and every consumer of `calls` inherits
+/// it: `circular` reports one strongly-connected component spanning production
+/// and tests, `dead_code` sees a phantom caller and calls live code reachable,
+/// `impact` and `file_dependents` report modules as depending on test files.
+///
+/// Evidence means one of: the candidate is in the caller's own file; it sits
+/// in the same directory, which is one package in every language this path
+/// serves; the caller imports its name; or the caller imports the module it
+/// lives in. Anything else declines, and a declined reference is simply
+/// unresolved — a missing edge degrades an answer, a fabricated one corrupts
+/// it.
+fn is_plausibly_reachable(
+    uref: &UnresolvedRef,
+    candidate: &Node,
+    import_index: &HashMap<String, HashSet<String>>,
+    node_by_id: &HashMap<&str, &Node>,
+) -> bool {
+    if candidate.file_path == uref.file_path {
+        return true;
+    }
+
+    let dir_of = |path: &str| path.rfind('/').map(|i| path[..i].to_string());
+    if dir_of(&candidate.file_path) == dir_of(&uref.file_path) {
+        return true;
+    }
+
+    let Some(imports) = import_index.get(&uref.file_path) else {
+        return false;
+    };
+
+    // The index keys each import on the last `::` segment, which for a Python
+    // or JS import is the whole dotted path — `headroom.perf.analyzer` is one
+    // key, not three. So an entry matches when it equals the name outright or
+    // ends with it as a dotted segment; without the second reading, `import
+    // headroom.perf.analyzer` is not recognised as importing `analyzer` and
+    // the guard declines calls the file plainly can make.
+    let imported = |name: &str| {
+        imports
+            .iter()
+            .any(|entry| entry == name || entry.rsplit('.').next() == Some(name))
+    };
+
+    if imported(&candidate.name) {
+        return true;
+    }
+
+    // The class that owns the method is the evidence a method call actually
+    // needs: `from pkg.encoder import Encoder` then `self.enc.encode(x)`
+    // imports `Encoder`, never `encode`. Without this the guard would decline
+    // most legitimate method calls in the languages it governs — measured at
+    // 13% of all call edges on a 992-file Python project, which is far too
+    // much recall to trade for the phantoms.
+    if let Some(parent) = candidate
+        .parent_id
+        .as_deref()
+        .and_then(|id| node_by_id.get(id))
+    {
+        if imported(&parent.name) {
+            return true;
+        }
+    }
+
+    // The module the candidate lives in: `pkg/logging.py` is imported as
+    // `logging`, and the import index keys on that last segment.
+    let module = candidate
+        .file_path
+        .rsplit('/')
+        .next()
+        .and_then(|file| file.split('.').next());
+    module.is_some_and(imported)
 }
 
 fn resolve_from_filtered_named(
@@ -1335,8 +1445,15 @@ fn resolve_from_filtered_named(
     kind_filtered: &[&Node],
     resolved_by: &str,
     import_index: &HashMap<String, HashSet<String>>,
+    require_reachable: bool,
+    node_by_id: &HashMap<&str, &Node>,
 ) -> Option<ResolvedRef> {
     if kind_filtered.len() == 1 {
+        if require_reachable
+            && !is_plausibly_reachable(uref, kind_filtered[0], import_index, node_by_id)
+        {
+            return None;
+        }
         return Some(ResolvedRef {
             original: uref.clone(),
             target_node_id: kind_filtered[0].id.clone(),
