@@ -822,6 +822,18 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
         discover::RECOVERABLE_FRACTION * 100.0,
     );
 
+    // Turns ingested before #474 carry no tool-result size, so a range reaching
+    // back before the upgrade reports navigation turns worth zero tokens. Say
+    // why, or the honest "nothing measured here yet" reads as the very bug
+    // #474 reported — a figure that is implausibly small.
+    if report.total_replaceable_turns() > 0 && report.total_addressable_input_tokens() == 0 {
+        println!(
+            "  These turns were recorded before tool-result sizes were measured, so \
+             their addressable total is unknown rather than zero. Turns ingested from \
+             now on carry it."
+        );
+    }
+
     Ok(())
 }
 
