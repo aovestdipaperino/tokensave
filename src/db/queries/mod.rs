@@ -353,6 +353,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" => "GLSL",
         "qnt" => "Quint",
         "gd" => "GDScript",
+        "vhd" | "vhdl" => "VHDL",
         _ => "Other",
     }
 }

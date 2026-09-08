@@ -1570,12 +1570,12 @@ async fn test_index_all_reports_skipped_extensions() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    // Originally used `.v`, which #344 has since made a supported extension.
-    // VHDL keeps the case honest: a real hardware language with no extractor.
+    // Originally used `.v` and then `.vhd`; both have since gained an
+    // extractor. Ada keeps the case honest: a real language with no extractor.
     fs::write(project.join("README.md"), "# readme\n").unwrap();
     fs::write(
-        project.join("example.vhd"),
-        "entity example is\nend example;\n",
+        project.join("example.adb"),
+        "procedure Example is\nbegin\n   null;\nend Example;\n",
     )
     .unwrap();
 
@@ -1584,7 +1584,7 @@ async fn test_index_all_reports_skipped_extensions() {
 
     assert_eq!(
         result.skipped_extensions,
-        vec![("vhd".to_string(), 1)],
+        vec![("adb".to_string(), 1)],
         "skipped_extensions: {:?}",
         result.skipped_extensions
     );

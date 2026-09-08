@@ -114,6 +114,8 @@ mod systemverilog_extractor;
 mod terraform_extractor;
 #[cfg(feature = "lang-toml")]
 mod toml_extractor;
+#[cfg(feature = "lang-vhdl")]
+mod vhdl_extractor;
 #[cfg(feature = "lang-wgsl")]
 mod wgsl_extractor;
 #[cfg(feature = "lang-xaml")]
@@ -231,6 +233,8 @@ pub use systemverilog_extractor::SystemVerilogExtractor;
 pub use terraform_extractor::TerraformExtractor;
 #[cfg(feature = "lang-toml")]
 pub use toml_extractor::TomlExtractor;
+#[cfg(feature = "lang-vhdl")]
+pub use vhdl_extractor::VhdlExtractor;
 #[cfg(feature = "lang-wgsl")]
 pub use wgsl_extractor::WgslExtractor;
 #[cfg(feature = "lang-xaml")]
@@ -345,6 +349,8 @@ impl LanguageRegistry {
         extractors.push(Box::new(HlslExtractor));
         #[cfg(feature = "lang-systemverilog")]
         extractors.push(Box::new(SystemVerilogExtractor));
+        #[cfg(feature = "lang-vhdl")]
+        extractors.push(Box::new(VhdlExtractor));
         #[cfg(feature = "lang-cuda")]
         extractors.push(Box::new(CudaExtractor));
         #[cfg(feature = "lang-metal")]

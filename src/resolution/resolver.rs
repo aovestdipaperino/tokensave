@@ -238,6 +238,7 @@ fn lang_from_path(path: &str) -> &'static str {
         "tf" | "tfvars" => "terraform",
         "zig" => "zig",
         "proto" => "proto",
+        "vhd" | "vhdl" => "vhdl",
         _ => "unknown",
     }
 }
@@ -1295,6 +1296,17 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
     match uref.reference_kind {
         EdgeKind::Implements if lang_from_path(&uref.file_path) == "ruby" => {
             matches!(target_kind, NodeKind::Module)
+        }
+        // A VHDL architecture implements an entity, and an entity is indexed
+        // as a `Module` because an instantiation targets it (#344).
+        EdgeKind::Implements if lang_from_path(&uref.file_path) == "vhdl" => {
+            matches!(target_kind, NodeKind::Module)
+        }
+        // A VHDL `use` clause names a package. The package body is indexed as
+        // an `Impl` with the same name; left permissive, `Uses` would tie
+        // between the two and resolve to neither.
+        EdgeKind::Uses if lang_from_path(&uref.file_path) == "vhdl" => {
+            matches!(target_kind, NodeKind::Package)
         }
         EdgeKind::Implements | EdgeKind::Extends | EdgeKind::DerivesMacro => {
             matches!(

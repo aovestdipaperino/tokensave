@@ -33,7 +33,7 @@ const CODE_EXTENSIONS: &[&str] = &[
     "proto", "ps1", "psm1", "psd1", "nix", "vb", "vbs", // Full tier
     "lua", "zig", "m", "mm", "pl", "pm", "bat", "cmd", "f", "f90", "f95", "f03", "for", "ftn",
     "cbl", "cob", "cpy", "bas", // HDL
-    "v", "vh", "sv", "svh",
+    "v", "vh", "sv", "svh", "vhd", "vhdl",
 ];
 
 /// Directory basenames that we treat as "code roots" when a grep target has no
