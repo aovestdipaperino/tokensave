@@ -837,8 +837,16 @@ pub fn run_upgrade(kill: bool) -> Result<String> {
 
     eprintln!("Checking for updates...");
 
-    let latest = cloud::fetch_latest_version().ok_or_else(|| TokenSaveError::Config {
-        message: "failed to check for updates — could not reach GitHub".to_string(),
+    // Name the condition that actually holds. A release with no asset for this
+    // platform used to be reported as an unreachable network, sending people to
+    // debug a working connection (#513).
+    let latest = cloud::try_fetch_latest_version().map_err(|e| TokenSaveError::Update {
+        message: match e {
+            cloud::VersionCheckError::Unreachable { .. } => {
+                format!("failed to check for updates — {e}")
+            }
+            _ => format!("{e}. Staying on v{current}"),
+        },
     })?;
 
     let latest = match classify_upgrade(current, &latest) {
@@ -894,12 +902,12 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     eprintln!("Switching from {current_channel} to {target_channel}...");
 
     let latest = if target_is_beta {
-        cloud::fetch_latest_beta_version()
+        cloud::try_fetch_latest_beta_version()
     } else {
-        cloud::fetch_latest_stable_version()
+        cloud::try_fetch_latest_stable_version()
     }
-    .ok_or_else(|| TokenSaveError::Config {
-        message: format!("failed to find latest {target_channel} release — could not reach GitHub"),
+    .map_err(|e| TokenSaveError::Update {
+        message: format!("cannot switch to the {target_channel} channel — {e}"),
     })?;
 
     eprintln!("  Target: v{latest}");

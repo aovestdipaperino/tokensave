@@ -23,6 +23,12 @@ pub enum TokenSaveError {
     #[error("config error: {message}")]
     Config { message: String },
 
+    /// An update check or upgrade could not be completed. Distinct from
+    /// [`TokenSaveError::Config`], which implicates the user's configuration
+    /// — nothing about a missing release asset does (#513).
+    #[error("update error: {message}")]
+    Update { message: String },
+
     #[error("sync lock: {message}")]
     SyncLock { message: String },
 
@@ -106,6 +112,19 @@ mod tests {
             message: "bad value".to_string(),
         };
         assert!(err.to_string().contains("bad value"));
+    }
+
+    #[test]
+    fn update_error_display_does_not_mention_config() {
+        let err = TokenSaveError::Update {
+            message: "v7.11.1 has no asset for x86_64-windows".to_string(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("update error"), "{s}");
+        assert!(
+            !s.contains("config"),
+            "an update failure is not a config fault: {s}"
+        );
     }
 
     #[test]
