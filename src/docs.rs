@@ -77,10 +77,16 @@ pub fn sidecar_stem(path: &str) -> Option<&str> {
     if len <= SIDECAR_SUFFIX.len() {
         return None;
     }
-    let (stem, suffix) = normalized.split_at(len - SIDECAR_SUFFIX.len());
-    if !suffix.eq_ignore_ascii_case(SIDECAR_SUFFIX) {
+    // Compare the trailing bytes rather than splitting the `str` first: a
+    // multi-byte character can straddle the split point and `split_at` panics
+    // on a non-char boundary. The suffix is pure ASCII, so a byte match also
+    // proves the split point is a char boundary and the slice below is safe.
+    let split = len - SIDECAR_SUFFIX.len();
+    let bytes = normalized.as_bytes();
+    if !bytes[split..].eq_ignore_ascii_case(SIDECAR_SUFFIX.as_bytes()) {
         return None;
     }
+    let stem = &normalized[..split];
     if stem.is_empty() {
         return None;
     }

@@ -604,6 +604,28 @@ async fn test_files_flat_format() {
     assert!(text.contains("bytes"), "flat format should show byte sizes");
 }
 
+/// A valid filter that matches nothing used to hand `truncate_response` an
+/// empty string, tripping a `debug_assert` that took the whole server down in
+/// a debug build while a release build returned an empty text block (#499).
+#[tokio::test]
+async fn test_files_flat_format_with_no_matches() {
+    let (_dir, cg) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_files",
+        json!({"pattern": "**/*ROADMAP*.md", "kind": "artifact", "format": "flat"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert_eq!(
+        text, "0 indexed files",
+        "an empty flat listing should say so rather than return an empty body"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 13. tokensave_affected
 // ---------------------------------------------------------------------------

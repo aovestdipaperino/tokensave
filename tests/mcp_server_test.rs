@@ -586,6 +586,70 @@ async fn test_notifications_initialized() {
     );
 }
 
+#[tokio::test]
+async fn test_notifications_roots_list_changed() {
+    let (_dir, server) = setup_server().await;
+    // Send "notifications/roots/list_changed" notification (no id), then ping.
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("notifications/roots/list_changed"),
+            jsonrpc_request(json!(4), "ping", json!({})),
+        ],
+    )
+    .await;
+
+    // The notification should produce no response; we should only get the ping response.
+    assert_eq!(
+        responses.len(),
+        1,
+        "expected only 1 response, got: {responses:?}"
+    );
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 4);
+    assert!(resp["error"].is_null(), "ping should succeed");
+}
+
+#[tokio::test]
+async fn test_unhandled_notification_produces_no_response() {
+    let (_dir, server) = setup_server().await;
+    // Send unknown notification methods without id, then ping.
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            jsonrpc_notification("notifications/unknown_future_event"),
+            jsonrpc_notification("custom/unhandled_event"),
+            jsonrpc_request(json!(5), "ping", json!({})),
+        ],
+    )
+    .await;
+
+    // Notifications must be silently ignored per JSON-RPC 2.0 §4.1.
+    assert_eq!(
+        responses.len(),
+        1,
+        "expected only 1 response, got: {responses:?}"
+    );
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 5);
+}
+
+#[tokio::test]
+async fn test_unhandled_request_with_id_produces_method_not_found() {
+    let (_dir, server) = setup_server().await;
+    // Send unknown method WITH an id.
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(6), "nonexistent/method", json!({}))],
+    )
+    .await;
+
+    assert_eq!(responses.len(), 1);
+    let resp = parse_response(&responses[0]);
+    assert_eq!(resp["id"], 6);
+    assert_eq!(resp["error"]["code"], -32601);
+}
+
 // ---------------------------------------------------------------------------
 // 4. test_ping
 // ---------------------------------------------------------------------------
@@ -3501,4 +3565,58 @@ async fn test_cli_indexed_project_needs_no_forced_reindex() {
 
     let after = tokensave::config::load_config(project).unwrap();
     assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
+}
+
+/// `tokensave_status` accepts a graph selector — #500.
+///
+/// Status was classified selector-less, so an agent that had just selected
+/// another project's graph could not ask what that snapshot contained: the
+/// call came back `-32602`. The counts, sync metadata and serving branch it
+/// reports are all read from the graph it is given, so answering for a
+/// selected one needs no new plumbing. Server statistics stay local, because
+/// they describe the running process rather than the snapshot.
+#[tokio::test]
+async fn selected_status_reports_the_selected_graph() {
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
+    drop(foreign);
+    let server = McpServer::new(local, None).await;
+
+    let selected = call_server(
+        &server,
+        71,
+        "tokensave_status",
+        json!({ "graph_root": foreign_dir.path().display().to_string() }),
+    )
+    .await;
+    assert!(selected["error"].is_null(), "{selected}");
+
+    let text = response_text(&selected);
+    let foreign_root = foreign_dir.path().canonicalize().unwrap();
+    assert!(
+        text.contains(&foreign_root.display().to_string()),
+        "status should describe the selected project: {text}"
+    );
+    assert!(
+        !text.contains(
+            &local_dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        ),
+        "status must not describe the local project: {text}"
+    );
+    assert_eq!(selected["result"]["_meta"]["tokensave"]["selected"], true);
+
+    // The local call still answers for the server's own project.
+    let local_status = call_server(&server, 72, "tokensave_status", json!({})).await;
+    assert!(local_status["error"].is_null(), "{local_status}");
+    let local_text = response_text(&local_status);
+    assert!(
+        !local_text.contains(&foreign_root.display().to_string()),
+        "an unselected status must still answer for the local project: {local_text}"
+    );
+    let _ = local_dir;
 }

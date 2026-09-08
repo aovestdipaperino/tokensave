@@ -5,14 +5,14 @@
 //! it iterates the indexed files: a file reaches it only if the index holds a
 //! `files` row, which happens when a language extractor handles the extension
 //! or the extension is listed in `artifact_extensions` (#323). A tracked
-//! `.html` template is neither, so its matches were absent from the response
+//! `.tmpl` template is neither, so its matches were absent from the response
 //! with nothing to say so — `count` read as "these are all the occurrences",
 //! which is the reported harm: an agent told to prefer tokensave over `grep`
 //! got a confidently incomplete answer and no signal to fall back.
 //!
 //! These tests pin the signal, and pin that the remedy the signal names
 //! actually works. The reporter's own repro shape: a flag key that appears in
-//! both a `.js` source file and a `.html` template.
+//! both a `.js` source file and a `.tmpl` template.
 
 use serde_json::{json, Value};
 use std::path::Path;
@@ -54,11 +54,11 @@ async fn project_with_untracked_extensions() -> (TempDir, TokenSave) {
     )
     .unwrap();
     std::fs::write(
-        root.join("routes/templates/page.html"),
+        root.join("routes/templates/page.tmpl"),
         "<div>{ k: 'someFlag' }</div>\n",
     )
     .unwrap();
-    std::fs::write(root.join("styles.css"), "body { color: red; }\n").unwrap();
+    std::fs::write(root.join("notes.rst"), "a title\n=======\n").unwrap();
     std::fs::write(root.join("Makefile"), "all:\n\techo someFlag\n").unwrap();
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-m", "init"]);
@@ -93,7 +93,7 @@ fn count_for(unscanned: &Value, extension: &str) -> Option<u64> {
         .as_u64()
 }
 
-/// The bug: the `.html` hit is missing. What must not also be missing is the
+/// The bug: the `.tmpl` hit is missing. What must not also be missing is the
 /// statement that something was not searched.
 #[tokio::test]
 async fn a_partial_literal_answer_reports_what_it_could_not_reach() {
@@ -101,7 +101,7 @@ async fn a_partial_literal_answer_reports_what_it_could_not_reach() {
     let payload = literal_search(&cg, "someFlag").await;
 
     // Precondition: this is genuinely the incomplete answer, not a fixed one.
-    // If `.html` ever becomes indexable by default this assertion fails
+    // If `.tmpl` ever becomes indexable by default this assertion fails
     // loudly rather than the test quietly proving nothing.
     let files: Vec<&str> = payload["matches"]
         .as_array()
@@ -121,14 +121,14 @@ async fn a_partial_literal_answer_reports_what_it_could_not_reach() {
         "a partial answer must carry an unscanned block, got {payload:#}"
     );
     assert_eq!(
-        count_for(unscanned, "html"),
+        count_for(unscanned, "tmpl"),
         Some(1),
         "the template holding the other hit must be named: {unscanned:#}"
     );
     assert_eq!(
-        count_for(unscanned, "css"),
+        count_for(unscanned, "rst"),
         Some(1),
-        "a stylesheet is text a literal search could have matched: {unscanned:#}"
+        "prose is text a literal search could have matched: {unscanned:#}"
     );
     assert_eq!(
         count_for(unscanned, "(no extension)"),
@@ -162,7 +162,7 @@ async fn adding_the_extension_makes_the_file_searchable_and_shrinks_the_report()
     config["artifact_extensions"]
         .as_array_mut()
         .expect("artifact_extensions is a list")
-        .push(json!("html"));
+        .push(json!("tmpl"));
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let cg = TokenSave::open(tmp.path()).await.unwrap();
@@ -176,7 +176,7 @@ async fn adding_the_extension_makes_the_file_searchable_and_shrinks_the_report()
         .map(|m| m["file"].as_str().unwrap())
         .collect();
     assert!(
-        files.contains(&"routes/templates/page.html"),
+        files.contains(&"routes/templates/page.tmpl"),
         "the template's line must now be searched, got {files:?}"
     );
     // No symbol encloses a line in a file that was never parsed, and the
@@ -185,7 +185,7 @@ async fn adding_the_extension_makes_the_file_searchable_and_shrinks_the_report()
         .as_array()
         .unwrap()
         .iter()
-        .find(|m| m["file"] == "routes/templates/page.html")
+        .find(|m| m["file"] == "routes/templates/page.tmpl")
         .unwrap();
     assert!(
         template_hit["enclosing"].is_null(),
@@ -194,14 +194,14 @@ async fn adding_the_extension_makes_the_file_searchable_and_shrinks_the_report()
 
     let unscanned = &payload["unscanned"];
     assert_eq!(
-        count_for(unscanned, "html"),
+        count_for(unscanned, "tmpl"),
         None,
-        "html must leave the unscanned tally once it is indexed: {unscanned:#}"
+        "tmpl must leave the unscanned tally once it is indexed: {unscanned:#}"
     );
     assert_eq!(
-        count_for(unscanned, "css"),
+        count_for(unscanned, "rst"),
         Some(1),
-        "the stylesheet is still unreachable and must still be reported: {unscanned:#}"
+        "the prose file is still unreachable and must still be reported: {unscanned:#}"
     );
 }
 
@@ -232,7 +232,7 @@ async fn a_deliberately_excluded_file_is_not_reported_as_unscanned() {
         "an excluded file is an opt-out, not a gap: {unscanned:#}"
     );
     assert_eq!(
-        count_for(unscanned, "html"),
+        count_for(unscanned, "tmpl"),
         Some(1),
         "control: the template is still reported: {unscanned:#}"
     );

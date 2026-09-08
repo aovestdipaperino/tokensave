@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::accounting::classifier;
 use crate::accounting::pricing;
+use crate::context::read_modes::estimate_tokens;
 use crate::global_db::GlobalDb;
 use crate::types::CostTurn;
 
@@ -102,7 +103,7 @@ fn extract_path_parts(path: &Path) -> (String, String) {
 
 /// Parse a single JSONL line into a `CostTurn`, if it's an assistant message
 /// with usage data.
-fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTurn> {
+fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<(CostTurn, Vec<String>)> {
     let v: Value = serde_json::from_str(line).ok()?;
 
     // Only process assistant messages
@@ -133,10 +134,14 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
     let content = msg.get("content").and_then(|c| c.as_array());
     let mut tool_names_vec: Vec<String> = Vec::new();
     let mut bash_commands: Vec<String> = Vec::new();
+    let mut tool_use_ids: Vec<String> = Vec::new();
 
     if let Some(blocks) = content {
         for block in blocks {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
+                    tool_use_ids.push(id.to_string());
+                }
                 if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
                     tool_names_vec.push(name.to_string());
                     if name == "Bash" {
@@ -173,7 +178,7 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
         cache_read_tokens,
     );
 
-    Some(CostTurn {
+    let turn = CostTurn {
         message_id: message_id.to_string(),
         project_hash: project_hash.to_string(),
         session_id: session_id.to_string(),
@@ -188,7 +193,68 @@ fn parse_line(line: &str, project_hash: &str, session_id: &str) -> Option<CostTu
         tool_names: tool_names_vec.join(","),
         agent: "claude".to_string(),
         credits: None,
-    })
+    };
+    Some((turn, tool_use_ids))
+}
+
+/// The tool results carried by one transcript line, as
+/// `(tool_use_id, estimated tokens)` pairs.
+///
+/// A result does not travel with the `tool_use` that asked for it: it arrives
+/// in the *following* user message, so the caller keeps the id-to-turn mapping
+/// and attributes the size back (#474). Only user messages carry results;
+/// every other line yields nothing.
+///
+/// The size is measured on the result text — the bytes a `Read` or a `Grep`
+/// actually put into the conversation, which is the quantity a graph query
+/// could have served more cheaply. Content arrives either as a plain string or
+/// as a list of blocks, and both forms are measured.
+fn parse_tool_results(line: &str) -> Vec<(String, u64)> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Vec::new();
+    };
+    if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return Vec::new();
+    }
+    let Some(blocks) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for block in blocks {
+        if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str()) else {
+            continue;
+        };
+        let tokens = block.get("content").map_or(0, measure_result_content);
+        if tokens > 0 {
+            out.push((id.to_string(), tokens));
+        }
+    }
+    out
+}
+
+/// Estimated tokens of one `tool_result` block's content.
+fn measure_result_content(content: &Value) -> u64 {
+    match content {
+        Value::String(text) => u64::from(estimate_tokens(text)),
+        Value::Array(blocks) => blocks
+            .iter()
+            .map(|block| {
+                block
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map_or(0, |text| u64::from(estimate_tokens(text)))
+            })
+            .sum(),
+        _ => 0,
+    }
 }
 
 /// Parse an ISO 8601 timestamp to unix epoch seconds.
@@ -324,6 +390,13 @@ async fn ingest_claude_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
             continue;
         }
 
+        // `tool_use_id` -> the message that issued it, so a result found in a
+        // later line can be attributed back (#474). Per session file, and
+        // entries are removed as they are consumed, so it holds only the calls
+        // still awaiting a result.
+        let mut issuing_turn: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
         let mut line = String::new();
         let mut current_offset = seek_to;
         let mut read_failed = false;
@@ -343,13 +416,30 @@ async fn ingest_claude_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if let Some(turn) = parse_line(trimmed, &project_hash, &session_id) {
+                    if let Some((turn, tool_use_ids)) =
+                        parse_line(trimmed, &project_hash, &session_id)
+                    {
                         let turn_cost = turn.cost_usd;
                         let turn_tokens = turn.input_tokens + turn.output_tokens;
+                        // Remember which turn issued each tool call, so the
+                        // result blocks in a later user message can be sized
+                        // and added back to it (#474).
+                        for id in tool_use_ids {
+                            issuing_turn.insert(id, turn.message_id.clone());
+                        }
                         if gdb.insert_turn(&turn).await {
                             total_inserted += 1;
                             total_cost += turn_cost;
                             total_tokens += turn_tokens;
+                        }
+                    } else {
+                        for (tool_use_id, tokens) in parse_tool_results(trimmed) {
+                            // An id with no remembered turn is what a resumed
+                            // parse sees when the assistant line fell before
+                            // the stored offset; there is nothing to add it to.
+                            if let Some(message_id) = issuing_turn.remove(&tool_use_id) {
+                                gdb.add_tool_result_tokens(&message_id, tokens).await;
+                            }
                         }
                     }
                 }
@@ -516,7 +606,7 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"id":"msg_01abc","model":"claude-opus-4-6","role":"assistant","usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":500,"cache_read_input_tokens":800},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"test.rs"}}]},"timestamp":"2026-04-14T10:00:00.000Z"}"#;
         let turn = parse_line(line, "proj", "sess");
         assert!(turn.is_some());
-        let t = turn.unwrap();
+        let (t, _tool_use_ids) = turn.unwrap();
         assert_eq!(t.message_id, "msg_01abc");
         assert_eq!(t.model, "claude-opus-4-6");
         assert_eq!(t.input_tokens, 1000);
@@ -538,5 +628,46 @@ mod tests {
     fn test_parse_line_malformed() {
         assert!(parse_line("not json at all", "proj", "sess").is_none());
         assert!(parse_line("{}", "proj", "sess").is_none());
+    }
+
+    /// The ids a turn issued come back with it, since the results that will
+    /// be attributed to it are identified by nothing else (#474).
+    #[test]
+    fn assistant_turn_reports_the_tool_calls_it_issued() {
+        let line = r#"{"type":"assistant","message":{"id":"msg_01abc","model":"claude-opus-4-6","role":"assistant","usage":{"input_tokens":3,"output_tokens":200},"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{}},{"type":"tool_use","id":"toolu_2","name":"Grep","input":{}}]},"timestamp":"2026-04-14T10:00:00.000Z"}"#;
+        let (turn, ids) = parse_line(line, "proj", "sess").unwrap();
+        assert_eq!(turn.tool_names, "Read,Grep");
+        assert_eq!(ids, ["toolu_1", "toolu_2"]);
+    }
+
+    /// A result block is sized by its text, whether the content is a plain
+    /// string or a list of blocks.
+    #[test]
+    fn tool_results_are_measured_by_their_text() {
+        let string_form = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"0123456789012345678901234567890123456789"}]}}"#;
+        let results = parse_tool_results(string_form);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "toolu_1");
+        assert_eq!(results[0].1, 10, "40 characters at ~4 per token");
+
+        let block_form = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"01234567"},{"type":"text","text":"89AB"}]}]}}"#;
+        let results = parse_tool_results(block_form);
+        assert_eq!(results, [("toolu_2".to_string(), 3)]);
+    }
+
+    /// Everything that is not a tool result contributes nothing — an ordinary
+    /// user message most of all, which is text the user typed rather than
+    /// anything a tool injected.
+    #[test]
+    fn only_tool_results_are_measured() {
+        let typed = r#"{"type":"user","message":{"content":"a long message the user typed out"}}"#;
+        assert!(parse_tool_results(typed).is_empty());
+
+        let assistant =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
+        assert!(parse_tool_results(assistant).is_empty());
+
+        assert!(parse_tool_results("not json").is_empty());
+        assert!(parse_tool_results("{}").is_empty());
     }
 }

@@ -36,6 +36,17 @@ fn sidecar_stem_rejects_non_sidecar_markdown() {
 }
 
 #[test]
+fn sidecar_stem_handles_non_ascii_filenames(/* #504 */) {
+    // A multi-byte character straddling the suffix split point used to panic:
+    // "end byte index 13 is not a char boundary".
+    assert_eq!(sidecar_stem("docs/Ativação bbbb.md"), None);
+    // Shorter than the suffix once the accent is counted in bytes.
+    assert_eq!(sidecar_stem("ã.md"), None);
+    // A genuine sidecar whose stem is non-ASCII still resolves.
+    assert_eq!(sidecar_stem("src/Ativação.readme.md"), Some("src/Ativação"));
+}
+
+#[test]
 fn sidecar_covers_every_extension_sharing_the_stem() {
     let files = owned(&[
         "src/Foo.cs",

@@ -341,7 +341,10 @@ fn test_language_registry_finds_scala_extractor() {
 #[test]
 fn test_language_registry_returns_none_for_unknown() {
     let registry = LanguageRegistry::new();
-    assert!(registry.extractor_for_file("style.css").is_none());
+    // `.css` used to stand here as the example of an unhandled extension; it
+    // gained an extractor in #507, so the case is now an extension nothing
+    // claims.
+    assert!(registry.extractor_for_file("archive.tar.gz").is_none());
     assert!(registry.extractor_for_file("README.unknown").is_none());
 }
 

@@ -206,8 +206,13 @@ pub(crate) async fn sibling_note(
 
 /// Truncates a string to the maximum response character limit, appending
 /// a truncation notice if necessary.
+///
+/// An empty input is a legitimate answer — a valid filter that matched
+/// nothing — and is returned unchanged. It used to trip a `debug_assert`,
+/// which killed the whole server in a debug build while a release build
+/// returned an empty text block, so the two profiles disagreed on a request
+/// that was never invalid (#499).
 pub(crate) fn truncate_response(s: &str) -> String {
-    debug_assert!(!s.is_empty(), "truncate_response called with empty string");
     if s.len() <= MAX_RESPONSE_CHARS {
         s.to_string()
     } else {

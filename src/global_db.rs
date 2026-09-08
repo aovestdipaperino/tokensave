@@ -247,7 +247,8 @@ impl GlobalDb {
                 category TEXT NOT NULL,
                 tool_names TEXT NOT NULL DEFAULT '',
                 agent TEXT NOT NULL DEFAULT 'claude',
-                credits INTEGER
+                credits INTEGER,
+                tool_result_tokens INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
             CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project_hash);
@@ -294,7 +295,8 @@ impl GlobalDb {
         Self::open_at(&db_path).await
     }
 
-    /// Add `agent` and `credits` columns to an existing turns table if absent.
+    /// Add `agent`, `credits` and `tool_result_tokens` columns to an existing
+    /// turns table if absent.
     /// Best-effort: failures are silently ignored (matches `open_at` pattern).
     async fn migrate_turns_columns(conn: &Connection) {
         let Ok(mut rows) = conn.query("PRAGMA table_info(turns)", ()).await else {
@@ -302,11 +304,13 @@ impl GlobalDb {
         };
         let mut has_agent = false;
         let mut has_credits = false;
+        let mut has_tool_result_tokens = false;
         while let Ok(Some(row)) = rows.next().await {
             if let Ok(name) = row.get::<String>(1) {
                 match name.as_str() {
                     "agent" => has_agent = true,
                     "credits" => has_credits = true,
+                    "tool_result_tokens" => has_tool_result_tokens = true,
                     _ => {}
                 }
             }
@@ -322,6 +326,18 @@ impl GlobalDb {
         if !has_credits {
             let _ = conn
                 .execute("ALTER TABLE turns ADD COLUMN credits INTEGER", ())
+                .await;
+        }
+        if !has_tool_result_tokens {
+            // Backfilled as 0 rather than recomputed: the figure comes from
+            // transcript lines this database does not keep, and re-reading
+            // every session to fill history in would cost more than the metric
+            // is worth. Turns parsed from here on carry it (#474).
+            let _ = conn
+                .execute(
+                    "ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
                 .await;
         }
     }
@@ -629,6 +645,32 @@ impl GlobalDb {
             .is_ok_and(|n| n > 0)
     }
 
+    /// Adds `tokens` to a turn's recorded tool-result size.
+    ///
+    /// Tool results are not in the assistant message that requested them: they
+    /// arrive in the following user message, one block per `tool_use_id`, so
+    /// the size is known only after the turn has been inserted and is added to
+    /// it here (#474). Accumulating rather than assigning is deliberate — a
+    /// turn may issue several tools, and their results can be split across
+    /// more than one user message.
+    ///
+    /// A no-op for an unknown `message_id`, which is what a resumed parse sees
+    /// when the assistant line fell before the stored offset and its results
+    /// after.
+    pub async fn add_tool_result_tokens(&self, message_id: &str, tokens: u64) -> bool {
+        if tokens == 0 {
+            return false;
+        }
+        self.conn
+            .execute(
+                "UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 \
+                 WHERE message_id = ?1",
+                params![message_id.to_string(), tokens as i64],
+            )
+            .await
+            .is_ok_and(|n| n > 0)
+    }
+
     /// Upsert a Droid cumulative-snapshot turn (monotonic semantics).
     ///
     /// On conflict, the row is updated only when **every** token counter in the
@@ -805,7 +847,17 @@ impl GlobalDb {
         out
     }
 
-    /// Fetch `(tool_names, input_tokens)` for every Claude turn since a timestamp.
+    /// Fetch `(tool_names, tool_result_tokens)` for every Claude turn since a
+    /// timestamp.
+    ///
+    /// The second element is the size of the tool *results* the turn's tools
+    /// injected — the text a graph query could have served instead — and not
+    /// `input_tokens`, which is what this read before (#474). Under prompt
+    /// caching `input_tokens` is only the uncached remainder of the prompt, a
+    /// double-digit figure per turn with nothing to do with what a `Read` or a
+    /// `Grep` put into the conversation. The whole prompt, cache included, is
+    /// not addressable either: most of it is conversation the navigation did
+    /// not cause.
     ///
     /// Claude-only: the discover analyzer works on Claude Code navigation patterns.
     /// Returns an empty vector on any DB error.
@@ -813,7 +865,8 @@ impl GlobalDb {
         let Ok(mut rows) = self
             .conn
             .query(
-                "SELECT tool_names, input_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'",
+                "SELECT tool_names, tool_result_tokens FROM turns \
+                 WHERE timestamp >= ?1 AND agent = 'claude'",
                 params![since as i64],
             )
             .await

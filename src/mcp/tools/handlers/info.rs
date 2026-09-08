@@ -171,11 +171,18 @@ pub(super) async fn handle_files(
         .unwrap_or("grouped");
 
     let output = if format == "flat" {
-        files
-            .iter()
-            .map(|f| format!("{} ({}, {} bytes)", f.path, describe_contents(f), f.size))
-            .collect::<Vec<_>>()
-            .join("\n")
+        if files.is_empty() {
+            // Say so rather than returning an empty body: the grouped format
+            // reports "0 indexed files", and an empty string is indistinguishable
+            // from a failed call to the caller (#499).
+            "0 indexed files".to_string()
+        } else {
+            files
+                .iter()
+                .map(|f| format!("{} ({}, {} bytes)", f.path, describe_contents(f), f.size))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     } else {
         // Grouped by directory
         let mut groups: std::collections::BTreeMap<String, Vec<String>> =

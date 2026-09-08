@@ -9,36 +9,48 @@
 //!
 //! # Estimation method and assumptions
 //!
-//! The `turns` table records, per turn, the comma-joined `tool_names` and the
-//! `input_tokens` billed for that turn. It does **not** store the byte/char
-//! size of the content each navigation tool returned, nor the content of
-//! `Bash` commands (only the literal tool name `Bash` is persisted). Two
-//! consequences follow, and we stay strictly within what the data supports:
+//! Per turn, the `turns` table records the comma-joined `tool_names` and — as
+//! of #474 — `tool_result_tokens`, the measured size of the tool results that
+//! turn's tools injected into the conversation. That is the quantity this
+//! analyzer reports as **addressable**: the text a graph query could have
+//! served instead.
+//!
+//! It is deliberately not `input_tokens`, which is what this read until #474.
+//! Under prompt caching `input_tokens` is only the *uncached remainder* of the
+//! prompt — a double-digit figure per turn, which is why the reported totals
+//! were implausibly small and looked like a placeholder. Nor is it the whole
+//! prompt with cache included: that is hundreds of thousands of tokens per
+//! turn, most of them conversation the navigation did not cause, and a graph
+//! query cannot recover any of it.
+//!
+//! Two limits remain, and we stay strictly within what the data supports:
 //!
 //! 1. Bash-based navigation (`grep`/`find`/`cat`/`rg`) cannot be detected here,
 //!    because command text is not in the table. Those turns are simply not
 //!    counted — this makes the analyzer a lower bound, never an over-claim.
-//! 2. We cannot compute exact recoverable tokens (that would need the size of
-//!    the file payload a `Read`/`Grep`/`Glob` pulled into context). Instead we
-//!    report the **addressable** input tokens — the full `input_tokens` spent
-//!    on replaceable navigation turns — and a clearly-labeled conservative
-//!    lower-bound recoverable figure: `addressable * RECOVERABLE_FRACTION`.
+//! 2. Turns parsed before #474 carry `tool_result_tokens = 0` and so contribute
+//!    nothing to the addressable total. The figure is not recomputed for them:
+//!    it comes from transcript lines the database does not keep, and re-reading
+//!    every historical session would cost more than the metric is worth. A
+//!    range extending back before the upgrade therefore under-reports, which
+//!    keeps it a lower bound rather than a wrong number.
 //!
 //! A turn is "replaceable" only when *every* tool it used is a navigation tool;
 //! a turn that also edits, runs Bash, delegates, etc. is left out entirely.
 //! This keeps the count conservative and avoids attributing edit-turn cost to
 //! navigation.
 
-/// Conservative fraction of a navigation turn's input tokens treated as
-/// recoverable by a graph query.
+/// Conservative fraction of a navigation turn's injected tool results treated
+/// as recoverable by a graph query.
 ///
-/// A navigation turn's `input_tokens` covers the system prompt, prior
-/// conversation, and tool-result payloads carried in context — not just the
-/// freshly-read file. A graph query returns a compact slice instead of whole
-/// files, but cannot shrink the fixed conversational overhead. We therefore
-/// claim only half the addressable input as recoverable. This is intentionally
-/// pessimistic: it is a stated lower bound, not a measured value. Changing it
-/// only rescales the recoverable column; the addressable figure is exact.
+/// The addressable figure is now the payload itself rather than a whole
+/// prompt (#474), so the old rationale — that most of `input_tokens` was fixed
+/// conversational overhead a graph query cannot shrink — no longer applies.
+/// What remains true is that a graph query is not free: it returns a compact
+/// slice where a `Read` returned a whole file, so it replaces most of the
+/// payload rather than all of it. Half is claimed. This is still a stated
+/// lower bound rather than a measured value; changing it only rescales the
+/// recoverable column, and the addressable figure stands on its own.
 pub const RECOVERABLE_FRACTION: f64 = 0.5;
 
 /// Which tokensave graph query would have replaced a navigation tool.
@@ -90,7 +102,10 @@ pub struct BucketStat {
     pub bucket: NavBucket,
     /// Number of replaceable navigation turns attributed to this bucket.
     pub turns: u64,
-    /// Sum of `input_tokens` across those turns (the "addressable" total).
+    /// Sum of `tool_result_tokens` across those turns — the text those tools
+    /// injected, which is what a graph query could have served instead. Read
+    /// from `input_tokens` until #474, where under prompt caching it measured
+    /// only the uncached remainder of the prompt.
     pub addressable_input_tokens: u64,
 }
 
