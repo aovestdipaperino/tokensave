@@ -279,10 +279,17 @@ fn check_network(dc: &mut DoctorCounters) {
     } else {
         dc.warn("Worldwide counter unreachable (offline or timeout)");
     }
-    if crate::cloud::fetch_latest_version().is_some() {
-        dc.pass("GitHub releases API reachable");
-    } else {
-        dc.warn("GitHub releases API unreachable (offline or timeout)");
+    // Reachability and installability are separate findings: a release with no
+    // asset for this platform means GitHub answered fine (#513).
+    match crate::cloud::try_fetch_latest_version() {
+        Ok(_) => dc.pass("GitHub releases API reachable"),
+        Err(crate::cloud::VersionCheckError::Unreachable { detail }) => {
+            dc.warn(&format!("GitHub releases API unreachable ({detail})"));
+        }
+        Err(e) => {
+            dc.pass("GitHub releases API reachable");
+            dc.warn(&format!("No installable release for this platform: {e}"));
+        }
     }
 }
 
