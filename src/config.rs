@@ -585,6 +585,29 @@ pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     }
 }
 
+/// Basename of the dependency lockfile Terraform and `OpenTofu` share.
+///
+/// `OpenTofu` kept Terraform's lockfile name and format, so one basename
+/// covers both tools; the provider registry address inside may be either
+/// `registry.terraform.io/...` or `registry.opentofu.org/...`.
+pub const TERRAFORM_LOCKFILE_BASENAME: &str = ".terraform.lock.hcl";
+
+/// Returns `true` when `path` is a Terraform/OpenTofu dependency lockfile.
+///
+/// The lockfile is the one dot-prefixed, HCL-formatted file a project is
+/// expected to commit and diff, so it is indexed as a path-tracked artifact
+/// even though the scanner's hidden filter and the unsupported `.hcl`
+/// extension would each otherwise drop it. Classification is by exact
+/// basename rather than extension: claiming `hcl` outright would mislabel
+/// every other HCL document (Packer, Consul, Vault, Nomad, Waypoint) as
+/// Terraform source, and an artifact is never parsed, so checksum-heavy
+/// content cannot surface as symbols.
+pub fn is_dependency_lockfile(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == TERRAFORM_LOCKFILE_BASENAME)
+}
+
 /// Returns `true` if the path matches any of the configured `include` patterns.
 ///
 /// This is used to allow hidden (dot-prefixed) directories that would
