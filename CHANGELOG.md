@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+- **Test and dev profiles now use `debug = "line-tables-only"`.** Across tokensave's 162+ integration-test crates, default debuginfo (`debug = 2`) generated up to ~395 MiB per test binary, driving `target/` peak disk usage past 25–29 GB during multi-threaded test links. Tuning `debug = "line-tables-only"` slashes test binary sizes by ~45% (down to ~216 MiB per test binary) and reduces peak disk footprint during test builds while preserving full file:line numbers in backtraces, panic messages, and test assertion locations.
+
 ### Added
 - **Terraform extraction** - Add full-tier support for `.tf` and `.tfvars` files, including canonical block declarations, direct attributes, traversal references, and malformed-input recovery.
 

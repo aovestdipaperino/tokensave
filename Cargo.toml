@@ -192,3 +192,12 @@ harness = false
 # `tests/vendored_libsql_test.rs` fails if the two drift apart.
 [patch.crates-io]
 libsql = { path = "vendor/libsql" }
+
+# Faster test compilation, reduced debuginfo bloat (216.7 MiB vs 395.3 MiB per test binary, -45%),
+# while preserving line tables for backtraces and panic locations.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
