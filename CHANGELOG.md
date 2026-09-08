@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+- **Terraform/OpenTofu dependency lockfiles are indexed as artifacts.** `.terraform.lock.hcl` (the basename both tools share) was dropped twice over: the hidden-entry filter skips dot-prefixed names, and no extractor or artifact extension owns `.hcl`, so sync reported it as an unsupported file and neither `tokensave_files` nor literal search could reach the provider source addresses, selected versions, and checksums it records. Classification is by exact basename, not extension: claiming `.hcl` outright would mislabel every other HCL document (Packer, Consul, Vault, Nomad) as Terraform source. The lockfile rides the existing artifact pipeline (#323): a `files` row with hash, size, and mtime, never parsed, so checksum strings cannot surface as symbols, and findable by path and by literal content search for both `registry.terraform.io/...` and `registry.opentofu.org/...` provider addresses. Other HCL files still count in the unsupported-extension summary, and other hidden files stay excluded.
+
 ### Changed
 - **Test and dev profiles now use `debug = "line-tables-only"`.** Across tokensave's 162+ integration-test crates, default debuginfo (`debug = 2`) generated up to ~395 MiB per test binary, driving `target/` peak disk usage past 25–29 GB during multi-threaded test links. Tuning `debug = "line-tables-only"` slashes test binary sizes by ~45% (down to ~216 MiB per test binary) and reduces peak disk footprint during test builds while preserving full file:line numbers in backtraces, panic messages, and test assertion locations.
 

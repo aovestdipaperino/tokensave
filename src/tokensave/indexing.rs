@@ -1585,6 +1585,12 @@ impl TokenSave {
                 }
                 let name = e.file_name().to_string_lossy();
                 if name.starts_with('.') || name == "target" {
+                    // The dependency lockfile is the one hidden file admitted
+                    // without an include glob: committed by convention and
+                    // classified as an artifact by basename downstream.
+                    if !e.file_type().is_dir() && crate::config::is_dependency_lockfile(e.path()) {
+                        return true;
+                    }
                     // Allow if the relative path matches an include glob or a
                     // manifest entry (#194).
                     if let Ok(rel) = e.path().strip_prefix(root) {
@@ -1630,9 +1636,10 @@ impl TokenSave {
     /// additionally treat every `.gitignore` it encounters as a standalone
     /// ignore file, ensuring nested rules are applied even outside a git repo.
     ///
-    /// When `include` globs are configured, the crate's built-in hidden filter
-    /// is disabled and hidden entries are filtered manually so that included
-    /// dot-paths can pass through.
+    /// The crate's built-in hidden filter is disabled and hidden entries are
+    /// filtered manually instead (directories pruned in `filter_entry`, files
+    /// skipped in the walk loop), so that include globs, manifest entries,
+    /// and the dependency lockfile basename can admit specific dot-paths.
     pub(crate) fn scan_files_with_gitignore(
         &self,
         supported_exts: &[&str],
@@ -1640,8 +1647,13 @@ impl TokenSave {
     ) -> Vec<String> {
         let manifest = self.manifest();
         // Manifest entries behave like include globs for hidden-path
-        // filtering, so disable the crate's hidden filter when either exists.
-        let has_includes = !self.config.include.is_empty() || manifest.is_some();
+        // filtering, so the crate's hidden filter is disabled when either
+        // exists — and unconditionally now that the dependency lockfile is
+        // admitted by basename: the crate-level `hidden(true)` filter drops
+        // dot-prefixed entries before `filter_entry` can see them, so the
+        // lockfile exemption below could never run. Hidden-entry semantics
+        // are preserved manually: directories are pruned in `filter_entry`,
+        // files are skipped in the walk loop.
         let mut files = Vec::new();
         // Prune directories covered by an `exclude` glob *before* descending.
         // The `ignore` crate honors `.gitignore` but not our `config.exclude`,
@@ -1653,9 +1665,10 @@ impl TokenSave {
         let root = self.project_root.clone();
         let config = self.config.clone();
         let canonical_root = self.project_root.canonicalize().ok();
+        let manifest_for_prune = manifest.clone();
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
-            .hidden(!has_includes) // disable when we need to check includes
+            .hidden(false) // hidden entries are filtered manually below
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
@@ -1666,6 +1679,22 @@ impl TokenSave {
                     if let Ok(rel) = e.path().strip_prefix(&root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
                         if is_excluded_dir(&rel_str, &config) {
+                            return false;
+                        }
+                    }
+                    // Hidden directories stay pruned exactly as the crate's
+                    // disabled hidden filter pruned them; an include glob or
+                    // manifest entry re-admits one (#194).
+                    if e.depth() > 0 && e.file_name().to_string_lossy().starts_with('.') {
+                        let rel_str = e
+                            .path()
+                            .strip_prefix(&root)
+                            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or_default();
+                        let manifest_allows = manifest_for_prune.as_deref().is_some_and(|m| {
+                            m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+                        });
+                        if !is_included(&rel_str, &config) && !manifest_allows {
                             return false;
                         }
                     }
@@ -1690,11 +1719,14 @@ impl TokenSave {
                 continue;
             };
 
-            // When we disabled the crate's hidden filter, manually skip hidden
-            // entries that don't match an include glob.
-            if has_includes && entry.depth() > 0 {
+            // The crate's hidden filter is disabled (see above), so hidden
+            // files are skipped manually unless an include glob or manifest
+            // entry admits them — with one exemption: the dependency
+            // lockfile, admitted by basename so it can be tracked as an
+            // artifact without an include glob.
+            if entry.depth() > 0 && ft.is_file() {
                 let name = entry.file_name().to_string_lossy();
-                if name.starts_with('.') {
+                if name.starts_with('.') && !crate::config::is_dependency_lockfile(entry.path()) {
                     if let Ok(rel) = entry.path().strip_prefix(&self.project_root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
                         let manifest_allows = manifest.as_deref().is_some_and(|m| {
@@ -1742,7 +1774,12 @@ impl TokenSave {
             let manifest_match = self
                 .manifest()
                 .is_some_and(|m| m.matches_local_file(&rel_str));
-            if !manifest_match {
+            // Dependency lockfiles are admitted by basename (#497 follow-up):
+            // `.terraform.lock.hcl` is tracked as an artifact even though no
+            // extractor or artifact extension owns `.hcl`, and it must not
+            // count toward the unsupported-extension summary.
+            let lockfile_match = crate::config::is_dependency_lockfile(path);
+            if !manifest_match && !lockfile_match {
                 if !ext.is_empty() && !is_excluded(&rel_str, &self.config) {
                     let ext_lower = ext.to_ascii_lowercase();
                     if !NON_SOURCE_EXTS.contains(&ext_lower.as_str()) {
@@ -1957,15 +1994,22 @@ impl TokenSave {
     /// Artifacts are never handed to the extractor: they have no symbols by
     /// definition, and routing them through extraction would mean teaching both
     /// the in-process and subprocess paths to return an empty result.
+    ///
+    /// A path is an artifact when its extension is configured as one or when
+    /// its basename names a dependency lockfile (`is_dependency_lockfile`):
+    /// the lockfile's `.hcl` extension is deliberately not an artifact
+    /// extension, since that would classify every HCL document as one.
     pub(crate) fn partition_artifacts(
         files: Vec<String>,
         artifact_exts: &[String],
     ) -> (Vec<String>, Vec<String>) {
         files.into_iter().partition(|path| {
-            !std::path::Path::new(path)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
+            let path_ref = std::path::Path::new(path);
+            !crate::config::is_dependency_lockfile(path_ref)
+                && !path_ref
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
         })
     }
 
